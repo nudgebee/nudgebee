@@ -97,7 +97,10 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Watch, error) {
 
 	// Dedup: watch_resource is injected into every agent, so an orchestrator and
 	// its sub-agent can each register a watch for the same observation. Reuse it.
-	if existing, derr := m.findDuplicate(ctx, db, in); derr != nil {
+	// NudgeBee's own watches are never merged: each belongs to one wait.
+	if in.Origin != "" {
+		// no dedup
+	} else if existing, derr := m.findDuplicate(ctx, db, in); derr != nil {
 		return nil, derr
 	} else if existing != nil {
 		slog.Info("watch: deduped duplicate registration; reusing existing watch",
@@ -117,8 +120,12 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Watch, error) {
 	// is bounded by concurrency (small) and the cap is a soft abuse-guard, not
 	// a correctness invariant — a strict bound would need a per-tenant
 	// advisory lock or SERIALIZABLE-with-retry, deliberately not taken here.
+	// A person's watches and NudgeBee's own are capped apart: NudgeBee's waits never take a person's slots.
 	maxPerTenant := config.Config.WatchMaxPerTenant
-	if err := assertTenantQuota(ctx, db, in.TenantID, maxPerTenant); err != nil {
+	if in.Origin != "" {
+		maxPerTenant = config.Config.WatchMaxOriginPerTenant
+	}
+	if err := assertTenantQuota(ctx, db, in.TenantID, in.Origin != "", maxPerTenant); err != nil {
 		return nil, err
 	}
 
@@ -142,6 +149,10 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Watch, error) {
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	if in.Origin != "" {
+		o := in.Origin
+		w.Origin = &o
+	}
 	if strings.TrimSpace(in.NotifyTemplate) != "" {
 		t := in.NotifyTemplate
 		w.NotifyTemplate = &t
@@ -164,7 +175,7 @@ INSERT INTO llm_watch_tasks (
   predicate_kind, predicate_expr, predicate_negate,
   notify_template, poll_interval_sec, max_duration_sec,
   status, next_poll_at, expires_at, created_at, updated_at,
-  parent_message_id, notify_session
+  parent_message_id, notify_session, origin
 )
 SELECT
   $1, $2, $3, $4, $5,
@@ -172,7 +183,7 @@ SELECT
   $8, $9, $10,
   $11, $12, $13,
   $14, $15, $16, $17, $18,
-  $19, $20`
+  $19, $20, $21`
 
 	args := []any{
 		w.ID, w.ConversationID, w.AccountID, w.TenantID, w.UserID,
@@ -180,16 +191,16 @@ SELECT
 		string(w.PredicateKind), w.PredicateExpr, w.PredicateNegate,
 		w.NotifyTemplate, w.PollIntervalSec, w.MaxDurationSec,
 		string(w.Status), w.NextPollAt, w.ExpiresAt, w.CreatedAt, w.UpdatedAt,
-		w.ParentMessageID, w.NotifySession,
+		w.ParentMessageID, w.NotifySession, w.Origin,
 	}
 	query := insertCols
 	if maxPerTenant > 0 {
-		// $4 is tenant_id (reused); $21 is the cap.
+		// $4 is tenant_id (reused); $22 is the cap, counted over the same kind ($21 is origin: NULL for a person).
 		query += `
 WHERE (
   SELECT COUNT(*) FROM llm_watch_tasks
-  WHERE tenant_id = $4 AND status IN ('PENDING','ACTIVE')
-) < $21`
+  WHERE tenant_id = $4 AND status IN ('PENDING','ACTIVE') AND (origin IS NOT NULL) = ($21::text IS NOT NULL)
+) < $22`
 		args = append(args, maxPerTenant)
 	}
 
@@ -213,7 +224,7 @@ func (m *Manager) findDuplicate(ctx context.Context, db *sqlx.DB, in CreateInput
 	const q = `
 SELECT id FROM llm_watch_tasks
 WHERE conversation_id = $1 AND tenant_id = $2
-  AND status IN ('PENDING','ACTIVE')
+  AND status IN ('PENDING','ACTIVE') AND origin IS NULL
   AND ($3::jsonb) -> 'tool_input' IS NOT NULL
   AND source_config -> 'tool_input' = ($3::jsonb) -> 'tool_input'
   AND predicate_kind = $4 AND predicate_expr = $5 AND predicate_negate = $6
@@ -272,27 +283,48 @@ func clampLimits(in CreateInput) CreateInput {
 	if cfg := config.Config.WatchMinIntervalSec; cfg > 0 && out.PollIntervalSec < cfg {
 		out.PollIntervalSec = cfg
 	}
-	if cfg := config.Config.WatchMaxDurationSec; cfg > 0 && out.MaxDurationSec > cfg {
-		out.MaxDurationSec = cfg
+	maxDuration := config.Config.WatchMaxDurationSec
+	if in.Origin != "" {
+		// NudgeBee's own waits run under their own bound: a remediation hold can last longer than a person's watch.
+		maxDuration = config.Config.WatchMaxOriginDurationSec
+	}
+	if maxDuration > 0 && out.MaxDurationSec > maxDuration {
+		out.MaxDurationSec = maxDuration
+	}
+	if in.SourceKind == SourceKindTimer {
+		// A timer has nothing to poll: one tick, at its deadline.
+		out.PollIntervalSec = out.MaxDurationSec
 	}
 	return out
 }
 
-func assertTenantQuota(ctx context.Context, db *sqlx.DB, tenantID uuid.UUID, maxActive int) error {
+// assertTenantQuota fails when the tenant has maxActive live watches of the same kind: a person's (nudgeBees false)
+// or NudgeBee's own.
+func assertTenantQuota(ctx context.Context, db *sqlx.DB, tenantID uuid.UUID, nudgeBees bool, maxActive int) error {
 	if maxActive <= 0 {
 		return nil
 	}
 	var n int
 	const q = `
 SELECT COUNT(*) FROM llm_watch_tasks
-WHERE tenant_id = $1 AND status IN ('PENDING','ACTIVE')`
-	if err := db.GetContext(ctx, &n, q, tenantID); err != nil {
+WHERE tenant_id = $1 AND status IN ('PENDING','ACTIVE') AND (origin IS NOT NULL) = $2`
+	if err := db.GetContext(ctx, &n, q, tenantID, nudgeBees); err != nil {
 		return fmt.Errorf("watch: tenant quota query failed: %w", err)
 	}
 	if n >= maxActive {
 		return ErrTenantQuotaExceeded
 	}
 	return nil
+}
+
+// OriginRoomLeft reports whether the tenant can take one more of NudgeBee's own watches now (ErrTenantQuotaExceeded
+// when not), for a caller that must know before it starts what the watch is for. Best effort, as Create's own check.
+func (m *Manager) OriginRoomLeft(ctx context.Context, tenantID uuid.UUID) error {
+	db, err := m.dbHandle()
+	if err != nil {
+		return err
+	}
+	return assertTenantQuota(ctx, db, tenantID, true, config.Config.WatchMaxOriginPerTenant)
 }
 
 // fetchDueClaimLeaseSec is how far into the future a claimed row's
@@ -342,7 +374,7 @@ RETURNING id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id, notify_session`
+       expires_at, created_at, updated_at, parent_message_id, notify_session, origin`
 	out := []Watch{}
 	if err := db.SelectContext(ctx, &out, q, limit, fetchDueClaimLeaseSec); err != nil {
 		return nil, fmt.Errorf("watch: fetch due failed: %w", err)
@@ -368,7 +400,7 @@ SELECT id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id, notify_session
+       expires_at, created_at, updated_at, parent_message_id, notify_session, origin
 FROM llm_watch_tasks
 WHERE id = $1 AND tenant_id = $2`
 	w := &Watch{}
@@ -626,7 +658,7 @@ SELECT id, conversation_id, account_id, tenant_id, user_id,
        notify_template, poll_interval_sec, max_duration_sec,
        status, poll_count, failure_count,
        next_poll_at, last_poll_at, last_poll_result, final_result, error,
-       expires_at, created_at, updated_at, parent_message_id, notify_session
+       expires_at, created_at, updated_at, parent_message_id, notify_session, origin
 FROM llm_watch_tasks
 WHERE conversation_id = $1 AND tenant_id = $2
 ORDER BY created_at ASC`

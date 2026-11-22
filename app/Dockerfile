@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-FROM node:25-alpine AS base
+FROM node:26-alpine AS base
 # Refresh the base image's Alpine OS packages to the latest patch level. The
-# node:25-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
+# node:26-alpine tag lags Alpine security releases (e.g. openssl/libssl3), so
 # without this the runtime inherits fixed-upstream OS CVEs. Applied on the shared
 # base so deps/builder/runner all get the patched packages. Bumping OS_PKG_EPOCH
 # changes this layer's cache key so the registry cache can't serve a stale
@@ -47,6 +47,15 @@ RUN --mount=type=cache,target=/app/.next/cache \
 
 # Production image, copy all the files and run next
 FROM base AS runner
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-app" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee web application" \
+      description="Nudgebee web user interface for the Nudgebee platform."
 WORKDIR /app
 
 ENV NODE_ENV production

@@ -106,7 +106,6 @@ func getAzureAlerts(ctx providers.CloudProviderContext, account providers.Accoun
 
 			page, err := pager.NextPage(ctx.GetContext())
 			if err != nil {
-				ctx.GetLogger().Error("azure:getAzureAlerts failed to get next page", "error", err, "subscriptionID", subID)
 				return providers.ListEventResponse{}, fmt.Errorf("failed to get next page: %w", err)
 			}
 
@@ -196,103 +195,12 @@ func getAzureAlerts(ctx providers.CloudProviderContext, account providers.Accoun
 					}
 				}
 
-				// Resource info from essentials (needed before building eventID)
-				resourceID := safeDeref(essentials.TargetResource)
-
-				// Build stable fingerprint from alert rule + target resource.
-				// alert.ID is a per-firing instance GUID — useless for dedup.
-				// AlertRule identifies the rule definition, combined with TargetResource
-				// it uniquely identifies "this alert on this resource".
-				alertRule := safeDeref(essentials.AlertRule)
-				var eventID string
-				if alertRule != "" && resourceID != "" {
-					eventID = fmt.Sprintf("%s:%s", alertRule, resourceID)
-				} else {
-					// Fall back to instance ID when resource scope is unavailable.
-					// Multi-resource alert rules can fire for different targets,
-					// so using alertRule alone would over-deduplicate.
-					eventID = *alert.ID
+				event := convertAzureAlertToEvent(subID, alert, essentials)
+				// A resolve ends the stored firing at the resolve's date, so a
+				// resolved alert is dated by when it resolved.
+				if event.EventStatus == providers.EventStatusResolved && essentials.MonitorConditionResolvedDateTime != nil {
+					event.Date = *essentials.MonitorConditionResolvedDateTime
 				}
-
-				// Stable date - when the alert actually fired
-				eventDate := time.Now().UTC()
-				if essentials.StartDateTime != nil {
-					eventDate = *essentials.StartDateTime
-				}
-
-				// Actual monitor condition (Fired/Resolved)
-				eventStatus := providers.EventStatusFiring
-				if essentials.MonitorCondition != nil && *essentials.MonitorCondition == armalertsmanagement.MonitorConditionResolved {
-					eventStatus = providers.EventStatusResolved
-				}
-
-				// Severity: Sev0->High, Sev1->High, Sev2->Medium, Sev3->Low, Sev4->Low
-				severity := mapAlertSeverity(essentials.Severity)
-				serviceName := extractFullResourceType(resourceID)
-				if serviceName == "" {
-					serviceName = strings.ToLower(safeDeref(essentials.TargetResourceType))
-				}
-				resourceType := extractShortResourceType(serviceName)
-				region := safeDeref(essentials.TargetResourceGroup)
-
-				alertName := *alert.Name
-
-				// Build labels
-				labels := map[string]string{
-					"azure_alert_id":              *alert.ID,
-					"azure_alert_name":            alertName,
-					"azure_alert_rule":            safeDeref(essentials.AlertRule),
-					"azure_region":                region,
-					"azure_subscription_id":       subID,
-					"azure_service_name":          serviceName,
-					"azure_alert_target_resource": resourceID,
-				}
-
-				if essentials.SignalType != nil {
-					labels["signal_type"] = string(*essentials.SignalType)
-				}
-				if essentials.MonitorCondition != nil {
-					labels["azure_monitor_condition"] = string(*essentials.MonitorCondition)
-				}
-				if essentials.Severity != nil {
-					labels["azure_alert_severity"] = string(*essentials.Severity)
-				}
-				if essentials.MonitorService != nil {
-					labels["azure_monitor_service"] = string(*essentials.MonitorService)
-				}
-				if essentials.Description != nil && *essentials.Description != "" {
-					labels["azure_alert_description"] = *essentials.Description
-				}
-
-				// NOTE: Alert context is already included in the Raw map via buildAlertRawMap.
-				// Storing it again in labels causes memory duplication (30-40% overhead).
-				// Context can be large (10-50KB per alert), so we only store it once in Raw.
-
-				// Build title and description
-				title := alertName
-				description := fmt.Sprintf("Azure alert '%s' fired", alertName)
-				if essentials.Description != nil && *essentials.Description != "" {
-					description = *essentials.Description
-				}
-
-				event := providers.Event{
-					Title:               title,
-					EventName:           alertName,
-					Description:         description,
-					Date:                eventDate,
-					EventSource:         "Azure_Monitor_Alert",
-					EventId:             eventID,
-					FindingId:           *alert.ID, // Source-native per-firing GUID for traceability
-					EventStatus:         eventStatus,
-					EventSeverity:       severity,
-					ResourceType:        resourceType,
-					ResourceId:          resourceID,
-					ResourceRegion:      region,
-					ResourceServiceName: serviceName,
-					Raw:                 buildAlertRawMap(alert, essentials),
-					Labels:              labels,
-				}
-
 				events = append(events, event)
 				alertsProcessed++
 			}
@@ -321,6 +229,130 @@ func getAzureAlerts(ctx providers.CloudProviderContext, account providers.Accoun
 	return providers.ListEventResponse{
 		Items: events,
 	}, nil
+}
+
+// convertAzureAlertToEvent builds the event a fired Azure alert is stored as.
+// Polling and the Azure Monitor webhook (NormalizeAzureMonitorWebhook) both call
+// it, so one firing gets one identity whichever way it arrived: the webhook used
+// to name it by its own rules and was stored a second time beside the polled
+// row, with a different fingerprint and subject.
+func convertAzureAlertToEvent(subID string, alert *armalertsmanagement.Alert, essentials *armalertsmanagement.Essentials) providers.Event {
+	// Resource info from essentials (needed before building eventID)
+	resourceID := safeDeref(essentials.TargetResource)
+
+	// Build stable fingerprint from alert rule + target resource.
+	// alert.ID is a per-firing instance GUID — useless for dedup.
+	// AlertRule identifies the rule definition, combined with TargetResource
+	// it uniquely identifies "this alert on this resource".
+	alertRule := safeDeref(essentials.AlertRule)
+	var eventID string
+	if alertRule != "" && resourceID != "" {
+		eventID = fmt.Sprintf("%s:%s", alertRule, resourceID)
+	} else {
+		// Fall back to instance ID when resource scope is unavailable.
+		// Multi-resource alert rules can fire for different targets,
+		// so using alertRule alone would over-deduplicate.
+		eventID = *alert.ID
+	}
+
+	// Stable date - when the alert actually fired
+	eventDate := time.Now().UTC()
+	if essentials.StartDateTime != nil {
+		eventDate = *essentials.StartDateTime
+	}
+
+	// Actual monitor condition (Fired/Resolved)
+	eventStatus := providers.EventStatusFiring
+	if essentials.MonitorCondition != nil && *essentials.MonitorCondition == armalertsmanagement.MonitorConditionResolved {
+		eventStatus = providers.EventStatusResolved
+	}
+
+	// Severity: Sev0->High, Sev1->High, Sev2->Medium, Sev3->Low, Sev4->Low
+	severity := mapAlertSeverity(essentials.Severity)
+	serviceName := extractFullResourceType(resourceID)
+	if serviceName == "" {
+		serviceName = strings.ToLower(safeDeref(essentials.TargetResourceType))
+	}
+	resourceType := extractShortResourceType(serviceName)
+	region := safeDeref(essentials.TargetResourceGroup)
+
+	alertName := *alert.Name
+
+	// Build labels
+	labels := map[string]string{
+		"azure_alert_id":              *alert.ID,
+		"azure_alert_name":            alertName,
+		"azure_alert_rule":            safeDeref(essentials.AlertRule),
+		"azure_region":                region,
+		"azure_subscription_id":       subID,
+		"azure_service_name":          serviceName,
+		"azure_alert_target_resource": resourceID,
+	}
+
+	if essentials.SignalType != nil {
+		labels["signal_type"] = string(*essentials.SignalType)
+	}
+	if essentials.MonitorCondition != nil {
+		labels["azure_monitor_condition"] = string(*essentials.MonitorCondition)
+	}
+	if essentials.Severity != nil {
+		labels["azure_alert_severity"] = string(*essentials.Severity)
+	}
+	if essentials.MonitorService != nil {
+		labels["azure_monitor_service"] = string(*essentials.MonitorService)
+	}
+	if essentials.Description != nil && *essentials.Description != "" {
+		labels["azure_alert_description"] = *essentials.Description
+	}
+
+	// NOTE: Alert context is already included in the Raw map via buildAlertRawMap.
+	// Storing it again in labels causes memory duplication (30-40% overhead).
+	// Context can be large (10-50KB per alert), so we only store it once in Raw.
+
+	// Build title and description
+	title := alertName
+	description := fmt.Sprintf("Azure alert '%s' fired", alertName)
+	if essentials.Description != nil && *essentials.Description != "" {
+		description = *essentials.Description
+	}
+
+	return providers.Event{
+		Title:               title,
+		EventName:           alertName,
+		Description:         description,
+		Date:                eventDate,
+		EventSource:         "Azure_Monitor_Alert",
+		EventId:             eventID,
+		FindingId:           canonicalAzureAlertFindingID(subID, *alert.ID),
+		LegacyFindingId:     *alert.ID,
+		EventStatus:         eventStatus,
+		EventSeverity:       severity,
+		ResourceType:        resourceType,
+		ResourceId:          resourceID,
+		ResourceRegion:      region,
+		ResourceServiceName: serviceName,
+		Raw:                 buildAlertRawMap(alert, essentials),
+		Labels:              labels,
+	}
+}
+
+// canonicalAzureAlertFindingID is the per-firing finding_id of an Azure alert.
+// Azure names one firing two ways: the Alerts Management list API returns it
+// under its target resource (/subscriptions/{sub}/resourcegroups/{rg}/providers/
+// {type}/{name}/providers/Microsoft.AlertsManagement/alerts/{guid}), while the
+// webhook's alertId is subscription-scoped (/subscriptions/{sub}/providers/
+// Microsoft.AlertsManagement/alerts/{guid}). Only the guid identifies the firing,
+// so both paths print it in one lowercase, subscription-scoped form and the
+// events unique index on finding_id collapses them.
+func canonicalAzureAlertFindingID(subID, alertID string) string {
+	guid := alertID
+	if idx := strings.LastIndex(alertID, "/"); idx != -1 {
+		guid = alertID[idx+1:]
+	}
+	if subID == "" {
+		subID = parseAzureResourceIDSegments(alertID)["subscriptions"]
+	}
+	return strings.ToLower(fmt.Sprintf("/subscriptions/%s/providers/microsoft.alertsmanagement/alerts/%s", subID, guid))
 }
 
 // matchesAlertFilter checks if a fired alert matches the provided filter criteria

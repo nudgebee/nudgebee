@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -11,10 +12,13 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
@@ -39,7 +43,7 @@ func TestSkillFetching_IntegrationIsolationAndQueryCache(t *testing.T) {
 		}
 		assert.Equal(t, ctx.AccountId, req.Account)
 		assert.True(t, req.Restrict)
-		_ = json.NewEncoder(w).Encode(core.RAGSearchResults{
+		_ = json.NewEncoder(w).Encode(knowledge.RAGSearchResults{
 			{Document: req.Collection + ":" + req.Query, Metadata: map[string]any{"collection": req.Collection}},
 			{Document: "WRONG-COLLECTION", Metadata: map[string]any{"collection": "foreign_knowledge_base"}},
 		})
@@ -55,7 +59,7 @@ func TestSkillFetching_IntegrationIsolationAndQueryCache(t *testing.T) {
 		require.Len(t, results, 2)
 		assert.Equal(t, "integration-a_knowledge_base:"+query, results["a"].Data)
 		assert.Equal(t, "integration-b_knowledge_base:"+query, results["b"].Data)
-		_, cached := common.CacheGet(core.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":a")
+		_, cached := common.CacheGet(knowledge.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":a")
 		assert.False(t, cached, "query output must not enter name cache")
 	}
 	assert.Equal(t, int32(6), calls.Load(), "legacy loads recheck scoped retrieval instead of retaining query snapshots")
@@ -81,7 +85,7 @@ func TestSkillFetching_LegacyExcerptIsBoundedAndHonest(t *testing.T) {
 	t.Cleanup(func() { config.Config.LlmServerMaxSkillContentLength = old })
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
 	body := strings.Repeat("診断<&> step\n", 30)
-	menu := cacheSearchKnowledgeCandidates(ctx, core.RAGSearchResults{{Document: body, Metadata: map[string]any{"url": "https://example.test/runbook"}}})
+	menu := cacheSearchKnowledgeCandidates(ctx, knowledge.RAGSearchResults{{Document: body, Metadata: map[string]any{"url": "https://example.test/runbook"}}})
 	id := regexp.MustCompile(`id="([^"]+)"`).FindStringSubmatch(menu[0])[1]
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": id}})
 	require.NoError(t, err)
@@ -99,12 +103,12 @@ func TestSkillFetching_IgnoresLegacyIntegrationNameCache(t *testing.T) {
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name()}
-	require.NoError(t, common.CacheSet(core.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":legacy", []byte(`{"id":"old","kb_type":"integration","data":"WRONG-OLD-QUERY"}`)))
+	require.NoError(t, common.CacheSet(knowledge.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":legacy", []byte(`{"id":"old","kb_type":"integration","data":"WRONG-OLD-QUERY"}`)))
 	mock.ExpectQuery(`SELECT kb.id, kb.name`).WithArgs(ctx.AccountId, sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "description", "kb_type", "kb_source", "integration_id", "note_category", "data_format"}).AddRow("fresh", "legacy", "", "", "integration", "confluence", "integration-a", "sop", ""))
 	results, _ := (LoadSkillsTool{}).fetchSkillsBatch(ctx, &common.DatabaseManager{Db: db}, []string{"legacy"})
 	assert.Empty(t, results["legacy"].Data)
 	assert.Equal(t, "fresh", results["legacy"].ID)
-	assert.Equal(t, core.KnowledgePurposeReference, results["legacy"].Purpose)
+	assert.Equal(t, knowledge.KnowledgePurposeReference, results["legacy"].Purpose)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -113,9 +117,9 @@ func TestSkillFetching_ManualCandidateUsesIDNotConflictingName(t *testing.T) {
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
-	require.NoError(t, common.CacheSet(core.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":runbook", []byte(`{"id":"other","kb_type":"manual","data":"WRONG-NAME-CACHE"}`)))
+	require.NoError(t, common.CacheSet(knowledge.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":runbook", []byte(`{"id":"other","kb_type":"manual","data":"WRONG-NAME-CACHE"}`)))
 	id := "knowledge:manual-canonical"
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, core.KnowledgeCandidate{ID: id, KBID: "selected", Title: "Runbook", Content: "old snapshot"}))
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, knowledge.KnowledgeCandidate{ID: id, KBID: "selected", Title: "Runbook", Content: "old snapshot"}))
 	mock.ExpectQuery(`SELECT id, name, .*LEFT.* FROM llm_knowledgebases`).WithArgs(ctx.AccountId, sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "note_category"}).AddRow("selected", "Runbook", "RIGHT-CONTENT", "sop"))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": id}})
 	require.NoError(t, err)
@@ -138,7 +142,7 @@ func TestSkillFetching_OversizedContentDoesNotPromiseContinuation(t *testing.T) 
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name()}
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
-	mock.ExpectQuery(`SELECT kb.id, kb.name`).WithArgs(ctx.AccountId, sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "description", "kb_type", "kb_source", "integration_id", "note_category", "data_format"}).AddRow("large", "large", strings.Repeat("x", core.MaxKnowledgeCandidateBytes+1), "", "manual", nil, nil, "fact", ""))
+	mock.ExpectQuery(`SELECT kb.id, kb.name`).WithArgs(ctx.AccountId, sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "description", "kb_type", "kb_source", "integration_id", "note_category", "data_format"}).AddRow("large", "large", strings.Repeat("x", knowledge.MaxKnowledgeCandidateBytes+1), "", "manual", nil, nil, "fact", ""))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": "large"}})
 	require.NoError(t, err)
 	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
@@ -182,7 +186,7 @@ func TestSkillFetching_ManualNameCacheCannotBypassDisabledRow(t *testing.T) {
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name()}
-	require.NoError(t, common.CacheSet(core.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":disabled", []byte(`{"id":"old","kb_type":"manual","data":"STALE-CONTENT"}`)))
+	require.NoError(t, common.CacheSet(knowledge.CacheNamespaceLlmSkillContent, "skill:"+ctx.AccountId+":disabled", []byte(`{"id":"old","kb_type":"manual","data":"STALE-CONTENT"}`)))
 	mock.ExpectQuery(`SELECT kb.id, kb.name`).WithArgs(ctx.AccountId, sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "data", "description", "kb_type", "kb_source", "integration_id", "note_category", "data_format"}))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": "disabled"}})
 	require.NoError(t, err)
@@ -197,4 +201,27 @@ func useLegacySkillLoading(t *testing.T) {
 	old := config.Config.LlmServerKnowledgeWorkspaceEnabled
 	config.Config.LlmServerKnowledgeWorkspaceEnabled = false
 	t.Cleanup(func() { config.Config.LlmServerKnowledgeWorkspaceEnabled = old })
+}
+
+// An ID is never in the embedded text, so only an exact metadata match finds the article (#42047).
+func TestSearchSkills_IDIsLookedUpExactly(t *testing.T) {
+	var body string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		body = string(raw)
+		_ = json.NewEncoder(w).Encode(knowledge.RAGSearchResults{{Document: "Deleted Email Recovery", Metadata: map[string]any{"collection": "snow_knowledge_base", "retrieval_id": "doc-1"}}})
+	}))
+	defer server.Close()
+	old := config.Config.RAGServerUrl
+	config.Config.RAGServerUrl = server.URL
+	t.Cleanup(func() { config.Config.RAGServerUrl = old })
+
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
+	resp, err := SearchSkillsTool{}.Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"query": "recover email", "id": "kb0000030"}})
+
+	require.NoError(t, err)
+	assert.Contains(t, resp.Data, "Deleted Email Recovery")
+	assert.Contains(t, body, `{"field":"kb_number","values":["kb0000030","KB0000030"]}`)
+	assert.Contains(t, body, `"query":"recover email"`)
+	assert.Contains(t, body, `"use_reranking":false`)
 }

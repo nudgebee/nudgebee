@@ -451,7 +451,7 @@ func init() {
 	toolInput := "Provide metrics question in natural language"
 	toolOutput := "The tool will return the Datadog metrics query retrieved from your question"
 
-	core.RegisterNBAgentFactoryAsTool(DatadogMetricsQueryAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAsTool(DatadogMetricsQueryAgentName, func(accountId string) (core.NBAgent, error) {
 		return DatadogMetricsQueryAgent{}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -605,6 +605,7 @@ var datadogMetricQueryRE = regexp.MustCompile(`(avg|sum|min|max|count|top|percen
 // `-` is both a binary operator and a numeric sign; isDatadogQueryPrefix rejects a
 // leading `- ` bullet separately.
 var datadogQueryPrefixRE = regexp.MustCompile(`^(?:[a-zA-Z_][a-zA-Z0-9_]*\(|-?[0-9]+(?:\.[0-9]+)?|[()+*/,\s-])*$`)
+var datadogTrailingProseRE = regexp.MustCompile(`^\s+[A-Za-z]+(?:\s+[A-Za-z]+)+[.!?]?$`)
 
 func extractAllMetricNames(query string) []string {
 	query = strings.TrimSpace(query)

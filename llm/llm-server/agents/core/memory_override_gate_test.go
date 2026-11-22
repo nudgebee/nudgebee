@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"nudgebee/llm/security"
@@ -25,8 +26,36 @@ func writeOffRequest() NBAgentRequest {
 // line would panic and fail the test.
 func TestGate_ExtractLongTermMemorySkipsWhenWriteDisabled(t *testing.T) {
 	ctx := security.NewRequestContext(context.TODO(), nil, nil, nil, nil)
-	stats := extractLongTermMemory(ctx, nil, writeOffRequest(), "a response", "notebook", 3)
+	stats := extractLongTermMemory(ctx, nil, writeOffRequest(), "a response", "notebook", 3, false)
 	assert.Zero(t, stats, "no extraction may run, so no stats")
+}
+
+// Only person chats and alert investigations save memory; anything else,
+// including a source added later, does not.
+func TestGate_IsChatOrAlertSource(t *testing.T) {
+	for _, s := range []ConversationSource{"", ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI,
+		ConversationSourceInvestigation, ConversationSourceInstantNotification} {
+		assert.True(t, isChatOrAlertSource(s), "%q", s)
+	}
+	for _, s := range []ConversationSource{ConversationSourceAutomation, ConversationSourcePRLifecycle,
+		ConversationSourceTriageClassification, ConversationSourceWorkflowBuilder, "SomeFutureSource"} {
+		assert.False(t, isChatOrAlertSource(s), "%q", s)
+	}
+}
+
+// Switching writing off for an unattended run keeps its reading and reranking,
+// and never mutates the caller's overrides.
+func TestGate_WithMemoryWriteOff(t *testing.T) {
+	q := toolcore.NBQueryConfig{Memory: withMemoryWriteOff(nil)}
+	assert.True(t, q.MemoryReadAllowed())
+	assert.True(t, q.MemoryRerankAllowed())
+	assert.False(t, q.MemoryWriteAllowed())
+
+	in := &toolcore.MemoryOverrides{Rerank: offPtr()}
+	out := withMemoryWriteOff(in)
+	assert.Nil(t, in.Write)
+	assert.False(t, *out.Write)
+	assert.False(t, *out.Rerank)
 }
 
 // Write off must leave reading alone — that is the combination the grouped
@@ -36,4 +65,25 @@ func TestGate_WriteOffLeavesReadingEnabled(t *testing.T) {
 	assert.True(t, q.MemoryReadAllowed())
 	assert.True(t, q.MemoryRerankAllowed())
 	assert.False(t, q.MemoryWriteAllowed())
+}
+
+// Where the saver keeps a conversation's memories, the extractor stops before
+// it reads anything or calls its model.
+func TestGate_ExtractLongTermMemorySkipsWhenSaverKeepsMemories(t *testing.T) {
+	origSaver, origActive, origDedup := SaverKeepsMemoriesFn, IsMemoryV2ActiveFn, LoadTypedStoreDedupContextFn
+	t.Cleanup(func() {
+		SaverKeepsMemoriesFn, IsMemoryV2ActiveFn, LoadTypedStoreDedupContextFn = origSaver, origActive, origDedup
+	})
+	IsMemoryV2ActiveFn = func(string) bool { return true }
+	LoadTypedStoreDedupContextFn = func(*security.RequestContext, NBAgentRequest) string { panic("past the gate") }
+	ctx := security.NewRequestContext(context.TODO(), security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
+	req := NBAgentRequest{AccountId: "acct", OriginalQueryFromUser: true}
+
+	SaverKeepsMemoriesFn = func(string, NBAgentRequest) bool { return true }
+	assert.Zero(t, extractLongTermMemory(ctx, nil, req, "a response", "notebook", 3, false))
+
+	SaverKeepsMemoriesFn = func(string, NBAgentRequest) bool { return false }
+	assert.PanicsWithValue(t, "past the gate", func() {
+		extractLongTermMemory(ctx, nil, req, "a response", "notebook", 3, false)
+	}, "without the saver the extractor runs")
 }

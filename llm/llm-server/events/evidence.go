@@ -21,6 +21,14 @@ type Evidence struct {
 	// Metadata carries metadata.query — the PromQL a metric card ran, or the
 	// request of a provider-neutral one — which is what says what its series measure.
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	// The anomaly detector's own result is stored as a bare object with no type
+	// (see IsAnomalyRecord); these are the fields of it the summary reads.
+	IsAnomaly      bool            `json:"is_anomaly,omitempty"`
+	AnomalyType    string          `json:"anomaly_type,omitempty"`
+	CurrentValue   *float64        `json:"current_value,omitempty"`
+	EvaluatedAt    string          `json:"evaluated_at,omitempty"`
+	ReferenceValue json.RawMessage `json:"reference_value,omitempty"`
 }
 
 type Insight struct {
@@ -194,6 +202,10 @@ type InvestigateData struct {
 	// LogPatternBreakdown is the error-log-spike alert's card: which log
 	// patterns rose against normal (Data decodes with DecodeLogPatternBreakdown).
 	LogPatternBreakdown InvestigateDataInsight `json:"log_pattern_breakdown"`
+	// AnomalyDetection is the anomaly detector's result for an anomaly event: the
+	// metric, the value that fired, the threshold and the baseline. Without it the
+	// event carries only the bare value label.
+	AnomalyDetection *AnomalySummary `json:"anomaly_detection,omitempty"`
 }
 
 // UnmarshalJSON on InvestigateData exists to tolerate upstream producers

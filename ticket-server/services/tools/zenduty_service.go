@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/tickets-server/clients"
@@ -40,6 +41,12 @@ func (s *ZenDutyService) GetComments(ctx *gin.Context, config models.TicketConfi
 	return GetZenDutyIncidentComments(ctx, config, ticketID)
 }
 
+// GetAttachment is unimplemented: ZenDuty incident notes have no attachment field
+// (ZenDutyIncidentNote carries only unique_id/note/creation_date/user).
+func (s *ZenDutyService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
+}
+
 // zenDutyIsNotFound reports whether err means the incident does not exist
 // upstream (deleted, or never valid).
 func zenDutyIsNotFound(err error) bool {
@@ -51,7 +58,7 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 	if err := utils.ValidateZenDutyIncidentID(ticketID); err != nil {
 		return nil, fmt.Errorf("invalid incident ID: %w", err)
 	}
-	client := clients.CreateZenDutyClient(config.Password)
+	client := clients.CreateZenDutyClient(config.Password, config.URL)
 	incident, full, err := client.GetIncidentWithBody(ctx, ticketID)
 	if err != nil {
 		if zenDutyIsNotFound(err) {
@@ -78,13 +85,25 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 		Title:       incident.Title,
 		Description: incident.Summary,
 		Status:      clients.MapStatusToString(incident.Status),
+		Severity:    clients.MapUrgencyToString(incident.Urgency),
 		Assignee:    assignee,
 		Assignees:   assignees,
 		Platform:    "zenduty",
-		URL:         incident.HTMLURL,
+		URL:         zenDutyTicketURL(config.URL, incident.HTMLURL, incident.UniqueID),
 		CreatedAt:   &createdAt,
 		Raw:         rawWithUnmodeled(incident, full),
 	}, nil
+}
+
+// zenDutyTicketURL returns the incident's web link: the API's own html_url
+// when present, else a link built from the integration's configured host.
+// html_url is undocumented and not reliably populated, so every ticket URL
+// in this file goes through here rather than using incident.HTMLURL directly.
+func zenDutyTicketURL(configURL, htmlURL, incidentID string) string {
+	if htmlURL != "" {
+		return htmlURL
+	}
+	return clients.ZenDutyDashboardURL(configURL, incidentID)
 }
 
 // zenDutyUserLabel picks the most human-readable identifier available on a
@@ -105,7 +124,7 @@ func (s *ZenDutyService) Acknowledge(ctx *gin.Context, config models.TicketConfi
 		return fmt.Errorf("invalid incident ID: %w", err)
 	}
 
-	client := clients.CreateZenDutyClient(config.Password)
+	client := clients.CreateZenDutyClient(config.Password, config.URL)
 	_, err := client.AcknowledgeIncident(ctx, incidentID)
 	return err
 }
@@ -124,7 +143,7 @@ func (s *ZenDutyService) Resolve(ctx *gin.Context, config models.TicketConfigura
 		return fmt.Errorf("invalid incident ID: %w", err)
 	}
 
-	client := clients.CreateZenDutyClient(config.Password)
+	client := clients.CreateZenDutyClient(config.Password, config.URL)
 
 	// Add resolution note if provided
 	if resolution != "" {
@@ -166,7 +185,7 @@ func (s *ZenDutyService) Transition(ctx *gin.Context, config models.TicketConfig
 		return fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
-	client := clients.CreateZenDutyClient(config.Password)
+	client := clients.CreateZenDutyClient(config.Password, config.URL)
 
 	// Map common status names to ZenDuty actions
 	switch strings.ToLower(status) {
@@ -183,7 +202,7 @@ func (s *ZenDutyService) Transition(ctx *gin.Context, config models.TicketConfig
 
 // List retrieves incidents from ZenDuty with filtering.
 func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfigurations, params models.ListParams) (*models.ListResult, error) {
-	client := clients.CreateZenDutyClient(config.Password)
+	client := clients.CreateZenDutyClient(config.Password, config.URL)
 
 	queryParams := make(map[string]string)
 	if params.ProjectKey != "" {
@@ -255,8 +274,9 @@ func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfiguratio
 			TicketID:  incident.UniqueID,
 			Title:     incident.Title,
 			Status:    clients.MapStatusToString(incident.Status),
+			Severity:  clients.MapUrgencyToString(incident.Urgency),
 			Platform:  "zenduty",
-			URL:       incident.HTMLURL,
+			URL:       zenDutyTicketURL(config.URL, incident.HTMLURL, incident.UniqueID),
 			CreatedAt: &createdAt,
 		})
 	}
@@ -271,7 +291,7 @@ func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfiguratio
 
 // CreateZenDutyIncident creates a new incident in ZenDuty.
 func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigurations, ticket models.Ticket) (models.Ticket, error) {
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	// Map urgency from severity
 	urgency := clients.MapUrgencyFromString(ticket.Severity)
@@ -298,11 +318,8 @@ func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigur
 
 	ticket.TicketID = createdIncident.UniqueID
 	ticket.Status = "triggered"
-	ticket.Severity = "NA"
-	ticket.URL = createdIncident.HTMLURL
-	if ticket.URL == "" {
-		ticket.URL = fmt.Sprintf("https://www.zenduty.com/dashboard/incidents/%s", createdIncident.UniqueID)
-	}
+	ticket.Severity = clients.MapUrgencyToString(createdIncident.Urgency)
+	ticket.URL = zenDutyTicketURL(configuration.URL, createdIncident.HTMLURL, createdIncident.UniqueID)
 	ticket.Platform = "zenduty"
 	now := time.Now()
 	ticket.CreatedAt = &now
@@ -312,7 +329,7 @@ func CreateZenDutyIncident(ctx *gin.Context, configuration models.TicketConfigur
 
 // FetchZenDutyIncidentCreateMeta fetches and formats the ZenDuty incident creation metadata.
 func FetchZenDutyIncidentCreateMeta(ctx *gin.Context, configuration models.TicketConfigurations, serviceID string) (any, error) {
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	// Fetch users for possible assignees
 	users, err := client.ListUsers(ctx)
@@ -409,7 +426,7 @@ func FetchZenDutyIncidentCreateMeta(ctx *gin.Context, configuration models.Ticke
 
 // AddZenDutyIncidentComment adds a note to an existing ZenDuty incident.
 func AddZenDutyIncidentComment(ctx *gin.Context, configuration models.TicketConfigurations, ticket models.Ticket) error {
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	if err := utils.ValidateZenDutyIncidentID(ticket.TicketID); err != nil {
 		return fmt.Errorf("invalid incident ID: %w", err)
@@ -443,7 +460,7 @@ func GetZenDutyIncidentComments(ctx *gin.Context, configuration models.TicketCon
 	if err := utils.ValidateZenDutyIncidentID(incidentID); err != nil {
 		return nil, fmt.Errorf("invalid incident ID: %w", err)
 	}
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	notes, err := client.GetIncidentNotes(ctx, incidentID)
 	if err != nil {
@@ -452,8 +469,12 @@ func GetZenDutyIncidentComments(ctx *gin.Context, configuration models.TicketCon
 
 	comments := make([]models.Comments, len(notes))
 	for i, note := range notes {
+		author := note.UserName
+		if author == "" {
+			author = note.User
+		}
 		comments[i] = models.Comments{
-			Author:  note.User,
+			Author:  author,
 			Comment: note.Note,
 			Created: note.CreatedAt,
 			Updated: note.CreatedAt,

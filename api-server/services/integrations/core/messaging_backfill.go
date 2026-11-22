@@ -27,12 +27,13 @@ type messagingPlatformRow struct {
 }
 
 // BackfillMessagingIntegrations is a one-off, idempotent migration that copies legacy
-// messaging_platforms rows (Slack / MS Teams) into the integrations table with the
+// messaging_platforms rows (Slack) into the integrations table with the
 // OAuth token encrypted at rest (via CreateIntegrationConfig's schema-driven
 // encryption). Tenants that already have the integration for that platform are
 // skipped, so it is safe to re-run. It is cross-tenant: each integration is created
 // under its own tenant's admin context. Legacy rows are left in place (reads dedup to
-// the integration); dropping them is a separate cleanup.
+// the integration); dropping them is a separate cleanup. MS Teams rows are not read:
+// a workspace's ms_teams integration is written only when a team is bound to it.
 func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, meter *metric.Meter) (MessagingBackfillResult, error) {
 	result := MessagingBackfillResult{}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -48,7 +49,7 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 		       COALESCE(channels::text, ''),
 		       COALESCE(to_char(token_expires_at, 'YYYY-MM-DD"T"HH24:MI:SS'), '')
 		FROM messaging_platforms
-		WHERE platform IN ('slack', 'ms_teams')`)
+		WHERE platform = 'slack'`)
 	if err != nil {
 		return result, err
 	}
@@ -94,13 +95,9 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 			continue
 		}
 
-		name := r.teamId
-		if r.platform == "ms_teams" {
-			name = MsTeamsAadTenantId(name)
-		}
 		ctx := security.NewRequestContextForTenantAdmin(r.tenantId, logger, tracer, meter)
 		_, createErr := CreateIntegrationConfig(
-			ctx, "", r.platform, name, buildMessagingConfigValues(r.platform, r),
+			ctx, "", r.platform, r.teamId, buildMessagingConfigValues(r.platform, r),
 			nil, []string{}, true, "user")
 		if createErr != nil {
 			result.Failed++
@@ -114,7 +111,7 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 
 // buildMessagingConfigValues maps a legacy messaging_platforms row to integration
 // config values. Token fields (bot_token/access_token/refresh_token) are encrypted by
-// CreateIntegrationConfig per the slack.go / ms_teams.go schema; everything else,
+// CreateIntegrationConfig per the slack.go schema; everything else,
 // including the scalar default channel + its display name, is stored plaintext.
 func buildMessagingConfigValues(platform string, r messagingPlatformRow) []IntegrationConfigValue {
 	var values []IntegrationConfigValue
@@ -158,25 +155,5 @@ func buildMessagingConfigValues(platform string, r messagingPlatformRow) []Integ
 		return values
 	}
 
-	// ms_teams — legacy default shape: {"team_id", "team_name", "channels": [{"name","id"}]}
-	add("access_token", r.token)
-	if r.channels != "" {
-		var ch struct {
-			TeamId   string `json:"team_id"`
-			TeamName string `json:"team_name"`
-			Channels []struct {
-				Name string `json:"name"`
-				Id   string `json:"id"`
-			} `json:"channels"`
-		}
-		if json.Unmarshal([]byte(r.channels), &ch) == nil {
-			add("default_team_id", ch.TeamId)
-			add("default_team_name", ch.TeamName)
-			if len(ch.Channels) > 0 {
-				add("default_channel_id", ch.Channels[0].Id)
-				add("default_channel_name", ch.Channels[0].Name)
-			}
-		}
-	}
 	return values
 }

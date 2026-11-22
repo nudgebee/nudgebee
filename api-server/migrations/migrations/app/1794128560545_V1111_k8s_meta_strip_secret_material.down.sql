@@ -1,0 +1,3 @@
+-- Irreversible on purpose: the removed values were secret material.
+-- Active rows are rewritten by the next discovery upsert, cleaned by
+-- utils/k8s_config_redaction.py in k8s-collector.

@@ -22,10 +22,9 @@ KubernetesAnomaly.tsx ──RPC──▶  /rpc/anomaly (api/anomaly.go)
                                        ▼
                               anomoly/service.go
                                 executeForAccountPairs()
-                                  ├─ ML path ──RabbitMQ──▶  controllers/anomaly.py  /anomaly
-                                  │                            anomaly_algo/* (IsolationForest default)
-                                  │   ProcessAnomaly() ◀──────┘  (RabbitMQ consumer)
-                                  └─ Prometheus path (direct 1/7/14-day compare, no ML)
+                                  └─ ML path ──RabbitMQ──▶  controllers/anomaly.py  /anomaly
+                                                               anomaly_algo/* (IsolationForest default)
+                                      ProcessAnomaly() ◀──────┘  (RabbitMQ consumer)
                                        ▼
                               insert into `anomaly` table
                               + GenerateAnomalyEvent() + collectEvidences()
@@ -92,6 +91,25 @@ ML path is async. Message `AnomalyProcessingMessage` (`service.go`) published wi
   no tenant can set it and `IsFeatureEnabledByDefault` returns true for the missing row: error-rate
   anomalies now always run. `service.go` still reads the flag; that dead branch is queued for
   removal (see `llm/llm-server/docs/flag-cleanup-programme.md`).
+- `FEATURE_ANOMALY_STABLE_CLOSE_ENABLED` (config, default off) with `NB_ANOMALY_CLOSE_STABLE_HOURS`
+  (default 3) — see "Event lifecycle" below.
+- `FEATURE_ANOMALY_RETURNED_DIGEST_ENABLED` (config, default off) — an anomaly that was resolved and
+  fires again is listed as "returned" in the anomaly digest (#40046).
+
+## Event lifecycle (K8s metric anomalies)
+
+- One event per anomaly instance: the finding id is `anomalyFingerprint` (account, type, workload,
+  namespace), so every detection upserts the same row. `starts_at` is rewritten on each anomalous
+  detection, so on an open event it is the **latest** detection, not the first.
+- `closeAnomalyEventIfOpen` resolves it on a run that evaluated the instance and found it clean. By
+  default that is the first clean run. With `FEATURE_ANOMALY_STABLE_CLOSE_ENABLED`, the close is held
+  until the latest detection is `NB_ANOMALY_CLOSE_STABLE_HOURS` old, so an instance that flaps hour to
+  hour stays open. The hold lasts N to N+1 runs, and `ends_at` still records the first clean run
+  (one detection cycle after `starts_at`).
+- A run that returns no result for the instance (new workload, too little training data) closes
+  nothing. `closeOrphanedAnomalyEvents` is the backstop for instances that stop being evaluated: it
+  closes events not updated for 7 days. It never closes a flapping instance, because each anomalous
+  detection bumps `updated_at`; with the stable-close flag on, such an instance stays open.
 
 ## Gotchas
 

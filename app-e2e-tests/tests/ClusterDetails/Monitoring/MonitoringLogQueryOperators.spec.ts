@@ -185,7 +185,7 @@ test.afterEach(async () => {
 
 test(
   "Query Logs - verify every operator Loki offers returns semantically correct results, in both Builder and Code, across multiple filters, a date-range change and download",
-  { tag: ["@dev", "@functional", "@regression", "@negative"] },
+  { tag: ["@dev", "@test", "@functional", "@regression", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(600000); // many real round trips to a live backend — generous on purpose
 
@@ -247,22 +247,42 @@ test(
         await locators.LogQueryBuilderInput.click();
         await locators.LogQuerySuggestions.first().waitFor({ state: "visible", timeout: 15000 });
         const labelTexts = (await locators.LogQuerySuggestions.allTextContents()).map((t) => t.trim()).filter(Boolean);
-        filterLabel = labelTexts.find((t) => !t.startsWith("__")) ?? labelTexts[0] ?? "";
-        expect(filterLabel, "a real label must exist to build the rest of this test on").not.toBe("");
-        const firstLabelOption = locators.LogQuerySuggestions.filter({
-          hasText: new RegExp(`^${escapeForRegex(filterLabel)}$`),
-        }).first();
-        await firstLabelOption.click();
+        const candidateLabels = labelTexts.filter((t) => !t.startsWith("__"));
+        // Some labels (e.g. free-text "message") offer no values, so candidates are walked until one does.
+        let firstValueOption = locators.LogQuerySuggestions.first();
+        let valuesOffered = false;
+        for (const candidate of candidateLabels.length ? candidateLabels : labelTexts.slice(0, 1)) {
+          filterLabel = candidate;
+          await locators.LogQueryBuilderInput.click();
+          await locators.LogQueryBuilderInput.fill("");
+          await locators.LogQuerySuggestions.first().waitFor({ state: "visible", timeout: 15000 });
+          await locators.LogQuerySuggestions.filter({ hasText: new RegExp(`^${escapeForRegex(candidate)}$`) })
+            .first()
+            .click();
 
-        const eqOption = locators.LogQuerySuggestions.filter({ hasText: /^=$/ }).first();
-        await eqOption.waitFor({ state: "visible", timeout: 10000 });
-        await eqOption.click();
+          const eqOption = locators.LogQuerySuggestions.filter({ hasText: /^=$/ }).first();
+          await eqOption.waitFor({ state: "visible", timeout: 10000 });
+          await eqOption.click();
 
-        const firstValueOption = locators.LogQuerySuggestions.first();
+          firstValueOption = locators.LogQuerySuggestions.first();
+          valuesOffered = await firstValueOption
+            .waitFor({ state: "visible", timeout: 8000 })
+            .then(() => true)
+            .catch(() => false);
+          if (valuesOffered) break;
+          console.log(`Label "${candidate}" offered no value suggestions, trying the next label`);
+        }
         await firstValueOption.waitFor({ state: "visible", timeout: 15000 });
-        appValue = (await firstValueOption.innerText()).trim();
-        expect(appValue, "a real value must exist to build the rest of this test on").not.toBe("");
-        await firstValueOption.click();
+        const offeredValues = Array.from(new Set((await locators.LogQuerySuggestions.allTextContents()).map((t) => t.trim()).filter(Boolean))).slice(0, 8);
+        appValue = offeredValues[0] ?? "";
+        // An indexed value can have no logs in the window, so the value is read from a row the query really returns.
+        await locators.LogQueryBuilderInput.fill("");
+        const addedProbe = await addLogFilterChip(locators, filterLabel, "!=", appValue);
+        if (addedProbe && (await runQuery(page, locators)) === "rows") {
+          const liveValues = await sampleRowField(locators, filterLabel);
+          appValue = liveValues.find((v) => v !== "" && v !== appValue) ?? appValue;
+        }
+        await clearAllLogFilterChips(page);
 
         record(
           "Discover a real label + value to test with",
@@ -384,15 +404,15 @@ test(
           );
           await clearAllLogFilterChips(page);
 
-          const addedNotIcontains = await addLogFilterChip(locators, filterLabel, "not icontains", substringFlipped);
+          const addedNotIcontains = await addLogFilterChip(locators, filterLabel, "not icontains", appValue);
           if (addedNotIcontains) {
             await runQuery(page, locators);
             const notValues = await sampleRowField(locators, filterLabel);
-            const allExcluded = notValues.every((v) => !v.toLowerCase().includes(substringFlipped.toLowerCase()));
+            const allExcluded = notValues.every((v) => !v.toLowerCase().includes(appValue.toLowerCase()));
             record(
               "'not icontains' excludes what 'icontains' found",
               allExcluded,
-              `${notValues.length} row(s) sampled, none contain "${substringFlipped}" (any case): ${allExcluded}`
+              `${notValues.length} row(s) sampled, none contain "${appValue}" (any case): ${allExcluded}`
             );
             await clearAllLogFilterChips(page);
           } else {

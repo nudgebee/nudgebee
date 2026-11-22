@@ -242,6 +242,7 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 		nbRequestContext := toolcore.NbToolContext{
 			Ctx:            ctx,
 			AccountId:      f.accountId,
+			AccountContext: delegatedAccountContext(ctx, query, f.accountId),
 			ConversationId: query.ConversationId,
 			ParentAgentId:  nestedAgentParentID(query),
 			MessageId:      query.MessageId,
@@ -552,7 +553,7 @@ func (m TracesAgentTool) Call(nbRequestContext toolcore.NbToolContext, input too
 			Data:              traceData,
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			References:        references,
+			References:        append(references, core.FileReferences(resp.References)...),
 			SubAgentEvidence:  core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, TracesAgentName, resp.AgentStepResponse),
 			AdditionalDetails: additionalDetails,
 		}, nil

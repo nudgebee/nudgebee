@@ -87,12 +87,13 @@ export type ButtonProps = BaseButtonProps & Omit<React.ButtonHTMLAttributes<HTML
 
 const SIZE_TOKENS: Record<
   ButtonSize,
-  { height: string; padX: string; fontSize: string; gap: string; iconSize: number; accentSize: number; accentIconSize: number }
+  { height: string; padX: string; fontSize: string; lineHeight: string; gap: string; iconSize: number; accentSize: number; accentIconSize: number }
 > = {
   xs: {
     height: '24px',
     padX: 'var(--ds-space-2)',
     fontSize: 'var(--ds-text-caption)',
+    lineHeight: 'var(--ds-text-caption-lh)',
     gap: 'var(--ds-space-1)',
     iconSize: 13,
     accentSize: 16,
@@ -102,6 +103,7 @@ const SIZE_TOKENS: Record<
     height: '28px',
     padX: 'var(--ds-space-3)',
     fontSize: 'var(--ds-text-small)',
+    lineHeight: 'var(--ds-text-small-lh)',
     gap: 'var(--ds-space-1)',
     iconSize: 14,
     accentSize: 20,
@@ -111,6 +113,7 @@ const SIZE_TOKENS: Record<
     height: '32px',
     padX: 'var(--ds-space-3)',
     fontSize: 'var(--ds-text-body)',
+    lineHeight: 'var(--ds-text-body-lh)',
     gap: 'var(--ds-space-2)',
     iconSize: 16,
     accentSize: 24,
@@ -120,6 +123,7 @@ const SIZE_TOKENS: Record<
     height: '40px',
     padX: 'var(--ds-space-4)',
     fontSize: 'var(--ds-text-body-lg)',
+    lineHeight: 'var(--ds-text-body-lg-lh)',
     gap: 'var(--ds-space-2)',
     iconSize: 18,
     accentSize: 30,
@@ -331,9 +335,12 @@ export const Button = React.forwardRef<HTMLElement, ButtonProps>(function Button
         fontFamily: 'var(--ds-font-display)',
         fontSize: tokens.fontSize,
         fontWeight: 'var(--ds-font-weight-medium)',
-        lineHeight: 1,
+        // A link sits in running text, so a long label wraps like text does;
+        // minHeight keeps a one-line link the same size as before.
+        lineHeight: isLink ? tokens.lineHeight : 1,
         minHeight: tokens.height,
-        height: tokens.height,
+        height: isLink ? 'auto' : tokens.height,
+        textAlign: isLink ? 'start' : undefined,
         // icon-only is square; link has no padding;
         // when a trailingAccent is present, tighten the right padding so the
         // yellow tile sits with a small inset (4px) rather than floating in
@@ -346,7 +353,7 @@ export const Button = React.forwardRef<HTMLElement, ButtonProps>(function Button
         border: isLink ? 'none' : `1px solid ${palette.border}`,
         borderRadius: isLink ? 0 : 'var(--ds-radius-md)',
         cursor: isInteractionDisabled ? 'default' : 'pointer',
-        whiteSpace: 'nowrap',
+        whiteSpace: isLink ? undefined : 'nowrap',
         textDecoration: isLink ? 'none' : undefined,
         transition:
           'background-color var(--ds-motion-micro) var(--ds-motion-ease), color var(--ds-motion-micro) var(--ds-motion-ease), border-color var(--ds-motion-micro) var(--ds-motion-ease)',

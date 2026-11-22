@@ -61,6 +61,8 @@ export function inertAlertPattern(ruleName: string): string {
 // every keystroke (TriageRulesManager.tsx:552 sets searchQuery straight from onChange), so
 // there is nothing to commit with Enter — but the value has to be committed to the input before
 // the row assertions run, or they race the controlled re-render.
+const MAX_LEFTOVER_RULES = 25;
+
 export async function searchByName(locators: TriageRulesLocators, term: string): Promise<void> {
   await locators.search.click();
   await locators.search.fill(term);
@@ -102,22 +104,24 @@ export async function openEditModal(locators: TriageRulesLocators, name: string)
 // be callable from a cleanup path, so it tolerates the row already being absent — a create that
 // failed leaves nothing to delete, and that must not mask the original failure.
 export async function deleteRuleByName(locators: TriageRulesLocators, name: string): Promise<void> {
+  // A failed step can leave a dialog open and failed runs leave duplicates, so close it and delete until none remain.
+  await locators.search.press("Escape");
   await searchByName(locators, name);
 
-  const row = locators.rowByName(name);
-  // A missing row is an expected outcome on the cleanup path, so absence has to come back as
-  // false rather than throw.
-  const present = await row
-    .waitFor({ state: "visible", timeout: 15000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!present) return;
+  for (let removed = 0; removed < MAX_LEFTOVER_RULES; removed++) {
+    const row = locators.rowByName(name);
+    // A missing row is expected on the cleanup path, so absence returns false instead of throwing.
+    const present = await row
+      .waitFor({ state: "visible", timeout: removed === 0 ? 15000 : 5000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!present) return;
 
-  await locators.rowMenuTrigger(row).click();
-  await locators.rowMenuItem(DELETE_MENU_ITEM).click();
-  await locators.deleteConfirmButton.click();
-
-  await expect(locators.rowByName(name)).toHaveCount(0, { timeout: 60000 });
+    await locators.rowMenuTrigger(row).click();
+    await locators.rowMenuItem(DELETE_MENU_ITEM).click();
+    await locators.deleteConfirmButton.click();
+    await expect(locators.ruleModal).toBeHidden();
+  }
 }
 
 // API-level helper for the retroactive-apply case, which has to read and restore real

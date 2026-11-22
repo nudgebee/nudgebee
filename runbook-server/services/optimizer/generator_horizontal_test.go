@@ -32,6 +32,8 @@ func TestHorizontalRightsizeGenerator_MLParsing(t *testing.T) {
 		tasks, _ := generator.GenerateTasks(ctx, ao, recs)
 		assert.Len(t, tasks, 1)
 		assert.Equal(t, 5.0, tasks[0].Meta["change_to"])
+		_, hasForecast := tasks[0].Meta["forecast_for"]
+		assert.False(t, hasForecast, "a static target has no forecast hour")
 
 		// Per-execution resource snapshot so history survives target-resource edits (#34245).
 		rf := tasks[0].ResourceFilter
@@ -46,13 +48,16 @@ func TestHorizontalRightsizeGenerator_MLParsing(t *testing.T) {
 	// 2. ML-Based Parsing
 	t.Run("ML-Based time-series", func(t *testing.T) {
 		// Target time: next hour
+		// The generator reads its own clock; cover the following hour too so a
+		// run that crosses an hour boundary still finds its key.
 		nextHour := time.Now().UTC().Truncate(time.Hour).Add(time.Hour)
-		timeKey := nextHour.Format("2006-01-02T15:04:05")
+		hourAfter := nextHour.Add(time.Hour)
 
 		recData := map[string]any{
 			"recommendation": map[string]any{
 				"recommended": map[string]any{
-					timeKey: 10.0,
+					nextHour.Format("2006-01-02T15:04:05"):  10.0,
+					hourAfter.Format("2006-01-02T15:04:05"): 10.0,
 				},
 			},
 		}
@@ -68,5 +73,7 @@ func TestHorizontalRightsizeGenerator_MLParsing(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Len(t, tasks, 1)
 		assert.Equal(t, 10.0, tasks[0].Meta["change_to"])
+		assert.Contains(t, []any{nextHour.Format(time.RFC3339), hourAfter.Format(time.RFC3339)}, tasks[0].Meta["forecast_for"],
+			"the target records the hour it was forecast for")
 	})
 }

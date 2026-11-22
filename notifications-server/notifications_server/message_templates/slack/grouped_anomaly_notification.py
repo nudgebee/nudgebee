@@ -1,9 +1,10 @@
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, TypeVar
 from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import settings, URLRoutes
+from notifications_server.message_templates.base import is_resolved
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_HIGH,
     STRIPE_SAVINGS,
@@ -21,7 +22,6 @@ MAX_ANOMALY_ITEMS = 5
 MAX_RESOLVED_ITEMS = 5
 RESOLVED_TITLE_MAX = 120
 RESOLVED_WHERE_MAX = 100
-RESOLVED_STATUSES = ("resolved", "closed")
 
 # Matches event.source, which every anomaly producer stamps "anomaly"
 # regardless of aggregation_key (api-server/services/anomoly).
@@ -160,26 +160,33 @@ def _started(starts_at: str) -> str:
     return f"started {_date_token(dt)}"
 
 
-def split_resolved(alerts: List[AnomalyAlertParams]) -> Tuple[List[AnomalyAlertParams], List[AnomalyAlertParams]]:
+# An item of any grouped digest that has a Resolved section: anomalies here,
+# SLOs in grouped_slo_notification.
+Alert = TypeVar("Alert")
+
+
+def split_resolved(alerts: List[Alert]) -> Tuple[List[Alert], List[Alert]]:
     """(firing, resolved), each in batch order. With the flag off nothing is
     split out, so every template renders exactly as it did before the section."""
     if not settings.notifications.digest_resolved_enabled:
         return alerts, []
-    firing: List[AnomalyAlertParams] = []
-    resolved: List[AnomalyAlertParams] = []
+    firing: List[Alert] = []
+    resolved: List[Alert] = []
     for alert in alerts:
-        (resolved if (alert.status or "").strip().lower() in RESOLVED_STATUSES else firing).append(alert)
+        (resolved if is_resolved(alert.status) else firing).append(alert)
     return firing, resolved
 
 
-def counts_phrase(firing: int, resolved: int, noun: str) -> str:
+def counts_phrase(firing: int, resolved: int, noun: str, verb: str = "detected") -> str:
     """Headline counts: "3 anomalies detected, 2 resolved"; a digest of resolves
-    only reads "2 anomalies resolved"."""
+    only reads "2 anomalies resolved". `verb` is what the firing ones did; a
+    noun that already says it ("SLO Breach Alerts") passes none."""
+    fired = f"{firing} {noun} {verb}" if verb else f"{firing} {noun}"
     if not resolved:
-        return f"{firing} {noun} detected"
+        return fired
     if not firing:
         return f"{resolved} {noun} resolved"
-    return f"{firing} {noun} detected, {resolved} resolved"
+    return f"{fired}, {resolved} resolved"
 
 
 def returned_label(alert: AnomalyAlertParams, bold: str) -> str:
@@ -193,20 +200,34 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def resolved_when(ends_at: Any, slack: bool = False) -> str:
+    """When a line of a Resolved section cleared, as "resolved <time>": plain
+    UTC, or Slack's <!date> token. Nothing when the payload has no readable end
+    time."""
+    ended = _parse_starts_at(str(ends_at)) if ends_at else None
+    if ended is None:
+        return ""
+    return f"resolved {_date_token(ended) if slack else _utc_text(ended)}"
+
+
+def resolved_text(title: str, places: List[str], when: str, bold: str) -> str:
+    """One compact line of a Resolved section, whatever the digest: what
+    cleared, where it was and when. `bold` is the platform's marker."""
+    where = _clip(" · ".join(place for place in places if place), RESOLVED_WHERE_MAX)
+    return " · ".join(bit for bit in (f"{bold}{_clip(title, RESOLVED_TITLE_MAX)}{bold}", where, when) if bit)
+
+
 def resolved_line(alert: AnomalyAlertParams, bold: str, when: Optional[str] = None) -> str:
     """One compact line of the Resolved section: title, where it was
     (namespace/workload, then the account — spend anomalies have no namespace)
     and when it cleared, if the payload says. `bold` is the platform's marker;
     `when` overrides the plain UTC time (Slack passes its <!date> token)."""
-    title = _clip(alert.title or f"{alert.subject_name} anomaly", RESOLVED_TITLE_MAX)
     subject = f"{alert.subject_namespace}/{alert.subject_name}" if alert.subject_namespace else alert.subject_name
     account = alert.cluster or alert.cloud_account_id
     places = [subject] if subject == account else [subject, account]
-    where = _clip(" · ".join(place for place in places if place), RESOLVED_WHERE_MAX)
     if when is None:
-        ended = _parse_starts_at(alert.ends_at)
-        when = f"resolved {_utc_text(ended)}" if ended else ""
-    return " · ".join(bit for bit in (f"{bold}{title}{bold}", where, when) if bit)
+        when = resolved_when(alert.ends_at)
+    return resolved_text(alert.title or f"{alert.subject_name} anomaly", places, when, bold)
 
 
 def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) -> Dict[str, Any]:
@@ -296,9 +317,7 @@ def get_grouped_anomaly_alerts_template(input_data: List[AnomalyAlertParams]) ->
     if resolved:
         resolved_lines = ["*Resolved*"]
         for alert in resolved[:MAX_RESOLVED_ITEMS]:
-            ended = _parse_starts_at(alert.ends_at)
-            when = f"resolved {_date_token(ended)}" if ended else ""
-            resolved_lines.append(f"• {resolved_line(alert, '*', when)}")
+            resolved_lines.append(f"• {resolved_line(alert, '*', resolved_when(alert.ends_at, slack=True))}")
         if resolved_remaining > 0:
             resolved_lines.append(f"_+{resolved_remaining} more resolved_")
         # One "View All" per message: the firing footer carries it when there is one.

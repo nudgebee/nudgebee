@@ -136,7 +136,7 @@ var traceSourceCanonicalCases = []struct {
 	},
 	{
 		name: "cubeapm advertises mapped fields", provider: "cubeapm", source: "user", declared: true,
-		expected: []string{"destination_workload_name", "http_status_code", "service_name", "span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
+		expected: []string{"destination_workload_name", "duration_ns", "http_status_code", "service_name", "span_name", "status_code", "trace_id", "workload_name", "workload_namespace"},
 	},
 	{
 		name: "splunk enterprise advertises mapped fields", provider: "splunk_enterprise", source: "user", declared: true,

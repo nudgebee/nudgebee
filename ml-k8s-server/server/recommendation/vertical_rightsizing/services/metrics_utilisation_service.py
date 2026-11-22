@@ -39,6 +39,7 @@ from server.recommendation.vertical_rightsizing.models.config import Config
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData, PodData
 from server.recommendation.vertical_rightsizing.models.replicas import ReplicaStats
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
+from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.services.metric_base_service import MetricsService
 from server.recommendation.vertical_rightsizing.services.metrics_prometheus_service import PrometheusMetricsService
 from server.recommendation.vertical_rightsizing.strategy.strategies import BaseStrategy
@@ -118,7 +119,7 @@ class UtilisationMetricsService(MetricsService):
         live_cutoff = (end - timedelta(minutes=5)).timestamp()
         last_seen: Dict[str, float] = {}
         for series in answered.get(MEMORY_WORKING_SET_KEY) or []:
-            pod = (series.get("metric") or {}).get("pod", "")
+            pod = safe_get(series, ["metric", "pod"], "")
             if not pod:
                 continue
             for ts in series.get("timestamps") or []:
@@ -300,10 +301,9 @@ def _pods_from_collapsed(series: List[dict], container: str, wanted_pods: Option
     """
     pods: PodsTimeData = {}
     for entry in series or []:
-        metric = entry.get("metric") or {}
-        if container and metric.get("container") and metric["container"] != container:
+        if container and (c := safe_get(entry, ["metric", "container"])) and c != container:
             continue
-        pod = metric.get("pod") or ""
+        pod = safe_get(entry, ["metric", "pod"], "")
         if not pod:
             continue
         if wanted_pods is not None and pod not in wanted_pods:

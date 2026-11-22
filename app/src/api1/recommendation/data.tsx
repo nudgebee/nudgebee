@@ -3974,12 +3974,12 @@ az vmss update \\
       references: ['https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/in-transit-encryption.html'],
     },
     aws_ec2_ebs_encrypt: {
-      title: 'Ec2 EBS Volumes Should be Encrypted',
+      title: 'EC2 EBS Volumes Should be Encrypted',
       description:
         'When working with production and confidential data it is strongly recommended to implement encryption in order to protect your data from unauthorized access and fulfill compliance requirements for data-at-rest and in-transit encryption within your organization. For example, a compliance requirement is to protect sensitive data that could potentially identify a specific individual such as Personally Identifiable Information (PII), usually used in Financial Services, Healthcare, and Telecommunications sectors.',
       serviceName: 'AmazonEC2',
       recommendations: [
-        `Ensure that your EBS Volumes are encrypted in order to meet security and compliance requirements. Encryption helps prevent unauthorized users from reading sensitive data available on your Ec2 Instance. This includes data saved to persistent media, known as data at-rest, and data that can be intercepted as it travels through the network, between clients and cache servers, known as data in-transit.`,
+        `Ensure that your EBS Volumes are encrypted in order to meet security and compliance requirements. Encryption helps prevent unauthorized users from reading sensitive data available on your EC2 Instance. This includes data saved to persistent media, known as data at-rest, and data that can be intercepted as it travels through the network, between clients and cache servers, known as data in-transit.`,
       ],
       mitigations: [
         `**By Default Enable Encryption for EBS Volumes**
@@ -4051,7 +4051,7 @@ az vmss update \\
       references: ['https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html'],
     },
     aws_ec2_instance_generation_upgrade: {
-      title: 'Ec2 Instance generation Upgrade',
+      title: 'EC2 Instance Generation Upgrade',
       description:
         'Using the current (latest) generation of EC2 instance types instead of the previous generation has multiple advantages such as better hardware performance (faster CPUs, increased memory and network throughput), better virtualization technology (HVM), and lower costs.',
       serviceName: 'AmazonEC2',
@@ -6399,7 +6399,7 @@ az vmss create \\
       mitigations: [
         `**AWS CLI command to upgrade EBS volume generation:**
 \`\`\`
-        aws ec2 modify-volume --volume-type {{recommendation.recommendded_volume_type}} --volume-id {{recommendation.volume_id}}
+        aws ec2 modify-volume --volume-id {{recommendation.volume_id}} --volume-type {{recommendation.recommendded_volume_type}} --region {{recommendation.volume_region || resource_region || region}}
 \`\`\`
 `,
       ],
@@ -8330,13 +8330,23 @@ Restart the instance (*Optional — skip if you want to start it yourself later*
         'Snapshot the volume if data needs to be preserved, then delete the unattached volume to eliminate unnecessary storage costs.',
       ],
     },
+    disk_performance_overprovisioned: {
+      title: 'Disk Performance Overprovisioned',
+      description:
+        'This disk is provisioned with more IOPS or throughput than its workload used at any point in the last 30 days. Provisioned performance is billed whether or not it is used, so the unused part is a cost with no benefit.',
+      recommendations: [
+        'Lower the disk to the recommended IOPS and throughput. They are set from the busiest interval observed, plus headroom, and never below the minimum the disk type allows.',
+        'Check the observed peak and the observation period shown on this recommendation against what you know of the workload before changing it. A job that runs less often than every 30 days will not appear in the peak.',
+        'NudgeBee cannot make this change for you. The saving shown is an estimate from list prices.',
+      ],
+    },
     storage_class_optimization: {
       title: 'Storage Class Optimization',
       description:
         'This storage resource may benefit from a different storage class based on its access patterns. Optimizing storage class can reduce costs.',
       recommendations: [
         'Review access patterns and consider moving to a more cost-effective storage class.',
-        'NudgeBee cannot make this change for you. On Google Cloud, Copy Command gives you the bucket update ready to paste; on Azure, change the access tier on the storage account.',
+        'This change is not applied automatically. On Google Cloud, Copy Command gives you the command that turns on Autoclass, which moves each object that is not read for 30 days to Nearline; on Azure, change the access tier on the storage account.',
       ],
     },
     unused_load_balancer: {

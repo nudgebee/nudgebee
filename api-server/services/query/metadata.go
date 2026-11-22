@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/services/account"
+	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
@@ -35,6 +37,19 @@ func InvalidateTraceIntegrationCache() {
 	traceIntegrationCache.Lock()
 	traceIntegrationCache.entries = make(map[string]traceIntCacheEntry)
 	traceIntegrationCache.Unlock()
+}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			traceIntegrationCache.Lock()
+			defer traceIntegrationCache.Unlock()
+			for _, accountId := range accountIds {
+				delete(traceIntegrationCache.entries, accountId)
+			}
+		},
+		OnAll: InvalidateTraceIntegrationCache,
+	})
 }
 
 type traceIntCacheEntry struct {
@@ -114,6 +129,12 @@ type TableDefinition struct {
 	// clause still bounds the result. Leave false for tables whose NULL-account
 	// rows are sensitive or global-only.
 	TenantWideReadable bool
+	// GlobalCatalog marks a table that holds no tenant data (feature list,
+	// anomaly types, alert-rule knowledge base), so any caller may read it
+	// without a tenant filter. A table with no TenantIdColumnName that is not a
+	// global catalog is readable only by a super admin or the server itself
+	// (see ExecuteQuery). The set is pinned by TestGlobalCatalogTablesArePinned.
+	GlobalCatalog bool
 	// AccountScope, when set, replaces the account-id restriction applied to
 	// account-scoped readers with a table-specific SQL predicate. It must build
 	// SQL only from the quoted ids it is given. The result goes to the SQL
@@ -301,6 +322,22 @@ func traceSourceExpr(tableName string) string {
 	}
 	return "CASE WHEN SpanAttributes['otel.scope.name'] = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END"
 }
+
+// DestinationZoneExpr reads a span's destination zone straight from SpanAttributes, for accounts
+// whose otel_traces has no materialized destination_workload_zone column. nudgebee/node-agent
+// emits the key misspelled ("availablity"), and the agent builds its materialized column from that
+// same spelling, so the misspelled key is the one live spans carry. Do not correct the spelling
+// here alone: #37036 did, and the column came back empty (#40498). The correct spelling is the
+// fallback, so an agent that later fixes the key keeps working.
+const DestinationZoneExpr = "CASE WHEN mapContains(SpanAttributes, 'destination.cloud.availablity_zone') THEN SpanAttributes['destination.cloud.availablity_zone'] ELSE SpanAttributes['destination.cloud.availability_zone'] END"
+
+// TraceResourceExpr reads a span's resource straight from SpanAttributes, for accounts whose
+// otel_traces has no materialized resource column. It must match the agent's materialized
+// definition (nudgebee/k8s-agent runner/pkg/clickhouse/schema.go). http.url comes before url.full:
+// nudgebee/node-agent puts the templated path in http.url so trace groups don't split per ID, and
+// keeps the raw URL in url.full. OTel SDKs on semconv >= 1.21 send only url.full, so without the
+// last arm their client spans had no resource. The query string is cut so tokens are not shown.
+const TraceResourceExpr = "CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] WHEN SpanAttributes['http.url'] != '' THEN SpanAttributes['http.url'] ELSE cutQueryStringAndFragment(SpanAttributes['url.full']) END"
 
 func GetTracesProviderAndUrl(ctx *security.RequestContext, accountId string) (string, string, bool) {
 	agentDetails, err := account.GetAgentConnectionDetails(accountId)
@@ -1519,6 +1556,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              getSource("metric_groupings_v2"),
 		Def:                 "cloud_resource_metrics",
 		Name:                "metric_groupings_v2",
+		PermissionModule:    "metrics",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -1805,6 +1843,14 @@ var table_metadata = map[string]TableDefinition{
 				Def:          "(array_agg(computed_priority ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
+			// The source severity of the same newest event latest_computed_priority
+			// reads its rank from. Severity changes within an issue as rank does, so
+			// a count of issues by severity needs the one value per issue.
+			"latest_priority": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "(array_agg(priority ORDER BY events.created_at DESC))[1]",
+				IsAggregated: true,
+			},
 			"latest_nb_status": {
 				Type:         ColumnDefinitionTypeString,
 				Def:          "(array_agg(nb_status ORDER BY CASE nb_status WHEN 'ACTION_REQUIRED' THEN 1 WHEN 'OPEN' THEN 2 WHEN 'SNOOZED' THEN 3 WHEN 'ACKNOWLEDGED' THEN 4 WHEN 'INVESTIGATING' THEN 5 WHEN 'DUPLICATE' THEN 6 WHEN 'SUPPRESSED' THEN 7 WHEN 'DROPPED' THEN 8 WHEN 'RESOLVED' THEN 9 ELSE 10 END, events.created_at DESC))[1]",
@@ -2029,18 +2075,20 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeInt,
 				Def:  "coalesce(ecc.incident_member_count, 0)",
 			},
-			// Row-level group signals for the Triage Inbox (#34655): a
-			// fingerprint row LEADS a group when any of its events has
-			// members; it is a CHILD when any of its events links to a
-			// leader. Aggregated because inbox rows span many events.
+			// Row-level group signals for the Triage Inbox (#34655), read from
+			// the row's newest event — the firing latest_event_id names and the
+			// row's Investigate, priority and status act on. A group is the
+			// alerts that fired together in one window, so each firing has its
+			// own; a max or bool_or over the row showed the badge of some
+			// earlier burst under the newest firing's time.
 			"incident_group_size": {
 				Type:         ColumnDefinitionTypeInt,
-				Def:          "max(coalesce(ecc.incident_member_count, 0))",
+				Def:          "(array_agg(coalesce(ecc.incident_member_count, 0) ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			"is_incident_child": {
 				Type:         ColumnDefinitionTypeBoolean,
-				Def:          "bool_or(ecl.related_event_id IS NOT NULL)",
+				Def:          "(array_agg(ecl.related_event_id IS NOT NULL ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 			// eia.* (see the join in DefGenerator) is constant within a
@@ -2052,20 +2100,13 @@ var table_metadata = map[string]TableDefinition{
 				IsAggregated: true,
 			},
 			// The event id the Grouped Alerts drill-down resolves the row's
-			// group from. A row's newest event is usually neither a leader nor
-			// a member — the leader is the OLDEST event of a recurring
-			// fingerprint — so anchoring on latest_event_id left rows that
-			// visibly carry a GROUPED badge showing "no related alerts".
-			// Leading rows anchor on their own largest leader (a row can hold
-			// more than one; incident_group_size is that same max); child rows
-			// anchor on the leader their newest linked event points at.
+			// group from: the newest event itself when it leads a group, else
+			// the leader it is filed under, else NULL (the drill-down then falls
+			// back to latest_event_id and shows no related alerts).
 			"incident_group_leader_id": {
 				Type: ColumnDefinitionTypeString,
-				Def: "coalesce(" +
-					"(array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) " +
-					"FILTER (WHERE ecc.incident_member_count > 0))[1], " +
-					"(array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) " +
-					"FILTER (WHERE ecl.related_event_id IS NOT NULL))[1])",
+				Def: "(array_agg(CASE WHEN ecc.incident_member_count > 0 THEN events.id::text " +
+					"ELSE ecl.related_event_id::text END ORDER BY events.created_at DESC))[1]",
 				IsAggregated: true,
 			},
 		},
@@ -3187,7 +3228,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, workload_namespace, workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, traceSourceExpr(tableName), tableName)
+				baseQuery = fmt.Sprintf(`(SELECT TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, `+TraceResourceExpr+` AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source, SpanAttributes as spanattributes FROM %s) AS traces_v2`, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT extendedFields.traceId AS trace_id, span.spanId AS span_id, span.parentSpanId AS parent_span_id, span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.displayName.value AS span_name, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace, CASE WHEN span.attributes.attributeMap.destination_name IS NOT NULL THEN span.attributes.attributeMap.destination_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_name, span.attributes.attributeMap.http_headers AS headers, span.attributes.attributeMap._http_status_code AS http_status_code, span.attributes.attributeMap.http_request_payload AS request_payload, span.attributes.attributeMap.http_response AS http_response, CASE WHEN span.attributes.attributeMap.otel_scope_name = 'nudgebee-node-agent' THEN 'ebpf' ELSE 'otel' END AS trace_source FROM %s) AS traces_v2`, traceProviderUrl)
@@ -3195,6 +3236,7 @@ var table_metadata = map[string]TableDefinition{
 			return baseQuery, request, nil
 		},
 		Name:                "traces_v2",
+		PermissionModule:    "traces",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		NamespaceColumnName: "workload_namespace",
@@ -3411,7 +3453,7 @@ var table_metadata = map[string]TableDefinition{
 			traceProvider, traceProviderUrl, hasMaterializedColumn := GetTracesProviderAndUrl(ctx, accountId)
 			baseQuery := fmt.Sprintf(`(SELECT workload_zone, destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, cloud_availability_zone, workload_namespace,workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, resource, Duration AS duration_ns, destination_workload_name, destination_workload_namespace, destination_name, headers, http_status_code, request_payload, http_response, trace_source FROM %s) AS traces_grouping_v2`, tableName)
 			if !hasMaterializedColumn {
-				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, SpanAttributes['destination.cloud.availability_zone'] AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, CASE WHEN mapContains(SpanAttributes, 'db.statement') THEN SpanAttributes['db.statement'] ELSE SpanAttributes['http.url'] END AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, traceSourceExpr(tableName), tableName)
+				baseQuery = fmt.Sprintf(`(SELECT ResourceAttributes['cloud.availability_zone'] AS workload_zone, %s AS destination_workload_zone, TraceId AS trace_id, SpanId AS span_id, ParentSpanId AS parent_span_id, ResourceAttributes['cloud.availability_zone'] AS cloud_availability_zone, CASE WHEN mapContains(SpanAttributes, 'source.workload_namespace') THEN SpanAttributes['source.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS workload_namespace, CASE WHEN mapContains(SpanAttributes, 'source.workload_name') THEN SpanAttributes['source.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] ELSE ResourceAttributes['service.name'] END AS workload_name, Timestamp AS timestamp, StatusCode AS status_code, SpanName AS span_name, `+TraceResourceExpr+` AS resource, Duration AS duration_ns, CASE WHEN mapContains(SpanAttributes, 'destination.workload_name') THEN SpanAttributes['destination.workload_name'] WHEN mapContains(ResourceAttributes, 'k8s.deployment.name') THEN ResourceAttributes['k8s.deployment.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_workload_name, CASE WHEN mapContains(SpanAttributes, 'destination.workload_namespace') THEN SpanAttributes['destination.workload_namespace'] WHEN mapContains(ResourceAttributes, 'k8s.namespace.name') THEN ResourceAttributes['k8s.namespace.name'] ELSE ResourceAttributes['service.namespace'] END AS destination_workload_namespace, CASE WHEN mapContains(SpanAttributes, 'destination.name') THEN SpanAttributes['destination.name'] WHEN mapContains(ResourceAttributes, 'service.name') THEN ResourceAttributes['service.name'] ELSE ResourceAttributes['net.peer.name'] END AS destination_name, SpanAttributes['http.headers'] AS headers, SpanAttributes['http.status_code'] AS http_status_code, SpanAttributes['http.request_payload'] AS request_payload, SpanAttributes['http.response'] AS http_response, %s AS trace_source FROM %s) AS traces_grouping_v2`, DestinationZoneExpr, traceSourceExpr(tableName), tableName)
 			}
 			if traceProvider == "bigquery" {
 				baseQuery = fmt.Sprintf(`(SELECT span.attributes.attributeMap.source_workload_namespace AS workload_namespace, span.attributes.attributeMap.source_workload_name AS workload_name, span.startTime AS timestamp, span.displayName.value AS span_name, CASE WHEN SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) >= 400 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) < 200 OR SAFE_CAST(span.attributes.attributeMap._http_status_code AS INT64) IS NULL THEN 'STATUS_CODE_ERROR' ELSE 'STATUS_CODE_UNSET' END AS status_code, span.attributes.attributeMap._http_status_code as http_status_code, TIMESTAMP_DIFF(span.endTime, span.startTime, MICROSECOND) * 1000 AS duration_ns, CASE WHEN span.attributes.attributeMap.http_url IS NOT NULL THEN span.attributes.attributeMap.http_url ELSE span.attributes.attributeMap._http_path END AS resource, CASE WHEN span.attributes.attributeMap.destination_workload_name IS NOT NULL THEN span.attributes.attributeMap.destination_workload_name ELSE span.attributes.attributeMap.net_peer_name END AS destination_workload_name, CASE WHEN span.attributes.attributeMap.destination_workload_namespace IS NOT NULL THEN span.attributes.attributeMap.destination_workload_namespace ELSE span.attributes.attributeMap.destination_namespace END AS destination_workload_namespace FROM %s) AS traces_grouping_v2`, traceProviderUrl)
@@ -3819,7 +3861,7 @@ var table_metadata = map[string]TableDefinition{
 					 WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
 					 WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
 					 WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
-					 ELSE r.recommendation ->> 'namespace'
+					 ELSE COALESCE(r.recommendation ->> 'namespace', ` + models.PopeyeNamespaceSQL + `)
 				END as resource_k8s_namespace,
 				cr.meta as resource_meta,
 				CASE
@@ -4050,6 +4092,14 @@ var table_metadata = map[string]TableDefinition{
 				Type: ColumnDefinitionTypeDatetime,
 				Def:  "updated_at",
 			},
+			// When the finding was first raised. The only age a tenant-wide roll-up
+			// can use: updated_at (and "timestamp") is bumped on nearly every open
+			// row by the ~6h finops-score cron. Comes from r.* on every path, so it
+			// is in neither joinRequiringCols nor windowRequiringCols.
+			"created_at": {
+				Type: ColumnDefinitionTypeDatetime,
+				Def:  "created_at",
+			},
 			// Mirrors recommendations_v2: safety band is stamped into the finops
 			// breakdown JSONB, not a dedicated column.
 			"safety_band": {
@@ -4078,7 +4128,7 @@ var table_metadata = map[string]TableDefinition{
 					tenant_id,
 					json_agg(json_build_object('id', id, 'username', username, 'team_name', team_name, 'created_at', created_at, 'team_id', team_id, 'channels', channels, 'platform', platform) ORDER BY team_name) as messaging_platforms
 				FROM messaging_platforms
-				WHERE platform IN ('slack', 'ms_teams', 'google_chat')
+				WHERE platform IN ('slack', 'google_chat')
 				GROUP BY tenant_id
 			),
 			integrations_agg AS (
@@ -4093,7 +4143,7 @@ var table_metadata = map[string]TableDefinition{
 					'postgresql', 'rabbitmq', 'mysql', 'redis', 'confluence', 'clickhouse',
 					'datadog', 'argocd', 'llm', 'loggly', 'loki', 'signoz',
 					'azure_app_insights', 'prometheus', 'otel_clickhouse', 'chronosphere',
-					'ssh', 'observe', 'jaeger', 'ES', 'newrelic', 'newrelic_webhook'
+					'ssh', 'observe', 'jaeger', 'ES', 'newrelic', 'newrelic_webhook', 'ms_teams'
 				)
 				GROUP BY tenant_id
 			)
@@ -4166,6 +4216,10 @@ var table_metadata = map[string]TableDefinition{
 			if podNamespaceFilter != "" {
 				joinKeyword = "JOIN"
 			}
+			// is_active: the finding's image is still run by an active pod. The pod
+			// subquery holds active pods only, so "it joined" is the whole test. The
+			// column was declared below without being selected here, so any request
+			// naming it failed with `column "is_active" does not exist`.
 			def := `
 		(
 			SELECT
@@ -4190,6 +4244,7 @@ var table_metadata = map[string]TableDefinition{
 				cr.workload_name,
 				cr.workload_type,
 				cr.namespace,
+				(cr.image IS NOT NULL)                  AS is_active,
 				(` + VulnerabilityRecommendationSQL("rec", "v.") + `)::varchar    AS recommendation
 			FROM recommendation rec
 			LEFT JOIN vulnerabilities v ON v.id = rec.vulnerability_id
@@ -4717,6 +4772,7 @@ var table_metadata = map[string]TableDefinition{
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Name:                "llm_conversation_agent_critiques_v2",
+		PermissionModule:    "critiques",
 		Def: `(
 			SELECT
 				cr.id::text as id,
@@ -5646,6 +5702,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.AgentMetrices,
 		Def:                 "cloud_resource_metric",
 		Name:                "cloud_metric_groupings_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -5843,7 +5900,8 @@ var table_metadata = map[string]TableDefinition{
 								cr.meta -> 'config' ->> 'namespace',
 								r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace',
 								r.recommendation -> 'metadata' ->> 'namespace',
-								r.recommendation ->> 'namespace'
+								r.recommendation ->> 'namespace',
+								` + models.PopeyeNamespaceSQL + `
 							) as resource_k8s_namespace,
 							cr.meta as resource_meta,
 							cr."name" as resource_name,
@@ -6263,7 +6321,7 @@ var table_metadata = map[string]TableDefinition{
 		sr.workload_name,
 		sr.cloud_account_id,
 		sr.tenant_id,
-		MAX(sr.timestamp) AS timestamp,
+		sr.timestamp,
 		SUM(sr.good_events_count) AS total_good_events,
 		SUM(sr.bad_events_count) AS total_bad_events,
 		SUM(sr.events_count) AS total_events,
@@ -6278,6 +6336,7 @@ var table_metadata = map[string]TableDefinition{
 		  sr.tenant_id,
 		  sr.timestamp, sr.status) as sro`,
 		Name:                "slo_report_observation_v2",
+		PermissionModule:    "slo",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6432,6 +6491,7 @@ var table_metadata = map[string]TableDefinition{
 			WHERE evaluated_at >= NOW() - INTERVAL '1 month'
 			GROUP BY namespace, name, anomaly_type, account_id, tenant ORDER BY MAX(evaluated_at) DESC) as anomaly_group`,
 		Name:                "anomaly_v3",
+		PermissionModule:    "anomalies",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6840,16 +6900,22 @@ var table_metadata = map[string]TableDefinition{
 				) as resource_group`, spendSelect, recSelect, spendJoin, recJoin)
 			}
 
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources_nostatus__where__", resourceWhereStrNoStatus)
-			baseQuery = strings.ReplaceAll(baseQuery, "__resources__where__", resourceWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations__where__", recommendationWhereStr)
-			baseQuery = strings.ReplaceAll(baseQuery, "__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL)
-			baseQuery = strings.ReplaceAll(baseQuery, "__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL)
+			// One pass: replacing the placeholders one after another would also
+			// replace a placeholder name inside a filter value an earlier pass
+			// inserted, splicing a quoted fragment into that value.
+			baseQuery = strings.NewReplacer(
+				"__resources_nostatus__where__", resourceWhereStrNoStatus,
+				"__resources__where__", resourceWhereStr,
+				"__spends__where__", spendsWhereStr,
+				"__recommendations__where__", recommendationWhereStr,
+				"__spends_acct__where__", "1 = 1"+spendAcctTenantWhereSQL,
+				"__recommendations_acct__where__", "1 = 1"+recAcctTenantWhereSQL,
+			).Replace(baseQuery)
 
 			return baseQuery, request, nil
 		},
 		Name:                "resource_groupings_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -6933,6 +6999,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 `application_profile`,
 		Name:                "application_profile_v2",
+		PermissionModule:    "applications",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -7087,149 +7154,14 @@ var table_metadata = map[string]TableDefinition{
 			},
 		},
 	},
-	"admin_get_users_by_tenant_v2": {
-		Type:               Derived,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		// Tenant-scoped user directory — a users:Read (or Write) custom grant
-		// authorizes this tenant-wide read.
-		PermissionModule: "users",
-		Name:             "admin_get_users_by_tenant_v2",
-		Def: `(
-			SELECT
-				u.id::text as id,
-				u.display_name,
-				u.status::text as status,
-				u.username as username,
-				u.created_at,
-				tu.tenant::text as tenant_id,
-				COALESCE(
-					(SELECT json_agg(json_build_object(
-						'id', ur.id,
-						'role', ur.role,
-						'entity_type', ur.entity_type,
-						'entity_id', ur.entity_id,
-						'role_display_name', COALESCE(r.display_name, ur.role)
-					))
-					FROM user_roles ur
-					LEFT JOIN roles r ON r.value = ur.role
-					WHERE ur.user_id = u.id AND ur.entity_id = tu.tenant::text),
-					'[]'::json
-				) as user_roles,
-				COALESCE(
-					(SELECT json_agg(json_build_object(
-						'name', ug.name,
-						'id', ug.id,
-						'group_roles', COALESCE(
-							(SELECT json_agg(json_build_object('role', gr.role))
-							FROM group_roles gr WHERE gr.group_id = ug.id),
-							'[]'::json
-						)
-					))
-					FROM usergroup_users ugu
-					INNER JOIN user_groups ug ON ug.id = ugu."group"
-					WHERE ugu."user" = u.id AND ug.tenant = tu.tenant),
-					'[]'::json
-				) as user_groups,
-				(SELECT ua.accessed_at
-				 FROM user_auths ua
-				 WHERE ua."user" = u.id AND ua.tenant_id = tu.tenant
-				 ORDER BY ua.accessed_at DESC
-				 LIMIT 1
-				) as last_accessed_at
-			FROM users u
-			INNER JOIN tenant_users tu ON tu."user" = u.id
-		) as users_by_tenant`,
-		Columns: map[string]ColumnDefinition{
-			"id": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "id",
-			},
-			"display_name": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "display_name",
-			},
-			"status": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "status",
-			},
-			"username": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "username",
-			},
-			"created_at": {
-				Type: ColumnDefinitionTypeDatetime,
-				Def:  "created_at",
-			},
-			"tenant_id": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "tenant_id",
-			},
-			"user_roles": {
-				Type: ColumnDefinitionTypeJson,
-				Def:  "user_roles",
-			},
-			"user_groups": {
-				Type: ColumnDefinitionTypeJson,
-				Def:  "user_groups",
-			},
-			"last_accessed_at": {
-				Type: ColumnDefinitionTypeDatetime,
-				Def:  "last_accessed_at",
-			},
-		},
-	},
-	"admin_get_users_grouping_by_tenant_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		// Aggregate companion of the tenant-scoped user directory — same
-		// users:Read (or Write) grant authorizes the tenant-wide read.
-		PermissionModule: "users",
-		Name:             "admin_get_users_grouping_by_tenant_v2",
-		Def: `(
-			SELECT
-				u.id::text as id,
-				u.display_name,
-				u.status::text as status,
-				u.username as username,
-				u.created_at,
-				tu.tenant::text as tenant_id
-			FROM users u
-			INNER JOIN tenant_users tu ON tu."user" = u.id
-		) as users_grouping`,
-		Columns: map[string]ColumnDefinition{
-			"id": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "id",
-			},
-			"display_name": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "display_name",
-			},
-			"status": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "status",
-			},
-			"username": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "username",
-			},
-			"created_at": {
-				Type: ColumnDefinitionTypeDatetime,
-				Def:  "created_at",
-			},
-			"tenant_id": {
-				Type: ColumnDefinitionTypeString,
-				Def:  "tenant_id",
-			},
-			"count": {
-				Type:         ColumnDefinitionTypeInt,
-				Def:          "count(*)",
-				IsAggregated: true,
-			},
-		},
-	},
+	// The tenant's people: people pickers, counts and recipients. Bee accounts are
+	// left out here, on the server, so a new caller cannot list them by accident.
+	"admin_get_users_by_tenant_v2":          usersByTenantTable("admin_get_users_by_tenant_v2", false),
+	"admin_get_users_grouping_by_tenant_v2": usersGroupingByTenantTable("admin_get_users_grouping_by_tenant_v2", false),
+	// Everyone, bees included: the Users page and lists that show who did something.
+	"admin_get_users_with_bees_by_tenant_v2":          usersByTenantTable("admin_get_users_with_bees_by_tenant_v2", true),
+	"admin_get_users_with_bees_grouping_by_tenant_v2": usersGroupingByTenantTable("admin_get_users_with_bees_grouping_by_tenant_v2", true),
+
 	"admin_get_user_groups_v2": {
 		Type:               Derived,
 		Source:             database.Metastore,
@@ -7603,6 +7535,82 @@ var table_metadata = map[string]TableDefinition{
 			},
 		},
 	},
+	// Delivery history: Admin -> Notification Rules -> Delivery history, and the alert page's Notifications
+	// section. Scoped like alerts: account readers see only their accounts' rows and never rows with no
+	// account (summaries, digests); a reader limited to some namespaces of an account sees none of its rows,
+	// which carry no namespace; email rows stay with tenant-wide admins. PermissionModule matches the
+	// MODULE_OVERRIDES entries for both actions in app/src/lib/permissionCatalog.ts.
+	"notification_deliveries_v2": {
+		Type:                Normal,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    deliveriesModule,
+		Name:                "notification_deliveries_v2",
+		Def:                 notificationDeliveriesDef("notification_deliveries", true),
+		UpdateFilters:       deliveryReadFilters,
+		Columns: map[string]ColumnDefinition{
+			"id":               {Type: ColumnDefinitionTypeString},
+			"created_at":       {Type: ColumnDefinitionTypeDatetime},
+			"tenant_id":        {Type: ColumnDefinitionTypeString},
+			"account_id":       {Type: ColumnDefinitionTypeString},
+			"fingerprint":      {Type: ColumnDefinitionTypeString},
+			"dispatch_id":      {Type: ColumnDefinitionTypeString},
+			"attempt":          {Type: ColumnDefinitionTypeInt},
+			"kind":             {Type: ColumnDefinitionTypeString},
+			"source":           {Type: ColumnDefinitionTypeString},
+			"title":            {Type: ColumnDefinitionTypeString},
+			"event_id":         {Type: ColumnDefinitionTypeString},
+			"platform":         {Type: ColumnDefinitionTypeString},
+			"team_id":          {Type: ColumnDefinitionTypeString},
+			"destination":      {Type: ColumnDefinitionTypeString},
+			"destination_name": {Type: ColumnDefinitionTypeString},
+			"message_id":       {Type: ColumnDefinitionTypeString},
+			"thread_id":        {Type: ColumnDefinitionTypeString},
+			"status":           {Type: ColumnDefinitionTypeString},
+			"reason":           {Type: ColumnDefinitionTypeString},
+			"error_code":       {Type: ColumnDefinitionTypeString},
+			"routed_by":        {Type: ColumnDefinitionTypeJson},
+			"is_final":         {Type: ColumnDefinitionTypeBoolean},
+			"team_url":         {Type: ColumnDefinitionTypeString},
+		},
+	},
+	// Counts and per-destination summaries of the same rows: totals, the destination filter, the Failing
+	// destinations strip (latest delivery per destination) and where an alert's history starts.
+	"notification_deliveries_grouping_v2": {
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "account_id",
+		PermissionModule:    deliveriesModule,
+		Name:                "notification_deliveries_grouping_v2",
+		Def:                 notificationDeliveriesDef("notification_deliveries_grouping", false),
+		UpdateFilters:       deliveryReadFilters,
+		Columns: map[string]ColumnDefinition{
+			"created_at":  {Type: ColumnDefinitionTypeDatetime},
+			"tenant_id":   {Type: ColumnDefinitionTypeString},
+			"account_id":  {Type: ColumnDefinitionTypeString},
+			"fingerprint": {Type: ColumnDefinitionTypeString},
+			"event_id":    {Type: ColumnDefinitionTypeString},
+			"kind":        {Type: ColumnDefinitionTypeString},
+			"source":      {Type: ColumnDefinitionTypeString},
+			"platform":    {Type: ColumnDefinitionTypeString},
+			"team_id":     {Type: ColumnDefinitionTypeString},
+			"destination": {Type: ColumnDefinitionTypeString},
+			"status":      {Type: ColumnDefinitionTypeString},
+			"is_final":    {Type: ColumnDefinitionTypeBoolean},
+			"count":       {Type: ColumnDefinitionTypeInt, Def: "count(*)", IsAggregated: true},
+			"first_at":    {Type: ColumnDefinitionTypeDatetime, Def: "min(created_at)", IsAggregated: true},
+			"last_at":     {Type: ColumnDefinitionTypeDatetime, Def: "max(created_at)", IsAggregated: true},
+			"last_status": {Type: ColumnDefinitionTypeString, Def: "(array_agg(status ORDER BY created_at DESC))[1]", IsAggregated: true},
+			"last_reason": {Type: ColumnDefinitionTypeString, Def: "(array_agg(reason ORDER BY created_at DESC))[1]", IsAggregated: true},
+			"last_destination_name": {
+				Type:         ColumnDefinitionTypeString,
+				Def:          "(array_agg(destination_name ORDER BY created_at DESC))[1]",
+				IsAggregated: true,
+			},
+		},
+	},
 	"admin_get_integrations_v2": {
 		Type:               Derived,
 		Source:             database.Metastore,
@@ -7614,6 +7622,20 @@ var table_metadata = map[string]TableDefinition{
 			// These allow filtering integrations by their config values at the DB level
 			configNameFilter := extractFilterSQL(&request, "config_value_name", "icv_filter.name")
 			configValueFilter := extractFilterSQL(&request, "config_value_value", "icv_filter.value")
+
+			// Secret config fields are blanked below and must not be matchable by
+			// value either, or the filter becomes a guessing oracle for them.
+			secretField, err := integrationSecretFieldSQL("ii.type", "icv.name")
+			if err != nil {
+				return "", request, err
+			}
+			if configValueFilter != "" {
+				secretFilterField, filterErr := integrationSecretFieldSQL("i.type", "icv_filter.name")
+				if filterErr != nil {
+					return "", request, filterErr
+				}
+				configValueFilter += " AND NOT COALESCE(icv_filter.is_encrypted, false) AND NOT " + secretFilterField
+			}
 
 			existsClause := ""
 			if configNameFilter != "" || configValueFilter != "" {
@@ -7651,6 +7673,8 @@ var table_metadata = map[string]TableDefinition{
 				i.source,
 				i.status,
 				i.labels,
+				-- MCP verdicts written by llm-server (#40994); NULL = not checked yet.
+				i.health,
 				i.created_at,
 				i.updated_at,
 				i.created_by::text as created_by,
@@ -7679,48 +7703,21 @@ var table_metadata = map[string]TableDefinition{
 				GROUP BY ica.integration_id
 			) ica_agg ON ica_agg.integration_id = i.id
 			LEFT JOIN (
-				-- Per-row redaction for LLM credentials: the API key /
-				-- access key / secret key / session token (plus every
-				-- per-tier / per-agent override variant matching the same
-				-- prefixes) must never round-trip to clients. UI gets
-				-- value='' and a has_value boolean so it can render
-				-- "✓ Configured — leave blank to keep". Backend-side
-				-- redaction is defense-in-depth: even a caller that
-				-- bypasses the UI cannot retrieve the secret value from
-				-- this endpoint.
-				--
-				-- Pattern source of truth lives in
-				-- integrations/llm.go::llmSecretFieldPrefixes — keep in
-				-- sync if that list changes.
+				-- Secret config values never leave the server. A field is secret
+				-- when integrations/core says so (its schema's IsEncrypted, plus
+				-- the LLM per-agent / per-tier key prefixes), the same rule the
+				-- create and update responses apply. Any row stored encrypted is
+				-- blanked too: rows of retired types or renamed fields carry
+				-- ciphertext no schema names any more. The UI gets value='' and a
+				-- has_value flag, shows a saved mask, and on save sends
+				-- is_encrypted=true so the server keeps the stored value
+				-- (core.ResolveKeptSecrets).
 				SELECT
 					icv.integration_id,
 					json_agg(json_build_object(
 						'id', icv.id,
 						'name', icv.name,
-						'value', CASE
-							-- ii.type stores integrations/llm.go::IntegrationLLM
-							-- ('llm', lowercase). Kept as a literal here to avoid a
-							-- query→integrations import cycle (integrations already
-							-- imports query). If IntegrationLLM ever changes, this
-							-- literal must be updated in lockstep.
-							WHEN ii.type = 'llm' AND (
-								icv.name LIKE 'llm_provider_api_key%' OR
-								icv.name LIKE 'llm_provider_access_key%' OR
-								icv.name LIKE 'llm_provider_secret_key%' OR
-								icv.name LIKE 'llm_provider_session_token%' OR
-								icv.name LIKE 'llm_oauth_client_secret%' OR
-								icv.name LIKE 'llm_tier_api_key%' OR
-								icv.name LIKE 'llm_tier_access_key%' OR
-								icv.name LIKE 'llm_tier_secret_key%' OR
-								icv.name LIKE 'llm_tier_session_token%' OR
-								icv.name LIKE 'llm_tier_oauth_client_secret%' OR
-								icv.name LIKE 'llm_fallback_api_key%' OR
-								icv.name LIKE 'llm_fallback_access_key%' OR
-								icv.name LIKE 'llm_fallback_secret_key%' OR
-								icv.name LIKE 'llm_fallback_oauth_client_secret%'
-							) THEN ''
-							ELSE icv.value
-						END,
+						'value', CASE WHEN COALESCE(icv.is_encrypted, false) OR ` + secretField + ` THEN '' ELSE icv.value END,
 						'type', icv.type,
 						'has_value', icv.value IS NOT NULL AND icv.value <> ''
 					)) as config_values
@@ -7756,6 +7753,10 @@ var table_metadata = map[string]TableDefinition{
 			"labels": {
 				Type: ColumnDefinitionTypeJson,
 				Def:  "labels",
+			},
+			"health": {
+				Type: ColumnDefinitionTypeJson,
+				Def:  "health",
 			},
 			"created_at": {
 				Type: ColumnDefinitionTypeDatetime,
@@ -8151,6 +8152,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Normal,
 		Source:              database.Metastore,
 		Name:                "user_account_ids_by_tenant_v2",
+		PermissionModule:    "users",
 		Def:                 "cloud_accounts",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "id",
@@ -8190,6 +8192,7 @@ var table_metadata = map[string]TableDefinition{
 				u.display_name,
 				u.username as username,
 				u.status::text as status,
+				u.kind,
 				u.created_at,
 				u.updated_at,
 				COALESCE(
@@ -8266,6 +8269,7 @@ var table_metadata = map[string]TableDefinition{
 			"display_name": {Type: ColumnDefinitionTypeString, Def: "display_name"},
 			"username":     {Type: ColumnDefinitionTypeString, Def: "username"},
 			"status":       {Type: ColumnDefinitionTypeString, Def: "status"},
+			"kind":         {Type: ColumnDefinitionTypeString, Def: "kind"},
 			"created_at":   {Type: ColumnDefinitionTypeDatetime, Def: "created_at"},
 			"updated_at":   {Type: ColumnDefinitionTypeDatetime, Def: "updated_at"},
 			"user_roles":   {Type: ColumnDefinitionTypeJson, Def: "user_roles"},
@@ -8286,6 +8290,7 @@ var table_metadata = map[string]TableDefinition{
 				u.display_name,
 				u.username as username,
 				u.status::text as status,
+				u.kind,
 				u.created_at,
 				u.updated_at,
 				ua_match.account_id::text as account_id,
@@ -8353,6 +8358,7 @@ var table_metadata = map[string]TableDefinition{
 			"display_name": {Type: ColumnDefinitionTypeString, Def: "display_name"},
 			"username":     {Type: ColumnDefinitionTypeString, Def: "username"},
 			"status":       {Type: ColumnDefinitionTypeString, Def: "status"},
+			"kind":         {Type: ColumnDefinitionTypeString, Def: "kind"},
 			"created_at":   {Type: ColumnDefinitionTypeDatetime, Def: "created_at"},
 			"updated_at":   {Type: ColumnDefinitionTypeDatetime, Def: "updated_at"},
 			"account_id":   {Type: ColumnDefinitionTypeString, Def: "account_id"},
@@ -8515,6 +8521,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "slo_config",
 		Name:                "slo_config_v2",
+		PermissionModule:    "slo",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8538,12 +8545,17 @@ var table_metadata = map[string]TableDefinition{
 			"workload_namespace": {Type: ColumnDefinitionTypeString},
 			"goal":               {Type: ColumnDefinitionTypeString},
 			"enabled":            {Type: ColumnDefinitionTypeBoolean},
+			// The latest forecast of a forecast SLO (forecast.Result); NULL for other types.
+			"last_forecast": {Type: ColumnDefinitionTypeJson},
+			// The container a memory_saturation SLO watches; NULL for other types.
+			"container": {Type: ColumnDefinitionTypeString},
 		},
 	},
 	"slo_report_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "slo_report_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "slo_report_v2",
+		PermissionModule: "slo",
 		Def: `(SELECT sr.*,
 			json_build_object(
 				'name', sc.name,
@@ -8636,6 +8648,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "agent_playbook",
 		Name:                "agent_playbook_v2",
+		PermissionModule:    "agents",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8690,9 +8703,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT ap.id, ap.name, ap.account_id, ap.tenant_id, ap.rule, ap.notification,
 			ap.schedule_time, ap.next_schedule_time, ap.last_executed_time, ap.created_by,
 			ap.creation_date, ap.start_at, ap.end_at, ap.attributes,
@@ -8746,6 +8760,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "(SELECT id, tenant_id, account_id, status::text as status, category::text as category, name FROM auto_pilot) as auto_pilot_agg",
 		Name:                "auto_pilot_groupings_v2",
+		PermissionModule:    "autooptimize",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -8763,9 +8778,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"upgrade_plan_audit_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "upgrade_plan_audit_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "upgrade_plan_audit_v2",
+		PermissionModule: "upgrade",
 		Def: `(SELECT upa.*,
 			json_build_object('display_name', u.display_name) as user_actioned_by
 			FROM upgrade_plan_audit upa
@@ -8790,10 +8806,29 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"k8s_nodes_v2": {
-		PermissionModule:    "k8s",
-		Type:                Normal,
-		Source:              database.Metastore,
-		Def:                 "k8s_nodes",
+		PermissionModule: "k8s",
+		Type:             Normal,
+		Source:           database.Metastore,
+		Def:              "k8s_nodes",
+		// pod_count is one grouped pass over the active pods, joined by node
+		// name. As a per-row subquery it re-read every active pod of the
+		// account for each node it counted (k8s_pods has no node_name index),
+		// so a page cost 10 such passes and sorting by pod_count one per node
+		// (#39743). The account and tenant filters reach the grouped pods
+		// through the join keys. Postgres cannot drop the join when nothing
+		// reads pod_count, so it is only added when the request does.
+		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
+			if !requestReferencesColumns(request, map[string]bool{"pod_count": true}) {
+				return "k8s_nodes", request, nil
+			}
+			return `(SELECT n.*, COALESCE(pc.pod_count, 0) AS pod_count
+			FROM k8s_nodes n
+			LEFT JOIN (SELECT cloud_account_id, tenant_id, node_name, COUNT(*) AS pod_count
+				FROM k8s_pods
+				WHERE is_active = true
+				GROUP BY cloud_account_id, tenant_id, node_name) pc
+				ON pc.cloud_account_id = n.cloud_account_id AND pc.tenant_id = n.tenant_id AND pc.node_name = n.name) AS k8s_nodes`, request, nil
+		},
 		Name:                "k8s_nodes_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
@@ -8822,10 +8857,7 @@ var table_metadata = map[string]TableDefinition{
 			"cost":               {Type: ColumnDefinitionTypeFloat},
 			"meta":               {Type: ColumnDefinitionTypeJson},
 			"tenant_id":          {Type: ColumnDefinitionTypeString},
-			"pod_count": {
-				Type: ColumnDefinitionTypeInt,
-				Def:  "(SELECT COUNT(*) FROM k8s_pods WHERE k8s_pods.cloud_account_id = k8s_nodes.cloud_account_id::uuid AND k8s_pods.tenant_id = k8s_nodes.tenant_id::uuid AND k8s_pods.node_name = k8s_nodes.name AND k8s_pods.is_active = true)",
-			},
+			"pod_count":          {Type: ColumnDefinitionTypeInt},
 		},
 	},
 	"k8s_nodes_groupings_v2": {
@@ -8894,9 +8926,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"cloud_resource_details_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "cloud_resource_details_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "cloud_resource_details_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				id,
@@ -9094,6 +9127,7 @@ var table_metadata = map[string]TableDefinition{
 			baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", spendsWhereStr)
 			return baseQuery, request, nil
 		},
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant",
 		AccountIdColumnName: "account",
 		NamespaceColumnName: "namespace",
@@ -9187,12 +9221,12 @@ var table_metadata = map[string]TableDefinition{
 			baseQuery := `(
 				WITH cr_base AS (
 					SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
-						cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant
+						cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant, cr.is_active
 					FROM cloud_resourses cr
 					__cr__where__
 				)
 				SELECT cr.region, cr.resourse_id, cr.service_name, cr.status, cr.name, cr.id,
-					cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant,
+					cr.meta, cr.account, cr.tags, cr.created_at, cr.resourse_created_on, cr.type, cr.tenant, cr.is_active,
 					cr.meta ->> 'namespace' as namespace,
 					COALESCE(s.spend_amount, 0)::float as spend_amount,
 					m.metric as latest_metric,
@@ -9219,7 +9253,7 @@ var table_metadata = map[string]TableDefinition{
 
 			metricColumns := []string{"metric"}
 			// Columns that exist directly on cloud_resourses table and can be pushed down
-			crColumns := []string{"region", "resourse_id", "service_name", "status", "name", "id", "type", "account", "tenant", "created_at", "meta", "tags"}
+			crColumns := []string{"region", "resourse_id", "service_name", "status", "name", "id", "type", "account", "tenant", "created_at", "meta", "tags", "is_active"}
 
 			// splitWhereClause recursively separates filters into matched and remaining
 			var splitWhereClause func(where QueryWhereClause, matchColumns []string) (matched QueryWhereClause, remaining QueryWhereClause)
@@ -9313,6 +9347,7 @@ var table_metadata = map[string]TableDefinition{
 						"created_at":   {Type: ColumnDefinitionTypeDatetime},
 						"meta":         {Type: ColumnDefinitionTypeJson},
 						"tags":         {Type: ColumnDefinitionTypeJson},
+						"is_active":    {Type: ColumnDefinitionTypeBoolean},
 					},
 					Type:   Normal,
 					Def:    "cloud_resourses",
@@ -9346,17 +9381,20 @@ var table_metadata = map[string]TableDefinition{
 				}
 			}
 
+			crWhere, spendsWhere := "", ""
 			if crWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "WHERE "+crWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__cr__where__", "")
+				crWhere = "WHERE " + crWhereStr
 			}
 			if spendsWhereStr != "" {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "WHERE "+spendsWhereStr)
-			} else {
-				baseQuery = strings.ReplaceAll(baseQuery, "__spends__where__", "")
+				spendsWhere = "WHERE " + spendsWhereStr
 			}
-			baseQuery = strings.ReplaceAll(baseQuery, "__metrics__where__", metricsWhereStr)
+			// One pass, as in resource_groupings_v2: a sequential replace would
+			// rewrite a placeholder name inside an inserted filter value.
+			baseQuery = strings.NewReplacer(
+				"__cr__where__", crWhere,
+				"__spends__where__", spendsWhere,
+				"__metrics__where__", metricsWhereStr,
+			).Replace(baseQuery)
 			return baseQuery, request, nil
 		},
 		TenantIdColumnName:  "tenant",
@@ -9370,6 +9408,7 @@ var table_metadata = map[string]TableDefinition{
 			"status":                  {Type: ColumnDefinitionTypeString},
 			"meta":                    {Type: ColumnDefinitionTypeJson},
 			"tags":                    {Type: ColumnDefinitionTypeJson},
+			"is_active":               {Type: ColumnDefinitionTypeBoolean},
 			"account":                 {Type: ColumnDefinitionTypeString},
 			"tenant":                  {Type: ColumnDefinitionTypeString},
 			"namespace":               {Type: ColumnDefinitionTypeString},
@@ -9518,6 +9557,7 @@ var table_metadata = map[string]TableDefinition{
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			return "spends s LEFT JOIN cloud_resourses cr ON s.cloud_resource_id = cr.id AND s.cloud_account = cr.account", request, nil
 		},
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9610,7 +9650,8 @@ var table_metadata = map[string]TableDefinition{
 		Def: `(SELECT ncam.*,
 			ca.account_name as account_name,
 			ca.cloud_provider as cloud_provider,
-			u.display_name as created_by_display_name
+			u.display_name as created_by_display_name,
+			COALESCE((ncam.channel_metadata::jsonb ->> 'system_managed')::boolean, false) as is_system_managed
 			FROM notification_channel_account_mappings ncam
 			LEFT JOIN cloud_accounts ca ON ca.id = ncam.account_id
 			LEFT JOIN users u ON u.id = ncam.created_by
@@ -9632,6 +9673,10 @@ var table_metadata = map[string]TableDefinition{
 			"account_name":            {Type: ColumnDefinitionTypeString},
 			"cloud_provider":          {Type: ColumnDefinitionTypeString},
 			"created_by_display_name": {Type: ColumnDefinitionTypeString},
+			// system_managed flag from channel_metadata (see CommonService._persist_channel_account_mapping
+			// in notifications-server): true for channels an automation (e.g. event-investigation)
+			// created/bound, false for channels an admin configured by hand.
+			"is_system_managed": {Type: ColumnDefinitionTypeBoolean},
 		},
 	},
 	"application_group_v2": {
@@ -9646,6 +9691,11 @@ var table_metadata = map[string]TableDefinition{
 			LEFT JOIN users uu ON uu.id = ag.updated_by
 		) as application_group_v2`,
 		TenantIdColumnName: "tenant_id",
+		// "id" is a placeholder to clear service.go's empty-AccountIdColumnName
+		// check; the real restriction is AccountScope below.
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group_v2"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
 			"id":                      {Type: ColumnDefinitionTypeString},
 			"name":                    {Type: ColumnDefinitionTypeString},
@@ -9660,12 +9710,16 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"application_group_groupings_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		Def:                "application_group",
-		Name:               "application_group_groupings_v2",
-		TenantIdColumnName: "tenant_id",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		Def:                 "application_group",
+		Name:                "application_group_groupings_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "id",
+		AccountScope:        applicationGroupAccountScope("application_group"),
+		PermissionModule:    "applications",
 		Columns: map[string]ColumnDefinition{
+			"id":        {Type: ColumnDefinitionTypeString},
 			"tenant_id": {Type: ColumnDefinitionTypeString},
 			"name":      {Type: ColumnDefinitionTypeString},
 			"count": {
@@ -9676,9 +9730,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"application_group_mapping_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "application_group_mapping_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "application_group_mapping_v2",
+		PermissionModule: "applications",
 		Def: `(SELECT agm.*,
 			ca.account_name as account_name,
 			kw.is_active as workload_is_active,
@@ -9712,6 +9767,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "application_group_mapping",
 		Name:                "application_group_mapping_groupings_v2",
+		PermissionModule:    "applications",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9726,9 +9782,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_task_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_task_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_task_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT apt.*,
 			ap.category as auto_pilot_category,
 			ap.account_id as auto_pilot_account_id,
@@ -9834,6 +9891,7 @@ var table_metadata = map[string]TableDefinition{
 		Source:              database.Metastore,
 		Def:                 "auto_pilot_approvals",
 		Name:                "auto_pilot_approvals_groupings_v2",
+		PermissionModule:    "autooptimize",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
@@ -9848,9 +9906,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"auto_pilot_approval_policy_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "auto_pilot_approval_policy_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "auto_pilot_approval_policy_v2",
+		PermissionModule: "autooptimize",
 		Def: `(SELECT apap.*,
 			ca.account_name as account_name,
 			uc.display_name as created_by_display_name,
@@ -9877,9 +9936,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"recommendation_resolution_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "recommendation_resolution_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "recommendation_resolution_v2",
+		PermissionModule: "recommendations",
 		Def: `(SELECT
 			rr.id,
 			rr.recommendation_id,
@@ -9954,14 +10014,45 @@ var table_metadata = map[string]TableDefinition{
 		// as well as listed: the frontend sends one where clause to the listing and
 		// another to this aggregate, and a column missing here would leave
 		// pagination reporting totals for a filter it never applied.
-		Def:                 "(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg",
+		//
+		// rec_savings_once carries the recommendation's savings on exactly one
+		// resolution row per (recommendation, status), 0 on the rest. Nothing stops
+		// one recommendation collecting several Success rows (a ticket and a pull
+		// request, or a retried pull request), and summing r.estimated_savings over
+		// all of them would count the same saving once per row. The lowest id wins;
+		// which row is picked does not matter, since every candidate joins the same
+		// recommendation. A correlated NOT EXISTS rather than ROW_NUMBER(): the
+		// window's partition would not include tenant_id, so it would rank every
+		// tenant's resolutions before the outer tenant filter applied, while this
+		// runs per surviving row on idx_rr_recommendation_id, and only when
+		// sum_rec_estimated_savings is selected (Postgres drops unused outputs).
+		// Caveat: a type/resolver_type filter can exclude the chosen row, and that
+		// recommendation then contributes 0 to a filtered sum.
+		Def: `(SELECT rr.*, r.tenant_id, r.cloud_account_id as account_id, r.severity as rec_severity,
+			CASE WHEN NOT EXISTS (
+				SELECT 1 FROM recommendation_resolution d
+				WHERE d.recommendation_id = rr.recommendation_id AND d.status = rr.status AND d.id < rr.id
+			) THEN GREATEST(COALESCE(r.estimated_savings, 0), 0) ELSE 0 END as rec_savings_once
+			FROM recommendation_resolution rr LEFT JOIN recommendation r ON r.id = rr.recommendation_id) as rr_agg`,
 		Name:                "recommendation_resolution_groupings_v2",
+		PermissionModule:    "recommendations",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
 		Columns: map[string]ColumnDefinition{
 			"count": {
 				Type:         ColumnDefinitionTypeInt,
 				Def:          "count(*)",
+				IsAggregated: true,
+			},
+			// Monthly savings of the recommendations these resolutions resolved,
+			// each recommendation counted once (see rec_savings_once above). It is
+			// the recommendation's current estimate, the same figure the weekly
+			// digest's resolved_savings sums, not a value snapshotted at resolution.
+			// GREATEST matches recommendation_groupings_v2's sum_estimated_savings:
+			// a negative estimate is a cost increase, not a saving.
+			"sum_rec_estimated_savings": {
+				Type:         ColumnDefinitionTypeFloat,
+				Def:          "COALESCE(sum(rec_savings_once), 0)",
 				IsAggregated: true,
 			},
 			"resolver_type":     {Type: ColumnDefinitionTypeString},
@@ -10026,6 +10117,10 @@ var table_metadata = map[string]TableDefinition{
 			"event_category":          {Type: ColumnDefinitionTypeString},
 			"conversation_session_id": {Type: ColumnDefinitionTypeString},
 			"conversation_title":      {Type: ColumnDefinitionTypeString},
+			// A PullRequest row's PR state (created, needs_followup, addressing, stale, merged, closed,
+			// unresolvable) and when it was last checked; a merge or close sets both.
+			"pr_lifecycle_state": {Type: ColumnDefinitionTypeString},
+			"last_pr_check_at":   {Type: ColumnDefinitionTypeDatetime},
 		},
 	},
 	"event_resolution_groupings_v2": {
@@ -10052,9 +10147,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"llm_agents_installation_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "llm_agents_installation_v2",
+		Type:             Derived,
+		Source:           database.Metastore,
+		Name:             "llm_agents_installation_v2",
+		PermissionModule: "ai_agents",
 		Def: `(SELECT lai.*,
 			ca.tenant as tenant_id
 			FROM llm_agents_installation lai
@@ -10793,10 +10889,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"knowledge_base_v2": {
-		Type:   Normal,
-		Source: database.Metastore,
-		Name:   "knowledge_base_v2",
-		Def:    "knowledge_base",
+		Type:          Normal,
+		Source:        database.Metastore,
+		Name:          "knowledge_base_v2",
+		GlobalCatalog: true,
+		Def:           "knowledge_base",
 		Columns: map[string]ColumnDefinition{
 			"id":          {Type: ColumnDefinitionTypeString, Def: "id"},
 			"rule_name":   {Type: ColumnDefinitionTypeString, Def: "rule_name"},
@@ -10839,6 +10936,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Normal,
 		Source:              database.Metastore,
 		Name:                "user_history_v2",
+		PermissionModule:    "users",
 		Def:                 "user_history",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",
@@ -10860,6 +10958,7 @@ var table_metadata = map[string]TableDefinition{
 		Type:               Normal,
 		Source:             database.Metastore,
 		Name:               "tenant_v2",
+		PermissionModule:   "tenants",
 		Def:                "tenant",
 		TenantIdColumnName: "id",
 		Columns: map[string]ColumnDefinition{
@@ -10875,9 +10974,10 @@ var table_metadata = map[string]TableDefinition{
 	// feature.category is NOT NULL with an FK to feature_category, so the inner
 	// join cannot drop a row.
 	"feature_v2": {
-		Type:   Derived,
-		Source: database.Metastore,
-		Name:   "feature_v2",
+		Type:          Derived,
+		Source:        database.Metastore,
+		Name:          "feature_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				f.value as value,
@@ -10985,7 +11085,10 @@ var table_metadata = map[string]TableDefinition{
 					))
 					FROM usergroup_users ugu2
 					INNER JOIN user_groups ug2 ON ug2.id = ugu2."group"
-					WHERE ugu2."user" = u.id),
+					-- this group's tenant only: a member's groups in other
+					-- tenants are not this tenant's to read (#43747)
+					WHERE ugu2."user" = u.id
+						AND ug2.tenant = ug.tenant),
 					'[]'::json
 				) as user_groups
 			FROM usergroup_users ugu
@@ -11049,6 +11152,7 @@ var table_metadata = map[string]TableDefinition{
 				u.display_name,
 				u.username as username,
 				u.status::text as user_status,
+				u.kind as user_kind,
 				u.created_at,
 				u.updated_at,
 				COALESCE(
@@ -11113,6 +11217,7 @@ var table_metadata = map[string]TableDefinition{
 			"display_name":   {Type: ColumnDefinitionTypeString, Def: "display_name"},
 			"username":       {Type: ColumnDefinitionTypeString, Def: "username"},
 			"user_status":    {Type: ColumnDefinitionTypeString, Def: "user_status"},
+			"user_kind":      {Type: ColumnDefinitionTypeString, Def: "user_kind"},
 			"created_at":     {Type: ColumnDefinitionTypeDatetime, Def: "created_at"},
 			"updated_at":     {Type: ColumnDefinitionTypeDatetime, Def: "updated_at"},
 			"user_roles":     {Type: ColumnDefinitionTypeJson, Def: "user_roles"},
@@ -11122,9 +11227,10 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"anomaly_type_v2": {
-		Type:   Derived,
-		Source: getSource("anomaly_type_v2"),
-		Name:   "anomaly_type_v2",
+		Type:          Derived,
+		Source:        getSource("anomaly_type_v2"),
+		Name:          "anomaly_type_v2",
+		GlobalCatalog: true,
 		Def: `(
 			SELECT
 				value,
@@ -11140,8 +11246,13 @@ var table_metadata = map[string]TableDefinition{
 		Type:                Derived,
 		Source:              getSource("cloud_resource_metrics_v2"),
 		Name:                "cloud_resource_metrics_v2",
+		PermissionModule:    "cloud",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "cloud_account_id",
+		// cloud_account_id and tenant_id stay uuid: every caller filters on
+		// both plus a time window, and a text cast hides them from the
+		// (tenant_id, cloud_account_id, timestamp) index on a multi-GB table
+		// (#39743). The select list still returns them as text.
 		Def: `(
 			SELECT
 				crm.id::text as id,
@@ -11149,8 +11260,8 @@ var table_metadata = map[string]TableDefinition{
 				crm.value,
 				crm.timestamp,
 				crm.cloud_resource_id::text as cloud_resource_id,
-				crm.cloud_account_id::text as cloud_account_id,
-				crm.tenant_id::text as tenant_id,
+				crm.cloud_account_id,
+				crm.tenant_id,
 				cr.name as resource_name,
 				cr.resourse_id as resource_id,
 				cr.service_name as service_name
@@ -11223,8 +11334,12 @@ var tableAliases = map[string]string{
 	"integrations_aggregate_webhook_events": "event_incoming_webhooks_grouping_v2",
 	"notifications_list_rules":              "admin_get_notification_rules_v2",
 	"notifications_aggregate_rules":         "admin_get_notification_rules_grouping_v2",
+	"notifications_list_deliveries":         "notification_deliveries_v2",
+	"notifications_aggregate_deliveries":    "notification_deliveries_grouping_v2",
 	"usergroups_aggregate":                  "admin_get_user_groups_grouping_v2",
 	"users_aggregate_by_tenant":             "admin_get_users_grouping_by_tenant_v2",
+	"users_list_by_tenant_with_bees":        "admin_get_users_with_bees_by_tenant_v2",
+	"users_aggregate_by_tenant_with_bees":   "admin_get_users_with_bees_grouping_by_tenant_v2",
 	// Tier 3: user_*_v2 / usergroup_*_v2 → users_* / usergroups_*
 	"users_get_details":                "user_details_v2",
 	"users_get_by_provider_account":    "user_by_provider_account_v2",

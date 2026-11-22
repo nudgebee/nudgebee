@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"fmt"
+	"nudgebee/llm/attachments"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"time"
@@ -29,7 +31,7 @@ func (o *PromptPlanner) Plan(
 	fullInputs := map[string]any{}
 	fullInputs["input"] = input
 	fullInputs["query_context"] = o.request.ConversationContext
-	fullInputs[agentScratchpad] = o.constructScratchPad(intermediateSteps)
+	fullInputs[llmruntime.AgentScratchpad] = o.constructScratchPad(intermediateSteps)
 	fullInputs["today"] = time.Now().Format("January 02, 2006")
 
 	prompt, err := o.prompt.FormatPrompt(fullInputs)
@@ -67,9 +69,9 @@ func (o *PromptPlanner) Plan(
 	}
 
 	// Attach images from the current request to the last human message
-	mcList = AppendImagesToLastHumanMessage(mcList, o.request.Images)
+	mcList = attachments.AppendImagesToLastHumanMessage(mcList, o.request.Images)
 
-	result, err := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, true, mcList, true, llms.WithTools(nbToolsToLlmTools(o.tools)), llms.WithTemperature(0.1))
+	result, err := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, true, mcList, true, llms.WithTools(nbToolsToLlmTools(o.tools)), llms.WithTemperature(0.1))
 	if err != nil {
 		o.ctx.GetLogger().Error("toolagent: unable to save agent thought", "error", err)
 		return nil, nil, err
@@ -158,9 +160,9 @@ func (o *PromptPlanner) parseOutputInternal(contentResp *llms.ContentResponse) (
 	}, nil, nil
 }
 
-func createPrompt(ctx *security.RequestContext, systemMessage string, tools []toolcore.NBTool, accountId string, agentName string, conversationContext string, extraMessages []prompts.MessageFormatter) prompts.ChatPromptTemplate {
+func createPrompt(systemMessage string, tools []toolcore.NBTool, accountId string, agentName string, agentInstructions string, conversationContext string, extraMessages []prompts.MessageFormatter) prompts.ChatPromptTemplate {
 	messageFormatters := []prompts.MessageFormatter{prompts.NewSystemMessagePromptTemplate(systemMessage, nil)}
-	if IsSLMEnabled(accountId, agentName) {
+	if llmruntime.IsSLMEnabled(accountId, agentName) {
 		messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate(`Question: {{.input}}`, []string{"input"}))
 	} else {
 		messageFormatters = append(messageFormatters, prompts.NewHumanMessagePromptTemplate(`
@@ -194,10 +196,8 @@ func createPrompt(ctx *security.RequestContext, systemMessage string, tools []to
 	}
 
 	messageFormatters = append(messageFormatters, prompts.MessagesPlaceholder{
-		VariableName: agentScratchpad,
+		VariableName: llmruntime.AgentScratchpad,
 	})
-
-	additionalInstructions, _, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, accountId, agentName)
 
 	previousMessageStr := messageFormatterToString(extraMessages)
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
@@ -207,7 +207,7 @@ func createPrompt(ctx *security.RequestContext, systemMessage string, tools []to
 		"history":                 previousMessageStr,
 		"query_context":           "",
 		"conversation_context":    conversationContext,
-		"additional_agent_prompt": additionalInstructions,
+		"additional_agent_prompt": agentInstructions,
 	}
 	return tmpl
 }
@@ -219,7 +219,7 @@ func NewPromptAgent(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	tools := FilterTools(nbAgent.GetSupportedTools(ctx), request.Capabilities)
 	return &PromptPlanner{
 		ctx:     ctx,
-		prompt:  createPrompt(ctx, systemMessage, tools, request.AccountId, nbAgent.GetName(), request.ConversationContext, extraMessages),
+		prompt:  createPrompt(systemMessage, tools, request.AccountId, nbAgent.GetName(), request.AgentInstructions, request.ConversationContext, extraMessages),
 		nbAgent: nbAgent,
 		request: request,
 		tools:   tools,

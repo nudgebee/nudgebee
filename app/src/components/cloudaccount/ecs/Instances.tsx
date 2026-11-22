@@ -26,6 +26,7 @@ import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText, DataBlock } from '@components/cloudaccount/common';
+import { resourceCreatedAt } from '@components/cloudaccount/resourceCreatedAt';
 import { ds } from '@utils/colors';
 
 // White card frame shared by every ECS drilldown detail panel (matches the EC2/RDS detail cards).
@@ -214,6 +215,7 @@ export const ECSTasks = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-task-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -266,7 +268,7 @@ export const ECSTasks = (props: {
       >
         <SearchInput
           id='ecs-tasks-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -293,8 +295,9 @@ export const ECSTasks = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -451,7 +454,7 @@ export const ECSServices = (props: {
           });
           data.push({ component: <TagsCell tags={item.tags} /> });
           data.push({
-            component: <Datetime value={item.created_at} />,
+            component: <Datetime value={resourceCreatedAt(item)} />,
           });
           data.push({
             component:
@@ -460,6 +463,7 @@ export const ECSServices = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={menuItems.map((m: any) => ({
                       id: `ecs-service-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -540,7 +544,7 @@ export const ECSServices = (props: {
       >
         <SearchInput
           id='ecs-services-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -567,8 +571,9 @@ export const ECSServices = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -973,7 +978,21 @@ const ECSDeploymentsDetails = ({ ecsDetails }: ECSDeploymentsDetailsProps) => {
 
 // --- ECS Clusters Component ---
 
-const CLUSTER_HEADER = ['Cluster Name', 'Status', 'Services', 'Tasks', 'Container Instances', 'Tags', 'CreatedAt', ''];
+// AWS DescribeClusters returns no creation time, so the collector stores none for
+// clusters. This column shows when NudgeBee first saw the cluster, labelled honestly
+// as "First Seen" rather than a creation date it can't know (#39708). Columns carry
+// explicit widths (the table is table-layout:fixed) so the two-word header and the
+// dates stay on one line instead of collapsing the column.
+const CLUSTER_HEADER = [
+  { name: 'Cluster Name', width: '20%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Services', width: '8%' },
+  { name: 'Tasks', width: '10%' },
+  { name: 'Container Instances', width: '16%' },
+  { name: 'Tags', width: '16%' },
+  { name: 'First Seen', width: '12%' },
+  { name: '', width: '8%' },
+];
 
 const clusterInfoComponentFn = (_opt: any, dq: any) => <ECSClusterInfo clusterDetails={dq} />;
 
@@ -1096,6 +1115,7 @@ export const ECSClusters = (props: {
                   <DsDropdownMenu
                     align='end'
                     size='sm'
+                    disablePortal={false}
                     items={MENU_ITEMS.map((m) => ({
                       id: `ecs-cluster-action-${item.resourse_id}-${m.id}`,
                       label: m.label,
@@ -1156,7 +1176,7 @@ export const ECSClusters = (props: {
       >
         <SearchInput
           id='ecs-clusters-search'
-          label='Search by Name/ARN Snippet'
+          label='Search by Name'
           value={searchFilter}
           onChange={(next) => {
             if (searchFilter !== '' && next === '') {
@@ -1183,8 +1203,9 @@ export const ECSClusters = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -1282,29 +1303,51 @@ const ECSClusterInfo = ({ clusterDetails }: { clusterDetails: any }) => {
   );
 };
 
+const CAPACITY_PROVIDER_HEADERS = ['Capacity Provider', 'Scaling Type', 'Provisioning Model', 'Update Status', 'Update Status Reason'];
+
+// AWS exposes FARGATE / FARGATE_SPOT as reserved providers with no scaling config;
+// anything else is Auto Scaling group backed. Mirror the AWS console's label.
+const capacityProviderScalingType = (detail: any): string => {
+  if (detail?.Name === 'FARGATE') return 'Fargate';
+  if (detail?.Name === 'FARGATE_SPOT') return 'Fargate Spot';
+  if (detail?.AutoScalingGroupProvider) return 'Auto Scaling group';
+  return '-';
+};
+
 const ECSClusterCapacityProviders = ({ clusterDetails }: { clusterDetails: any }) => {
+  const capacityProviderDetails = clusterDetails?.meta?.CapacityProviderDetails;
   const capacityProviders = clusterDetails?.meta?.CapacityProviders;
   const defaultStrategy = clusterDetails?.meta?.DefaultCapacityProviderStrategy;
 
-  if ((!capacityProviders || capacityProviders.length === 0) && (!defaultStrategy || defaultStrategy.length === 0)) {
+  // Prefer the enriched detail objects; fall back to bare names for clusters
+  // collected before the backend started surfacing CapacityProviderDetails.
+  const providerRows: any[] =
+    capacityProviderDetails && capacityProviderDetails.length > 0
+      ? capacityProviderDetails
+      : (capacityProviders || []).map((name: string) => ({ Name: name }));
+
+  if (providerRows.length === 0 && (!defaultStrategy || defaultStrategy.length === 0)) {
     return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No capacity providers configured for this cluster.</Typography>;
   }
+
+  const cellSx = { fontSize: ds.text.body };
+  const tableData: ICustomTableRow[][] = providerRows.map((detail: any) => [
+    { component: <Typography sx={cellSx}>{detail.Name || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{capacityProviderScalingType(detail)}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.ProvisioningModel || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.UpdateStatus || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.UpdateStatusReason || '-'}</Typography> },
+  ]);
 
   return (
     <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[4]}>
-        {capacityProviders && capacityProviders.length > 0 && (
+        {providerRows.length > 0 && (
           <Box>
             <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
               Capacity Providers
             </Typography>
-            <List dense>
-              {capacityProviders.map((cp: string) => (
-                <ListItem key={cp} sx={{ py: ds.space[1] }}>
-                  <Chip size='md'>{cp}</Chip>
-                </ListItem>
-              ))}
-            </List>
+            <CustomTable id='ecs-cluster-capacity-providers-table' headers={CAPACITY_PROVIDER_HEADERS} tableData={tableData} loading={false} />
           </Box>
         )}
         {defaultStrategy && defaultStrategy.length > 0 && (

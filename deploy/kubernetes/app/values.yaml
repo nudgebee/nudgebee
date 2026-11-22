@@ -229,7 +229,7 @@ nginx:
     # `registry: registry.nudgebee.com`). Community default is GHCR.
     registry: 'ghcr.io/nudgebee'
     repository: nginx
-    tag: stable-alpine3.20-slim-nb1
+    tag: stable-alpine3.24-slim-nb1
     pullPolicy: IfNotPresent
   # The sidecar was BestEffort (no requests, no limits), so it was first in line
   # for eviction under node pressure — and it fronts the whole UI. Measured

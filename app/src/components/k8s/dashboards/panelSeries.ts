@@ -32,6 +32,14 @@ export interface RawSeries {
    * account out beside its number instead of splitting a display string.
    */
   accountLabel?: string;
+  /**
+   * The series' PromQL label map (`{pod, namespace, instance, __name__}`) as the
+   * provider returned it. `seriesLabel` collapses these into the display `label`
+   * and the raw map is otherwise dropped; it is kept here so a chart data-link
+   * can fill `{{pod}}`-style tokens from the clicked point's series. Absent on a
+   * consolidated ("All accounts") series, which spans several label sets.
+   */
+  metric?: Record<string, string>;
 }
 
 /**
@@ -53,6 +61,13 @@ export function seriesLabel(metric: Record<string, string> | undefined | null, l
   const name = metric?.__name__ || '';
   const entries = Object.entries(metric || {}).filter(([k]) => k !== '__name__');
   if (entries.length === 0) return name || queryKey || 'series';
+  // A series split by one label — `sum by (namespace)`, the shape behind a pie or a
+  // by-namespace line chart — reads as that label's value alone: `arc-systems`, not
+  // `{namespace="arc-systems"}`. The key is already plain from the query, and the
+  // braces only cost legend width. A metric name or a second label keeps the full
+  // `name{a="x", b="y"}` form, where the keys are what tell the series apart. A
+  // legend_format still wins over both (handled above).
+  if (!name && entries.length === 1 && entries[0][1]) return entries[0][1];
   const inner = entries.map(([k, v]) => `${k}="${v}"`).join(', ');
   return `${name}{${inner}}`;
 }
@@ -265,7 +280,7 @@ export function toRawSeries(results: any[], legendByKey: Record<string, string>)
     for (const series of result?.payload ?? []) {
       const timestamps: number[] = (series?.timestamps ?? []).map(toEpochSeconds);
       const values = (series?.values ?? []).map(toFinite);
-      out.push({ label: seriesLabel(series?.metric, legendByKey[key], key), timestamps, values });
+      out.push({ label: seriesLabel(series?.metric, legendByKey[key], key), timestamps, values, metric: series?.metric });
     }
   }
   return out;
@@ -332,7 +347,7 @@ export function alignSeries(raw: RawSeries[], step?: number): PanelData {
   const series = snapped.map((s) => {
     const byTimestamp = new Map<number, number | null>();
     s.timestamps.forEach((t, i) => byTimestamp.set(t, s.values[i] ?? null));
-    return { label: s.label, accountLabel: s.accountLabel, values: axis.map((t) => byTimestamp.get(t) ?? null) };
+    return { label: s.label, accountLabel: s.accountLabel, metric: s.metric, values: axis.map((t) => byTimestamp.get(t) ?? null) };
   });
   // The same axis twice: `labels` is the printable form the non-timeseries
   // visualisations read, `timestamps` the raw instants the chart's x-axis and
@@ -347,6 +362,62 @@ export function lastValue(values: (number | null)[] | undefined): number | undef
     if (v !== null && v !== undefined) return v;
   }
   return undefined;
+}
+
+/** One bar of a histogram: the range `[lo, hi]` and how many samples fell in it. */
+export interface HistogramBin {
+  lo: number;
+  hi: number;
+  count: number;
+}
+
+/**
+ * Bins every value a query reported into equal-width buckets — the distribution
+ * of the metric over the panel's time range, not one number per series.
+ *
+ * Pools EVERY finite sample across EVERY series: a query returning one series over
+ * an hour bins its samples through time; one returning many series (per pod, say)
+ * bins all of theirs together — the answer is "how are these values spread", which
+ * is what a histogram asks. A gap (`null`) is skipped: it is the absence of a
+ * reading, not a zero that would pile onto the lowest bucket.
+ *
+ * `null` when nothing finite was reported, so the caller shows an empty state
+ * rather than an axis over no data. When every value is identical there is one
+ * bucket holding them all — a real answer, where equal-width bins would divide by
+ * a zero range. The bucket count never exceeds the number of samples, so a handful
+ * of readings don't scatter across thirty mostly-empty bars.
+ */
+export function histogramBins(series: PanelSeries[], bucketCount = 30): { bins: HistogramBin[]; total: number } | null {
+  const values: number[] = [];
+  for (const s of series) {
+    for (const v of s.values) {
+      if (v !== null && v !== undefined && Number.isFinite(v)) values.push(v);
+    }
+  }
+  if (values.length === 0) return null;
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  if (min === max) return { bins: [{ lo: min, hi: max, count: values.length }], total: values.length };
+
+  const count = Math.max(1, Math.min(bucketCount, values.length));
+  const width = (max - min) / count;
+  // Distinct-but-adjacent values can have a range that underflows to a zero width
+  // once divided into buckets; `(v - min) / 0` is NaN/Infinity and would index a
+  // bucket that isn't there. One bucket holds them, as the equal-values case does.
+  if (width <= 0) return { bins: [{ lo: min, hi: max, count: values.length }], total: values.length };
+  const bins: HistogramBin[] = Array.from({ length: count }, (_, i) => ({ lo: min + i * width, hi: min + (i + 1) * width, count: 0 }));
+  for (const v of values) {
+    // The top edge belongs to the last bucket — floor would otherwise send the
+    // maximum value to a (count)-th bucket that does not exist.
+    const idx = Math.min(count - 1, Math.floor((v - min) / width));
+    bins[idx].count += 1;
+  }
+  return { bins, total: values.length };
 }
 
 /**

@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	//"time" // Not directly used in this test file
+	"time"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks"
 	// "nudgebee/runbook/internal/tasks/core" // Not directly imported here, but types used.
 	// "nudgebee/runbook/internal/tasks/types" // Not directly imported here, but types used.
 )
@@ -185,6 +187,28 @@ func (s *ExecutorTestSuite) TestSwitchDefaultBranchFanIn() {
 		`{"converge":"joined:SKIPPED/-|SKIPPED/-|SKIPPED/-|COMPLETED/ran-default"}`,
 		resultStr,
 	)
+}
+
+// TestSwitchBranchThatDependsOnItsSwitchRuns reproduces #41250: JSON authors list
+// the switch under each branch's depends_on. The chosen branch must still run.
+func (s *ExecutorTestSuite) TestSwitchBranchThatDependsOnItsSwitchRuns() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	wf := switchFanInWorkflow("b")
+	for i, t := range wf.Definition.Tasks {
+		if t.ID != "router" && t.ID != "converge" {
+			wf.Definition.Tasks[i].DependsOn = []string{"router"}
+		}
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"converge":"joined:SKIPPED/-|COMPLETED/ran-leaf_b|SKIPPED/-|SKIPPED/-"}`, resultStr)
 }
 
 // TestSwitchFanInAllSkippedSkipsDownstream locks in the all-skipped propagation
@@ -523,4 +547,195 @@ func (s *ExecutorTestSuite) TestCalleeWorkflowIDSurvivesSystemUpsert() {
 		val, ok := attrs.GetKeyword(temporal.NewSearchAttributeKeyKeyword(model.SearchAttrWorkflowID))
 		s.False(ok && val == inlineChildSnapshot.ID, "must not overwrite the callee id with the synthetic snapshot id")
 	}
+}
+
+func (s *ExecutorTestSuite) TestHookActionsReceiveTrustedWorkflowMetadata() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	captured := make(chan map[string]any, 2)
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, params map[string]any) (any, error) {
+		captured <- params
+		return nil, nil
+	}, activity.RegisterOptions{Name: "test.capture-hook"})
+
+	spoofedParams := map[string]any{
+		"marker":                   "hook",
+		tasks.ParamTenantID:        "attacker-tenant",
+		tasks.ParamAccountID:       "attacker-account",
+		tasks.ParamDryRun:          false,
+		tasks.ParamWorkflowID:      "attacker-workflow",
+		tasks.ParamEventID:         "attacker-event",
+		tasks.ParamUserID:          "attacker-user",
+		tasks.ParamWorkflowName:    "attacker-name",
+		tasks.ParamUserDisplayName: "attacker-display-name",
+	}
+	hook := model.Action{Type: "test.capture-hook", Params: spoofedParams}
+	wf := &model.Workflow{
+		ID:            "trusted-workflow-id",
+		TenantID:      "trusted-tenant-id",
+		AccountID:     "trusted-account-id",
+		UpdatedBy:     "trusted-user-id",
+		UpdatedByUser: &model.WorkflowUser{DisplayName: "Trusted User"},
+		Name:          "Trusted Workflow",
+		DryRun:        true,
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{{
+				ID:     "task",
+				Type:   "core.print",
+				Params: map[string]any{"message": "run"},
+				Hooks:  &model.Hooks{Success: []model.Action{hook}},
+			}},
+			Hooks: &model.Hooks{Success: []model.Action{hook}},
+		},
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, map[string]any{
+		"event": map[string]any{"id": "trusted-event-id"},
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	s.Equal(2, len(captured), "task and workflow hooks should both run")
+	for i := 0; i < 2; i++ {
+		params := <-captured
+		s.Equal(true, params[tasks.ParamDryRun], "dry-run flag must be set by the workflow, not hook params")
+		s.Equal("trusted-tenant-id", params[tasks.ParamTenantID])
+		s.Equal("trusted-account-id", params[tasks.ParamAccountID])
+		s.Equal("trusted-workflow-id", params[tasks.ParamWorkflowID])
+		s.Equal("trusted-event-id", params[tasks.ParamEventID])
+		s.Equal("trusted-user-id", params[tasks.ParamUserID])
+		s.Equal("Trusted Workflow", params[tasks.ParamWorkflowName])
+		s.Equal("Trusted User", params[tasks.ParamUserDisplayName])
+	}
+}
+
+func templateClockWorkflow(ctx workflow.Context) (map[string]string, error) {
+	if err := workflow.Sleep(ctx, 24*time.Hour); err != nil {
+		return nil, err
+	}
+
+	expected := workflow.Now(ctx).UTC()
+	tplCtx := newWorkflowTemplateContext(ctx, nil, nil).Clone()
+	date, err := tplCtx.Render("{{ date_iso }}")
+	if err != nil {
+		return nil, err
+	}
+	datetime, err := tplCtx.Render("{{ datetime }}")
+	if err != nil {
+		return nil, err
+	}
+	timestamp, err := tplCtx.Render("{{ timestamp_iso }}")
+	if err != nil {
+		return nil, err
+	}
+	now, err := tplCtx.Render("{{ now() | strftime(\"%Y-%m-%dT%H:%M:%SZ\") }}")
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]string{
+		"expected_date":      expected.Format("2006-01-02"),
+		"expected_datetime":  expected.Format("02012006_1504"),
+		"expected_timestamp": expected.Format(time.RFC3339),
+		"date":               date,
+		"datetime":           datetime,
+		"timestamp":          timestamp,
+		"now":                now,
+	}, nil
+}
+
+func (s *ExecutorTestSuite) TestWorkflowTemplateClockUsesTemporalTime() {
+	s.env.RegisterWorkflow(templateClockWorkflow)
+	s.env.ExecuteWorkflow(templateClockWorkflow)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var result map[string]string
+	s.NoError(s.env.GetWorkflowResult(&result))
+	s.Equal(result["expected_date"], result["date"])
+	s.Equal(result["expected_datetime"], result["datetime"])
+	s.Equal(result["expected_timestamp"], result["timestamp"])
+	s.Equal(result["expected_timestamp"], result["now"])
+}
+
+// TestSwitchBranchDependsOnEarlierSwitchBranch covers a branch that depends on
+// a finished branch of an earlier switch (#41250 review).
+func (s *ExecutorTestSuite) TestSwitchBranchDependsOnEarlierSwitchBranch() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	p := func(id string, deps ...string) model.Task {
+		return model.Task{ID: id, Type: "core.print", DependsOn: deps, Params: map[string]any{"message": "ran-" + id}}
+	}
+	wf := &model.Workflow{ID: "test-cross-switch", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "sw1", Type: "core.switch", Params: map[string]any{"expression": "a", "default_next": "b1",
+					"cases": []any{map[string]any{"value": "a", "next": "a1"}}}},
+				p("a1"), p("b1"),
+				{ID: "sw2", Type: "core.switch", DependsOn: []string{"a1", "b1"}, Params: map[string]any{"expression": "a",
+					"default_next": "b2", "cases": []any{map[string]any{"value": "a", "next": "a2"}}}},
+				p("a2", "sw2", "a1"), p("b2", "sw2"),
+			},
+			Output: map[string]any{"a2": "{{ Tasks['a2'].output.data }}"},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"a2":"ran-a2"}`, resultStr)
+}
+
+// TestNestedSwitchBranchDependsOnItsSwitch covers a branch of a switch that is
+// itself a branch of another switch (#41250 review).
+func (s *ExecutorTestSuite) TestNestedSwitchBranchDependsOnItsSwitch() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	p := func(id string, deps ...string) model.Task {
+		return model.Task{ID: id, Type: "core.print", DependsOn: deps, Params: map[string]any{"message": "ran-" + id}}
+	}
+	wf := &model.Workflow{ID: "test-nested-switch", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "sw1", Type: "core.switch", Params: map[string]any{"expression": "a", "default_next": "other",
+					"cases": []any{map[string]any{"value": "a", "next": "sw2"}}}},
+				{ID: "sw2", Type: "core.switch", Params: map[string]any{"expression": "x", "default_next": "inner_d",
+					"cases": []any{map[string]any{"value": "x", "next": "inner_x"}}}},
+				p("inner_x", "sw2"), p("inner_d", "sw2"), p("other"),
+			},
+			Output: map[string]any{"x": "{{ Tasks['inner_x'].output.data }}"},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+}
+
+// TestSwitchBranchKeepsUnrelatedSuffixDep: a branch of "db-cleanup" that depends
+// on an unfinished, unrelated step "cleanup" must keep that dependency.
+func (s *ExecutorTestSuite) TestSwitchBranchKeepsUnrelatedSuffixDep() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	wf := &model.Workflow{ID: "test-suffix-dep", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "db-cleanup", Type: "core.switch", Params: map[string]any{"expression": "a",
+					"cases": []any{map[string]any{"value": "a", "next": "leaf"}}}},
+				{ID: "leaf", Type: "core.print", DependsOn: []string{"db-cleanup", "cleanup"}, Params: map[string]any{"message": "leaf"}},
+				{ID: "cleanup", Type: "core.print", DependsOn: []string{"db-cleanup"}, Params: map[string]any{"message": "cleanup"}},
+			},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.Error(s.env.GetWorkflowError())
+	s.Contains(s.env.GetWorkflowError().Error(), "cleanup")
 }

@@ -722,8 +722,11 @@ func (t *MCPTask) ListTools(taskCtx types.TaskContext, params map[string]any) ([
 
 // executeViaIntegration resolves MCP config from an integration and executes via relay.
 func (t *MCPTask) executeViaIntegration(taskCtx types.TaskContext, integrationID string, params map[string]any) (any, error) {
-	accountId := taskCtx.GetAccountID()
-	requestContext := taskCtx.GetNewRequestContext()
+	accountId, err := resolveTaskAccount(taskCtx, params)
+	if err != nil {
+		return nil, err
+	}
+	requestContext := taskCtx.GetNewRequestContextForAccount(accountId)
 
 	toolName, ok := params["tool_name"].(string)
 	if !ok || toolName == "" {
@@ -888,6 +891,16 @@ func (t *MCPTask) InputSchema() *types.Schema {
 				Options:     []string{"integration", "direct"},
 				Order:       0,
 			},
+			// Order 0 ties with connection_mode; the builder breaks the tie by
+			// putting required fields first, so this renders right below it.
+			accountParamFieldName: {
+				Type:        types.PropertyTypeAccount,
+				Title:       "Account",
+				Description: "Account whose MCP integration and agent the call goes through. Leave empty to use the automation's own account. Accepts an expression such as {{ event.cloud_account_id }}.",
+				Required:    false,
+				DependsOn:   []string{"connection_mode"},
+				VisibleWhen: &types.VisibleWhen{Field: "connection_mode", Value: []string{"integration"}},
+			},
 			"integration_id": {
 				Type:         types.PropertyTypeIntegration,
 				Description:  "Select an MCP integration to use.",
@@ -976,10 +989,11 @@ func (t *MCPTask) InputSchema() *types.Schema {
 				// Auth inputs are dependencies: the tool list is fetched WITH these
 				// credentials, so editing any of them must re-fetch the dropdown (via
 				// DependencyMapping) and clear a now-stale selection (via DependsOn).
-				DependsOn: []string{"connection_mode", "integration_id", "url", "headers", "auth_type", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scope", "oauth_audience"},
+				DependsOn: []string{"connection_mode", accountParamFieldName, "integration_id", "url", "headers", "auth_type", "oauth_token_url", "oauth_client_id", "oauth_client_secret", "oauth_scope", "oauth_audience"},
 				OptionsSource: &types.OptionsSource{
 					Type: "mcp_tools",
 					DependencyMapping: map[string]string{
+						accountParamFieldName: accountParamFieldName,
 						"integration_id":      "integration_id",
 						"url":                 "url",
 						"connection_mode":     "connection_mode",

@@ -207,6 +207,38 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 
 		c.JSON(200, resp)
 		return
+	case "metrics_check_vm_status":
+		var request struct {
+			AccountId string `json:"account_id"`
+		}
+		input, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("missing or invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(input, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "metrics") {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityStatusActionTimeout, func() (observability.VMMetricsStatus, error) {
+			return observability.CheckVMMetricsStatus(ctx, request.AccountId)
+		})
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
 	case "metrics_list_series":
 		var request observability.FetchMetricSeriesRequest
 		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})

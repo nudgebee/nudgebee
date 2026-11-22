@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -14,6 +15,7 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +66,48 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 	if tenantId == "" || accountId == "" || serviceName == "" {
 		return nil, nil
 	}
+
+	args := []any{tenantId, accountId, serviceName}
+	whereClauses := []string{
+		"tenant = $1",
+		"account = $2",
+		"lower(service_name) = lower($3)",
+	}
+	if region != "" {
+		args = append(args, region)
+		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
+	}
+	if len(resourceIds) > 0 {
+		args = append(args, pq.Array(resourceIds))
+		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
+	}
+	return selectResourcesFromDB(whereClauses, args)
+}
+
+// lookupEventResources returns the row the event is linked to when it has one, else the rows
+// matching the alert's identifiers. Several rows can share a resource's id (a load balancer's
+// cost-report record is keyed by the alarm's app/<name>/<id> dimension while the load balancer
+// itself is keyed by its ARN; an instance also has Systems Manager and cost-report records), so
+// the identifier match can describe the wrong record. The link was chosen with the resource's
+// service and key, and is what the event's resource card already shows. A link to a row of
+// another service is ignored: events linked before that choice existed can point at a Systems
+// Manager or Inspector record of the resource.
+func lookupEventResources(ctx playbooks.PlaybookActionContext, accountId, serviceName, region string, resourceIds []string) ([]Resource, error) {
+	if linkedId := ctx.GetEvent().CloudResourceId; linkedId != "" && ctx.GetTenantId() != "" && serviceName != "" {
+		items, err := selectResourcesFromDB(
+			[]string{"tenant = $1", "id = $2", "lower(service_name) = lower($3)"},
+			[]any{ctx.GetTenantId(), linkedId, serviceName})
+		if err != nil {
+			return nil, err
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+	}
+	return lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, resourceIds)
+}
+
+func selectResourcesFromDB(whereClauses []string, args []any) ([]Resource, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return nil, err
@@ -80,21 +124,6 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 		Tags        []byte         `db:"tags"`
 		Meta        []byte         `db:"meta"`
 		CreatedAt   sql.NullTime   `db:"created_at"`
-	}
-
-	args := []any{tenantId, accountId, serviceName}
-	whereClauses := []string{
-		"tenant = $1",
-		"account = $2",
-		"lower(service_name) = lower($3)",
-	}
-	if region != "" {
-		args = append(args, region)
-		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
-	}
-	if len(resourceIds) > 0 {
-		args = append(args, pq.Array(resourceIds))
-		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
 	}
 
 	query := fmt.Sprintf(`SELECT resourse_id, name, type, arn, service_name, status, region, tags, meta, created_at
@@ -217,6 +246,69 @@ func getVpcIdForResource(resourceId, tenantId string) string {
 	return vpcId
 }
 
+var (
+	flowLogScopeENIRegex = regexp.MustCompile(`"NetworkInterfaceId":\s*"(eni-[0-9a-f]{8,17})"`)
+	flowLogScopeIPRegex  = regexp.MustCompile(`"PrivateIpAddress":\s*"((?:\d{1,3}\.){3}\d{1,3})"`)
+)
+
+// flowLogScopeMaxValues bounds how many interfaces or addresses go into one
+// Insights filter; an instance with more is still matched by the first ones.
+const flowLogScopeMaxValues = 16
+
+// getNetworkScopeForInstance returns the network interfaces and private IPs of
+// an EC2 instance from its cloud_resourses meta, so VPC flow-log evidence can
+// be limited to that instance's own traffic. Only instance ids are looked up:
+// other resource types' meta carries a VpcId but no interfaces of their own,
+// and a PrivateIpAddress in it may belong to something else. A resource can
+// have several rows (one per service type), not all with the interface list,
+// so values are merged across rows.
+func getNetworkScopeForInstance(resourceId, tenantId string) (enis []string, ips []string) {
+	if !awsInstanceIdRegex.MatchString(resourceId) {
+		return nil, nil
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, nil
+	}
+	var metas []string
+	// Same index path as getVpcIdForResource.
+	err = dbms.Db.Select(&metas,
+		`SELECT meta::text
+		 FROM cloud_resourses
+		 WHERE account IN (SELECT id FROM cloud_accounts WHERE tenant = $2)
+		 AND resourse_id = $1 AND tenant = $2 AND cloud_provider = 'AWS'
+		 AND meta::text ~ '"(NetworkInterfaceId|PrivateIpAddress)"'
+		 LIMIT 20`,
+		resourceId, tenantId,
+	)
+	if err != nil {
+		slog.Warn("getNetworkScopeForInstance: failed to query cloud_resourses", "resourceId", resourceId, "error", err)
+		return nil, nil
+	}
+	return extractInstanceNetworkScope(metas)
+}
+
+// extractInstanceNetworkScope pulls distinct, validated interface ids and
+// private IPv4 addresses out of instance meta rows.
+func extractInstanceNetworkScope(metas []string) (enis []string, ips []string) {
+	seenENI, seenIP := map[string]bool{}, map[string]bool{}
+	for _, meta := range metas {
+		for _, m := range flowLogScopeENIRegex.FindAllStringSubmatch(meta, -1) {
+			if !seenENI[m[1]] && len(enis) < flowLogScopeMaxValues {
+				seenENI[m[1]] = true
+				enis = append(enis, m[1])
+			}
+		}
+		for _, m := range flowLogScopeIPRegex.FindAllStringSubmatch(meta, -1) {
+			if ip := net.ParseIP(m[1]); ip != nil && ip.To4() != nil && !seenIP[m[1]] && len(ips) < flowLogScopeMaxValues {
+				seenIP[m[1]] = true
+				ips = append(ips, m[1])
+			}
+		}
+	}
+	return enis, ips
+}
+
 type cloudResourceAction struct {
 }
 
@@ -289,7 +381,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		accountId := ctx.GetAccountId()
 		if accountId != "" {
 			rawParams["account_id"] = accountId
-			items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, []string{targetResource})
+			items, err := lookupEventResources(ctx, accountId, serviceName, region, []string{targetResource})
 			if err != nil {
 				ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 				return nil, nil
@@ -319,7 +411,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 			return nil, err
 		}
 		rawParams["account_id"] = accountId
-		items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
+		items, err := lookupEventResources(ctx, accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
 		if err != nil {
 			ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 			return nil, nil
@@ -355,7 +447,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		return nil, err
 	}
 	rawParams["account_id"] = accountId
-	items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
+	items, err := lookupEventResources(ctx, accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
 	if err != nil {
 		ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 		return nil, nil
@@ -468,22 +560,23 @@ type cloudMetricsAction struct {
 }
 
 type cloudMetricsActionParams struct {
-	AccountId       string              `json:"account_id,omitempty"`
-	StartTime       *time.Time          `json:"start_time"`
-	EndTime         *time.Time          `json:"end_time"`
-	ResourceIds     []string            `json:"resource_ids"`
-	ResourceId      string              `json:"resource_id"`
-	ServiceName     string              `json:"service_name" validate:"required"`
-	Region          string              `json:"region" validate:"required"`
-	MetricNames     []string            `json:"metric_names"`
-	MetricName      string              `json:"metric_name"`
-	MetricNamespace string              `json:"metric_namespace"`
-	Step            time.Duration       `json:"step"`
-	Query           string              `json:"query"`
-	Dimensions      []map[string]string `json:"dimensions,omitempty"`
-	Dimension       map[string]string   `json:"dimension,omitempty"`
-	Statistics      []string            `json:"statistics"`
-	Statistic       string              `json:"statistic"`
+	AccountId       string                  `json:"account_id,omitempty"`
+	StartTime       *time.Time              `json:"start_time"`
+	EndTime         *time.Time              `json:"end_time"`
+	ResourceIds     []string                `json:"resource_ids"`
+	ResourceId      string                  `json:"resource_id"`
+	ServiceName     string                  `json:"service_name" validate:"required"`
+	Region          string                  `json:"region" validate:"required"`
+	MetricNames     []string                `json:"metric_names"`
+	MetricName      string                  `json:"metric_name"`
+	MetricNamespace string                  `json:"metric_namespace"`
+	Step            time.Duration           `json:"step"`
+	Query           string                  `json:"query"`
+	Dimensions      []map[string]string     `json:"dimensions,omitempty"`
+	Dimension       map[string]string       `json:"dimension,omitempty"`
+	Statistics      []string                `json:"statistics"`
+	Statistic       string                  `json:"statistic"`
+	MetricQueries   []CloudWatchMetricEntry `json:"metric_queries,omitempty"`
 }
 
 // mapAlarmDimensionsToMetricDimensions maps CloudWatch alarm dimension names to metric API dimension names
@@ -529,13 +622,9 @@ func mapAlarmDimensionsToMetricDimensions(alarmDimensions []map[string]any, name
 func (a *cloudMetricsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	labels := ctx.GetEvent().Labels
 
-	// AWS standard namespace alarms with instance
-	if labels["aws_region"] != "" && labels["aws_event_metric_name"] != "" && labels["aws_event_metric_namespace"] != "" && labels["aws_event_metric_statistic"] != "" && labels["aws_event_instance"] != "" {
-		return true
-	}
-
-	// AWS custom namespace alarms (log-based metrics)
-	if labels["aws_region"] != "" && labels["aws_event_metric_name"] != "" && labels["aws_event_metric_namespace"] != "" && labels["aws_event_metric_statistic"] != "" && !strings.HasPrefix(labels["aws_event_metric_namespace"], "AWS/") {
+	// AWS metric alarms, standard or custom namespace, with or without a resource:
+	// the alarm's own metric can always be charted (see awsAlarmMetricQuery)
+	if labels["aws_region"] != "" && labels["aws_event_metric_name"] != "" && labels["aws_event_metric_namespace"] != "" && labels["aws_event_metric_statistic"] != "" {
 		return true
 	}
 
@@ -795,139 +884,209 @@ func (a *cloudMetricsAction) AutoExecute(ctx playbooks.PlaybookActionContext) (p
 		return a.Execute(ctx, rawParams)
 	}
 
-	// Handle custom namespace alarms (log-based metrics)
-	namespace := ctx.GetEvent().Labels["aws_event_metric_namespace"]
-	if namespace != "" && !strings.HasPrefix(namespace, "AWS/") {
-		rawParams := map[string]any{
-			"metric_names":     []string{ctx.GetEvent().Labels["aws_event_metric_name"]},
-			"metric_namespace": namespace,
-			"statistics":       []string{ctx.GetEvent().Labels["aws_event_metric_statistic"]},
-			"region":           ctx.GetEvent().Labels["aws_region"],
-			"service_name":     ctx.GetEvent().Labels["aws_service_name"],
-			"title":            "Metrics For - " + ctx.GetEvent().Labels["aws_event_metric_name"],
-		}
+	return a.autoExecuteAws(ctx, labels)
+}
 
-		// Parse and add dimensions if present
-		if ctx.GetEvent().Labels["aws_event_alarm_dimensions"] != "" {
-			dimensionsArr := []map[string]any{}
-			err := common.UnmarshalJson([]byte(ctx.GetEvent().Labels["aws_event_alarm_dimensions"]), &dimensionsArr)
-			if err != nil {
-				ctx.GetLogger().Error("cloud_list_metrics: unable to parse aws_event_alarm_dimensions", "error", err)
-			} else if len(dimensionsArr) > 0 {
-				// Convert to []map[string]string format expected by Execute
-				// Filter out @-prefixed dimensions (e.g. @aws.account, @aws.region)
-				// which are auto-injected by CloudWatch Logs and are not real metric dimensions
-				dimensions := []map[string]string{}
-				for _, dim := range dimensionsArr {
-					dimMap := make(map[string]string)
-					if name, ok := dim["Name"].(string); ok {
-						if strings.HasPrefix(name, "@") {
-							continue
-						}
-						if value, ok := dim["Value"].(string); ok {
-							dimMap[name] = value
-						}
-					}
-					if len(dimMap) > 0 {
-						dimensions = append(dimensions, dimMap)
-					}
-				}
-				if len(dimensions) > 0 {
-					rawParams["dimensions"] = dimensions
-				}
-			}
-		}
+// autoExecuteAws charts an AWS event's metrics: for a metric alarm, the metric the
+// alarm evaluates, exactly as the alarm defines it, followed by the service's
+// default metric set for the alarmed resource. EventBridge events name no metric
+// and get the defaults alone.
+//
+// The defaults cannot stand in for the alarm's own metric. They are a fixed
+// per-service list keyed by one resource dimension, so they miss the alarm
+// whenever the service has no list (Step Functions alarms arrive as service
+// "CloudWatch"), the alarm is on a finer dimension set than the list uses (an FSx
+// volume rather than its file system), or the metric has no dimensions at all (a
+// custom log metric, which the collector refuses to query on that path). Each of
+// those left the alert without a chart of the number that fired it.
+func (a *cloudMetricsAction) autoExecuteAws(ctx playbooks.PlaybookActionContext, labels map[string]string) (playbooks.PlaybookActionResponse, error) {
+	base := map[string]any{"region": labels["aws_region"]}
 
-		// Get cloud account ID
-		if ctx.GetEvent().Labels["aws_account"] != "" {
-			dbms, err := database.GetDatabaseManager(database.Metastore)
-			if err != nil {
-				return nil, err
-			}
-			var accountId string
-			err = dbms.Db.QueryRowx("select id from cloud_accounts ca where account_number = $1 AND tenant = $2 AND status = 'active'", ctx.GetEvent().Labels["aws_account"], ctx.GetTenantId()).Scan(&accountId)
-			if err != nil {
-				ctx.GetLogger().Warn("cloud_list_metrics: could not find cloud account", "account_number", ctx.GetEvent().Labels["aws_account"], "error", err)
-			} else {
-				rawParams["account_id"] = accountId
-			}
-		}
-
-		// Add time range if available
-		if ctx.GetEvent().Labels["aws_event_start_time"] != "" {
-			startTime, err := time.Parse(time.RFC3339, ctx.GetEvent().Labels["aws_event_start_time"])
-			if err == nil {
-				startTime = startTime.Add(-1 * time.Hour)
-				rawParams["start_time"] = &startTime
-			}
-		}
-
-		if ctx.GetEvent().Labels["aws_event_end_time"] != "" {
-			endTime, err := time.Parse(time.RFC3339, ctx.GetEvent().Labels["aws_event_end_time"])
-			if err == nil {
-				rawParams["end_time"] = &endTime
-			}
-		}
-
-		return a.Execute(ctx, rawParams)
-	}
-
-	// Standard AWS namespace alarms
-	// Don't pass metric_names, statistics, or metric_namespace — let cloud-collector
-	// auto-discover all predefined metrics for the service (via serviceCloudwatchNamespaceMap)
-	// with their per-metric statistics config. Passing metric_namespace causes cloud-collector
-	// to take the explicit-namespace path which skips resource type auto-detection.
-	rawParams := map[string]any{
-		"resource_ids": []string{ctx.GetEvent().Labels["aws_event_instance"]},
-		"region":       ctx.GetEvent().Labels["aws_region"],
-		"service_name": ctx.GetEvent().Labels["aws_service_name"],
-		"title":        "Metrics For - " + ctx.GetEvent().Labels["aws_event_instance"],
-	}
-	if ctx.GetEvent().Labels["aws_event_alarm_dimensions"] != "" {
-		dimensionsArr := []map[string]any{}
-		err := common.UnmarshalJson([]byte(ctx.GetEvent().Labels["aws_event_alarm_dimensions"]), &dimensionsArr)
-		if err != nil {
-			ctx.GetLogger().Error("cloud: unable to parse aws_event_alarm_dimensions", "error", err, "aws_event_alarm_dimensions", ctx.GetEvent().Labels["aws_event_alarm_dimensions"])
-		} else {
-			// Map alarm dimension names to CloudWatch metric dimension names
-			// Some services use different dimension names in alarms vs metrics API
-			mappedDimensions := mapAlarmDimensionsToMetricDimensions(dimensionsArr, ctx.GetEvent().Labels["aws_event_metric_namespace"])
-			rawParams["dimensions"] = mappedDimensions
-		}
-
-	}
-	if ctx.GetEvent().Labels["aws_account"] != "" {
+	// Get cloud account ID
+	if labels["aws_account"] != "" {
 		dbms, err := database.GetDatabaseManager(database.Metastore)
 		if err != nil {
 			return nil, err
 		}
 		var accountId string
-		err = dbms.Db.QueryRowx("select id from cloud_accounts ca where account_number = $1 AND tenant = $2 AND status = 'active'", ctx.GetEvent().Labels["aws_account"], ctx.GetTenantId()).Scan(&accountId)
+		err = dbms.Db.QueryRowx("select id from cloud_accounts ca where account_number = $1 AND tenant = $2 AND status = 'active'", labels["aws_account"], ctx.GetTenantId()).Scan(&accountId)
 		if err != nil {
-			return nil, err
+			ctx.GetLogger().Warn("cloud_list_metrics: could not find cloud account", "account_number", labels["aws_account"], "error", err)
+		} else {
+			base["account_id"] = accountId
 		}
-		rawParams["account_id"] = accountId
 	}
 
-	if ctx.GetEvent().Labels["aws_event_start_time"] != "" {
-		startTime, err := time.Parse(time.RFC3339, ctx.GetEvent().Labels["aws_event_start_time"])
+	if labels["aws_event_start_time"] != "" {
+		startTime, err := time.Parse(time.RFC3339, labels["aws_event_start_time"])
 		if err == nil {
 			// set start time 1 hour before the event start time to capture metrics leading up to the event
 			startTime = startTime.Add(-1 * time.Hour)
-			rawParams["start_time"] = &startTime
+			base["start_time"] = &startTime
 		}
 	}
 
-	if ctx.GetEvent().Labels["aws_event_end_time"] != "" {
-		endTime, err := time.Parse(time.RFC3339, ctx.GetEvent().Labels["aws_event_end_time"])
+	if labels["aws_event_end_time"] != "" {
+		endTime, err := time.Parse(time.RFC3339, labels["aws_event_end_time"])
 		if err == nil {
-			rawParams["end_time"] = &endTime
+			base["end_time"] = &endTime
 		}
 	}
-	return a.Execute(ctx, rawParams)
+
+	namespace := labels["aws_event_metric_namespace"]
+	customNamespace := namespace != "" && !strings.HasPrefix(namespace, "AWS/")
+
+	title := "Metrics For - " + labels["aws_event_instance"]
+	if customNamespace || labels["aws_event_instance"] == "" {
+		title = "Metrics For - " + labels["aws_event_metric_name"]
+	}
+
+	var alarmQuery, defaultsQuery map[string]any
+	if q := awsAlarmMetricQuery(ctx, labels); q != nil {
+		alarmQuery = lo.Assign(base, q)
+	}
+
+	// Standard AWS namespaces only: a custom namespace has no service defaults.
+	// Don't pass metric_names, statistics, or metric_namespace — let cloud-collector
+	// auto-discover all predefined metrics for the service (via serviceCloudwatchNamespaceMap)
+	// with their per-metric statistics config. Passing metric_namespace causes cloud-collector
+	// to take the explicit-namespace path which skips resource type auto-detection.
+	if !customNamespace && labels["aws_event_instance"] != "" {
+		defaultsQuery = lo.Assign(base, map[string]any{
+			"resource_ids": []string{labels["aws_event_instance"]},
+			"service_name": labels["aws_service_name"],
+		})
+		if labels["aws_event_alarm_dimensions"] != "" {
+			dimensionsArr := []map[string]any{}
+			err := common.UnmarshalJson([]byte(labels["aws_event_alarm_dimensions"]), &dimensionsArr)
+			if err != nil {
+				ctx.GetLogger().Error("cloud: unable to parse aws_event_alarm_dimensions", "error", err, "aws_event_alarm_dimensions", labels["aws_event_alarm_dimensions"])
+			} else {
+				// Map alarm dimension names to CloudWatch metric dimension names
+				// Some services use different dimension names in alarms vs metrics API
+				defaultsQuery["dimensions"] = mapAlarmDimensionsToMetricDimensions(dimensionsArr, namespace)
+			}
+		}
+	}
+
+	var alarmItems, defaultItems []MetricItem
+	var queryErr error
+	if alarmQuery != nil {
+		items, err := a.queryMetricItems(ctx, alarmQuery)
+		if err != nil {
+			ctx.GetLogger().Warn("cloud_list_metrics: alarm metric query failed", "metric_namespace", namespace, "metric_name", labels["aws_event_metric_name"], "error", err)
+			queryErr = err
+		}
+		alarmItems = items
+	}
+	if defaultsQuery != nil {
+		items, err := a.queryMetricItems(ctx, defaultsQuery)
+		if err != nil {
+			ctx.GetLogger().Warn("cloud_list_metrics: service default metrics query failed", "service_name", labels["aws_service_name"], "error", err)
+			if queryErr == nil {
+				queryErr = err
+			}
+		}
+		defaultItems = items
+	}
+
+	items := mergeAlarmAndDefaultSeries(alarmItems, defaultItems)
+	if len(items) == 0 && queryErr != nil {
+		return nil, queryErr
+	}
+	query := alarmQuery
+	if query == nil {
+		query = defaultsQuery
+	}
+	return metricsEvidence(items, query, title), nil
+}
+
+// awsAlarmMetricQuery is the cloud_list_metrics request for the one metric an AWS
+// alarm evaluates: its namespace, name, dimensions (possibly none) and statistic.
+// It is nil when the event names no such metric — an EventBridge event, a
+// metric-math alarm, or a percentile alarm, whose statistic label is empty.
+//
+// It goes to the collector as an exact CloudWatch query (metric_queries) under
+// the CloudWatch service, so the collector runs it as written instead of
+// resolving a service's resource dimension, which a dimensionless metric does not
+// have and an unlisted service does not define. The alarm's service name cannot
+// be used for that: the collector dispatches on it, and the service a custom
+// namespace happens to share a name with ("rds") may not honour metric_queries.
+func awsAlarmMetricQuery(ctx playbooks.PlaybookActionContext, labels map[string]string) map[string]any {
+	metricName := labels["aws_event_metric_name"]
+	namespace := labels["aws_event_metric_namespace"]
+	statistic := labels["aws_event_metric_statistic"]
+	if metricName == "" || namespace == "" || statistic == "" {
+		return nil
+	}
+
+	dimensions := map[string]string{}
+	if raw := labels["aws_event_alarm_dimensions"]; raw != "" {
+		alarmDimensions := []map[string]any{}
+		if err := common.UnmarshalJson([]byte(raw), &alarmDimensions); err != nil {
+			// Without the alarm's dimensions the query would read a different series.
+			ctx.GetLogger().Error("cloud_list_metrics: unable to parse aws_event_alarm_dimensions", "error", err, "aws_event_alarm_dimensions", raw)
+			return nil
+		}
+		// Every dimension is kept, @-prefixed ones (@aws.account, @aws.region) too: a
+		// query matches only series with exactly these dimensions, and a log metric
+		// alarm that names them reads a series that carries them.
+		for _, dim := range mapAlarmDimensionsToMetricDimensions(alarmDimensions, namespace) {
+			name, _ := dim["Name"].(string)
+			value, _ := dim["Value"].(string)
+			if name != "" {
+				dimensions[name] = value
+			}
+		}
+	}
+
+	return map[string]any{
+		"service_name":     "CloudWatch",
+		"metric_namespace": namespace,
+		"metric_queries": []CloudWatchMetricEntry{{
+			Id:         "alarm",
+			ReturnData: true,
+			MetricStat: &CloudWatchMetricEntryStat{
+				Stat:   statistic,
+				Period: 60,
+				Metric: CloudWatchMetricEntryRef{
+					Namespace:  namespace,
+					Name:       metricName,
+					Dimensions: dimensions,
+				},
+			},
+		}},
+	}
+}
+
+// mergeAlarmAndDefaultSeries puts the alarm's own series first and drops any
+// default series that repeats one of them (same metric and statistic).
+func mergeAlarmAndDefaultSeries(alarmItems, defaultItems []MetricItem) []MetricItem {
+	key := func(item MetricItem) string { return item.Name + "\x00" + item.Statistics }
+	alarmKeys := map[string]bool{}
+	for _, item := range alarmItems {
+		alarmKeys[key(item)] = true
+	}
+	merged := append([]MetricItem{}, alarmItems...)
+	for _, item := range defaultItems {
+		if !alarmKeys[key(item)] {
+			merged = append(merged, item)
+		}
+	}
+	return merged
 }
 
 func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawParams map[string]any) (playbooks.PlaybookActionResponse, error) {
+	items, err := a.queryMetricItems(ctx, rawParams)
+	if err != nil {
+		return nil, err
+	}
+	return metricsEvidence(items, rawParams, rawParams["title"]), nil
+}
+
+// queryMetricItems runs one metrics request and returns the series that carry
+// datapoints.
+func (a *cloudMetricsAction) queryMetricItems(ctx playbooks.PlaybookActionContext, rawParams map[string]any) ([]MetricItem, error) {
 	var params cloudMetricsActionParams
 	err := common.UnmarshalMapToStruct(rawParams, &params)
 	if err != nil {
@@ -982,6 +1141,7 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 			Statistics:      lo.Uniq(params.Statistics),
 			MetricNamespace: params.MetricNamespace,
 			Query:           params.Query,
+			MetricQueries:   params.MetricQueries,
 		},
 	})
 
@@ -989,9 +1149,42 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		return nil, err
 	}
 
+	// Drop series CloudWatch returned with no datapoints. It answers with one
+	// result per query whether or not the metric recorded anything, so a metric
+	// that simply never fired (no 5xx, no rejected connections) or that needs a
+	// dimension we don't send arrives as an empty series and renders as a blank
+	// chart. Half the charts on a healthy load balancer were blank this way.
+	items := lo.Filter(resourceResp.Items, func(item MetricItem, _ int) bool {
+		return len(item.Values) > 0
+	})
+
+	// Counting series is not enough: CloudWatch returns one result per query even
+	// when the metric matched no data, so a wrong namespace or dimension yields a
+	// full set of series that every one of them is empty.
+	if len(items) == 0 {
+		ctx.GetLogger().Warn("cloud_list_metrics: query returned no datapoints",
+			"series_returned", len(resourceResp.Items),
+			"service_name", params.ServiceName,
+			"region", params.Region,
+			"resource_ids", params.ResourceIds,
+			"metric_namespace", params.MetricNamespace,
+			"account_id", params.AccountId)
+	}
+	return items, nil
+}
+
+// metricsEvidence renders metric series as a metrics evidence card, or returns nil
+// when there are none.
+func metricsEvidence(items []MetricItem, query map[string]any, title any) playbooks.PlaybookActionResponse {
+	// Skip storing evidence when nothing was actually measured — avoids empty
+	// "prometheus_enricher" cards that mislead the LLM into reporting empty Prometheus data.
+	if len(items) == 0 {
+		return nil
+	}
+
 	metadata := map[string]any{
 		"query-result-version": "1.0",
-		"query":                rawParams,
+		"query":                query,
 	}
 
 	additionalInfo := map[string]any{
@@ -999,7 +1192,7 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		"actual_action_name": "prometheus_queries_enricher",
 	}
 
-	if title, ok := rawParams["title"]; ok {
+	if title != nil {
 		additionalInfo["title"] = title
 	} else {
 		additionalInfo["title"] = "Cloudwatch Metrics"
@@ -1009,15 +1202,7 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 	// Group series by metric name for separate chart rendering
 	metricGroups := map[string][]any{}
 
-	for _, item := range resourceResp.Items {
-		// Drop series CloudWatch returned with no datapoints. It answers with one
-		// result per query whether or not the metric recorded anything, so a metric
-		// that simply never fired (no 5xx, no rejected connections) or that needs a
-		// dimension we don't send arrives as an empty series and renders as a blank
-		// chart. Half the charts on a healthy load balancer were blank this way.
-		if len(item.Values) == 0 {
-			continue
-		}
+	for _, item := range items {
 		metricObj := map[string]any{
 			"service_name": item.ServiceName,
 			"region":       item.Region,
@@ -1051,22 +1236,6 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		metricGroups[metricKey] = append(metricGroups[metricKey], data)
 	}
 
-	// Skip storing evidence when nothing was actually measured — avoids empty
-	// "prometheus_enricher" cards that mislead the LLM into reporting empty Prometheus data.
-	// Counting series is not enough: CloudWatch returns one result per query even
-	// when the metric matched no data, so a wrong namespace or dimension yields a
-	// full set of series that every one of them is empty.
-	if len(seriesList) == 0 {
-		ctx.GetLogger().Warn("cloud_list_metrics: query returned no datapoints",
-			"series_returned", len(resourceResp.Items),
-			"service_name", params.ServiceName,
-			"region", params.Region,
-			"resource_ids", params.ResourceIds,
-			"metric_namespace", params.MetricNamespace,
-			"account_id", params.AccountId)
-		return nil, nil
-	}
-
 	responseData := map[string]any{
 		"result_type":        "matrix",
 		"series_list_result": seriesList,
@@ -1088,7 +1257,7 @@ func (a *cloudMetricsAction) Execute(ctx playbooks.PlaybookActionContext, rawPar
 		Data:           responseData,
 		AdditionalInfo: additionalInfo,
 		Insight:        []playbooks.PlaybookActionResponseInsight{},
-	}, err
+	}
 }
 
 type cloudServiceMapAction struct {
@@ -1464,6 +1633,63 @@ func logMetricLookbackWindow(startTime, endTime, startedAt *time.Time) (*time.Ti
 	return &start, &end
 }
 
+// awsAlarmLogMargin is added to an alarm's evaluation window when looking back for
+// its logs, so the lines just before the breach began are included too.
+const awsAlarmLogMargin = 5 * time.Minute
+
+// awsAlarmLogDefaultWindow stands in for the evaluation window when the alarm event
+// carries no period/evaluation-periods labels.
+const awsAlarmLogDefaultWindow = 10 * time.Minute
+
+// awsAlarmLogMaxWindow bounds the look-back for alarms with long periods.
+const awsAlarmLogMaxWindow = 6 * time.Hour
+
+// awsAlarmEvaluationWindow is how long the alarm's metric had to breach before it
+// fired (period x evaluation periods), or the default when the labels are absent.
+func awsAlarmEvaluationWindow(labels map[string]string) time.Duration {
+	period, err1 := strconv.ParseInt(labels["Period"], 10, 64)
+	periods, err2 := strconv.ParseInt(labels["EvaluationPeriods"], 10, 64)
+	if err1 != nil || err2 != nil || period <= 0 || periods <= 0 {
+		return awsAlarmLogDefaultWindow
+	}
+	// Checked by division so a huge label cannot wrap the product negative.
+	if maxSeconds := int64(awsAlarmLogMaxWindow / time.Second); period > maxSeconds/periods {
+		return awsAlarmLogMaxWindow
+	}
+	return time.Duration(period*periods) * time.Second
+}
+
+// awsAlarmLogWindowStart returns the start of the log query for a CloudWatch alarm:
+// the alarm's evaluation window plus a margin before it fired, or the existing start
+// when that is already earlier. breachStart is where the breach began, which the
+// size cap keeps lines closest to.
+func awsAlarmLogWindowStart(labels map[string]string, alertStart, start *time.Time) (windowStart, breachStart *time.Time) {
+	if alertStart == nil || !strings.Contains(labels["aws_event_arn"], ":alarm:") {
+		return start, nil
+	}
+	window := awsAlarmEvaluationWindow(labels)
+	breach := alertStart.Add(-window)
+	from := breach.Add(-awsAlarmLogMargin)
+	if start != nil && start.Before(from) {
+		from = *start
+	}
+	return &from, &breach
+}
+
+// sortLogsByDistanceFrom orders results by how close each is to anchor, so a size
+// cap that drops the tail keeps the lines nearest the breach start. Stable, so
+// equally distant lines keep the collector's order.
+func sortLogsByDistanceFrom(results []LogMessage, anchor time.Time) {
+	at := anchor.UnixMilli()
+	dist := func(m LogMessage) int64 {
+		if d := m.Timestamp - at; d >= 0 {
+			return d
+		}
+		return at - m.Timestamp
+	}
+	sort.SliceStable(results, func(i, j int) bool { return dist(results[i]) < dist(results[j]) })
+}
+
 func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
 
@@ -1606,6 +1832,13 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		params.StartTime, params.EndTime = logMetricLookbackWindow(params.StartTime, params.EndTime, ctx.GetEvent().StartedAt)
 	}
 
+	// An AWS alarm's logs must cover the window it evaluated before firing; the
+	// event's own window only reaches a fixed 10 minutes back.
+	var breachStart *time.Time
+	if _, hasStart := rawParams["start_time"]; !hasStart {
+		params.StartTime, breachStart = awsAlarmLogWindowStart(ctx.GetEvent().Labels, ctx.GetEvent().AlertStart(), params.StartTime)
+	}
+
 	query := params.Query
 	if query == "" {
 		query = params.QueryString
@@ -1661,6 +1894,9 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	approxBytes := 0
 	truncated := false
 
+	if breachStart != nil {
+		sortLogsByDistanceFrom(resourceResp.Results, *breachStart)
+	}
 	for _, item := range resourceResp.Results {
 		if len(logoutput) >= maxLogEntries {
 			truncated = true
@@ -1704,6 +1940,15 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 		}
 		approxBytes += entryBytes
 		logoutput = append(logoutput, log)
+	}
+
+	if breachStart != nil {
+		// Back to the collector's newest-first order after the distance ranking.
+		sort.SliceStable(logoutput, func(i, j int) bool {
+			ti, _ := logoutput[i]["timestamp"].(int64)
+			tj, _ := logoutput[j]["timestamp"].(int64)
+			return ti > tj
+		})
 	}
 
 	if truncated {
@@ -1762,6 +2007,14 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	additionalInfo := map[string]any{}
 	if title, ok := rawParams["title"].(string); ok && title != "" {
 		additionalInfo["title"] = title
+	}
+	// Name the source, so a reader of the lines knows which log group (and
+	// which of its streams) they came from and can query it further.
+	if resourceResp.LogGroupName != "" {
+		additionalInfo["log_group_name"] = resourceResp.LogGroupName
+		if resourceResp.LogStreamPrefix != "" {
+			additionalInfo["log_stream_prefix"] = resourceResp.LogStreamPrefix
+		}
 	}
 
 	response := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, insights, metadata)
@@ -2532,7 +2785,7 @@ func (a *cloudAzureAlertRuleAction) AutoExecute(ctx playbooks.PlaybookActionCont
 
 	cmd := fmt.Sprintf("az resource show --ids '%s' --output json", alertRule)
 
-	resp, err := ExecuteCli(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), CloudExecuteCliCommandRequest{
+	resp, err := executeStaticConfigCli(security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil), CloudExecuteCliCommandRequest{
 		AccountID: accountId,
 		Command:   cmd,
 	})
@@ -3121,7 +3374,7 @@ func (a *cloudAzureDCRInfoAction) AutoExecute(ctx playbooks.PlaybookActionContex
 		targetResource,
 	)
 
-	assocResp, err := ExecuteCli(reqCtx, CloudExecuteCliCommandRequest{
+	assocResp, err := executeStaticConfigCli(reqCtx, CloudExecuteCliCommandRequest{
 		AccountID: accountId,
 		Command:   assocCmd,
 	})
@@ -3172,7 +3425,7 @@ func (a *cloudAzureDCRInfoAction) AutoExecute(ctx playbooks.PlaybookActionContex
 
 		// Fetch DCR details
 		dcrCmd := fmt.Sprintf("az rest --method get --url 'https://management.azure.com%s?api-version=2022-06-01' --output json", dcrID)
-		dcrResp, err := ExecuteCli(reqCtx, CloudExecuteCliCommandRequest{
+		dcrResp, err := executeStaticConfigCli(reqCtx, CloudExecuteCliCommandRequest{
 			AccountID: accountId,
 			Command:   dcrCmd,
 		})
@@ -3417,6 +3670,8 @@ func extractResourceGroup(resourceID string) string {
 var (
 	awsRegionRegex       = regexp.MustCompile(`^[a-z]{2}-(?:gov-)?[a-z]+-\d+$`)
 	awsVpcIdRegex        = regexp.MustCompile(`^vpc-[0-9a-f]{8,17}$`)
+	awsInstanceIdRegex   = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	awsENIIdRegex        = regexp.MustCompile(`^eni-[0-9a-f]{8,17}$`)
 	awsLogGroupNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-/.#]{1,512}$`)
 )
 
@@ -3439,6 +3694,34 @@ type cloudVpcFlowLogsParams struct {
 	OnlyFailed       bool       `json:"only_failed"`        // If true, only show rejected/failed connections
 	IncludePublicIPs bool       `json:"include_public_ips"` // If true, include public IP traffic (default: false, private only)
 	IPWhitelist      []string   `json:"ip_whitelist"`       // Optional: specific CIDR ranges to include (overrides private IP filter)
+	// Optional: limit flows to one resource's traffic. Set when the action runs
+	// for an alert on a specific instance; without them the query covers the VPC.
+	ResourceId   string   `json:"resource_id"`
+	InterfaceIds []string `json:"interface_ids"`
+	ResourceIPs  []string `json:"resource_ips"`
+}
+
+// flowLogResourceFilter returns the Insights filter stage that keeps only the
+// flows of the given interfaces (when the log format records interface-id) or
+// else of the given addresses, and "" when neither can be applied. Values must
+// already be validated.
+func flowLogResourceFilter(logFormat string, interfaceIds, ips []string) string {
+	quoteAll := func(values []string) string {
+		quoted := make([]string, len(values))
+		for i, v := range values {
+			quoted[i] = `"` + v + `"`
+		}
+		return "[" + strings.Join(quoted, ", ") + "]"
+	}
+	hasInterfaceField := logFormat == "" || strings.Contains(logFormat, "${interface-id}")
+	if len(interfaceIds) > 0 && hasInterfaceField {
+		return "filter interface_id in " + quoteAll(interfaceIds)
+	}
+	if len(ips) > 0 {
+		list := quoteAll(ips)
+		return fmt.Sprintf("filter srcaddr in %s or dstaddr in %s", list, list)
+	}
+	return ""
 }
 
 func (a *cloudVpcFlowLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
@@ -3481,7 +3764,16 @@ func (a *cloudVpcFlowLogsAction) AutoExecute(ctx playbooks.PlaybookActionContext
 		"vpc_id":      vpcId,
 		"region":      region,
 		"only_failed": true, // By default, only show failed/rejected connections
-		"title":       "VPC Flow Logs Failed Connections - " + vpcId,
+	}
+
+	// An alert on one instance gets that instance's flows, not the whole VPC's:
+	// VPC-wide rejects were read as the instance's own failures.
+	if instance := labels["aws_event_instance"]; instance != "" {
+		rawParams["resource_id"] = instance
+		if enis, ips := getNetworkScopeForInstance(instance, ctx.GetTenantId()); len(enis) > 0 || len(ips) > 0 {
+			rawParams["interface_ids"] = enis
+			rawParams["resource_ips"] = ips
+		}
 	}
 
 	// Get cloud account ID
@@ -3532,6 +3824,16 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 	if params.LogGroupName != "" && !awsLogGroupNameRegex.MatchString(params.LogGroupName) {
 		return nil, fmt.Errorf("invalid log_group_name format: %q", params.LogGroupName)
 	}
+	for _, eni := range params.InterfaceIds {
+		if !awsENIIdRegex.MatchString(eni) {
+			return nil, fmt.Errorf("invalid interface id format: %q", eni)
+		}
+	}
+	for _, ip := range params.ResourceIPs {
+		if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
+			return nil, fmt.Errorf("invalid resource ip format: %q", ip)
+		}
+	}
 
 	// Prioritize time sources: explicit params > event window > default (last 1 hour).
 	// The event window goes through ResolveQueryWindow rather than being used raw: a
@@ -3580,6 +3882,12 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 	if params.OnlyFailed {
 		queryString += `
 | filter action = "REJECT"`
+	}
+
+	resourceFilter := flowLogResourceFilter(logFormat, params.InterfaceIds, params.ResourceIPs)
+	scopedToResource := resourceFilter != ""
+	if scopedToResource {
+		queryString += "\n| " + resourceFilter
 	}
 
 	// IP filtering logic: configurable based on parameters
@@ -3790,8 +4098,10 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 						logEntry := map[string]any{
 							"timestamp": startTime.Format(time.RFC3339),
 							"message":   message,
-							"severity":  lo.Ternary(action == "REJECT", "ERROR", "INFO"),
-							"labels":    flow, // All flow fields as labels
+							// Only a resource's own rejects are its errors; VPC-wide
+							// rows tagged ERROR became the alerting host's error lines.
+							"severity": lo.Ternary(action == "REJECT" && scopedToResource, "ERROR", "INFO"),
+							"labels":   flow, // All flow fields as labels
 						}
 
 						logoutput = append(logoutput, logEntry)
@@ -3813,33 +4123,48 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 				"action_name": "cloud_logs", // Use "cloud_logs" to trigger CloudLog card rendering
 			}
 
+			metadata["resource_id"] = params.ResourceId
+			metadata["scoped_to_resource"] = scopedToResource
+			// scope says whose flows these are, in every title and insight.
+			scope := fmt.Sprintf("VPC '%s'", params.VpcId)
+			switch {
+			case scopedToResource:
+				scope = fmt.Sprintf("%s in VPC '%s'", params.ResourceId, params.VpcId)
+			case params.ResourceId != "":
+				scope = fmt.Sprintf("all of VPC '%s', not filtered to %s (its network interfaces are unknown)", params.VpcId, params.ResourceId)
+			}
+
 			if title, ok := rawParams["title"]; ok {
 				additionalInfo["title"] = title
+			} else if params.OnlyFailed {
+				additionalInfo["title"] = "VPC Flow Logs rejected connections - " + scope
 			} else {
-				additionalInfo["title"] = fmt.Sprintf("VPC Flow Logs - %s (Private IPs Only)", params.VpcId)
+				additionalInfo["title"] = fmt.Sprintf("VPC Flow Logs - %s (Private IPs Only)", scope)
 			}
 
 			insights := []playbooks.PlaybookActionResponseInsight{}
 			if len(logoutput) == 0 {
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message:  fmt.Sprintf("No %s private IP connections found in VPC Flow Logs for VPC '%s' during the specified time range (Internet traffic excluded)", lo.Ternary(params.OnlyFailed, "rejected", ""), params.VpcId),
+					Message:  fmt.Sprintf("No %s private IP connections found in VPC Flow Logs for %s during the specified time range (Internet traffic excluded)", lo.Ternary(params.OnlyFailed, "rejected", ""), scope),
 					Severity: "info",
 				})
 			} else {
 				if params.OnlyFailed && failedFlowCount > 0 {
+					// A reject is a deny rule doing its job as often as a fault;
+					// say what was seen, not what it is likely to mean.
 					insights = append(insights, playbooks.PlaybookActionResponseInsight{
-						Message:  fmt.Sprintf("Found %d rejected internal connection patterns between private IPs in VPC '%s'. These are likely security group misconfigurations preventing internal communication.", failedFlowCount, params.VpcId),
-						Severity: "high",
+						Message:  fmt.Sprintf("Found %d rejected connection patterns between private IPs for %s. Check whether the alerting resource depends on these connections before treating them as a cause.", failedFlowCount, scope),
+						Severity: lo.Ternary(scopedToResource, "warning", "info"),
 					})
 				}
 
 				// Add summary insight
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message: fmt.Sprintf("Analyzed %d connection patterns (%d total connections, %s data transferred) between private IPs in VPC '%s'",
+					Message: fmt.Sprintf("Analyzed %d connection patterns (%d total connections, %s data transferred) between private IPs for %s",
 						len(logoutput),
 						totalConnections,
 						formatBytes(totalBytes),
-						params.VpcId),
+						scope),
 					Severity: "info",
 				})
 			}

@@ -31,6 +31,15 @@ def failed_response(platform: str, reason: Optional[str] = None, **extra: Any) -
     ).model_dump(exclude_none=True)
 
 
+def not_sent_response(platform: str, reason: str, **extra: Any) -> dict[str, Any]:
+    return PlatformResponse(
+        platform=platform,
+        status="not_sent",
+        reason=reason,
+        **extra,
+    ).model_dump(exclude_none=True)
+
+
 def system_response(status: str, reason: Optional[str] = None, **extra: Any) -> dict[str, Any]:
     return PlatformResponse(
         platform="system",

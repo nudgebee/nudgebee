@@ -91,6 +91,109 @@ type Query {
 }
 
 type Query {
+  notifications_list_deliveries(
+    limit: Int
+    offset: Int
+    order_by: [QuerySortByRequest!]
+    where: NotificationDeliveriesWhereRequest
+  ): NotificationDeliveriesResponse!
+}
+
+type Query {
+  notifications_aggregate_deliveries(
+    columns: [String]
+    group_by: [String!]
+    having: NotificationDeliveriesGroupingWhereRequest
+    limit: Int
+    order_by: [QuerySortByRequest!]
+    where: NotificationDeliveriesGroupingWhereRequest
+  ): NotificationDeliveriesAggregationResponse!
+}
+
+input NotificationDeliveriesWhereRequest {
+  _and: [NotificationDeliveriesWhereRequest]
+  _or: [NotificationDeliveriesWhereRequest]
+  id: QueryWhereStringRequest
+  created_at: QueryWhereDatetimeRequest
+  account_id: QueryWhereStringRequest
+  fingerprint: QueryWhereStringRequest
+  dispatch_id: QueryWhereStringRequest
+  kind: QueryWhereStringRequest
+  source: QueryWhereStringRequest
+  event_id: QueryWhereStringRequest
+  platform: QueryWhereStringRequest
+  team_id: QueryWhereStringRequest
+  destination: QueryWhereStringRequest
+  status: QueryWhereStringRequest
+  reason: QueryWhereStringRequest
+  is_final: QueryWhereBooleanRequest
+}
+
+input NotificationDeliveriesGroupingWhereRequest {
+  _and: [NotificationDeliveriesGroupingWhereRequest]
+  _or: [NotificationDeliveriesGroupingWhereRequest]
+  created_at: QueryWhereDatetimeRequest
+  account_id: QueryWhereStringRequest
+  fingerprint: QueryWhereStringRequest
+  event_id: QueryWhereStringRequest
+  kind: QueryWhereStringRequest
+  source: QueryWhereStringRequest
+  platform: QueryWhereStringRequest
+  team_id: QueryWhereStringRequest
+  destination: QueryWhereStringRequest
+  status: QueryWhereStringRequest
+  is_final: QueryWhereBooleanRequest
+  last_status: QueryWhereStringRequest
+}
+
+type NotificationDeliveriesResponse {
+  rows: [NotificationDelivery!]!
+}
+
+type NotificationDelivery {
+  id: String
+  created_at: Datetime
+  account_id: String
+  fingerprint: String
+  dispatch_id: String
+  attempt: Int
+  kind: String
+  source: String
+  title: String
+  event_id: String
+  platform: String
+  team_id: String
+  destination: String
+  destination_name: String
+  message_id: String
+  thread_id: String
+  status: String
+  reason: String
+  error_code: String
+  routed_by: String
+  is_final: Boolean
+  team_url: String
+}
+
+type NotificationDeliveriesAggregationResponse {
+  rows: [NotificationDeliveriesAggregation!]!
+}
+
+type NotificationDeliveriesAggregation {
+  platform: String
+  team_id: String
+  destination: String
+  status: String
+  kind: String
+  count: Int
+  first_at: Datetime
+  last_at: Datetime
+  last_status: String
+  last_reason: String
+  last_destination_name: String
+}
+
+type Query {
   usergroups_aggregate(
     where: UserGroupsWhereRequest
   ): UserGroupsAggregationResponse!
@@ -172,13 +275,6 @@ type Mutation {
 }
 
 type Mutation {
-  ai_create_function(
-    account_id: String!
-    function: CreateFunctionInput!
-  ): FunctionResponse
-}
-
-type Mutation {
   ai_create_gc(
     request: CreateGCRequest!
   ): CreateGCResponse
@@ -212,12 +308,6 @@ type Mutation {
   ai_delete_tool(
     request: DeleteToolRequest!
   ): DeleteToolResponse
-}
-
-type Mutation {
-  ai_delete_function(
-    request: AiDeleteFunctionRequest!
-  ): AiDeleteFunctionResponse
 }
 
 type Mutation {
@@ -266,6 +356,12 @@ type Mutation {
   ai_generate_metrics_query(
     request: AIGetMetricsQueryRequest!
   ): AIGetMetricsQueryResponse
+}
+
+type Mutation {
+  ai_generate_dashboard(
+    request: AIGenerateDashboardRequest!
+  ): AIGenerateDashboardResponse
 }
 
 type Query {
@@ -357,12 +453,27 @@ type Query {
 }
 
 type Mutation {
+  ai_generate_remediation_plan(
+    account_id: String!
+    event_id: String!
+    mode: String!
+    reasons: [String!]
+    note: String
+  ): AIResponse
+}
+
+type Mutation {
   ai_remediation_execute(
     account_id: String!
     event_id: String
     command: String!
     config_name: String
     slot: String
+    execute_command: String
+    action: String
+    acknowledge_unknown: Boolean
+    plan_version: String
+    reason: String
   ): AIResponse
 }
 
@@ -403,6 +514,12 @@ type Query {
 }
 
 type Query {
+  ai_list_kb_account_overrides(
+    request: ListKBAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
+}
+
+type Query {
   ai_get_kb_load_history(
     request: GetKBLoadHistoryRequest!
   ): GetKBLoadHistoryResponse
@@ -438,10 +555,20 @@ type Query {
   ): ListAIMemoryResponse
 }
 
+type Mutation {
+  ai_delete_memory(
+    request: DeleteMemoryRequest!
+  ): DeleteAIMemoryResponse
+}
+
 type Query {
   ai_list_models(
     request: AIListModelsRequest!
   ): AIListModelsResponse
+}
+
+type Query {
+  ai_list_tenant_models: AIListModelsResponse
 }
 
 type Query {
@@ -523,14 +650,6 @@ type Mutation {
 }
 
 type Mutation {
-  ai_update_function(
-    account_id: String!
-    function_id: String!
-    function: UpdateFunctionInput!
-  ): FunctionUpdateResponse
-}
-
-type Mutation {
   ai_update_gc(
     request: UpdateGCRequest!
   ): UpdateGCResponse
@@ -546,6 +665,82 @@ type Mutation {
   ai_update_kb_enabled(
     request: UpdateKBEnabledRequest!
   ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_kb_visibility(
+    request: UpdateKBVisibilityRequest!
+  ): UpdateKBVisibilityResponse
+}
+
+type Mutation {
+  ai_update_kb_account_override(
+    request: UpdateKBAccountOverrideRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_create_kb_skill_source(
+    request: CreateKBSkillSourceRequest!
+  ): KBSkillSourceResponse
+}
+
+type Query {
+  ai_list_kb_skill_sources: ListKBSkillSourcesResponse
+}
+
+type Mutation {
+  ai_update_kb_skill_source(
+    request: UpdateKBSkillSourceRequest!
+  ): KBSkillSourceResponse
+}
+
+type Mutation {
+  ai_sync_kb_skill_source(
+    request: KBSkillSourceIdRequest!
+  ): SyncKBSkillSourceResponse
+}
+
+type Mutation {
+  ai_delete_kb_skill_source(
+    request: KBSkillSourceIdRequest!
+  ): DeleteKBResponse
+}
+
+type Mutation {
+  ai_update_agent_visibility(
+    request: UpdateOrgItemVisibilityRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_agent_account_override(
+    request: UpdateOrgItemAccountOverrideRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Query {
+  ai_list_agent_account_overrides(
+    request: ListOrgItemAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
+}
+
+type Mutation {
+  ai_update_tool_visibility(
+    request: UpdateOrgItemVisibilityRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Mutation {
+  ai_update_tool_account_override(
+    request: UpdateOrgItemAccountOverrideRequest!
+  ): UpdateKBEnabledResponse
+}
+
+type Query {
+  ai_list_tool_account_overrides(
+    request: ListOrgItemAccountOverridesRequest!
+  ): ListKBAccountOverridesResponse
 }
 
 type Mutation {
@@ -754,6 +949,9 @@ type Mutation {
   autooptimize_update_status(
     arg1: auto_optimize_update_status_request!
   ): auto_optimize_update_status_response
+  autooptimize_update_approval(
+    arg1: auto_optimize_update_approval_request!
+  ): auto_optimize_update_approval_response
 }
 
 type Query {
@@ -837,6 +1035,12 @@ type Mutation {
 type Mutation {
   cloud_account_update(
     object: cloud_account_update_input!
+  ): cloud_account_update_output
+}
+
+type Mutation {
+  cloud_update_credentials(
+    object: cloud_update_credentials_input!
   ): cloud_account_update_output
 }
 
@@ -1284,6 +1488,14 @@ type Mutation {
 }
 
 type Query {
+  events_check_rollback(
+    account_id: String!
+    event_id: String!
+    change_event_id: String
+  ): EventRollbackCheckResponse
+}
+
+type Query {
   event_rules_groupings_v2(
     where: EventRulesGroupingsWhereRequest
     limit: Int
@@ -1327,6 +1539,14 @@ type Mutation {
 }
 
 type Mutation {
+  events_apply_remediation_resolve(
+    account_id: String!
+    event_id: String!
+    run_id: String!
+  ): RemediationResolveResponse
+}
+
+type Mutation {
   event_update_status(
     event_id: String!
     status: String!
@@ -1362,6 +1582,7 @@ type Mutation {
     name: String
     description: String
     apply_to_existing: Boolean
+    enabled: Boolean
   ): UpdateTriageRuleResponse
 }
 
@@ -1498,6 +1719,12 @@ type Mutation {
   ): CreateIntegrationConfigResponse
 }
 
+type Query {
+  integrations_check_llm_defaults(
+    request: CheckLLMDefaultsRequest!
+  ): CheckLLMDefaultsResponse
+}
+
 type Mutation {
   integrations_delete_config(
     request: DeleteIntegrationConfigRequest!
@@ -1520,9 +1747,21 @@ type Mutation {
 }
 
 type Mutation {
+  integrations_update_mcp_write_tools(
+    request: UpdateMCPWriteToolsRequest!
+  ): DeleteIntegrationConfigResponse
+}
+
+type Mutation {
   integrations_check_connection(
     request: IntegrationTestConnectionRequest!
   ): IntegrationTestConnectionResponse
+}
+
+type Mutation {
+  integrations_execute_mcp_health_check(
+    request: IntegrationMCPHealthCheckRequest!
+  ): IntegrationMCPHealthCheckResponse
 }
 
 type Mutation {
@@ -1718,6 +1957,12 @@ type Query {
 }
 
 type Query {
+  ai_list_own_conversation_feedback(
+    request: ListOwnConversationFeedbackRequest!
+  ): ListOwnConversationFeedbackResponse
+}
+
+type Query {
   log_group(
     request: LogGroupRequest!
   ): LogGroupOutput
@@ -1733,6 +1978,12 @@ type Query {
   logs_list_label_values(
     request: FetchLogLabelValuesRequest!
   ): [OutputLogLabelValue]
+}
+
+type Query {
+  logs_check_vm_status(
+    request: LogsCheckVmStatusRequest!
+  ): VMLogsStatus
 }
 
 type Query {
@@ -1799,6 +2050,12 @@ type Query {
   metrics_list(
     request: FetchMetricsRequest!
   ): OutputMetricQuery
+}
+
+type Query {
+  metrics_check_vm_status(
+    request: MetricsCheckVmStatusRequest!
+  ): VMMetricsStatus
 }
 
 type Query {
@@ -2192,6 +2449,10 @@ type Query {
     integration_id: String!
     project_key: String!
   ): ticket_create_meta_response
+  tickets_get_transition_meta(
+    integration_id: String!
+    project_key: String!
+  ): ticket_transition_meta_response
 }
 
 type Query {
@@ -2281,6 +2542,12 @@ type Query {
 type Mutation {
   traces_get_service_map(
     request: TraceServiceMapRequest!
+  ): ServiceMapResponse
+}
+
+type Query {
+  vm_get_service_map(
+    request: VmServiceMapRequest!
   ): ServiceMapResponse
 }
 
@@ -2502,6 +2769,18 @@ type Query {
   users_list_token: UserAuthTokenResponse
 }
 
+type Query {
+  users_list_tenant_tokens(
+    user: TenantTokenListRequest
+  ): TenantTokenListResponse
+}
+
+type Mutation {
+  users_delete_tenant_token(
+    user: TenantTokenDeleteRequest!
+  ): TenantTokenDeleteResponse
+}
+
 type Mutation {
   cloud_check_credentials(
     object: ValidateCloudCredentialsInput!
@@ -2554,6 +2833,12 @@ type Query {
   workflow_get(
     request: WorkflowGetRequest
   ): Workflow
+}
+
+type Query {
+  workflow_get_account(
+    request: WorkflowGetAccountRequest!
+  ): WorkflowGetAccountResponse
 }
 
 type Query {
@@ -2627,6 +2912,18 @@ type Query {
   workflow_list_template(
     request: WorkflowListTemplateRequest!
   ): WorkflowTemplateListResponse
+}
+
+type Query {
+  workflows_list_ai_settings(
+    request: WorkflowListAISettingsRequest!
+  ): WorkflowListAISettingsResponse
+}
+
+type Mutation {
+  workflows_update_ai_settings(
+    request: WorkflowUpdateAISettingsRequest!
+  ): WorkflowAISetting
 }
 
 type Mutation {
@@ -3195,6 +3492,8 @@ input EventGroupingsWhereRequest {
   fingerprint: QueryWhereStringRequest
   id: QueryWhereStringRequest
   computed_priority: QueryWhereStringRequest
+  latest_computed_priority: QueryWhereStringRequest
+  latest_priority: QueryWhereStringRequest
   nb_status: QueryWhereStringRequest
   is_new_issue: QueryWhereBooleanRequest
   fingerprint_first_seen_at: QueryWhereDatetimeRequest
@@ -3649,6 +3948,7 @@ input autooptimize_create {
   dryrun: Boolean!
   gitops: auto_optimize_gitops_config
   ticket_config: auto_optimize_ticket_config
+  require_approval: Boolean
 }
 
 input auto_runbook_skip_request {
@@ -3898,6 +4198,7 @@ input autooptimize_update {
   dryrun: Boolean!
   gitops: auto_optimize_gitops_config
   ticket_config: auto_optimize_ticket_config
+  require_approval: Boolean
 }
 
 input PlaybookGroupWhereRequest {
@@ -4306,6 +4607,13 @@ input auto_optimize_update_status_request {
   account_id: uuid!
 }
 
+input auto_optimize_update_approval_request {
+  id: uuid!
+  account_id: uuid!
+  status: String!
+  reviewer_comments: String
+}
+
 input TraceHeatMapWhereRequest {
   _and: [TraceWhereRequest]
   _or: [TraceWhereRequest]
@@ -4374,6 +4682,13 @@ input AIGetMetricsQueryRequest {
   index: String
 }
 
+input AIGenerateDashboardRequest {
+  account_id: String!
+  query: String!
+  user_id: String
+  async: Boolean
+}
+
 input AIGetLogQueryRequest {
   account_id: String!
   query: String!
@@ -4381,6 +4696,7 @@ input AIGetLogQueryRequest {
   async: Boolean
   log_provider: String
   index: String
+  limit: Int
 }
 
 input AiFeedbackCreateRequest {
@@ -4443,10 +4759,16 @@ input SaveLLMConversationRequest {
 
 input ListAgentRequest {
   account_id: String!
+  "Also return organisation agents this account switched off."
+  include_switched_off: Boolean
 }
 
 input ListToolRequest {
   account_id: String!
+  "Only entries of this type (tool or agent); omitted returns both."
+  nb_tool_type: String
+  "Also return organisation tools this account switched off."
+  include_switched_off: Boolean
 }
 
 input AIListModelsRequest {
@@ -4496,6 +4818,8 @@ input AgentRequest {
   system_prompt_variables: [String]
   tools: [String]
   rags: [RagDataInput]
+  visibility: String
+  account_ids: [String]
 }
 
 input CreateToolRequest {
@@ -4510,6 +4834,8 @@ input ToolRequest {
   schema: jsonb
   executor_type: String
   config: jsonb
+  visibility: String
+  account_ids: [String]
 }
 
 input DeleteAgentRequest {
@@ -4531,6 +4857,16 @@ input CreateIntegrationConfigRequest {
   tags: jsonb
   skip_validation: Boolean
   source: String
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
+}
+
+input CheckLLMDefaultsRequest {
+  op: String!
+  integration_id: String
+  account_ids: [String]
+  llm_tenant_default: Boolean
+  llm_account_default: Boolean
 }
 
 input IntegrationConfigValueInput {
@@ -4547,6 +4883,10 @@ input DeleteIntegrationConfigRequest {
 }
 
 input IntegrationTestConnectionRequest {
+  integration_id: String!
+}
+
+input IntegrationMCPHealthCheckRequest {
   integration_id: String!
 }
 
@@ -4809,16 +5149,6 @@ input TenantAttributeRequest {
   value: String!
 }
 
-input CreateFunctionInput {
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String]
-  variable_defaults: jsonb
-  status: String
-  version: Int
-}
-
 input AIStopInvestigationRequest {
   account_id: String!
   conversation_id: String!
@@ -4883,6 +5213,7 @@ input UserTokenCreateRequest {
   expires_at: String
   limits: [TokenLimitInput!]
   scopes: [String!]
+  gateway_policy: GatewayPolicyInput
 }
 
 input UserTokenDeleteRequest {
@@ -4890,10 +5221,33 @@ input UserTokenDeleteRequest {
   name: String
 }
 
+input TenantTokenListRequest {
+  user_id: String
+  kind: String
+  limit: Int
+  offset: Int
+}
+
+input TenantTokenDeleteRequest {
+  id: String!
+}
+
 input UserTokenUpdateRequest {
   id: String!
   expires_at: String
   limits: [TokenLimitInput!]
+  """
+  AI Gateway keys only. Omit to keep the key's current restrictions. When sent, it replaces
+  all three lists together: a list left out is cleared (unrestricted), not kept, so send the
+  whole policy. {} clears every restriction.
+  """
+  gateway_policy: GatewayPolicyInput
+}
+
+input GatewayPolicyInput {
+  providers: [String!]
+  models: [String!]
+  endpoints: [String!]
 }
 
 input TokenLimitInput {
@@ -4901,6 +5255,7 @@ input TokenLimitInput {
   period: String!
   value: Float!
   model: String
+  soft_pct: Int
 }
 
 input TraceServiceMapRequest {
@@ -4910,6 +5265,11 @@ input TraceServiceMapRequest {
   start_time: String
   end_time: String
   label_filter: [TraceServiceMapLabelFilter]
+}
+
+input VmServiceMapRequest {
+  account_id: String!
+  window_seconds: Int
 }
 
 input DefaultProviderRequest {
@@ -4943,7 +5303,7 @@ input AIGetConversationUsageMetricsRequest {
 }
 
 input AIGetConversationTimeAggregatesRequest {
-  account_id: String!
+  account_ids: [String!]
   user_id: String
   start_date: String!
   end_date: String!
@@ -5031,11 +5391,6 @@ input CreateExtensionAgentRequest {
   agent: CreateExtensionAgentDetails
 }
 
-input AiDeleteFunctionRequest {
-  account_id: String!
-  function_id: String!
-}
-
 input FetchMetricLabelsRequest {
   account_id: String!
   metric_provider: String
@@ -5052,16 +5407,6 @@ input FetchMetricsLabelValueRequest {
   end_time: Float
   request: jsonb
   label: String!
-}
-
-input UpdateFunctionInput {
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String]
-  variable_defaults: jsonb
-  status: String
-  version: Int
 }
 
 input FetchMetricsRequest {
@@ -5144,6 +5489,10 @@ input WorkflowListRequest {
 
 input WorkflowGetRequest {
   account_id: String!
+  id: String!
+}
+
+input WorkflowGetAccountRequest {
   id: String!
 }
 
@@ -5387,6 +5736,8 @@ input kg_get_node_input {
 
 input kg_get_edge_input {
   edge_id: String!
+  source_node_id: String
+  dest_node_id: String
 }
 
 input kg_get_filter_options_input {
@@ -5419,6 +5770,7 @@ input kg_search_nodes_input {
   namespace: String
   cluster: String
   node_types: [String]
+  roles: [String]
   source: String
   labels: jsonb
   account_ids: [String]
@@ -5558,6 +5910,8 @@ input KnowledgebaseInput {
   file_name: String!
   note_category: String
   context_tags: [String!]
+  visibility: String
+  account_ids: [String!]
 }
 
 input KnowledgebaseUpdateInput {
@@ -5596,6 +5950,123 @@ input UpdateKBEnabledRequest {
   enabled: Boolean!
 }
 
+input UpdateKBVisibilityRequest {
+  kb_id: String!
+  visibility: String!
+  account_ids: [String!]
+  target_account_id: String
+}
+
+input UpdateKBAccountOverrideRequest {
+  account_id: String!
+  kb_id: String!
+  enabled: Boolean!
+}
+
+input ListKBAccountOverridesRequest {
+  kb_id: String!
+}
+
+input UpdateOrgItemVisibilityRequest {
+  id: String!
+  visibility: String!
+  account_ids: [String!]
+  target_account_id: String
+}
+
+input UpdateOrgItemAccountOverrideRequest {
+  id: String!
+  account_id: String!
+  enabled: Boolean!
+}
+
+input ListOrgItemAccountOverridesRequest {
+  id: String!
+}
+
+type KBAccountOverride {
+  account_id: String
+  account_name: String
+  enabled: Boolean
+  updated_at: String
+}
+
+type ListKBAccountOverridesResponse {
+  data: [KBAccountOverride]
+  errors: [Error]
+}
+
+input CreateKBSkillSourceRequest {
+  repo: String!
+  folder: String
+  branch: String
+  visibility: String
+  account_ids: [String!]
+}
+
+input UpdateKBSkillSourceRequest {
+  id: String!
+  visibility: String!
+  account_ids: [String!]
+}
+
+input KBSkillSourceIdRequest {
+  id: String!
+}
+
+type KBSkillSource {
+  id: String!
+  tenant_id: String!
+  provider: String!
+  repo: String!
+  folder: String
+  branch: String
+  visibility: String!
+  account_ids: [String!]
+  last_commit: String
+  last_synced_at: timestamp
+  status: String!
+  error_message: String
+  sync_report: jsonb
+  skill_count: Int
+  created_at: timestamp
+  updated_at: timestamp
+}
+
+type KBSkillSourceResponse {
+  data: KBSkillSource
+  errors: [Error]
+}
+
+type ListKBSkillSourcesResponse {
+  data: [KBSkillSource]
+  errors: [Error]
+}
+
+type KBSkippedSkill {
+  source_path: String
+  reason: String
+}
+
+type KBSkillSourceSyncReport {
+  commit: String
+  found: Int
+  added: Int
+  updated: Int
+  archived: Int
+  skipped: [KBSkippedSkill]
+}
+
+type SyncKBSkillSourceResponse {
+  data: KBSkillSourceSyncReport
+  errors: [Error]
+}
+
+type UpdateKBVisibilityResponse {
+  data: KnowledgebaseOutput
+  errors: [Error]
+}
+
 input DeleteKBRequest {
   account_id: String!
   id: String!
@@ -5610,6 +6081,7 @@ input MapKBToAgentRequest {
   account_id: String!
   kb_id: String!
   agent_id: String!
+  always_load: Boolean
 }
 
 input UnmapKBFromAgentRequest {
@@ -5688,6 +6160,16 @@ input ExportRecommendationRequest {
   format: String!
 }
 
+input DeleteMemoryRequest {
+  account_id: String!
+  id: String!
+}
+
+type DeleteAIMemoryResponse {
+  data: Json
+  errors: [Error]
+}
+
 input ListAIMemoryRequest {
   account_id: String!
   conversation_id: String
@@ -5758,6 +6240,14 @@ input AITriggerInvestigationRequest {
   capabilities: AIConfigCapabilitiesInput
   client_tools: [AIConfigClientToolInput]
   images: [AIImageAttachmentInput]
+  remediation_pick: AIRemediationPickInput
+}
+
+input AIRemediationPickInput {
+  event_id: String
+  plan_version: String!
+  option: Int!
+  kind: String!
 }
 
 input AIImageAttachmentInput {
@@ -6168,6 +6658,17 @@ input cloud_account_update_input {
   account_env: String
   data: jsonb
   regions: [String!]
+}
+
+input cloud_update_credentials_input {
+  id: uuid!
+  cloud_provider: String!
+  client_secret: String
+  credentials_json: String
+  assume_role: String
+  access_key: String
+  access_secret: String
+  validate_only: Boolean
 }
 
 input cloud_account_attr_object {
@@ -6799,6 +7300,7 @@ type EventGroupingsRowResponse {
   latest_score_factors: Json
   latest_score_confidence: Float
   latest_computed_priority: String
+  latest_priority: String
   latest_nb_status: String
   latest_title: String
   latest_snoozed_until: Datetime
@@ -7422,6 +7924,11 @@ type ticket_create_meta_response {
   data: jsonb!
 }
 
+type ticket_transition_meta_response {
+  data: jsonb!
+  warning: String
+}
+
 type ticket_field_values_response {
   data: jsonb!
 }
@@ -7838,8 +8345,19 @@ type event_resolve_output {
   data: [jsonb]!
 }
 
+type EventRollbackCheckResponse {
+  allowed: Boolean!
+  reason: String
+}
+
 type auto_optimize_update_status_response {
   status: String!
+}
+
+type auto_optimize_update_approval_response {
+  id: uuid!
+  status: String!
+  message: String
 }
 
 type AIResponse {
@@ -7957,6 +8475,10 @@ type AIGeneratedQuery {
   session_id: String
 }
 
+type AIGenerateDashboardResponse {
+  data: AIGeneratedQuery!
+}
+
 type AIGetLogQueryResponse {
   data: AIGeneratedQuery!
 }
@@ -7991,6 +8513,21 @@ type AiFeedbackResponse {
   user_corrected_response: String
   conversation_id: String
   user_id: String
+}
+
+input ListOwnConversationFeedbackRequest {
+  cloud_account_id: String!
+  session_id: [String!]!
+}
+
+type ListOwnConversationFeedbackResponse {
+  rows: [OwnFeedbackRow]
+}
+
+type OwnFeedbackRow {
+  session_id: String
+  useful: Boolean
+  additional_notes: String
 }
 
 type InsightResponse {
@@ -8106,6 +8643,12 @@ type CreateIntegrationConfigResponse {
   schema: jsonb
 }
 
+input UpdateMCPWriteToolsRequest {
+  integration_id: String!
+  "The MCP server's tool names that ask for approval, comma separated; empty for none."
+  write_tools: String!
+}
+
 type DeleteIntegrationConfigResponse {
   status: String!
 }
@@ -8118,6 +8661,11 @@ type IntegrationTestConnectionResponse {
   success: Boolean!
   message: String
   error: String
+}
+
+type IntegrationMCPHealthCheckResponse {
+  integration_id: String!
+  health: jsonb
 }
 
 type AnomalyTemplateListResponse {
@@ -8177,6 +8725,16 @@ type AlertActionListResponse {
 
 type AlertAction {
   actions: jsonb!
+}
+
+type CheckLLMDefaultsResponse {
+  env_configured: Boolean
+  tenant_default: jsonb
+  replaces_tenant_default: jsonb
+  becomes_tenant_wide: Boolean
+  affected: jsonb
+  replaced_account_defaults: jsonb
+  blocked: jsonb
 }
 
 type IntegrationSchemaResponse {
@@ -8283,6 +8841,7 @@ type AiConversationAgent {
   parent_agent_id: String
   status: String
   references: String
+  plan_state: String
   created_at: timestamptz!
   updated_at: timestamptz!
 }
@@ -8434,6 +8993,17 @@ type Comment {
   comment: String!
   created_at: String!
   updated_at: String
+  attachments: [CommentAttachment]
+}
+
+# Exactly one of id or url is set: id is an opaque token the backend resolves to
+# bytes via ticket_get_attachment (ServiceNow, Jira - their files need the stored
+# platform credentials to fetch); url is already directly fetchable (Freshdesk).
+type CommentAttachment {
+  id: String
+  name: String!
+  content_type: String
+  url: String
 }
 
 type CreateAgentRagOutput {
@@ -8465,33 +9035,6 @@ type TenantAttributeResponse {
   updated_at: Datetime!
   value: String!
   tenant_id: String!
-}
-
-type CreateFunctionResponse {
-  success: Boolean!
-  message: String!
-  function: LLMFunctionCreateResponse
-}
-
-type LLMFunctionCreateResponse {
-  id: String!
-  name: String!
-  description: String!
-  prompt: String!
-  variables: [String!]
-  variable_defaults: jsonb
-  status: String!
-  version: Int
-  account_id: String!
-  tenant_id: String!
-  created_by: String
-  updated_by: String
-  created_at: Datetime
-  updated_at: Datetime
-}
-
-type FunctionResponse {
-  data: CreateFunctionResponse!
 }
 
 type AIStopInvestigationResponse {
@@ -8529,6 +9072,13 @@ type UserTokenCreateResponse {
   kind: String
   expires_at: String
   scopes: [String]
+  gateway_policy: GatewayPolicy
+}
+
+type GatewayPolicy {
+  providers: [String]
+  models: [String]
+  endpoints: [String]
 }
 
 type UserTokenDeleteResponse {
@@ -8545,6 +9095,18 @@ type UserAuthTokenResponse {
   tokens: [UserAuthToken]
 }
 
+type TenantTokenListResponse {
+  tokens: [UserAuthToken]
+  total: Int
+}
+
+type TenantTokenDeleteResponse {
+  id: String
+  name: String
+  owner_id: String
+  status: String
+}
+
 type UserAuthToken {
   id: String
   name: String
@@ -8555,6 +9117,12 @@ type UserAuthToken {
   accessed_at: timestamp
   expires_at: timestamp
   scopes: [String]
+  token_suffix: String
+  owner_id: String
+  owner_name: String
+  last_provider: String
+  last_model: String
+  gateway_policy: GatewayPolicy
   limits: [TokenLimit]
   usage: TokenUsage
 }
@@ -8564,6 +9132,7 @@ type TokenLimit {
   period: String
   value: Float
   model: String
+  soft_pct: Int
 }
 
 type TokenUsage {
@@ -8681,7 +9250,14 @@ type ProviderCapabilities {
   supported_operators: [String]
   supported_operator_descriptors: [OperatorDescriptor!]
   label_mappings: jsonb
+  # The provider-independent log vocabulary a caller may filter on, minus anything
+  # this provider cannot resolve. Logs only. See #39573.
+  canonical_fields: [String]
   default_index: String
+  # True when the provider's "By Traces" listing can only be returned newest first, so a
+  # client must not offer or send another order for that view — it is refused, not
+  # reordered. Traces only; absent means "order it however you like". See #41495.
+  by_trace_natural_order_only: Boolean
 }
 
 type OperatorDescriptor {
@@ -8842,8 +9418,37 @@ type CreateAgentExtensionResponse {
   err: jsonb
 }
 
-type AiDeleteFunctionResponse {
-  data: jsonb
+input MetricsCheckVmStatusRequest {
+  account_id: String!
+}
+
+input LogsCheckVmStatusRequest {
+  account_id: String!
+}
+
+type VMLogsStatus {
+  state: String!
+  provider: String
+  integration_id: String
+  integration_name: String
+  error: String
+}
+
+type VMReportingAgent {
+  instance: String!
+  hostname: String
+}
+
+type VMMetricsStatus {
+  state: String!
+  provider: String
+  integration_id: String
+  integration_name: String
+  error: String
+  scope: String
+  inventory: Int
+  other_agents: Int
+  reporting: [VMReportingAgent!]!
 }
 
 type OutputMetricLabels {
@@ -8860,10 +9465,6 @@ type UpgradeExecuteCommandResponse {
   success: Boolean
   output: String
   error: String
-}
-
-type FunctionUpdateResponse {
-  data: jsonb!
 }
 
 type TracesGroupV3CountResponse {
@@ -8996,6 +9597,36 @@ type WorkflowExecutionCountResponse {
   count: Int!
 }
 
+input WorkflowListAISettingsRequest {
+  account_ids: [String]
+}
+
+input WorkflowUpdateAISettingsRequest {
+  account_id: String!
+  id: String!
+  ai_invocable: Boolean!
+  ai_auto_approve: Boolean!
+}
+
+"An automation offered, or that could be offered, to Nubi as a tool."
+type WorkflowAISetting {
+  id: String!
+  name: String!
+  account_id: String!
+  status: String
+  ai_invocable: Boolean
+  ai_auto_approve: Boolean
+  "Nubi is offered it right now, judged on the published version."
+  offered: Boolean
+  "Why it is not offered: not_enabled, not_opted_in, not_active, not_published, no_manual_trigger or no_llm_description."
+  not_offered_reason: String
+  created_by_user: WorkflowUser
+}
+
+type WorkflowListAISettingsResponse {
+  workflows: [WorkflowAISetting]
+}
+
 type WorkflowUser {
   id: String
   display_name: String
@@ -9012,6 +9643,7 @@ type Workflow {
   last_execution_status: String
   last_execution_time: timestamp
   last_execution_version: Int
+  last_execution_failed_step_count: Int
   name: String!
   created_by: String
   created_by_user: WorkflowUser
@@ -9022,6 +9654,8 @@ type Workflow {
   created_from_session_id: String
   description: String
   ai_invocable: Boolean
+  "The author allowed Nubi to run it without asking."
+  ai_auto_approve: Boolean
 }
 
 type WorkflowDefinition {
@@ -9057,6 +9691,7 @@ type WorkflowDefinitionInput {
   description: String
   type: String
   default: String
+  required: Boolean
 }
 
 type WorkflowDefinitionTrigger {
@@ -9131,6 +9766,9 @@ type WorkflowExecutionGetResponse {
   workflow_result: jsonb
   error: String
   tasks: [WorkflowExecutionTaskResponse]
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 type WorkflowExecutionTaskResponse {
@@ -9172,6 +9810,9 @@ type WorkflowExecutionSummary {
   workflow_name: String
   version: Int
   version_number: Int
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 # A dashboard row: the standard summary plus the fields Temporal's visibility
@@ -9192,6 +9833,9 @@ type AccountExecutionSummary {
   duration_ms: Float
   user_name: String
   failure_reason: String
+  failed_step_count: Int
+  first_failed_step: String
+  first_failed_step_error: String
 }
 
 type AccountExecutionListResponse {
@@ -9257,6 +9901,11 @@ type FetchMetricQueryOutput {
 
 type WorkflowDeleteResponse {
   message: String!
+}
+
+type WorkflowGetAccountResponse {
+  id: String!
+  account_id: String!
 }
 
 type WorkflowListCallersResponse {
@@ -9527,6 +10176,16 @@ type RulePreviewSampleEvent {
   service: String
 }
 
+type RemediationResolveEvent {
+  event_id: String!
+  prev_status: String!
+  new_status: String!
+}
+
+type RemediationResolveResponse {
+  events: [RemediationResolveEvent!]!
+}
+
 type UpdateNBStatusResponse {
   success: Boolean!
   prev_status: String!
@@ -9633,6 +10292,8 @@ type kg_filter_options {
   node_bucket_idx: jsonb
   specific_type_dict: [String]
   cluster_dict: [String]
+  display_name_node_idx: jsonb
+  display_names: [String]
   filter_buckets: jsonb
   label_key_buckets: jsonb
   attribute_key_buckets: jsonb
@@ -9720,6 +10381,8 @@ type KnowledgebaseOutput {
   id: String!
   tenant_id: String!
   account_id: String!
+  visibility: String
+  switched_off: Boolean
   name: String!
   description: String
   data: String!
@@ -9742,6 +10405,8 @@ type KnowledgebaseOutput {
   shapes: [String!]
   capabilities: [String!]
   capability_details: [CapabilityDetail!]
+  source_id: String
+  skill_meta: jsonb
 }
 
 type CapabilityDetail {
@@ -9863,6 +10528,10 @@ type KBDocument {
   content_type: String
   document_key: String
   note_category: String
+  account_marks: Int
+  kind: String
+  shape: String
+  capabilities: [String!]
 }
 
 input UpsertKBDocumentCategoryRequest {
@@ -10198,6 +10867,11 @@ type ThresholdSuggestionDetail {
   estimated_reduction: Float!
   method: String
   recommendation_type: String
+  recommendation_label: String
+  current_duration_seconds: Int
+  measured_on: String
+  measured_on_other: Boolean
+  fetch_failed_at: String
   suggested_duration: Int
   duration_reason: String
   risk_level: String
@@ -10226,6 +10900,7 @@ type ThresholdSuggestionListItem {
   estimated_reduction: Float
   method: String
   recommendation_type: String
+  recommendation_label: String
   computed_at: String
   event_aggregation_key: String
   firing_analysis: jsonb
@@ -10235,6 +10910,9 @@ type ThresholdSuggestionListItem {
   apply_status: String
   apply_method: String
   applied_at: String
+  pr_url: String
+  resolution_status: String
+  resolution_message: String
 }
 
 type ThresholdApplyOption {
@@ -10252,6 +10930,9 @@ type ThresholdApplyOptionsOutput {
   current_threshold: Float
   new_threshold: Float
   operator: String
+  current_duration_seconds: Int
+  current_duration_known: Boolean
+  new_duration_minutes: Int
 }
 
 type ThresholdApplyResultOutput {
@@ -10385,6 +11066,7 @@ type Integration {
   source: String
   status: String
   labels: jsonb
+  health: jsonb
   created_at: Datetime
   updated_at: Datetime
   created_by: String
@@ -11367,6 +12049,7 @@ input NotificationChannelAccountMappingWhereRequest {
   channel_id: QueryWhereStringRequest
   tenant_id: QueryWhereStringRequest
   created_at: QueryWhereDatetimeRequest
+  is_system_managed: QueryWhereBooleanRequest
 }
 
 type NotificationChannelAccountMappingResponse {
@@ -11386,6 +12069,7 @@ type NotificationChannelAccountMappingRowResponse {
   account_name: String
   cloud_provider: String
   created_by_display_name: String
+  is_system_managed: Boolean
 }
 
 type Query {
@@ -11606,15 +12290,6 @@ type Query {
 }
 
 type Query {
-  ai_list_functions(
-    where: LlmFunctionsWhereRequest
-    limit: Int
-    offset: Int
-    order_by: [QuerySortByRequest!]
-  ): LlmFunctionsResponse
-}
-
-type Query {
   ai_list_agent_installations(
     where: LlmAgentsInstallationWhereRequest
     limit: Int
@@ -11761,17 +12436,6 @@ input EventResolutionGroupingsWhereRequest {
   event_cloud_account_id: QueryWhereStringRequest
 }
 
-input LlmFunctionsWhereRequest {
-  _and: [LlmFunctionsWhereRequest]
-  _or: [LlmFunctionsWhereRequest]
-  _not: LlmFunctionsWhereRequest
-  id: QueryWhereStringRequest
-  tenant_id: QueryWhereStringRequest
-  account_id: QueryWhereStringRequest
-  name: QueryWhereStringRequest
-  status: QueryWhereStringRequest
-}
-
 type AutoPilotTaskResponse {
   rows: [AutoPilotTaskRowResponse]
 }
@@ -11889,6 +12553,7 @@ type RecommendationResolutionGroupingsResponse {
 
 type RecommendationResolutionGroupingsRowResponse {
   count: Int
+  sum_rec_estimated_savings: Float
   resolver_type: String
   type: String
   recommendation_id: String
@@ -11918,6 +12583,8 @@ type EventResolutionRowResponse {
   event_cloud_account_id: String
   event_priority: String
   event_category: String
+  pr_lifecycle_state: String
+  last_pr_check_at: Datetime
 }
 
 type EventResolutionGroupingsResponse {
@@ -11926,27 +12593,6 @@ type EventResolutionGroupingsResponse {
 
 type EventResolutionGroupingsRowResponse {
   count: Int
-}
-
-type LlmFunctionsResponse {
-  rows: [LlmFunctionsRowResponse]
-}
-
-type LlmFunctionsRowResponse {
-  id: String
-  tenant_id: String
-  account_id: String
-  name: String
-  description: String
-  prompt: String
-  variables: Json
-  variable_defaults: Json
-  status: String
-  version: Int
-  created_by: String
-  updated_by: String
-  created_at: Datetime
-  updated_at: Datetime
 }
 
 type Query {
@@ -12813,6 +13459,7 @@ type AILlmWatchRow {
   expires_at: String!
   created_at: String!
   updated_at: String!
+  origin: String
 }
 
 type AILlmWatchCancelResponse {
@@ -12897,6 +13544,7 @@ input DashboardSaveRequest {
   status: String
   message: String
   bindings: [DashboardBindingInput]
+  expected_version: Int
 }
 
 type Dashboard {
@@ -12915,6 +13563,7 @@ type Dashboard {
   created_at: Datetime
   updated_at: Datetime
   version: Int
+  updated_by_name: String
 }
 
 type DashboardBinding {

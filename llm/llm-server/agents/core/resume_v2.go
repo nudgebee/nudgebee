@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -259,6 +260,11 @@ func resumeFollowupLocked(ctx *security.RequestContext, req NBAgentRequest) (NBA
 	// sub-agent's refine already wrote its config, we must surface it here or
 	// refine will overwrite message_config losing the sibling's choice (#28141).
 	req.QueryConfig = mergeLatestMessageConfig(dao, req.MessageId, req.AccountId, req.ConversationId, req.QueryConfig, logger, "resume_v2: merged existing message_config into request QueryConfig")
+	// Messages saved before the write-off existed lack it in message_config; sibling and parent resumes merge onto this.
+	runSource := storedRunSource(dao, req)
+	if !isChatOrAlertSource(runSource) {
+		req.QueryConfig.Memory = withMemoryWriteOff(req.QueryConfig.Memory)
+	}
 	req = withOriginalQuestion(ctx, req)
 
 	// A resumed turn ends here rather than in the save-back that drains the
@@ -685,7 +691,7 @@ func bubbleUpIfSiblingsDone(ctx *security.RequestContext, req NBAgentRequest, ch
 	// For terminal non-complete states (FAILED), also persist message content.
 	// WAITING states leave the message alone — another resume will finalize it.
 	if finalStatus == ConversationStatusFailed {
-		persistFinalMessage(ctx, req.MessageId, parentResp)
+		persistFinalMessage(ctx, req, parentResp)
 	}
 	if err := dao.UpdateConversationStatus(req.ConversationId, finalStatus); err != nil {
 		logger.Warn("resume_v2: failed to persist post-parent status", "error", err)
@@ -732,12 +738,12 @@ func resolveBubbleUpParent(
 // that needed a followup (any confirm-to-proceed, pick-one, or extra-input
 // exchange) — #37534.
 func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequest, resp NBAgentResponse) {
-	persistFinalMessage(ctx, req.MessageId, resp)
+	persistFinalMessage(ctx, req, resp)
 	if err := GetConversationDao().UpdateConversationStatus(req.ConversationId, ConversationStatusCompleted); err != nil {
 		ctx.GetLogger().Warn("resume_v2: failed to mark conversation complete", "error", err)
 	}
 
-	if resp.AgentName == ToolLlm {
+	if resp.AgentName == llmruntime.ToolLlm {
 		return
 	}
 
@@ -767,7 +773,7 @@ func finalizeCompletedConversation(ctx *security.RequestContext, req NBAgentRequ
 		return
 	}
 
-	ScoreAnswerConfidenceAsync(ctx, req, answer)
+	ScoreAnswerConfidenceAsync(ctx, req, toolcore.StripChartData(answer))
 }
 
 // withOriginalQuestion restores the turn's original question on a followup
@@ -792,7 +798,7 @@ func withOriginalQuestion(ctx *security.RequestContext, req NBAgentRequest) NBAg
 	// The stored message keeps the routed @agent mention; the first run's
 	// OriginalQuery was seeded after executeAgent stripped it.
 	req.OriginalQuery = stripRoutedAgentMention(question)
-	req.OriginalQueryFromUser = isUserConversationSource(req.ConversationSource)
+	req.OriginalQueryFromUser = IsUserConversationSource(req.ConversationSource)
 	return req
 }
 
@@ -827,7 +833,8 @@ func loadOriginalQuestion(req NBAgentRequest) (string, error) {
 // but resume_v2 bubbles up through executeAgent directly and must persist
 // the message itself — otherwise the UI sees conversation=COMPLETED but
 // message.status=IN_PROGRESS with empty response (bug surfaced in #28141).
-func persistFinalMessage(ctx *security.RequestContext, messageID string, resp NBAgentResponse) {
+func persistFinalMessage(ctx *security.RequestContext, req NBAgentRequest, resp NBAgentResponse) {
+	messageID := req.MessageId
 	if messageID == "" {
 		return
 	}
@@ -835,6 +842,10 @@ func persistFinalMessage(ctx *security.RequestContext, messageID string, resp NB
 	if status == "" {
 		status = ConversationStatusCompleted
 	}
+	// In place: resp.Response shares its array with the caller, so the response
+	// it returns carries the charts and the run record too.
+	resolveAnswerCharts(req.ConversationId, resp.Response)
+	applyRunReceipt(ctx, req.AccountId, messageID, storedRunSource(GetConversationDao(), req), resp.Response)
 	content := ""
 	if len(resp.Response) > 0 {
 		content = resp.Response[0]
@@ -842,6 +853,15 @@ func persistFinalMessage(ctx *security.RequestContext, messageID string, resp NB
 	if err := GetConversationDao().UpdateConversationMessage(messageID, content, status); err != nil {
 		ctx.GetLogger().Warn("resume_v2: failed to persist final message", "error", err, "message_id", messageID)
 	}
+}
+
+// storedRunSource is the run's stored source, not the request's: an approval
+// answered from the UI arrives as a chat.
+func storedRunSource(dao IConversationDao, req NBAgentRequest) ConversationSource {
+	if conversation, err := dao.GetConversation(req.ConversationId); err == nil && conversation.Source != nil && *conversation.Source != "" {
+		return *conversation.Source
+	}
+	return req.ConversationSource
 }
 
 // mergeLatestMessageConfig reads the current message_config JSON off the

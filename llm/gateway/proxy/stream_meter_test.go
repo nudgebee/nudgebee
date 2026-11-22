@@ -50,3 +50,30 @@ func TestStream_MetersOnPreHeaderFailure(t *testing.T) {
 	assert.NotEqual(t, 200, ev.StatusCode, "failed stream must not record a 200")
 	assert.Zero(t, ev.TotalTokens)
 }
+
+func TestReqMeta_TTFT(t *testing.T) {
+	start := time.Now().Add(-2 * time.Second)
+
+	streamed := &reqMeta{streaming: true, start: start}
+	assert.Nil(t, streamed.ttftMs(), "no chunk yet → no TTFT")
+	streamed.markFirstChunk()
+	first := streamed.firstChunk
+	streamed.markFirstChunk() // later chunks don't move it
+	assert.Equal(t, first, streamed.firstChunk)
+	if got := streamed.ttftMs(); assert.NotNil(t, got) {
+		assert.InDelta(t, 2000, *got, 100)
+	}
+
+	unary := &reqMeta{streaming: false, start: start}
+	unary.markFirstChunk()
+	assert.Nil(t, unary.ttftMs(), "TTFT is only recorded for streamed requests")
+}
+
+func TestReqMeta_TTFTAfterFailoverExcludesPrimary(t *testing.T) {
+	rm := &reqMeta{streaming: true, start: time.Now().Add(-8 * time.Second)}
+	rm.attemptStart = time.Now().Add(-500 * time.Millisecond) // fallback began after an 8s primary failure
+	rm.markFirstChunk()
+	if got := rm.ttftMs(); assert.NotNil(t, got) {
+		assert.InDelta(t, 500, *got, 100)
+	}
+}

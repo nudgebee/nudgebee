@@ -2,7 +2,7 @@
 import { Page, Locator, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
-import { MyUsageLocators, ALL_ACCOUNTS_LABEL, KPI_TENANT_SPEND, PERIOD_HEADER_PATTERN } from "./myUsageLocators";
+import { MyUsageLocators, KPI_TENANT_SPEND, PERIOD_HEADER_PATTERN } from "./myUsageLocators";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
 // app/src/api1/budget/index.ts names the per-account budget read this way; it is

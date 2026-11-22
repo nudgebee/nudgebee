@@ -29,9 +29,11 @@ query list_account {
   }
   integrations: integrations_list(where: __WHERE_INTEGRATIONS__) {
     rows {
+      id
       type
       status
       name
+      source
       integrations_cloud_accounts
     }
   }
@@ -221,6 +223,29 @@ mutation DeleteMessagingPlatform($object: messaging_platform_delete_input!) {
 }
 `;
 
+// MS Teams is connected only through its integration (a bound team): a legacy
+// messaging_platforms row of it is never a connection.
+const withoutLegacyTeams = (rows: any[]) => (Array.isArray(rows) ? rows.filter((r) => r?.platform !== 'ms_teams') : []);
+
+export const DELETE_MS_TEAMS_TEAM = `
+mutation DeleteMsTeamsTeam($team_id: String!) {
+  notifications_delete_ms_teams_team(team_id: $team_id) {
+    success
+    error
+  }
+}
+`;
+
+export const DELETE_MS_TEAMS_CONNECTION = `
+mutation DeleteMsTeamsConnection {
+  notifications_delete_ms_teams_connection {
+    success
+    released_teams
+    error
+  }
+}
+`;
+
 export const INSERT_ACC_ATTRIBUTE = `
 mutation InsertAccountAttribute($object: cloud_account_attrs_upsert_input!) {
   cloud_account_attrs_upsert(object: $object) {
@@ -232,6 +257,14 @@ mutation InsertAccountAttribute($object: cloud_account_attrs_upsert_input!) {
 export const UPDATE_ACCOUNT = `
 mutation UpdateCloudAccount($object: cloud_account_update_input!) {
   cloud_account_update(object: $object) {
+    affected_rows
+  }
+}
+`;
+
+export const UPDATE_CREDENTIALS = `
+mutation UpdateCloudCredentials($object: cloud_update_credentials_input!) {
+  cloud_update_credentials(object: $object) {
     affected_rows
   }
 }
@@ -279,17 +312,17 @@ const apiAccount = {
     }
   },
   getNotificationUserList: async function (platform: string) {
-    try {
-      const response = await queryGraphQL(GET_NOTIFICATION_USER_LIST, 'GetUserList', {
-        platform: platform,
-      });
-      return {
-        data: response?.data?.data?.notification_get_user_list || [],
-      };
-    } catch (err) {
-      console.error('Failed to get notification user list:', err);
-      throw err;
+    const response = await queryGraphQL(GET_NOTIFICATION_USER_LIST, 'GetUserList', { platform });
+    // The gateway answers an upstream failure with HTTP 200 and an errors array;
+    // throw so the picker shows an error, not "No users available" (#41063).
+    if (response?.data?.errors?.length) {
+      throw new Error(response.data.errors[0]?.message || 'Failed to list users');
     }
+    const result = response?.data?.data?.notification_get_user_list;
+    if (!Array.isArray(result?.data)) {
+      throw new Error('User list response had no users array');
+    }
+    return { data: result };
   },
   getMessagingPlatform: async function (platform_type: string) {
     try {
@@ -299,24 +332,27 @@ const apiAccount = {
       }
       const response = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object });
       return {
-        data: response?.data?.data?.messagingplatforms_list?.data || [],
+        data: withoutLegacyTeams(response?.data?.data?.messagingplatforms_list?.data || []),
       };
     } catch (err) {
       console.log('Failed to fetch platform', { platform_type, err });
       return err;
     }
   },
-  // Unified Slack/MS Teams installs across the legacy messaging_platforms table and
-  // the new integrations storage (token encrypted at rest). Integration installs win
-  // over legacy (one per tenant). Normalized to the legacy install shape so the
-  // messaging modal renders both identically; `_origin` routes channel edits/deletes.
+  // Unified Slack installs across the legacy messaging_platforms table and the new
+  // integrations storage (token encrypted at rest). Integration installs win over
+  // legacy (one per tenant). MS Teams comes only from its integration. Normalized to
+  // the legacy install shape so the messaging modal renders both identically;
+  // `_origin` routes channel edits/deletes.
   getMessagingInstallations: async function (platform_type: string) {
     let legacy: any[] = [];
     try {
-      const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', {
-        object: { platform: platform_type },
-      });
-      legacy = lr?.data?.data?.messagingplatforms_list?.data || [];
+      if (platform_type !== 'ms_teams') {
+        const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', {
+          object: { platform: platform_type },
+        });
+        legacy = lr?.data?.data?.messagingplatforms_list?.data || [];
+      }
     } catch {
       legacy = [];
     }
@@ -361,7 +397,9 @@ const apiAccount = {
         return { ...base, channels };
       }
       const channels = cfg.default_channel_id ? JSON.stringify({ id: cfg.default_channel_id, name: cfg.default_channel_name || '' }) : null;
-      return { ...base, channels };
+      // Unset means repeats thread, matching notifications-server.
+      const thread_repeats = String(cfg.thread_repeats ?? '').toLowerCase() !== 'false';
+      return { ...base, channels, thread_repeats };
     });
     return { data: normalized };
   },
@@ -382,7 +420,7 @@ const apiAccount = {
     try {
       const response = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object: {} });
       return {
-        data: response?.data?.data?.messagingplatforms_list?.data,
+        data: withoutLegacyTeams(response?.data?.data?.messagingplatforms_list?.data || []),
       };
     } catch (err) {
       console.log(`Failed to list messaging platform- `, err);
@@ -404,7 +442,7 @@ const apiAccount = {
       const lr: any = await queryGraphQL(LIST_MESSAGING_PLATFORMS_ACTION, 'ListMessagingPlatforms', { object: {} });
       if (lr instanceof Error) throw lr;
       if (lr?.data?.errors?.length) throw new Error(lr.data.errors[0]?.message || 'ListMessagingPlatforms failed');
-      (lr?.data?.data?.messagingplatforms_list?.data || []).forEach((m: { platform?: string }) => {
+      withoutLegacyTeams(lr?.data?.data?.messagingplatforms_list?.data || []).forEach((m: { platform?: string }) => {
         if (m?.platform) connected.add(m.platform);
       });
     } catch (err) {
@@ -447,7 +485,8 @@ const apiAccount = {
   async getAllAccount() {
     try {
       const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry', 'SelfHosted'];
-      const messagingPlatforms = ['slack', 'ms_teams', 'google_chat', 'discord'];
+      // MS Teams is read from its integration rows only.
+      const messagingPlatforms = ['slack', 'google_chat', 'discord'];
       const integrationTypes = [
         'github',
         'gitlab',
@@ -481,6 +520,7 @@ const apiAccount = {
         'prometheus',
         'otel_clickhouse',
         'chronosphere',
+        'orion',
         'ssh',
         'observe',
         'jaeger',
@@ -510,6 +550,7 @@ const apiAccount = {
         'openobserve_webhook',
         'workflow_webhook',
         'event_webhook',
+        'orion_webhook',
         'google_chat_space',
         'slack',
         'ms_teams',
@@ -644,6 +685,14 @@ const apiAccount = {
       return err;
     }
   },
+  deleteMsTeamsTeam: async function (teamId: string) {
+    const response = await queryGraphQL(DELETE_MS_TEAMS_TEAM, 'DeleteMsTeamsTeam', { team_id: teamId });
+    return response?.data?.data?.notifications_delete_ms_teams_team;
+  },
+  deleteMsTeamsConnection: async function () {
+    const response = await queryGraphQL(DELETE_MS_TEAMS_CONNECTION, 'DeleteMsTeamsConnection', {});
+    return response?.data?.data?.notifications_delete_ms_teams_connection;
+  },
   insertAccAttr: async function (data: any) {
     try {
       const response = await queryGraphQL(INSERT_ACC_ATTRIBUTE, 'InsertAccountAttribute', {
@@ -731,6 +780,8 @@ const apiAccount = {
             supports_service_map
             supports_alert_rules
             alert_rules_reason
+            canonical_fields
+            by_trace_natural_order_only
             supported_operator_descriptors {
               token
               chip_label
@@ -873,6 +924,39 @@ const apiAccount = {
       return response?.data?.data?.cloud_check_credentials;
     } catch (err) {
       console.log('validateCloudCredentials error:', err);
+      throw err;
+    }
+  },
+  // Rotate a connected account's stored credential in place (Azure client
+  // secret, GCP service-account key, AWS role or access keys), on every account
+  // sharing it. validate_only runs the same checks without saving. Returns the full response so the caller can read both
+  // affected_rows and any GraphQL errors.
+  updateCredentials: async function (data: {
+    id: string;
+    cloud_provider: string;
+    client_secret?: string;
+    credentials_json?: string;
+    assume_role?: string;
+    access_key?: string;
+    access_secret?: string;
+    validate_only?: boolean;
+  }) {
+    try {
+      const response = await queryGraphQL(UPDATE_CREDENTIALS, 'UpdateCloudCredentials', {
+        object: {
+          id: data.id,
+          cloud_provider: data.cloud_provider,
+          client_secret: data.client_secret,
+          credentials_json: data.credentials_json,
+          assume_role: data.assume_role,
+          access_key: data.access_key,
+          access_secret: data.access_secret,
+          validate_only: data.validate_only,
+        },
+      });
+      return response;
+    } catch (err) {
+      console.log('updateCredentials error:', err);
       throw err;
     }
   },

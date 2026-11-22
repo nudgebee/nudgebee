@@ -8,6 +8,7 @@ import (
 	"math"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 )
 
 func ec2StatusToNbStatus(status string) providers.ResourceStatus {
@@ -361,6 +363,90 @@ func (a *amazonEc2) applyEBSGp3Upgrade(ctx providers.CloudProviderContext, accou
 	}
 }
 
+func (a *amazonEc2) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	if recommendation.RuleName != "aws_ec2_ebs_generation_upgrade" {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	volumeID, _ := recommendation.Data["volume_id"].(string)
+	if volumeID == "" {
+		return providers.ApplyStatusResult{}, fmt.Errorf("EBS gp3 upgrade status: missing volume_id in recommendation data")
+	}
+	region, _ := recommendation.Data["volume_region"].(string)
+	if region == "" {
+		region = recommendation.ResourceRegion
+	}
+
+	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
+	if err != nil {
+		return providers.ApplyStatusResult{}, fmt.Errorf("failed to create aws config: %w", err)
+	}
+	cfg.Region = region
+	client := ec2.NewFromConfig(cfg)
+
+	modsOut, err := client.DescribeVolumesModifications(ctx.GetContext(), &ec2.DescribeVolumesModificationsInput{
+		VolumeIds: []string{volumeID},
+	})
+	// A volume that was never modified is an error, not an empty list; fall
+	// through to its current type.
+	if err != nil && !isVolumeModificationNotFound(err) {
+		return providers.ApplyStatusResult{}, fmt.Errorf("failed to describe modifications for volume %s: %w", volumeID, err)
+	}
+	if modsOut != nil {
+		if result, found := ebsGp3ApplyStatus(modsOut.VolumesModifications); found {
+			return result, nil
+		}
+	}
+
+	// No gp3 modification on record: settle from the volume's current type instead.
+	volOut, err := client.DescribeVolumes(ctx.GetContext(), &ec2.DescribeVolumesInput{VolumeIds: []string{volumeID}})
+	if err != nil {
+		return providers.ApplyStatusResult{}, fmt.Errorf("failed to describe volume %s: %w", volumeID, err)
+	}
+	if len(volOut.Volumes) == 1 && volOut.Volumes[0].VolumeType == types.VolumeTypeGp3 {
+		return providers.ApplyStatusResult{Status: providers.ApplyStatusSucceeded, Message: "Volume is now gp3."}, nil
+	}
+	// Describe calls are eventually consistent, so a modification started moments ago
+	// may not be listed yet. Report that as unknown rather than failed.
+	return providers.ApplyStatusResult{}, fmt.Errorf("no gp3 modification is on record yet for volume %s and it is not gp3", volumeID)
+}
+
+func isVolumeModificationNotFound(err error) bool {
+	var apiErr smithy.APIError
+	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "InvalidVolumeModification.NotFound"
+}
+
+// ebsGp3ApplyStatus reads the outcome of the most recent gp3 modification. The new type
+// is in effect once a modification reaches optimizing, so that counts as done; only
+// performance is still converging. found is false when no gp3 modification is on record.
+func ebsGp3ApplyStatus(mods []types.VolumeModification) (result providers.ApplyStatusResult, found bool) {
+	var latest *types.VolumeModification
+	for i := range mods {
+		m := &mods[i]
+		if m.TargetVolumeType != types.VolumeTypeGp3 {
+			continue
+		}
+		if latest == nil || (m.StartTime != nil && (latest.StartTime == nil || m.StartTime.After(*latest.StartTime))) {
+			latest = m
+		}
+	}
+	if latest == nil {
+		return providers.ApplyStatusResult{}, false
+	}
+
+	switch latest.ModificationState {
+	case types.VolumeModificationStateOptimizing, types.VolumeModificationStateCompleted:
+		return providers.ApplyStatusResult{Status: providers.ApplyStatusSucceeded, Message: "Volume is now gp3."}, true
+	case types.VolumeModificationStateFailed:
+		msg := "The gp3 modification failed; the volume stays on its current type."
+		if reason := aws.ToString(latest.StatusMessage); reason != "" {
+			msg += " " + reason
+		}
+		return providers.ApplyStatusResult{Status: providers.ApplyStatusFailed, Message: msg}, true
+	default:
+		return providers.ApplyStatusResult{Status: providers.ApplyStatusInProgress, Message: "The gp3 modification is still running."}, true
+	}
+}
+
 func (a *amazonEc2) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
 	var resultMessage string
 	var resultErr error
@@ -483,7 +569,7 @@ func (a *amazonEc2) GetResources(ctx providers.CloudProviderContext, account pro
 	// Fetch all CloudWatch alarms for this region once, instead of per-instance.
 	// This avoids N separate STS AssumeRole + DescribeAlarms calls that can exhaust
 	// the request context timeout for accounts with many instances.
-	alarmsByResource := fetchAlarmsByResource(ctx, account, region)
+	alarmsByResource, alarmsErr := fetchAlarmsByResource(ctx, account, region)
 
 	instancesPaginator := ec2.NewDescribeInstancesPaginator(svc, &ec2.DescribeInstancesInput{})
 	for instancesPaginator.HasMorePages() {
@@ -555,7 +641,9 @@ func (a *amazonEc2) GetResources(ctx providers.CloudProviderContext, account pro
 				meta := structToMap(instance)
 				meta["InstanceTypeDetails"] = instanceTypeMap[instanceType]
 
-				meta["AlarmDetails"] = alarmsByResource[*instance.InstanceId]
+				if alarmsErr == nil {
+					meta["AlarmDetails"] = alarmsByResource[*instance.InstanceId]
+				}
 
 				resource := providers.Resource{
 					Id:          *instance.InstanceId,
@@ -1767,6 +1855,10 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 					// Check if alarm is missing
 					isMissing, err := IsAlarmMissing(resource, template, resource.Id)
+					if errors.Is(err, ErrAlarmDetailsUnknown) {
+						recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+						continue
+					}
 					if err != nil {
 						ctx.GetLogger().Warn("Error checking alarm", "error", err, "template", template.Name, "resourceId", resource.Id)
 						continue
@@ -1833,7 +1925,24 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 		}
 	}
 
+	recommendations = append(recommendations, a.diskPerformanceRecommendations(ctx, account, filter, existingResources)...)
+
 	return recommendations, nil
+}
+
+// ec2InstanceIDRegex matches an instance id, the only resource id that is safe
+// to put into a Logs Insights regex as a stream prefix.
+var ec2InstanceIDRegex = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+
+// LogStreamPrefix scopes a detected log group to the instance's own streams.
+// GetLogGroupName picks the group because it holds a stream named after the
+// instance, and the CloudWatch agent's default groups hold one such stream per
+// instance, so the group alone would return every instance's logs.
+func (a *amazonEc2) LogStreamPrefix(resourceId string) string {
+	if !ec2InstanceIDRegex.MatchString(resourceId) {
+		return ""
+	}
+	return resourceId
 }
 
 func (a *amazonEc2) GetLogGroupName(ctx providers.CloudProviderContext, account providers.Account, region, resourceId string) (string, error) {

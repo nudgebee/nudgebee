@@ -28,6 +28,7 @@ const FLOW_SOURCES = [
   { id: 'ebpf', label: 'eBPF' },
   { id: 'traces', label: 'Traces' },
   { id: 'datadog-apm', label: 'Datadog APM' },
+  { id: 'elastic-apm', label: 'Elastic APM' },
   { id: 'newrelic-apm', label: 'New Relic APM' },
 ];
 
@@ -347,14 +348,14 @@ const KGCoverageTab = ({ open, onSaved, onClose }) => {
             <>
               {removedAccounts.length > 0 && (
                 <Box component='span' sx={{ display: 'block' }}>
-                  {removedAccounts.length} cloud account{removedAccounts.length === 1 ? '' : 's'} (<strong>{removedAccountNames}</strong>) lose every
-                  node and edge they own, immediately on save.
+                  {removedAccounts.length} cloud account{removedAccounts.length === 1 ? '' : 's'} (<strong>{removedAccountNames}</strong>){' '}
+                  {removedAccounts.length === 1 ? 'loses every node and edge it owns' : 'lose every node and edge they own'}, immediately on save.
                 </Box>
               )}
               {removedFlowSources.length > 0 && (
                 <Box component='span' sx={{ display: 'block' }}>
-                  {removedFlowSources.length} flow source{removedFlowSources.length === 1 ? '' : 's'} (<strong>{removedFlowSourceNames}</strong>) lose
-                  every edge they created, immediately on save.
+                  {removedFlowSources.length} flow source{removedFlowSources.length === 1 ? '' : 's'} (<strong>{removedFlowSourceNames}</strong>){' '}
+                  {removedFlowSources.length === 1 ? 'loses every edge it created' : 'lose every edge they created'}, immediately on save.
                 </Box>
               )}
               {hasRemovals && (

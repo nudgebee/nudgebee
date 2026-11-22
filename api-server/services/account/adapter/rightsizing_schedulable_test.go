@@ -148,7 +148,8 @@ func TestCheckMemoryHeadroom_RefusesValueLargerThanAnyNodeWithoutItsPods(t *test
 	}
 	// The container, what it asked for, and the largest node — the first by name
 	// of the two that tie, so the message does not change between attempts.
-	for _, want := range []string{"app needs 58.6Gi", "no node in this cluster is that large", "node-a", "12.1Gi"} {
+	// ... and the size it would have to come down to, in the whole Mi the forms take.
+	for _, want := range []string{"app needs 58.6Gi", "no node in this cluster is that large", "node-a", "12.1Gi", "has to be 12345Mi or less"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal should mention %q, got: %v", want, err)
 		}
@@ -184,8 +185,74 @@ func TestCheckMemoryHeadroom_NodeSizeCheckTotalsTheChangedContainers(t *testing.
 	if !known || err == nil {
 		t.Fatalf("16Gi across two containers exceeds a 12Gi node; expected a refusal, got known=%v err=%v", known, err)
 	}
-	if !strings.Contains(err.Error(), "unseen needs 16.0Gi") {
-		t.Errorf("with more than one container changed the refusal names the workload and the total, got: %v", err)
+	for _, want := range []string{"unseen needs 16.0Gi", "Together the requests have to be 12288Mi or less"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("with more than one container changed the refusal names the workload and the total; want %q, got: %v", want, err)
+		}
+	}
+}
+
+// Advice that is refused when followed is worse than none, so the size a
+// refusal quotes has to be one the check then accepts. On node-a the free block
+// is 5.45Gi and the unchanged sidecar takes 16Mi of it, which leaves the
+// prometheus container 5564Mi — not the 5.4Gi the rounded block size suggests,
+// and not the whole block.
+func TestCheckMemoryHeadroom_QuotedSizeIsOneThatPasses(t *testing.T) {
+	nodes, requests := devCluster()
+	err, _ := checkMemoryHeadroom(nodes, requests, "nudgebee-agent", "prometheus",
+		map[string]float64{"prometheus": 10 * GiB})
+	if err == nil || !strings.Contains(err.Error(), "Lower the request to 5564Mi or less") {
+		t.Fatalf("expected the refusal to quote 5564Mi, got: %v", err)
+	}
+
+	nodes, requests = devCluster()
+	if err, _ := checkMemoryHeadroom(nodes, requests, "nudgebee-agent", "prometheus",
+		map[string]float64{"prometheus": 5564 * MiB}); err != nil {
+		t.Fatalf("the quoted 5564Mi must be accepted, got: %v", err)
+	}
+	nodes, requests = devCluster()
+	if err, _ := checkMemoryHeadroom(nodes, requests, "nudgebee-agent", "prometheus",
+		map[string]float64{"prometheus": 5565 * MiB}); err == nil {
+		t.Fatal("5565Mi is past what fits and must still be refused")
+	}
+}
+
+// Several containers changed at once share one figure: what they may ask for
+// together.
+func TestCheckMemoryHeadroom_QuotedSizeCoversEveryChangedContainer(t *testing.T) {
+	nodes := map[string]*nodeMemory{
+		"node-a": {name: "node-a", allocatable: 14 * GiB},
+	}
+	requests := []containerRequest{
+		{node: "node-a", namespace: "ns", workload: "app", container: "app", bytes: 1 * GiB},
+		{node: "node-a", namespace: "ns", workload: "app", container: "sidecar", bytes: 1 * GiB},
+	}
+	err, _ := checkMemoryHeadroom(nodes, requests, "ns", "app",
+		map[string]float64{"app": 8 * GiB, "sidecar": 8 * GiB})
+	if err == nil || !strings.Contains(err.Error(), "Lower the requests to 14336Mi or less in total") {
+		t.Fatalf("expected one total for both containers, got: %v", err)
+	}
+}
+
+// When the pod's unchanged containers already take everything the roomiest node
+// can give, no lower value for the changed one helps, and the refusal must not
+// invent one.
+func TestCheckMemoryHeadroom_NoSizeQuotedWhenNothingFits(t *testing.T) {
+	nodes := map[string]*nodeMemory{
+		"node-a": {name: "node-a", allocatable: 4 * GiB},
+	}
+	requests := []containerRequest{
+		{node: "node-a", namespace: "ns", workload: "app", container: "app", bytes: 0},
+		{node: "node-a", namespace: "ns", workload: "app", container: "sidecar", bytes: 1 * GiB},
+		{node: "node-a", namespace: "other", workload: "filler", container: "app", bytes: 3 * GiB},
+	}
+	err, _ := checkMemoryHeadroom(nodes, requests, "ns", "app",
+		map[string]float64{"app": 2 * GiB})
+	if err == nil {
+		t.Fatal("2Gi on a full node must be refused")
+	}
+	if strings.Contains(err.Error(), "Lower the request") || !strings.HasSuffix(err.Error(), "Add capacity") {
+		t.Errorf("with no room left for the container the refusal should only say to add capacity, got: %v", err)
 	}
 }
 

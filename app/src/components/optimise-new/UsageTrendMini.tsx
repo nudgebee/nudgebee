@@ -6,7 +6,7 @@ import type { TrendSeries, ResourceSeries } from './evidence/trendSeries';
 
 /**
  * UsageTrendMini — the usage chart that carries the recommendation, drawn
- * directly under the change it justifies: seven days of per-pod usage with the
+ * directly under the change it justifies: per-pod usage over the drawer's range, with the
  * current request and the recommended request as lines on the same axis. The
  * gap between them is the argument for the change, read without a sentence.
  * The Evidence tab draws the same series at full size with the limit and the
@@ -17,6 +17,8 @@ interface UsageTrendMiniProps {
   loading: boolean;
   /** "per pod" or "all replicas" — what the y values are. */
   basis: string;
+  /** Days the series covers. */
+  rangeDays: number;
 }
 
 const CHART_HEIGHT = 128;
@@ -118,21 +120,21 @@ function options(format: (v: number) => string) {
 
 const Placeholder = () => <Box sx={{ height: CHART_HEIGHT, borderRadius: ds.radius.md, backgroundColor: ds.gray[100] }} />;
 
-const Panel = ({ title, basis, children }: { title: string; basis: string; children: React.ReactNode }) => (
+const Panel = ({ title, basis, rangeDays, children }: { title: string; basis: string; rangeDays: number; children: React.ReactNode }) => (
   <Box sx={{ minWidth: 0, border: `1px solid ${ds.gray[200]}`, borderRadius: ds.radius.md, p: ds.space[2] }}>
     <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: ds.space[2], mb: ds.space[1] }}>
       <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{title}</Typography>
-      <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], whiteSpace: 'nowrap' }}>{`${basis} · last 7 days`}</Typography>
+      <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], whiteSpace: 'nowrap' }}>{`${basis} · last ${rangeDays} days`}</Typography>
     </Box>
     {children}
   </Box>
 );
 
-const UsageTrendMini = ({ series, loading, basis }: UsageTrendMiniProps) => {
+const UsageTrendMini = ({ series, loading, basis, rangeDays }: UsageTrendMiniProps) => {
   if (!loading && !series) return null;
   return (
     <Box data-testid='usage-trend-mini' sx={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: ds.space[2] }}>
-      <Panel title='CPU' basis={basis}>
+      <Panel title='CPU' basis={basis} rangeDays={rangeDays}>
         {series ? (
           <Box sx={{ height: CHART_HEIGHT }}>
             <Chart.Series
@@ -147,7 +149,7 @@ const UsageTrendMini = ({ series, loading, basis }: UsageTrendMiniProps) => {
           <Placeholder />
         )}
       </Panel>
-      <Panel title='Memory' basis={basis}>
+      <Panel title='Memory' basis={basis} rangeDays={rangeDays}>
         {series ? (
           <Box sx={{ height: CHART_HEIGHT }}>
             <Chart.Series

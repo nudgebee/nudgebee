@@ -6,8 +6,9 @@ import PodAllocationSummary from './PodAllocationSummary';
 import MemoryAllocationIcon from '@assets/investigation/resource-allocation.svg';
 import RenderMemoryLeakData from './RenderMemoryLeakData';
 import { safeJSONParse } from 'src/utils/common';
+import recommendationApi from '@api1/recommendation';
 import { Box, Typography } from '@mui/material';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ds } from '@utils/colors';
 import { mentionsContainer, summarizeAllocation } from './cardSummaries';
 
@@ -47,6 +48,46 @@ const parseMemoryQuantity = (text, which) => {
   return Number.isFinite(bytes) && bytes > 0 ? bytes : undefined;
 };
 
+// The workload's stored right-sizing recommendation — the record Optimize > Right
+// Sizing shows. The tune form proposes its figure, so one workload doesn't get two
+// different answers (#40631).
+const useRightSizingRecord = (accountId, namespace, workloadType, workload) => {
+  const [record, setRecord] = useState(null);
+  useEffect(() => {
+    setRecord(null);
+    if (!accountId || !namespace || !workloadType || !workload) return undefined;
+    let active = true;
+    // Rows are keyed "<namespace>/<Kind>/<name>" and the API matches that as a
+    // substring, so keep only the exact row: "api" must not take "api-gateway"'s figure.
+    // With the namespace pinned every match starts with the key, so sorting by it
+    // puts the exact row first however many siblings share the prefix.
+    const key = `${namespace}/${workloadType}/${workload}`;
+    Promise.resolve()
+      .then(() =>
+        recommendationApi.getK8sRecommendation({
+          accountId,
+          category: 'RightSizing',
+          ruleName: 'pod_right_sizing',
+          resourceNamespace: namespace,
+          accountObjectId: key,
+          status: ['Open', 'Assigned', 'InProgress'],
+          orderBy: 'account_object_id',
+          orderAsc: true,
+        })
+      )
+      .then((res) => {
+        const rows = res?.data?.recommendation || [];
+        if (active) setRecord(rows.find((r) => String(r?.account_object_id).toLowerCase() === key.toLowerCase()) || null);
+      })
+      // Without the record the form proposes from the event's own evidence.
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [accountId, namespace, workloadType, workload]);
+  return record;
+};
+
 // A real component, so the chosen container survives the parent's re-renders
 // and the form's data only changes when the container (or the card's evidence)
 // does — the form re-seeds its inputs whenever `data` changes.
@@ -54,14 +95,15 @@ const TuneResourceForm = ({ card, open, onClose }) => {
   const { workload, workloadType } = card.resolveWorkload();
   const containers = card.resolveContainers();
   const [selected, setSelected] = useState('');
+  const rightSizingRecord = useRightSizingRecord(card.event?.cloud_account_id, card.event?.subject_namespace, workloadType, workload);
   // CollapsableCard mounts this before the evidence is parsed, so the default is
   // re-derived rather than frozen into the initial state. A pick is kept even if
   // the evidence never named it: the form also offers the workload spec's
   // containers.
   const container = selected || containers[0] || '';
   const data = useMemo(
-    () => card.buildResolveData(container, workload, workloadType),
-    [card, container, workload, workloadType, card.memoryAllocationItem, card.podMemoryAllocationItem]
+    () => card.buildResolveData(container, workload, workloadType, rightSizingRecord),
+    [card, container, workload, workloadType, rightSizingRecord, card.memoryAllocationItem, card.podMemoryAllocationItem]
   );
   return (
     <KubernetesRightSizingUpdateForm
@@ -84,6 +126,35 @@ const TuneResourceForm = ({ card, open, onClose }) => {
 // current limit means the evidence counted it wrong (a second exporter publishing
 // the same series doubled it). Propose from the limit rather than from that.
 const requestWithinLimit = (request, limit) => (request > 0 && limit > 0 ? Math.min(request, limit) : request);
+
+const MIB = 1024 * 1024;
+
+const toMb = (bytes) => formatMemory(bytes, 'bytes', 'mb')?.replace(/,/g, '');
+
+// One container's memory figure from the stored right-sizing record, in bytes.
+// Nothing when the record has no number for it ("?" under an HPA, or no entry).
+const storedMemory = (record, container) => {
+  const entries = record?.recommendation?.[container];
+  const memory = Array.isArray(entries) ? entries.find((e) => e?.resource === 'memory') : undefined;
+  const request = Number(memory?.recommended?.request);
+  if (!(request > 0)) return undefined;
+  const limit = Number(memory?.recommended?.limit);
+  return { request, limit: limit > 0 ? limit : request, updatedAt: record.updated_at };
+};
+
+// The tune form's memory proposal from the stored figure, as Optimize shows it (no
+// buffer on top), but never below what the container has now: this card offers a
+// resize only on resource pressure, and a record scanned before the workload grew
+// would shrink the container that just ran out of room.
+const memoryFromRightSizing = (stored, currentRequest, currentLimit) => {
+  const request = Math.max(stored.request, requestWithinLimit(currentRequest, currentLimit) || 0);
+  const limit = Math.max(stored.limit, Number(currentLimit) || 0, request);
+  return {
+    request: toMb(request),
+    limit: toMb(limit),
+    rightSizing: { request: stored.request / MIB, limit: stored.limit / MIB, updatedAt: stored.updatedAt },
+  };
+};
 
 class MemoryAllocationCard {
   constructor() {
@@ -439,7 +510,7 @@ class MemoryAllocationCard {
   // must never stand in: a sidecar's 20 MiB proposed for the container that was
   // OOMKilled at 8 GiB is the failure this guards. With nothing for the
   // container, the form reads current values off the workload spec instead.
-  buildResolveData = (container, workload, workloadType) => {
+  buildResolveData = (container, workload, workloadType, rightSizingRecord) => {
     const namespace = this.event?.subject_namespace;
     // Entries without a container label are the pod as a whole.
     const forContainer = (item) => !item.container || !container || item.container === container;
@@ -450,6 +521,7 @@ class MemoryAllocationCard {
       container_name: container,
     };
 
+    const stored = storedMemory(rightSizingRecord, container);
     const containerItem = this.memoryAllocationItem.find(forContainer);
     if (containerItem) {
       return {
@@ -471,6 +543,7 @@ class MemoryAllocationCard {
           limit: formatMemory(containerItem?.limits?.memory * 1.1, 'bytes', 'mb')?.replace(',', ''),
           oldRequest: formatMemory(containerItem?.request?.memory, 'bytes', 'mb')?.replace(',', ''),
           oldLimit: formatMemory(containerItem?.limits?.memory, 'bytes', 'mb')?.replace(',', ''),
+          ...(stored && memoryFromRightSizing(stored, containerItem?.request?.memory, containerItem?.limits?.memory)),
         },
       };
     }
@@ -540,6 +613,7 @@ class MemoryAllocationCard {
       oldRequest: formatMem(memoryObject?.request),
       oldLimit: formatMem(memoryObject?.limits),
       nbalgoBase: memPeak > 0 ? memPeak / (1024 * 1024) : undefined,
+      ...(stored && memoryFromRightSizing(stored, memoryObject?.request, memoryObject?.limits)),
     };
     if (cpuObject) {
       const cpuReqBase = cpuObject.cpu_request > 0 ? cpuObject.cpu_request : cpuPeak;

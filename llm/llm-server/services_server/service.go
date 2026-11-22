@@ -90,8 +90,17 @@ func ExecuteQuery(serviceRequest ServicesQueryRequest) (map[string]string, error
 	return response, err
 }
 
+// ScanImageActionPermission is the grant key the app gateway classifies
+// security_scan_image as. This call goes to the server directly, not through
+// the gateway, so it sends the key itself: without it the server honours only
+// built-in roles, and a custom-role caller (an automation account) is refused. The
+// grant is still checked on the caller (session user). Pinned to the
+// classification by app/src/lib/__tests__/permissionCatalog.test.ts.
+const ScanImageActionPermission = "security:Execute"
+
 func ExecuteScanImageQuery(scanImageRequest ScanImageServiceRequest) (map[string]string, error) {
 	response := make(map[string]string)
+	scanImageRequest.Action.Permission = ScanImageActionPermission
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/recommendation", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,
@@ -127,8 +136,16 @@ func ExecuteScanImageQuery(scanImageRequest ScanImageServiceRequest) (map[string
 	return response, nil
 }
 
+// CisScanActionPermission is the grant key sent with the CIS scan the AI
+// starts (recommendation_job_create). Not the gateway's classification of that
+// action (recommendations:Write, a person creating a job from the UI): a scan
+// the AI runs needs Execute on security, the module its tool (trigger_cis_scan)
+// is checked against at dispatch, as the image scan above.
+const CisScanActionPermission = "security:Execute"
+
 func ExecuteScanCisQuery(scanCisRequest ScanCisServiceRequest) (map[string]string, error) {
 	response := make(map[string]string)
+	scanCisRequest.Action.Permission = CisScanActionPermission
 
 	resp, err := common.HttpPost(fmt.Sprintf("%s/rpc/recommendation", config.Config.ServiceEndpoint), common.HttpWithHeaders(map[string]string{
 		"Content-Type":   contentTypeJson,
@@ -318,6 +335,9 @@ func GetServiceDependencyGraph(ctx security.RequestContext, accountId, namespace
 }
 
 func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.ObservabilityLogResponse, error) {
+	if err := checkObservabilityUse(ctx, request.AccountId, "logs", request.LogProvider, request.LogProviderSource); err != nil {
+		return core.ObservabilityLogResponse{}, err
+	}
 	if request.Limit == 0 {
 		request.Limit = 1000
 	}
@@ -405,6 +425,13 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 		Query      string                  `json:"query"`
 		Provider   string                  `json:"provider"`
 		Suggestion string                  `json:"suggestion"`
+		// Partial: the backend stopped before reading the whole window without
+		// reaching the limit, so Logs are the newest matches, not all of them.
+		Partial bool `json:"partial"`
+		// Total / TotalRelation: the backend's own match count, when it reports one
+		// with the result (Elasticsearch); absent otherwise.
+		Total         *int64 `json:"total"`
+		TotalRelation string `json:"total_relation"`
 	}
 	if err = common.UnmarshalJson(jsonBody, &body); err != nil {
 		return observabilityResp, err
@@ -413,6 +440,10 @@ func QueryLogs(ctx security.RequestContext, request LogQueryRequest) (core.Obser
 	observabilityResp.Logs = body.Logs
 	observabilityResp.Suggestion = body.Suggestion
 	observabilityResp.Coverage = core.NewObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
+	if body.Partial {
+		observabilityResp.Coverage = core.NewPartialObservabilityLogCoverage(body.Logs, request.Limit, request.StartTime, request.EndTime)
+	}
+	observabilityResp.Coverage = core.WithBackendLogTotal(observabilityResp.Coverage, body.Logs, request.Limit, request.StartTime, request.EndTime, body.Total, body.TotalRelation)
 	if body.Query != "" {
 		observabilityResp.Metadata.Query = body.Query
 	}
@@ -503,6 +534,9 @@ func GetLogsQuery(ctx security.RequestContext, request LogQueryRequest) (OutputL
 }
 
 func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3Request) (core.ObservabilityTraceResponse, error) {
+	if err := checkObservabilityUse(ctx, request.AccountId, "traces", request.ProviderType, request.ProviderSource); err != nil {
+		return core.ObservabilityTraceResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "traces_query",
@@ -643,6 +677,9 @@ func firstNonSpaceByte(b []byte) byte {
 }
 
 func QueryLogLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) (core.ObservabilityLogLabelResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "logs", provider.Provider, provider.IntegrationSource); err != nil {
+		return core.ObservabilityLogLabelResponse{}, err
+	}
 
 	if provider.IntegrationSource == "" {
 		provider.IntegrationSource = "agent"
@@ -737,6 +774,9 @@ func QueryLogLabels(ctx security.RequestContext, accountId string, provider Obse
 // Mirrors QueryLogLabels; the v2 traces agent uses it for live, per-account field
 // discovery (the trace counterpart of the log agent's get_labels call).
 func QueryTraceLabels(ctx security.RequestContext, accountId string, provider ObservabilityProvider) ([]string, error) {
+	if err := checkObservabilityUse(ctx, accountId, "traces", provider.Provider, provider.IntegrationSource); err != nil {
+		return nil, err
+	}
 	if provider.IntegrationSource == "" {
 		provider.IntegrationSource = "agent"
 	}
@@ -831,6 +871,16 @@ type ProviderCapabilities struct {
 	// emits a provider-independent where clause that services-server resolves.
 	// Empty when the backend omits it — callers fall back to provider-native labels.
 	LabelMappings map[string]string `json:"label_mappings"`
+	// CanonicalFields is the provider-independent log vocabulary this backend will
+	// resolve, minus anything it declares it cannot (services-server subtracts
+	// GetIgnoredQueryRequestKeys — e.g. Dynatrace and New Relic strip `trace_id`).
+	//
+	// This is the list the query generator should advertise, and it is why
+	// llm-server no longer invents a field name of its own: before #39573 nothing
+	// told it what the backend accepted, so QueryLabels stapled a synthetic `_body`
+	// onto every provider. Empty when the backend predates that — callers fall back
+	// to the old behaviour. Logs only; traces and metrics leave it unset.
+	CanonicalFields []string `json:"canonical_fields"`
 }
 
 type ObservabilityProvider struct {
@@ -957,6 +1007,9 @@ func CreateIntegrationConfig(ctx security.RequestContext, serviceRequest Integra
 }
 
 func ListMetricsSeries(ctx security.RequestContext, accountId, provider, filter string) (core.ObservabilityMetricsSeriesResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsSeriesResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_list_names",
@@ -1035,6 +1088,9 @@ func ListMetricsSeries(ctx security.RequestContext, accountId, provider, filter 
 }
 
 func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, seriesName string) (core.ObservabilityMetricsSeriesLabelsResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsSeriesLabelsResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_list_labels",
@@ -1115,6 +1171,9 @@ func ListMetricsSeriesLabels(ctx security.RequestContext, accountId, provider, s
 func ListMetricsSeriesMatch(ctx security.RequestContext, accountId, provider, namespace, workload string, startTime, endTime int64) (core.ObservabilityMetricSeriesMatchResponse, error) {
 	if accountId == "" {
 		return core.ObservabilityMetricSeriesMatchResponse{}, errors.New("account id is empty")
+	}
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricSeriesMatchResponse{}, err
 	}
 	request := map[string]any{
 		"account_id":      accountId,
@@ -1205,6 +1264,9 @@ var metricsLabelValuesRequestTimeout = 60 * time.Second
 // ListMetricsSeriesLabelValues fetches values for a given label. For ES/Opensearch, pass
 // request with metric_name set to the index pattern (e.g. {"metric_name": "metrics-*"}).
 func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provider, label string, request ...map[string]any) (core.ObservabilityMetricsLabelValuesResponse, error) {
+	if err := checkObservabilityUse(ctx, accountId, "metrics", provider, ""); err != nil {
+		return core.ObservabilityMetricsLabelValuesResponse{}, err
+	}
 	reqMap := map[string]any{
 		"account_id":      accountId,
 		"metric_provider": provider,
@@ -1288,6 +1350,9 @@ func ListMetricsSeriesLabelValues(ctx security.RequestContext, accountId, provid
 
 // QueryMetrics executes a metrics_query action against api-server (e.g. Elasticsearch DSL aggregation).
 func QueryMetrics(ctx security.RequestContext, req core.ObservabilityMetricsQueryRequest) (core.ObservabilityMetricsQueryResponse, error) {
+	if err := checkObservabilityUse(ctx, req.AccountId, "metrics", req.MetricProvider, ""); err != nil {
+		return core.ObservabilityMetricsQueryResponse{}, err
+	}
 	queryPayload := map[string]any{
 		"action": map[string]any{
 			"name": "metrics_query",

@@ -93,9 +93,12 @@ function dayKey(d: Date): string {
 }
 
 function weekKey(d: Date): string {
-  // ISO-ish week number for bucketing (good enough for the prototype).
-  const onejan = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
-  const week = Math.ceil(((d.getTime() - onejan.getTime()) / 86_400_000 + onejan.getUTCDay() + 1) / 7);
+  // ISO-8601 week number (weeks start Monday). Must agree with the backend's
+  // date_trunc('week', …), which buckets Monday-first — a Sunday-first count here
+  // puts Sunday's rows in a week label the chart never draws, dropping their cost.
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  t.setUTCDate(t.getUTCDate() + 4 - (t.getUTCDay() || 7));
+  const week = Math.ceil(((t.getTime() - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86_400_000 + 1) / 7);
   return `W${week}`;
 }
 
@@ -551,4 +554,24 @@ export function downloadFile(filename: string, content: string, mime = 'text/csv
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+const TITLE_MAX = 140;
+
+/**
+ * Short display title for a conversation. Some conversations (event triage) are
+ * titled with their whole multi-paragraph markdown summary; show the embedded
+ * "Title:" value, else the first non-empty line, with markdown syntax stripped.
+ * Plain one-line titles pass through untouched.
+ */
+export function cleanConversationTitle(raw: string | null | undefined): string {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  if (!t || !(t.includes('\n') || /^(#|\*\*|__)/.test(t))) return t;
+  const embedded = t.match(/[*_]{0,2}Title:[*_]{0,2}\s*([^\n]+)/i)?.[1];
+  const line = embedded ?? t.split('\n').find((l) => l.replace(/[#*_`>\s-]/g, '') !== '') ?? t;
+  const clean = line
+    .replace(/[#*_`>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return clean.length > TITLE_MAX ? `${clean.slice(0, TITLE_MAX - 1)}…` : clean;
 }

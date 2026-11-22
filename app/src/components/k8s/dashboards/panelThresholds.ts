@@ -5,10 +5,12 @@
  * Two deliberate narrowings, both so the feature has no config that does
  * nothing:
  *
- *  1. Only `stat` and `gauge` carry thresholds. Those two render ONE number, so
- *     "the value crossed the line" has a single unambiguous answer. A chart or a
- *     table has a value per series, per point, per cell — colouring the whole
- *     panel from one of them would be picking a winner silently.
+ *  1. `stat` and `gauge` carry thresholds about the ONE number they render, so
+ *     "the value crossed the line" has a single unambiguous answer. A
+ *     `timeseries` panel carries them too, but judges every drawn LINE on its
+ *     own and names the line that crossed — never the chart from one unnamed
+ *     series, which would be picking a winner silently. A table has a value per
+ *     cell and carries none.
  *  2. Steps are absolute, and there is no base step. A percentage step needs a
  *     min and a max, which an aggregated number has neither of; and a value no
  *     step matches is drawn exactly as an unconfigured panel is, so a colour for
@@ -23,7 +25,8 @@
  */
 import { ds } from '@utils/colors';
 import type { Panel, PanelThresholdAppliesTo, PanelThresholdColor, PanelThresholdOp, PanelThresholdStep, PanelType } from '@api1/dashboards';
-import type { StatTotal } from './panelSeries';
+import type { RawSeries, StatTotal } from './panelSeries';
+import type { PanelSeries } from './usePanelData';
 
 /**
  * Every colour a step may name, in the order the editor offers them — which is
@@ -43,6 +46,26 @@ export const OP_SYMBOL: Record<PanelThresholdOp, string> = { gte: '≥', gt: '>'
 export const OP_PHRASE: Record<PanelThresholdOp, string> = { gte: 'at or above', gt: 'above', lte: 'at or below', lt: 'below' };
 
 const APPLIES_TO: PanelThresholdAppliesTo[] = ['shown', 'every', 'account'];
+
+/** The shortest hold a step may ask for: two minutes, so any provider's minute-level data holds two samples. */
+export const FOR_MIN_SECONDS = 120;
+/** The longest: an hour, which is the range a dashboard opens on. */
+export const FOR_MAX_SECONDS = 3600;
+
+/** A step's hold in seconds, or undefined for a step that fires on the latest sample alone. */
+export function forOf(step: PanelThresholdStep): number | undefined {
+  return typeof step.for === 'number' ? step.for : undefined;
+}
+
+/** Whether a hold is one the renderer will honour: a whole number of minutes, two to sixty. */
+export function isValidFor(seconds: number): boolean {
+  return Number.isInteger(seconds) && seconds % 60 === 0 && seconds >= FOR_MIN_SECONDS && seconds <= FOR_MAX_SECONDS;
+}
+
+/** "5m", "1h", "90m" — how a hold is written on the badge and in the editor. */
+export function holdLabel(seconds: number): string {
+  return seconds % 3600 === 0 ? `${seconds / 3600}h` : `${Math.round(seconds / 60)}m`;
+}
 
 /** A step's comparison. Absent is `gte`: every step written before the field was one. */
 export function opOf(step: PanelThresholdStep): PanelThresholdOp {
@@ -80,9 +103,22 @@ export function thresholdTone(color: PanelThresholdColor): ThresholdTone {
   return TONES[color] || TONES.red;
 }
 
-/** Panel types that show one number, and so have something to compare against. */
-export function hasThresholds(type: PanelType): boolean {
+/** The panel types that show ONE number — and so add their accounts up, and judge thresholds against it. */
+export function showsOneNumber(type: PanelType): boolean {
   return type === 'stat' || type === 'gauge';
+}
+
+/** Panel types that evaluate thresholds: the two that show one number, and the chart that judges each line. */
+export function hasThresholds(type: PanelType): boolean {
+  return showsOneNumber(type) || isLinePanel(type);
+}
+
+/**
+ * Panel types whose thresholds are about LINES rather than the one shown number.
+ * The two groups evaluate different things, so steps do not carry across them.
+ */
+export function isLinePanel(type: PanelType): boolean {
+  return type === 'timeseries';
 }
 
 /**
@@ -115,6 +151,7 @@ export function isCompleteStep(step: PanelThresholdStep): boolean {
   if (!Number.isFinite(step.value) || !THRESHOLD_COLORS.includes(step.color)) return false;
   if (step.op !== undefined && !THRESHOLD_OPS.includes(step.op)) return false;
   if (step.applies_to !== undefined && !APPLIES_TO.includes(step.applies_to)) return false;
+  if (step.for !== undefined && !isValidFor(step.for)) return false;
   return step.applies_to !== 'account' || (typeof step.account_id === 'string' && step.account_id !== '');
 }
 
@@ -123,9 +160,15 @@ export function isCompleteStep(step: PanelThresholdStep): boolean {
  * rather than drawn in a fallback colour.
  */
 export function panelThresholdsOf(panel: Panel): PanelThresholdStep[] {
-  return panelThresholdStepsOf(panel)
-    .filter(isCompleteStep)
-    .sort((a, b) => a.value - b.value);
+  return (
+    panelThresholdStepsOf(panel)
+      .filter(isCompleteStep)
+      // A stat or gauge judges one sample, so it cannot honour a hold. Firing
+      // such a step at once would break what it says; it is left undrawn, and
+      // the editor offers to remove the hold (see PanelEditorModal).
+      .filter((step) => isLinePanel(panel.type) || step.for === undefined)
+      .sort((a, b) => a.value - b.value)
+  );
 }
 
 /** Whether `value` is past `step`'s line. */
@@ -159,10 +202,14 @@ function severer(a: PanelThresholdStep, b: PanelThresholdStep): PanelThresholdSt
  */
 export function breachedStep(steps: PanelThresholdStep[], value: number | null | undefined): PanelThresholdStep | undefined {
   if (value === null || value === undefined || !Number.isFinite(value)) return undefined;
+  return resolveCrossed(steps.filter((step) => crosses(step, value)));
+}
+
+/** The one step that decides, among steps the value has ALREADY been found to cross. See breachedStep. */
+function resolveCrossed(crossed: PanelThresholdStep[]): PanelThresholdStep | undefined {
   let upper: PanelThresholdStep | undefined;
   let lower: PanelThresholdStep | undefined;
-  for (const step of steps) {
-    if (!crosses(step, value)) continue;
+  for (const step of crossed) {
     if (isUpper(opOf(step))) {
       if (!upper || step.value >= upper.value) upper = step;
     } else if (!lower || step.value <= lower.value) {
@@ -181,7 +228,7 @@ export function breachedStep(steps: PanelThresholdStep[], value: number | null |
  * about where the needle stopped.
  */
 export function panelBreach(panel: Panel, value: number | null | undefined): PanelThresholdStep | undefined {
-  if (!hasThresholds(panel.type)) return undefined;
+  if (!hasThresholds(panel.type) || isLinePanel(panel.type)) return undefined;
   return breachedStep(
     panelThresholdsOf(panel).filter((step) => appliesToOf(step) === 'shown'),
     value
@@ -194,6 +241,11 @@ export interface Breach {
   /** The account whose figure crossed; `null` for the panel's shown number. */
   account: string | null;
   value: number;
+  /** On a chart, the line that crossed — its legend label. */
+  line?: string;
+  /** On a chart, the hold the line satisfied: epoch ms of its first and last sample. */
+  from?: number;
+  to?: number;
 }
 
 /** Everything a panel's thresholds say about what it is showing. */
@@ -221,7 +273,7 @@ const NO_BREACHES: PanelBreaches = { all: [], rows: new Map() };
  * says nothing the card does not.
  */
 export function panelBreaches(panel: Panel, stat: StatTotal | null | undefined, accounts: { value: string; label: string }[]): PanelBreaches {
-  if (!stat || !hasThresholds(panel.type)) return NO_BREACHES;
+  if (!stat || !hasThresholds(panel.type) || isLinePanel(panel.type)) return NO_BREACHES;
   const steps = panelThresholdsOf(panel);
   if (steps.length === 0) return NO_BREACHES;
 
@@ -260,7 +312,8 @@ export function panelBreaches(panel: Panel, stat: StatTotal | null | undefined, 
           o.value === b.value &&
           opOf(o.step) === opOf(b.step) &&
           o.step.value === b.step.value &&
-          o.step.color === b.step.color
+          o.step.color === b.step.color &&
+          forOf(o.step) === forOf(b.step)
       ) === i
   );
   const frame = distinct.reduce<Breach | undefined>((worst, b) => (!worst || severer(worst.step, b.step) !== worst.step ? b : worst), undefined);
@@ -361,4 +414,312 @@ export function thresholdOverlaps(steps: PanelThresholdStep[], accounts: { value
     });
   });
   return found;
+}
+
+/** A hold one line satisfied, as positions on the chart's axis — what the chart shades. */
+export interface HoldSpan {
+  /** Index into the drawn series. */
+  series: number;
+  step: PanelThresholdStep;
+  /** First and last axis index of the run. */
+  from: number;
+  to: number;
+}
+
+/** Everything a chart's thresholds say about the lines it is drawing. */
+export interface LineBreaches extends PanelBreaches {
+  spans: HoldSpan[];
+  /**
+   * Steps whose hold the chart's sampling is too coarse to judge: fewer than two
+   * samples would fall inside it. Reported so the panel can say "zoom in" rather
+   * than stay silently plain.
+   */
+  tooCoarse: PanelThresholdStep[];
+  /** Steps whose hold is longer than the time range, so no line could ever have held it. */
+  tooLong: PanelThresholdStep[];
+}
+
+const NO_LINE_BREACHES: LineBreaches = { all: [], rows: new Map(), spans: [], tooCoarse: [], tooLong: [] };
+
+/**
+ * How far behind the range's end a line's last sample may be and still count as
+ * current. Providers publish late — CloudWatch by minutes — and Prometheus keeps
+ * a vanished series for five minutes itself, so this is the floor.
+ */
+const STALE_AFTER_MS = 5 * 60 * 1000;
+
+/** The median gap between consecutive entries, in the entries' unit; 0 with fewer than two. */
+function medianSpacing(points: number[]): number {
+  if (points.length < 2) return 0;
+  const gaps: number[] = [];
+  for (let i = 1; i < points.length; i++) gaps.push(points[i] - points[i - 1]);
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)];
+}
+
+/**
+ * Evaluates a chart's steps against every line it draws.
+ *
+ * Each line is judged on the chart's own samples — the ones the viewer is
+ * looking at — so the verdict is about the picture, and the hover says which
+ * samples it rests on. The rules that keep that honest:
+ *
+ *  - A line counts only while it is CURRENT: its last sample within two of its
+ *    own steps, and never less than five minutes, of the end of the range the
+ *    viewer asked for. A pod that died forty minutes ago at 95% is history on
+ *    the chart, not a breach — also when it is the only line on it.
+ *  - A step with no hold fires on the line's latest sample, as a stat does.
+ *  - A step with a hold fires when the line's latest samples crossed the line
+ *    without a break for at least the hold: from the first sample of that run
+ *    to the last. A line younger than the hold cannot have held it. A missing
+ *    sample breaks the run only when the gap is longer than twice the line's
+ *    own spacing — the shared axis writes `null` wherever a coarser line had no
+ *    sample of its own, and that is not the line going quiet.
+ *  - A hold shorter than two of the chart's steps cannot be judged and is
+ *    reported in `tooCoarse`; one longer than the range, in `tooLong`. Neither
+ *    is fired or silently ignored.
+ *  - The consolidated total is drawn but never judged: it is a sum of whichever
+ *    accounts reported at each instant, a sawtooth on a fleet that misses the
+ *    odd scrape, not a measurement.
+ *
+ * `accounts` are the ones on screen, which is how an `account` step finds its
+ * lines; `shown` and `every` both mean every line, since a chart has no single
+ * shown number for `shown` to be about. `range` is the requested window in
+ * epoch ms; without it the axis's own first and last instants stand in.
+ */
+export function lineBreaches(
+  panel: Panel,
+  series: PanelSeries[],
+  timestamps: number[] | undefined,
+  accounts: { value: string; label: string }[],
+  range?: { start: number; end: number }
+): LineBreaches {
+  if (!isLinePanel(panel.type) || !timestamps || timestamps.length === 0) return NO_LINE_BREACHES;
+  const steps = panelThresholdsOf(panel);
+  if (steps.length === 0) return NO_LINE_BREACHES;
+
+  const axisStep = medianSpacing(timestamps);
+  const rangeStart = range?.start ?? timestamps[0];
+  const rangeEnd = range?.end ?? timestamps[timestamps.length - 1];
+  // The longest run any line could show: the range, less the step the first
+  // sample may sit inside it.
+  const longestRun = rangeEnd - rangeStart - axisStep;
+  const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
+  const all: Breach[] = [];
+  const spans: HoldSpan[] = [];
+  const tooCoarse = new Set<PanelThresholdStep>();
+  const tooLong = new Set<PanelThresholdStep>();
+
+  series.forEach((line, index) => {
+    if (line.consolidated) return;
+    const values = line.values;
+    const has = (i: number) => values[i] !== null && values[i] !== undefined && Number.isFinite(values[i] as number);
+    let lastIdx = -1;
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (has(i)) {
+        lastIdx = i;
+        break;
+      }
+    }
+    if (lastIdx < 0) return;
+
+    const own: number[] = [];
+    for (let i = 0; i < values.length; i++) if (has(i)) own.push(timestamps[i]);
+    const ownStep = medianSpacing(own) || axisStep;
+    // Not current: the line ended well before the range did.
+    if (timestamps[lastIdx] < rangeEnd - Math.max(2 * Math.max(ownStep, axisStep), STALE_AFTER_MS)) return;
+
+    const accountId = line.accountLabel ? idByLabel.get(line.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined;
+    const mine = steps.filter((step) => appliesToOf(step) !== 'account' || (accountId !== undefined && step.account_id === accountId));
+    if (mine.length === 0) return;
+
+    const tolerance = 2 * ownStep;
+    const latest = values[lastIdx] as number;
+
+    const crossed: { step: PanelThresholdStep; from: number }[] = [];
+    for (const step of mine) {
+      const hold = forOf(step);
+      if (hold === undefined) {
+        if (crosses(step, latest)) crossed.push({ step, from: lastIdx });
+        continue;
+      }
+      const holdMs = hold * 1000;
+      if (axisStep <= 0 || holdMs < 2 * axisStep) {
+        tooCoarse.add(step);
+        continue;
+      }
+      if (holdMs > longestRun) {
+        tooLong.add(step);
+        continue;
+      }
+      // The run of crossing samples the line ends on, back to the first sample
+      // that did not cross or the first real gap.
+      let from = -1;
+      let previous = timestamps[lastIdx];
+      for (let i = lastIdx; i >= 0; i--) {
+        if (!has(i)) continue;
+        if (previous - timestamps[i] > tolerance || !crosses(step, values[i] as number)) break;
+        previous = timestamps[i];
+        from = i;
+      }
+      if (from >= 0 && timestamps[lastIdx] - timestamps[from] >= holdMs) crossed.push({ step, from });
+    }
+
+    const decided = resolveCrossed(crossed.map((c) => c.step));
+    if (!decided) return;
+    const run = crossed.find((c) => c.step === decided)!;
+    all.push({
+      step: decided,
+      account: null,
+      value: latest,
+      line: line.label,
+      ...(forOf(decided) !== undefined ? { from: timestamps[run.from], to: timestamps[lastIdx] } : {}),
+    });
+    if (forOf(decided) !== undefined) spans.push({ series: index, step: decided, from: run.from, to: lastIdx });
+  });
+
+  const frame = all.reduce<Breach | undefined>((worst, b) => (!worst || severer(worst.step, b.step) !== worst.step ? b : worst), undefined);
+  return {
+    frame,
+    all: frame ? [frame, ...all.filter((b) => b !== frame)] : all,
+    rows: new Map(),
+    spans,
+    tooCoarse: [...tooCoarse],
+    tooLong: [...tooLong],
+  };
+}
+
+/** One line's finished breaches inside the range, at the most severe step it reached. */
+export interface PastBreach {
+  line: string;
+  step: PanelThresholdStep;
+  /** How many separate times the line crossed it. */
+  count: number;
+  /** The worst value across those times, in the step's direction. */
+  worst: number;
+  /** When the latest of them ended, epoch ms. */
+  lastAt: number;
+}
+
+/**
+ * The breaches a chart's range holds that are already over: what `lineBreaches`
+ * rightly leaves out, because it answers "is this breached now?". They never
+ * colour the frame — a panel that recovered an hour ago is not on fire.
+ *
+ *  - A breach is a run of crossing samples. A sample that does not cross ends
+ *    it, and so does a gap longer than twice the line's spacing: a scrape outage
+ *    says nothing either way, so it splits rather than joins.
+ *  - A step with a hold counts a run only if it lasted the hold. A hold too
+ *    short for the chart's step is skipped here; `lineBreaches` already says so.
+ *  - A run still going at the end of a current line is today's breach, not
+ *    history, and is the badge's to report. A line that ended early has no such
+ *    run: a pod that died at 95% is exactly the history this is for.
+ *  - The consolidated total is not judged, for the reason `lineBreaches` gives.
+ *  - A line reports its most severe step only, or a red spike inside an amber
+ *    one would count twice.
+ *
+ * What it can see is what the chart sampled: a spike between two samples leaves
+ * no trace at a wide range.
+ */
+export function pastBreaches(
+  panel: Panel,
+  series: PanelSeries[],
+  timestamps: number[] | undefined,
+  accounts: { value: string; label: string }[],
+  range?: { start: number; end: number }
+): PastBreach[] {
+  if (!isLinePanel(panel.type) || !timestamps || timestamps.length === 0) return [];
+  const steps = panelThresholdsOf(panel);
+  if (steps.length === 0) return [];
+
+  const axisStep = medianSpacing(timestamps);
+  const rangeEnd = range?.end ?? timestamps[timestamps.length - 1];
+  const idByLabel = new Map(accounts.map((a) => [a.label, a.value]));
+  const out: PastBreach[] = [];
+
+  for (const line of series) {
+    if (line.consolidated) continue;
+    const samples: { at: number; value: number }[] = [];
+    line.values.forEach((value, i) => {
+      if (value !== null && value !== undefined && Number.isFinite(value)) samples.push({ at: timestamps[i], value });
+    });
+    if (samples.length === 0) continue;
+
+    const accountId = line.accountLabel ? idByLabel.get(line.accountLabel) : accounts.length === 1 ? accounts[0].value : undefined;
+    const ownStep = medianSpacing(samples.map((p) => p.at)) || axisStep;
+    const tolerance = 2 * ownStep;
+    const last = samples[samples.length - 1];
+    const current = last.at >= rangeEnd - Math.max(2 * Math.max(ownStep, axisStep), STALE_AFTER_MS);
+
+    let found: PastBreach | undefined;
+    for (const step of steps) {
+      if (appliesToOf(step) === 'account' && (accountId === undefined || step.account_id !== accountId)) continue;
+      const hold = forOf(step);
+      if (hold !== undefined && (axisStep <= 0 || hold * 1000 < 2 * axisStep)) continue;
+
+      const worse = (a: number, b: number) => (isUpper(opOf(step)) ? Math.max(a, b) : Math.min(a, b));
+      let count = 0;
+      let worst = 0;
+      let lastAt = 0;
+      let run: { from: number; to: number; worst: number } | undefined;
+      const close = (active: boolean) => {
+        if (run && !active && (hold === undefined || run.to - run.from >= hold * 1000)) {
+          worst = count === 0 ? run.worst : worse(worst, run.worst);
+          lastAt = run.to;
+          count += 1;
+        }
+        run = undefined;
+      };
+      for (const { at, value } of samples) {
+        if (run && at - run.to > tolerance) close(false);
+        if (crosses(step, value)) {
+          run = run ? { ...run, to: at, worst: worse(run.worst, value) } : { from: at, to: at, worst: value };
+        } else {
+          close(false);
+        }
+      }
+      close(current);
+
+      if (count > 0 && (!found || severer(step, found.step) === step)) found = { line: line.label, step, count, worst, lastAt };
+    }
+    if (found) out.push(found);
+  }
+  return out.sort((a, b) => b.lastAt - a.lastAt);
+}
+
+/**
+ * Which series a chart with thresholds must keep when the series cap trims it:
+ * those whose latest value already crosses one of the steps that applies to
+ * them. A "ready replicas < 1" step breaches on the quietest line, which a peak
+ * ranking would drop first. Undefined when the panel has nothing to prefer.
+ *
+ * `accountOf` names a series' account id, so a step about one account does not
+ * keep another account's lines.
+ */
+export function breachingLinePreference(
+  panel: Panel,
+  accountOf: (series: RawSeries) => string | undefined
+): ((series: RawSeries) => boolean) | undefined {
+  if (!isLinePanel(panel.type)) return undefined;
+  const steps = panelThresholdsOf(panel);
+  if (steps.length === 0) return undefined;
+  return (series) => {
+    const account = accountOf(series);
+    const mine = steps.filter((step) => appliesToOf(step) !== 'account' || (account !== undefined && step.account_id === account));
+    let last: number | undefined;
+    for (let i = series.values.length - 1; i >= 0; i--) {
+      const v = series.values[i];
+      if (v !== null && v !== undefined) {
+        last = v;
+        break;
+      }
+    }
+    return breachedStep(mine, last) !== undefined;
+  };
+}
+
+/** What the series cap's preference depends on — a fresh one re-ranks lines already fetched. */
+export function linePreferenceKey(panel: Panel): string {
+  if (!isLinePanel(panel.type)) return '';
+  return JSON.stringify(panelThresholdsOf(panel).map((s) => [s.value, s.op ?? '', s.applies_to ?? '', s.account_id ?? '']));
 }

@@ -58,6 +58,22 @@ func TestServerRoleDefaultsToAll(t *testing.T) {
 	}
 }
 
+// ServerName names this pod in RabbitMQ consumer tags and replica broadcast
+// senders. Its hostname default was once set after Unmarshal, so it never
+// applied and every pod reported an empty name (#40807).
+func TestServerNameDefaultsToHostname(t *testing.T) {
+	if v, ok := os.LookupEnv("SERVICES_SERVER_NAME"); ok {
+		t.Skipf("SERVICES_SERVER_NAME=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	hostName, err := os.Hostname()
+	if err != nil {
+		t.Skipf("hostname unavailable: %v", err)
+	}
+	if Config.ServerName != hostName {
+		t.Errorf("default ServerName = %q, want hostname %q", Config.ServerName, hostName)
+	}
+}
+
 // Per-resource knowledge-graph updates are on unless an environment explicitly
 // turns them off. They shipped off, and two days on dev showed the detector
 // publishing refs that never reached the patch path — so the comparison the
@@ -99,5 +115,63 @@ func TestAnomalyReturnedDigestIsOffByDefaultAndReadFromTheEnvironment(t *testing
 	}
 	if Config.FeatureAnomalyReturnedDigestEnabled {
 		t.Error("default feature_anomaly_returned_digest_enabled = true, want false")
+	}
+}
+
+// Announcing a recovered SLO in the SLO digest is opt-in: an environment turns
+// it on only once its notifications-server lists resolved items. On by default,
+// a notifications-server a release behind would show every recovery as one more
+// breaching SLO.
+func TestSLOResolvedDigestDisabledByDefault(t *testing.T) {
+	if v, ok := os.LookupEnv("FEATURE_SLO_RESOLVED_DIGEST_ENABLED"); ok {
+		t.Skipf("FEATURE_SLO_RESOLVED_DIGEST_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureSLOResolvedDigestEnabled {
+		t.Error("default feature_slo_resolved_digest_enabled = true, want false")
+	}
+}
+
+// Provider health alerts are opt-in, and the switch has to be reachable from
+// the environment: an environment turns them on once its notifications-server
+// knows the integration_health message type.
+func TestProviderHealthAlertsAreOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_provider_health_alerts_enabled") {
+		t.Error("feature_provider_health_alerts_enabled has no viper default, so FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED"); ok {
+		t.Skipf("FEATURE_PROVIDER_HEALTH_ALERTS_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureProviderHealthAlertsEnabled {
+		t.Error("default feature_provider_health_alerts_enabled = true, want false")
+	}
+}
+
+// Re-running workflows on a scheduled job's re-detection is opt-in, and the
+// switch has to be reachable from the environment.
+func TestScheduledAlertWorkflowRefireIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	if !slices.Contains(viper.AllKeys(), "feature_scheduled_alert_workflow_refire_enabled") {
+		t.Error("feature_scheduled_alert_workflow_refire_enabled has no viper default, so FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED is ignored")
+	}
+	if v, ok := os.LookupEnv("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED"); ok {
+		t.Skipf("FEATURE_SCHEDULED_ALERT_WORKFLOW_REFIRE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureScheduledAlertWorkflowRefireEnabled {
+		t.Error("default feature_scheduled_alert_workflow_refire_enabled = true, want false")
+	}
+}
+
+// Holding an anomaly's close is opt-in, and both settings have to be reachable
+// from the environment.
+func TestAnomalyStableCloseIsOffByDefaultAndReadFromTheEnvironment(t *testing.T) {
+	for _, key := range []string{"feature_anomaly_stable_close_enabled", "nb_anomaly_close_stable_hours"} {
+		if !slices.Contains(viper.AllKeys(), key) {
+			t.Errorf("%s has no viper default, so its environment variable is ignored", key)
+		}
+	}
+	if v, ok := os.LookupEnv("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED"); ok {
+		t.Skipf("FEATURE_ANOMALY_STABLE_CLOSE_ENABLED=%q is set in the environment; the compiled-in default is not observable here", v)
+	}
+	if Config.FeatureAnomalyStableCloseEnabled {
+		t.Error("default feature_anomaly_stable_close_enabled = true, want false")
 	}
 }

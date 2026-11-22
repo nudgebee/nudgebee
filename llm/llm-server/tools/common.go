@@ -9,22 +9,17 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/shlex"
-)
-
-const (
-	preContextLineCount  = 2
-	postContextLineCount = 5
 )
 
 // cliErrorPrefixRe matches CLI-style error prefixes (`error:`, `fatal:`,
@@ -260,7 +255,7 @@ func ExecuteCliCommand(toolContext core.NbToolContext, command string, env []str
 	combinedStderr := combinedStderrBuilder.String()
 
 	if finalErr != nil {
-		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr, "command", command)
+		toolContext.Ctx.GetLogger().Error("tools: cli command execution failed", "error", finalErr, "stderr", combinedStderr, "command", egressfilter.RedactForLog(command))
 		return finalStdout.String(), fmt.Errorf("tools: cli command failed: %v\nStderr: %s", finalErr, combinedStderr)
 	}
 
@@ -304,17 +299,6 @@ func ClassifyLogSeverity(log string) LogSeverity {
 		return LogSeverityWarning
 	}
 	return LogSeverityNone
-}
-
-// CountLogsInObservabilityResponse returns the number of logs in a serialized
-// ObservabilityLogResponse JSON string. Returns 0 if the response cannot be parsed.
-func CountLogsInObservabilityResponse(toolResponse string) int {
-	resultsMap := core.ObservabilityLogResponse{}
-	err := common.UnmarshalJson([]byte(toolResponse), &resultsMap)
-	if err != nil {
-		return 0
-	}
-	return len(resultsMap.Logs)
 }
 
 func normalizeLogLine(log string) string {
@@ -400,135 +384,6 @@ func GetErrorLinesFromLogStringOrDefault(log string, returnDefault bool) []strin
 	}
 
 	return finalLines[start:]
-}
-
-// minErrorLinesForWarningSkip is the minimum number of ERROR/FATAL/PANIC lines
-// needed before warnings are excluded from the filtered output.
-const minErrorLinesForWarningSkip = 5
-
-func GetErrorLinesFromObservabilityLogString(toolResponse string) (string, error) {
-	// check if the response is a valid json and reduce size by only picking errors
-	resultsMap := core.ObservabilityLogResponse{}
-	err := common.UnmarshalJson([]byte(toolResponse), &resultsMap)
-	if err != nil {
-		return "", err
-	}
-
-	logs := resultsMap.Logs
-	numLogs := len(logs)
-
-	// 1. Classify log lines by severity, separating errors from warnings
-	var errorIndices []int
-	var warningIndices []int
-	errorCounts := make(map[string]int)
-	for i, log := range logs {
-		severity := ClassifyLogSeverity(log.Message)
-		switch severity {
-		case LogSeverityError:
-			errorIndices = append(errorIndices, i)
-			errorCounts[normalizeLogLine(log.Message)]++
-		case LogSeverityWarning:
-			warningIndices = append(warningIndices, i)
-			errorCounts[normalizeLogLine(log.Message)]++
-		}
-	}
-
-	// 2. Prioritize errors; include warnings only when there are few errors
-	indicesToProcess := errorIndices
-	if len(errorIndices) < minErrorLinesForWarningSkip {
-		indicesToProcess = append(append([]int{}, errorIndices...), warningIndices...)
-		slices.Sort(indicesToProcess)
-	}
-
-	var resultBlocks [][]core.ObservabilityLog
-	seenErrors := make(map[string]bool)
-	claimedIndices := make(map[int]bool)
-	totalLines := 0
-
-	// 3. Iterate backwards through the identified lines to prioritize the latest ones
-	for i := len(indicesToProcess) - 1; i >= 0; i-- {
-		// Limit Results heuristic
-		if totalLines >= config.Config.LLMServerAgentMaxLogLines {
-			break
-		}
-
-		errIdx := indicesToProcess[i]
-		errorLog := logs[errIdx]
-		normalizedErrorMsg := normalizeLogLine(errorLog.Message)
-
-		if seenErrors[normalizedErrorMsg] {
-			continue
-		}
-		seenErrors[normalizedErrorMsg] = true
-		claimedIndices[errIdx] = true
-
-		// Append repetition count if applicable
-		if count := errorCounts[normalizedErrorMsg]; count > 1 {
-			errorLog.Message = fmt.Sprintf("%s (Repeated %d times)", errorLog.Message, count)
-		}
-
-		// Collect Pre-Context
-		var preContext []core.ObservabilityLog
-		for k := 1; k <= preContextLineCount; k++ {
-			idx := errIdx - k
-			if idx < 0 {
-				break
-			}
-			if claimedIndices[idx] || IsErrorLogLine(logs[idx].Message) {
-				break
-			}
-			preContext = append(preContext, logs[idx])
-			claimedIndices[idx] = true
-		}
-		slices.Reverse(preContext)
-
-		// Collect Post-Context
-		var postContext []core.ObservabilityLog
-		for k := 1; k <= postContextLineCount; k++ {
-			idx := errIdx + k
-			if idx >= numLogs {
-				break
-			}
-			if claimedIndices[idx] || IsErrorLogLine(logs[idx].Message) {
-				break
-			}
-			postContext = append(postContext, logs[idx])
-			claimedIndices[idx] = true
-		}
-
-		// Assemble Block
-		currentBlock := append(preContext, errorLog)
-		currentBlock = append(currentBlock, postContext...)
-
-		// Append block (will reverse later)
-		resultBlocks = append(resultBlocks, currentBlock)
-		totalLines += len(currentBlock)
-	}
-	slices.Reverse(resultBlocks)
-
-	var updatedLogs []core.ObservabilityLog
-	for _, block := range resultBlocks {
-		updatedLogs = append(updatedLogs, block...)
-	}
-
-	// If no errors were found, fall back to keeping all logs (truncated)
-	if len(updatedLogs) == 0 {
-		updatedLogs = logs
-	}
-
-	// Final truncation to strict limit
-	if len(updatedLogs) > config.Config.LLMServerAgentMaxLogLines {
-		updatedLogs = updatedLogs[len(updatedLogs)-config.Config.LLMServerAgentMaxLogLines:]
-	}
-
-	resultsMap.Logs = updatedLogs
-
-	toolResponseBytes, err := common.MarshalJson(resultsMap)
-	if err != nil {
-		return "", err
-	}
-	toolResponse = string(toolResponseBytes)
-	return toolResponse, nil
 }
 
 // ParseDuration parses a duration string, including support for days (d), weeks (w),

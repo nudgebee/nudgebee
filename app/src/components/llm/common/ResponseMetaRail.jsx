@@ -473,14 +473,15 @@ const buildItems = (props) => {
   if (props.contextCount > 0 && props.onOpenContexts) {
     items.push(countItem('contexts', 'agent', props.contextCount, props.onOpenContexts));
   }
-  // Approvals and clarifications the assistant asked for. Amber when one of them was
+  // Approvals and clarifications the assistant asked for, one pill per kind; each
+  // pill opens the drawer on its own kind. Amber when one of them was
   // denied, dismissed or left unanswered, so a reviewer sees that something did not
   // go ahead without opening the drawer.
   if (props.onOpenFollowups) {
     ['approvals', 'clarifications'].forEach((key) => {
       const kind = props.followups?.[key];
       if (kind?.count > 0) {
-        items.push(countItem(key, kind.needsAttention ? 'warning' : 'neutral', kind.count, props.onOpenFollowups));
+        items.push(countItem(key, kind.needsAttention ? 'warning' : 'neutral', kind.count, () => props.onOpenFollowups(key)));
       }
     });
   }

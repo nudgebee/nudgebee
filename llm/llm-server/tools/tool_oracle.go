@@ -145,10 +145,17 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	wsQuery := oracleWorkspaceShellCommand(database, query)
 	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, wsQuery, IntegrationWorkspaceEnv(nbRequestContext, nil))
 
-	response = convertCsvToJsonString(nbRequestContext, response, rune(','))
-
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("oracle: unable to execute oracle query in workspace", "error", err.Error())
+	}
+	return oracleToolResponse(nbRequestContext, response, err)
+}
+
+// oracleToolResponse turns a workspace result into the tool response. The
+// output is converted to rows only on success: on failure it is the error
+// text sqlplus printed, which the CSV conversion would mangle.
+func oracleToolResponse(nbRequestContext core.NbToolContext, response string, err error) (core.NBToolResponse, error) {
+	if err != nil {
 		if response == "" {
 			response = err.Error()
 		}
@@ -160,7 +167,7 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	}
 
 	return core.NBToolResponse{
-		Data:   response,
+		Data:   convertCsvToJsonString(nbRequestContext, response, rune(',')),
 		Type:   core.NBToolResponseTypeTable,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil

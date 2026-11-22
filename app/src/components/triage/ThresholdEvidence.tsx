@@ -22,6 +22,7 @@ import k8sApi from '@api1/kubernetes';
 import { getDateString } from '@lib/datetime';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import { type ThresholdSuggestionItem } from '@api1/triage';
+import { firingPattern, offersNumber, recommendationDisplay, recommendationTypeOf, waitChange } from './thresholdVerdict';
 import ThresholdApplyPanel from './ThresholdApplyPanel';
 import { Card } from '@ui/Card';
 import { ds, resolveColor, resolveColors, withAlpha } from 'src/utils/colors';
@@ -34,30 +35,12 @@ interface ThresholdEvidenceProps {
 
 type ChipTone = 'neutral' | 'info' | 'success' | 'warning' | 'critical' | 'savings' | 'waste' | 'agent';
 
-const RECOMMENDATION_LABELS: Record<string, { label: string; tone: ChipTone }> = {
-  tune_threshold: { label: 'Tune Threshold', tone: 'info' },
-  increase_duration: { label: 'Increase Duration', tone: 'warning' },
-  tune_both: { label: 'Tune Both', tone: 'info' },
-  disable: { label: 'Disable Alert', tone: 'critical' },
-  none: { label: 'No Change', tone: 'success' },
-  review_alert: { label: 'Review Alert', tone: 'warning' },
-  not_eligible: { label: 'Not Eligible', tone: 'neutral' },
-};
-
-const CLASSIFICATION_INFO: Record<string, { tone: ChipTone; description: string }> = {
-  false_positive: { tone: 'critical', description: 'Mostly noise — high transient rate, low engagement' },
-  broken: { tone: 'critical', description: 'Misconfigured — fires constantly with no resolution' },
-  noisy_but_real: { tone: 'warning', description: 'Fires too often but represents real conditions' },
-  noisy_ignored: { tone: 'warning', description: 'Fires often and stays firing, but nobody acts on it' },
-  healthy: { tone: 'success', description: 'Firing at acceptable patterns, threshold tuning can reduce noise' },
-};
-
 // Tooltips for each stat — explains what the number means
 const STAT_TOOLTIPS: Record<string, string> = {
   firings: 'Total number of times this alert fired in the analysis window',
   avg_day: 'Average alert firings per day',
-  resolution: 'Percentage of alerts that were acknowledged or resolved by a user',
-  engagement: 'Percentage of alerts that someone interacted with (commented, assigned, etc.)',
+  resolution: 'Percentage of firings that cleared at the source (they have a start and a later end)',
+  engagement: 'Percentage of firings whose status someone changed in Nudgebee',
   transient: 'Percentage of alerts that auto-resolved within 10 minutes — often indicates flapping or overly sensitive thresholds',
   duration_p90: '90th percentile of how long each alert stayed in firing state before resolving',
   flapping: 'Percentage of alerts that rapidly toggled between firing and OK — indicates an unstable threshold boundary',
@@ -118,13 +101,6 @@ const formatThreshold = (value?: number, operator?: string): string => {
     return '-';
   }
   return `${operatorSymbol(operator)} ${formatNumber(value)}`;
-};
-
-const formatDurationReason = (reason: string, suggestedDuration?: number): string => {
-  if (!suggestedDuration) {
-    return reason;
-  }
-  return reason + ' — Suggested window: ' + suggestedDuration + ' min';
 };
 
 const TippedStat = ({ label, tooltip, value, sub }: { label: string; tooltip: string; value: string; sub?: string }): React.ReactElement => (
@@ -648,22 +624,18 @@ const FULL_SUPPRESSION_GUIDANCE =
 // ─── Main Component ──────────────────────────────────────────────────
 const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
   const { firing_analysis, alert_quality, metric_stats, recommendation_type, reason } = data;
-  const recType = metric_stats?.recommendation_type || recommendation_type || '';
-  const recStyle = RECOMMENDATION_LABELS[recType];
-  const classificationInfo = CLASSIFICATION_INFO[alert_quality?.classification || ''] || {
-    tone: 'neutral' as ChipTone,
-    description: '',
-  };
+  const recType = recommendationTypeOf({ metric_stats, recommendation_type });
+  const recStyle = recommendationDisplay(recType, data.recommendation_label);
+  const pattern = firingPattern(alert_quality);
+  // Only a tuning carries a new value; every other verdict keeps the current threshold.
+  const showsNewValue = offersNumber(recType) && data.current_threshold !== data.suggested_threshold;
+  const waitText = waitChange(recType, metric_stats);
+  const fetchFailedAt = metric_stats?.last_fetch_failed_at;
 
   const riskLevel = metric_stats?.risk_level;
   const riskWarnings = metric_stats?.risk_warnings;
 
-  const showReduction =
-    data.estimated_reduction != null &&
-    data.estimated_reduction > 0 &&
-    recType !== 'increase_duration' &&
-    recType !== 'disable' &&
-    recType !== 'none';
+  const showReduction = data.estimated_reduction != null && data.estimated_reduction > 0 && offersNumber(recType);
   let reductionText: string | null = null;
   if (showReduction) {
     reductionText = data.estimated_reduction === 100 ? 'Suppresses all alerts' : `Est. ${Math.round(data.estimated_reduction!)}% fewer alerts`;
@@ -684,6 +656,15 @@ const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
         {/* ─── Risk warnings (top, prominent) ─── */}
         <RiskWarningBanner riskLevel={riskLevel} warnings={riskWarnings} />
 
+        {fetchFailedAt && (
+          <Text
+            value={`The last attempt to read this rule's metric failed (${new Date(
+              fetchFailedAt
+            ).toLocaleString()}). What is shown below is from an earlier run, and it cannot be applied until the metric has been read again.`}
+            sx={{ fontSize: ds.text.small, lineHeight: 1.6, color: ds.amber[700] }}
+          />
+        )}
+
         {/* ─── Metric name + Recommendation summary ─── */}
         <Box>
           {data.metric_name && (
@@ -693,27 +674,31 @@ const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
               sx={{ fontSize: ds.text.caption, fontFamily: ds.font.mono, mb: ds.space[2], color: ds.gray[600] }}
             />
           )}
+          {metric_stats?.measured_on && (
+            <Text
+              value={
+                metric_stats.measured_on_other
+                  ? `Measured on ${metric_stats.measured_on} — the instance that crossed the threshold most. The instance the latest alert came from was not found in the metric data.`
+                  : `Measured on ${metric_stats.measured_on}. A rule can fire on many instances; this verdict is read from this one.`
+              }
+              sx={{ fontSize: ds.text.caption, mb: ds.space[2], color: metric_stats.measured_on_other ? ds.amber[700] : ds.gray[600] }}
+            />
+          )}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
-            {recStyle && (
-              <Chip variant='tag' size='xs' tone={recStyle.tone}>
-                {recStyle.label}
-              </Chip>
-            )}
+            <Chip variant='tag' size='xs' tone={recStyle.tone}>
+              {recStyle.label}
+            </Chip>
             <Text value={formatThreshold(data.current_threshold, data.operator)} sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold }} />
-            {data.current_threshold !== data.suggested_threshold &&
-              recType !== 'disable' &&
-              recType !== 'none' &&
-              recType !== 'increase_duration' &&
-              recType !== 'review_alert' &&
-              recType !== 'not_eligible' && (
-                <>
-                  <Text value='→' sx={{ fontSize: ds.text.bodyLg, mx: `-${ds.space[1]}`, color: ds.gray[600] }} />
-                  <Text
-                    value={formatThreshold(data.suggested_threshold, data.operator)}
-                    sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.green[600] }}
-                  />
-                </>
-              )}
+            {showsNewValue && (
+              <>
+                <Text value='→' sx={{ fontSize: ds.text.bodyLg, mx: `-${ds.space[1]}`, color: ds.gray[600] }} />
+                <Text
+                  value={formatThreshold(data.suggested_threshold, data.operator)}
+                  sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.green[600] }}
+                />
+              </>
+            )}
+            {waitText && <Text value={`Wait ${waitText}`} sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.green[600] }} />}
             {reductionText && (
               <Tooltip title='Estimated percentage reduction in alert firings if this threshold change is applied' placement='top'>
                 <Chip variant='tag' size='xs' tone={reductionTone}>
@@ -721,10 +706,10 @@ const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
                 </Chip>
               </Tooltip>
             )}
-            {alert_quality && (
-              <Tooltip title={classificationInfo.description} placement='top'>
-                <Chip variant='tag' size='xs' tone={classificationInfo.tone}>
-                  {alert_quality.classification.replace(/_/g, ' ')}
+            {pattern && (
+              <Tooltip title={pattern.description} placement='top'>
+                <Chip variant='tag' size='xs' tone={pattern.tone}>
+                  {pattern.label}
                 </Chip>
               </Tooltip>
             )}
@@ -758,7 +743,7 @@ const ThresholdEvidence: React.FC<ThresholdEvidenceProps> = ({ data }) => {
               })()}
             {metric_stats?.duration_reason &&
               (() => {
-                let durationText = formatDurationReason(metric_stats.duration_reason, metric_stats.suggested_duration);
+                let durationText = metric_stats.duration_reason;
                 if (guidance && recType === 'increase_duration') {
                   durationText = durationText.replace(/^Threshold appears correct,?\s*but\s*/i, '');
                 }

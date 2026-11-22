@@ -57,11 +57,12 @@ func TestRecommendationPoller_NoNewRecommendations(t *testing.T) {
 func TestRecommendationPoller_RecommendationMatchesTrigger(t *testing.T) {
 	rules := []model.WorkflowEventTriggerRule{
 		{
-			WorkflowID: "wf-opt-1",
-			EventType:  "optimization.recommendation",
-			Filter:     "{{ event.category in ['PodRightSizing'] }}",
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-1",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "{{ event.category in ['PodRightSizing'] }}",
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 	}
 	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
@@ -104,11 +105,12 @@ func TestRecommendationPoller_RecommendationMatchesTrigger(t *testing.T) {
 func TestRecommendationPoller_NoMatchingTrigger(t *testing.T) {
 	rules := []model.WorkflowEventTriggerRule{
 		{
-			WorkflowID: "wf-opt-1",
-			EventType:  "optimization.recommendation",
-			Filter:     "{{ event.category in ['Security'] }}",
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-1",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "{{ event.category in ['Security'] }}",
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 	}
 	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
@@ -136,11 +138,12 @@ func TestRecommendationPoller_NoMatchingTrigger(t *testing.T) {
 func TestRecommendationPoller_AccountIsolation(t *testing.T) {
 	rules := []model.WorkflowEventTriggerRule{
 		{
-			WorkflowID: "wf-opt-1",
-			EventType:  "optimization.recommendation",
-			Filter:     "", // Match all
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-1",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "", // Match all
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 	}
 	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
@@ -167,18 +170,20 @@ func TestRecommendationPoller_AccountIsolation(t *testing.T) {
 func TestRecommendationPoller_MultipleRecommendationsAndRules(t *testing.T) {
 	rules := []model.WorkflowEventTriggerRule{
 		{
-			WorkflowID: "wf-opt-pod",
-			EventType:  "optimization.recommendation",
-			Filter:     "{{ event.category in ['PodRightSizing'] }}",
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-pod",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "{{ event.category in ['PodRightSizing'] }}",
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 		{
-			WorkflowID: "wf-opt-all",
-			EventType:  "optimization.recommendation",
-			Filter:     "", // Match all
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-all",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "", // Match all
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 	}
 	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
@@ -238,11 +243,12 @@ func TestRecommendationPoller_DBErrorDoesNotAdvanceLastPoll(t *testing.T) {
 func TestRecommendationPoller_ExecutorErrorDoesNotBlockOthers(t *testing.T) {
 	rules := []model.WorkflowEventTriggerRule{
 		{
-			WorkflowID: "wf-opt-1",
-			EventType:  "optimization.recommendation",
-			Filter:     "",
-			AccountID:  "acc-1",
-			TenantID:   "tenant-1",
+			WorkflowID:  "wf-opt-1",
+			EventType:   "optimization.recommendation",
+			TriggerType: model.WorkflowTriggerOptimization,
+			Filter:      "",
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
 		},
 	}
 	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
@@ -317,4 +323,35 @@ func TestRecommendationPoller_StartStopsOnContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after context cancellation")
 	}
+}
+
+func TestRecommendationPoller_IgnoresWildcardEventRules(t *testing.T) {
+	rules := []model.WorkflowEventTriggerRule{
+		{
+			WorkflowID:  "wf-event-1",
+			Filter:      "{{ 1==1 }}",
+			TriggerType: model.WorkflowTriggerEvent,
+			AccountID:   "acc-1",
+			TenantID:    "tenant-1",
+		},
+	}
+	mockRecStore, mockExecutor, poller := setupPollerTest(t, rules)
+
+	recs := []storage.RecommendationEvent{
+		{
+			ID:             "rec-1",
+			TenantID:       "tenant-1",
+			CloudAccountID: "acc-1",
+			Category:       "PodRightSizing",
+			Status:         "Open",
+		},
+	}
+
+	mockRecStore.On("FindNewRecommendations", mock.Anything, mock.Anything).
+		Return(recs, nil)
+
+	poller.poll(context.Background())
+
+	mockRecStore.AssertExpectations(t)
+	mockExecutor.AssertNotCalled(t, "ExecuteWorkflow")
 }

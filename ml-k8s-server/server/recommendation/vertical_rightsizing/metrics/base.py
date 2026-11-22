@@ -13,6 +13,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pydantic as pd
 
+from server.utils.utils import safe_get
 from server.recommendation.vertical_rightsizing.models.result import PodsTimeData
 from server.recommendation.vertical_rightsizing.models.objects import K8sObjectData
 from server.recommendation.vertical_rightsizing.models.config import Config
@@ -197,7 +198,8 @@ class PrometheusMetric(BaseMetric):
             results = response
             # format the results to return the same format as custom_query_range
             for result in results:
-                result["values"] = [result.pop("value")]
+                if "value" in result:
+                    result["values"] = [result.pop("value")]
             return results
 
     async def query_prometheus(self, data: PrometheusMetricData) -> list[PrometheusSeries]:
@@ -267,15 +269,19 @@ class PrometheusMetric(BaseMetric):
         if self.filtering:
             result = self.filter_prom_jobs_results(result)
 
-        return {pod_result["metric"]["pod"]: np.array(pod_result["values"], dtype=np.float64) for pod_result in result}
+        return {
+            p: np.array(pod_result["values"], dtype=np.float64)
+            for pod_result in result
+            if (p := safe_get(pod_result, ["metric", "pod"])) and "values" in pod_result
+        }
 
     # --------------------- Filtering Jobs --------------------- #
 
     @staticmethod
     def get_target_name(series: PrometheusSeries) -> Optional[str]:
         for label in ["pod", "container", "node"]:
-            if label in series["metric"]:
-                return series["metric"][label]
+            if (val := safe_get(series, ["metric", label])) is not None:
+                return val
         return None
 
     @staticmethod
@@ -303,11 +309,15 @@ class PrometheusMetric(BaseMetric):
             relevant_series = [
                 series for series in series_list_result if PrometheusMetric.get_target_name(series) == target_name
             ]
-            relevant_kubelet_metric = [series for series in relevant_series if series["metric"].get("job") == "kubelet"]
+            relevant_kubelet_metric = [
+                series for series in relevant_series if safe_get(series, ["metric", "job"]) == "kubelet"
+            ]
             if len(relevant_kubelet_metric) == 1:
                 return_list.append(relevant_kubelet_metric[0])
                 continue
-            sorted_relevant_series = sorted(relevant_series, key=lambda s: s["metric"].get("job", ""), reverse=False)
+            sorted_relevant_series = sorted(
+                relevant_series, key=lambda s: safe_get(s, ["metric", "job"]) or "", reverse=False
+            )
             return_list.append(sorted_relevant_series[0])
         return return_list
 

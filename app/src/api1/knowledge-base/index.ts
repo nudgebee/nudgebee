@@ -10,8 +10,13 @@ interface CapabilityDetail {
 interface KnowledgeBaseOutput {
   id: string;
   tenant_id: string;
+  // Empty for an organisation KB (owned by the tenant).
   account_id: string;
   account_name?: string;
+  // account | organisation | selected_accounts
+  visibility?: string;
+  // An organisation KB the listed account switched off for itself.
+  switched_off?: boolean;
   name: string;
   description?: string;
   data: string;
@@ -36,6 +41,74 @@ interface KnowledgeBaseOutput {
   shapes?: string[];
   capabilities?: string[];
   capability_details?: CapabilityDetail[];
+  // Set on a skill synced from a skill source; the source owns its content and
+  // who can use it.
+  source_id?: string | null;
+  skill_meta?: SkillMeta | null;
+}
+
+export interface SkillRequirement {
+  kind: 'cli' | 'mcp' | 'runtime' | 'note' | string;
+  name: string;
+  provided: boolean;
+}
+
+export interface SkillFileInfo {
+  path: string;
+  size: number;
+  skipped?: string;
+}
+
+// An Agent Skills folder's details, as synced from its skill source.
+export interface SkillMeta {
+  source_path?: string;
+  commit?: string;
+  license?: string;
+  compatibility?: string;
+  metadata?: Record<string, string>;
+  allowed_tools?: string;
+  requirements?: SkillRequirement[];
+  warnings?: string[];
+  files?: SkillFileInfo[];
+  body_sha?: string;
+}
+
+export interface SkillSourceSyncReport {
+  commit?: string;
+  found?: number;
+  added?: number;
+  updated?: number;
+  archived?: number;
+  skipped?: { source_path: string; reason: string }[];
+}
+
+// A GitHub repository (optionally one folder / branch of it) whose Agent Skills
+// folders become organisation skills.
+export interface SkillSource {
+  id: string;
+  tenant_id: string;
+  provider: string;
+  repo: string;
+  folder?: string;
+  branch?: string;
+  visibility: string;
+  account_ids?: string[];
+  last_commit?: string;
+  last_synced_at?: string;
+  status: 'pending' | 'syncing' | 'active' | 'error' | string;
+  error_message?: string;
+  sync_report?: SkillSourceSyncReport | null;
+  skill_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CreateSkillSourcePayload {
+  repo: string;
+  folder?: string;
+  branch?: string;
+  visibility?: string;
+  accountIds?: string[];
 }
 
 /**
@@ -45,6 +118,12 @@ interface KnowledgeBaseOutput {
  */
 export const KB_AGENT_WILDCARD = '*';
 export const KB_DOCUMENTS_PAGE_SIZE = 50;
+/**
+ * Longest skill text that can be marked "Always load" on an agent link. The
+ * llm-server enforces the same cap when marking and on every later edit of a
+ * marked skill (#40899); the UI uses it only to disable the switch and explain.
+ */
+export const ALWAYS_LOAD_MAX_CHARS = 4000;
 
 interface CreateKnowledgeBasePayload {
   name: string;
@@ -54,6 +133,10 @@ interface CreateKnowledgeBasePayload {
   fileName?: string;
   noteCategory?: string;
   contextTags?: string[];
+  // Tenant admins only: 'organisation' or 'selected_accounts' creates an
+  // organisation KB; accountIds lists the accounts for 'selected_accounts'.
+  visibility?: string;
+  accountIds?: string[];
 }
 
 interface UpdateKnowledgeBasePayload {
@@ -85,6 +168,53 @@ const extractErrorMessage = (response: any, fallbackMessage: string): string => 
   }
 };
 
+const SKILL_SOURCE_FIELDS = `
+  id
+  tenant_id
+  provider
+  repo
+  folder
+  branch
+  visibility
+  account_ids
+  last_commit
+  last_synced_at
+  status
+  error_message
+  sync_report
+  skill_count
+  created_at
+  updated_at
+`;
+
+// Runs one skill-source action and unwraps `{ data, errors }` the way the other
+// calls in this module do: transport errors, the action's own errors, or data.
+const runSkillSourceAction = async <T>(
+  query: string,
+  operationName: string,
+  field: string,
+  variables: Record<string, unknown> | undefined,
+  fallbackMessage: string
+): Promise<{ data: T | null; errors: { message: string }[] }> => {
+  try {
+    const response = await queryGraphQL(query, operationName, variables);
+    if (response?.data?.errors && response.data.errors.length > 0) {
+      return { data: null, errors: [{ message: extractErrorMessage(response, fallbackMessage) }] };
+    }
+    const result = response?.data?.data?.[field];
+    if (result) {
+      if (result.errors && result.errors.length > 0) {
+        return { data: null, errors: result.errors };
+      }
+      return { data: result.data ?? null, errors: [] };
+    }
+    return { data: null, errors: [{ message: fallbackMessage }] };
+  } catch (error) {
+    console.error(`Error in ${operationName}:`, error);
+    return { data: null, errors: [{ message: fallbackMessage }] };
+  }
+};
+
 const apiKnowledgeBase = {
   getKnowledgeBases: async (accountId: string) => {
     if (accountId === 'demo') {
@@ -100,6 +230,8 @@ const apiKnowledgeBase = {
             tenant_id
             account_id
             account_name
+            visibility
+            switched_off
             name
             description
             data
@@ -129,6 +261,8 @@ const apiKnowledgeBase = {
               surface
               scope
             }
+            source_id
+            skill_meta
           }
           errors {
             message
@@ -160,6 +294,8 @@ const apiKnowledgeBase = {
           integration_id: kb.integration_id,
           account_id: kb.account_id,
           account_name: kb.account_name,
+          visibility: kb.visibility,
+          switched_off: kb.switched_off,
           created_at: kb.created_at,
           updated_at: kb.updated_at,
           created_by: kb.created_by ? { display_name: kb.created_by } : null,
@@ -173,6 +309,8 @@ const apiKnowledgeBase = {
           shapes: kb.shapes,
           capabilities: kb.capabilities,
           capability_details: kb.capability_details,
+          source_id: kb.source_id || null,
+          skill_meta: kb.skill_meta || null,
         }));
         return { data: transformedData, errors: result.errors || [] };
       }
@@ -181,6 +319,42 @@ const apiKnowledgeBase = {
       console.error('Error fetching knowledge bases:', error);
       return { data: [], errors: [{ message: 'An error occurred while fetching knowledge bases' }] };
     }
+  },
+
+  /**
+   * Skills a user can load from chat with `/skill-name`: active, enabled,
+   * user-defined (manual) text KBs. Selects only the fields needed for the
+   * slash-command suggestion list.
+   */
+  listSkillCommands: async (accountId: string): Promise<{ name: string; description: string }[]> => {
+    if (accountId === 'demo') {
+      return [];
+    }
+    const LIST_SKILL_COMMANDS = `
+      query ListSkillCommands($request: ListKBRequest!) {
+        ai_list_kb(request: $request) {
+          data {
+            id
+            name
+            description
+            kb_type
+            enabled
+            status
+            switched_off
+            data_format
+          }
+        }
+      }
+    `;
+    const response = await queryGraphQL(LIST_SKILL_COMMANDS, 'ListSkillCommands', {
+      request: {
+        account_id: accountId,
+      },
+    });
+    const rows: KnowledgeBaseOutput[] = response?.data?.data?.ai_list_kb?.data || [];
+    return rows
+      .filter((kb) => kb.kb_type === 'manual' && kb.enabled && kb.status === 'active' && !kb.switched_off && kb.data_format !== 'pdf')
+      .map((kb) => ({ name: kb.name, description: kb.description || '' }));
   },
 
   /**
@@ -200,6 +374,7 @@ const apiKnowledgeBase = {
             id
             tenant_id
             account_id
+            visibility
             name
             description
             data
@@ -214,6 +389,8 @@ const apiKnowledgeBase = {
             error_message
             note_category
             context_tags
+            source_id
+            skill_meta
           }
           errors {
             message
@@ -242,6 +419,8 @@ const apiKnowledgeBase = {
             format: kb.data_format,
             fileName: kb.data_filename,
             status: kb.status,
+            account_id: kb.account_id,
+            visibility: kb.visibility,
             created_at: kb.created_at,
             updated_at: kb.updated_at,
             created_by: kb.created_by ? { display_name: kb.created_by } : null,
@@ -249,6 +428,8 @@ const apiKnowledgeBase = {
             error_message: kb.error_message,
             note_category: kb.note_category,
             context_tags: kb.context_tags,
+            source_id: kb.source_id || null,
+            skill_meta: kb.skill_meta || null,
           };
           return { data: transformedData, errors: result.errors || [] };
         }
@@ -309,6 +490,8 @@ const apiKnowledgeBase = {
             file_name: payload.fileName || `${payload.name}.txt`,
             note_category: payload.noteCategory || '',
             context_tags: payload.contextTags || [],
+            ...(payload.visibility ? { visibility: payload.visibility } : {}),
+            ...(payload.accountIds?.length ? { account_ids: payload.accountIds } : {}),
           },
         },
       });
@@ -543,9 +726,12 @@ const apiKnowledgeBase = {
   },
 
   /**
-   * Map a knowledge base to an agent
+   * Map a knowledge base to an agent. It is an upsert: `alwaysLoad` set to
+   * true/false marks or unmarks the link (the agent then gets the full text on
+   * every run); left out, an existing link keeps its flag and a new one starts
+   * unmarked.
    */
-  mapKnowledgeBaseToAgent: async (accountId: string, kbId: string, agentId: string) => {
+  mapKnowledgeBaseToAgent: async (accountId: string, kbId: string, agentId: string, alwaysLoad?: boolean) => {
     const MAP_KB_TO_AGENT = `
       mutation MapKBToAgent($request: MapKBToAgentRequest!) {
         ai_create_kb_mapping(request: $request) {
@@ -569,6 +755,7 @@ const apiKnowledgeBase = {
           account_id: accountId,
           kb_id: kbId,
           agent_id: agentId,
+          ...(alwaysLoad === undefined ? {} : { always_load: alwaysLoad }),
         },
       });
 
@@ -749,6 +936,10 @@ const apiKnowledgeBase = {
               url
               document_key
               note_category
+              account_marks
+              kind
+              shape
+              capabilities
             }
             next_offset
             indexed
@@ -982,6 +1173,241 @@ const apiKnowledgeBase = {
       console.error('Error retriggering KB:', error);
       return { data: null, errors: [{ message: 'An error occurred while retriggering' }] };
     }
+  },
+
+  /**
+   * Change the scope of a knowledge base (tenant admins only): widen it to the
+   * organisation, restrict it to selected accounts, or move it back to one
+   * account (visibility 'account' with targetAccountId).
+   */
+  updateKnowledgeBaseVisibility: async (kbId: string, visibility: string, accountIds: string[] = [], targetAccountId = '') => {
+    const UPDATE_KB_VISIBILITY = `
+      mutation UpdateKBVisibility($request: UpdateKBVisibilityRequest!) {
+        ai_update_kb_visibility(request: $request) {
+          data {
+            id
+            account_id
+            visibility
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      const response = await queryGraphQL(UPDATE_KB_VISIBILITY, 'UpdateKBVisibility', {
+        request: { kb_id: kbId, visibility, account_ids: accountIds, target_account_id: targetAccountId },
+      });
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to change who can use it') }] };
+      }
+      const result = response?.data?.data?.ai_update_kb_visibility;
+      if (result) {
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to change who can use it' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base visibility:', error);
+      return { data: null, errors: [{ message: 'An error occurred while changing who can use it' }] };
+    }
+  },
+
+  /**
+   * Switch an organisation knowledge base off or on for one account only.
+   */
+  setKnowledgeBaseAccountOverride: async (accountId: string, kbId: string, enabled: boolean) => {
+    const SET_KB_ACCOUNT_OVERRIDE = `
+      mutation SetKBAccountOverride($request: UpdateKBAccountOverrideRequest!) {
+        ai_update_kb_account_override(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      if (accountId === 'demo') {
+        return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+      }
+      const response = await queryGraphQL(SET_KB_ACCOUNT_OVERRIDE, 'SetKBAccountOverride', {
+        request: { account_id: accountId, kb_id: kbId, enabled },
+      });
+      if (response?.data?.errors && response.data.errors.length > 0) {
+        return { data: null, errors: [{ message: extractErrorMessage(response, 'Failed to update knowledge base') }] };
+      }
+      const result = response?.data?.data?.ai_update_kb_account_override;
+      if (result) {
+        if (result.errors && result.errors.length > 0) {
+          return { data: null, errors: result.errors };
+        }
+        return { data: result.data, errors: [] };
+      }
+      return { data: null, errors: [{ message: 'Failed to update knowledge base' }] };
+    } catch (error) {
+      console.error('Error updating knowledge base account switch:', error);
+      return { data: null, errors: [{ message: 'An error occurred while updating the knowledge base' }] };
+    }
+  },
+
+  /**
+   * The per-account switches of an organisation knowledge base (tenant admins).
+   * For a selected-accounts KB, the accounts switched on are the selection.
+   */
+  listKnowledgeBaseAccountOverrides: async (kbId: string) => {
+    const LIST_KB_ACCOUNT_OVERRIDES = `
+      query ListKBAccountOverrides($request: ListKBAccountOverridesRequest!) {
+        ai_list_kb_account_overrides(request: $request) {
+          data {
+            account_id
+            account_name
+            enabled
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    try {
+      const response = await queryGraphQL(LIST_KB_ACCOUNT_OVERRIDES, 'ListKBAccountOverrides', {
+        request: { kb_id: kbId },
+      });
+      const result = response?.data?.data?.ai_list_kb_account_overrides;
+      if (result) {
+        return { data: result.data || [], errors: result.errors || [] };
+      }
+      return { data: [], errors: [{ message: extractErrorMessage(response, 'Failed to load account switches') }] };
+    } catch (error) {
+      console.error('Error listing knowledge base account switches:', error);
+      return { data: [], errors: [{ message: 'An error occurred while loading account switches' }] };
+    }
+  },
+  /**
+   * Skill sources (tenant admins): GitHub repositories whose Agent Skills
+   * folders (a SKILL.md each) become read-only organisation skills.
+   */
+  listSkillSources: async () => {
+    const LIST_SKILL_SOURCES = `
+      query ListKBSkillSources {
+        ai_list_kb_skill_sources {
+          data {${SKILL_SOURCE_FIELDS}}
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    const result = await runSkillSourceAction<SkillSource[]>(
+      LIST_SKILL_SOURCES,
+      'ListKBSkillSources',
+      'ai_list_kb_skill_sources',
+      undefined,
+      'Failed to load skill sources'
+    );
+    return { data: result.data || [], errors: result.errors };
+  },
+
+  createSkillSource: async ({ repo, folder, branch, visibility, accountIds }: CreateSkillSourcePayload) => {
+    const CREATE_SKILL_SOURCE = `
+      mutation CreateKBSkillSource($request: CreateKBSkillSourceRequest!) {
+        ai_create_kb_skill_source(request: $request) {
+          data {${SKILL_SOURCE_FIELDS}}
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    return runSkillSourceAction<SkillSource>(
+      CREATE_SKILL_SOURCE,
+      'CreateKBSkillSource',
+      'ai_create_kb_skill_source',
+      {
+        request: {
+          repo,
+          folder: folder || '',
+          branch: branch || '',
+          visibility: visibility || 'organisation',
+          account_ids: visibility === 'selected_accounts' ? accountIds || [] : [],
+        },
+      },
+      'Failed to add the skill source'
+    );
+  },
+
+  updateSkillSource: async (id: string, visibility: string, accountIds: string[] = []) => {
+    const UPDATE_SKILL_SOURCE = `
+      mutation UpdateKBSkillSource($request: UpdateKBSkillSourceRequest!) {
+        ai_update_kb_skill_source(request: $request) {
+          data {${SKILL_SOURCE_FIELDS}}
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    return runSkillSourceAction<SkillSource>(
+      UPDATE_SKILL_SOURCE,
+      'UpdateKBSkillSource',
+      'ai_update_kb_skill_source',
+      { request: { id, visibility, account_ids: visibility === 'selected_accounts' ? accountIds : [] } },
+      'Failed to change who can use the skill source'
+    );
+  },
+
+  syncSkillSource: async (id: string) => {
+    const SYNC_SKILL_SOURCE = `
+      mutation SyncKBSkillSource($request: KBSkillSourceIdRequest!) {
+        ai_sync_kb_skill_source(request: $request) {
+          data {
+            commit
+            found
+            added
+            updated
+            archived
+            skipped {
+              source_path
+              reason
+            }
+          }
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    return runSkillSourceAction<SkillSourceSyncReport>(
+      SYNC_SKILL_SOURCE,
+      'SyncKBSkillSource',
+      'ai_sync_kb_skill_source',
+      { request: { id } },
+      'Failed to sync the skill source'
+    );
+  },
+
+  deleteSkillSource: async (id: string) => {
+    const DELETE_SKILL_SOURCE = `
+      mutation DeleteKBSkillSource($request: KBSkillSourceIdRequest!) {
+        ai_delete_kb_skill_source(request: $request) {
+          data
+          errors {
+            message
+          }
+        }
+      }
+    `;
+    return runSkillSourceAction<{ status: string; id: string }>(
+      DELETE_SKILL_SOURCE,
+      'DeleteKBSkillSource',
+      'ai_delete_kb_skill_source',
+      { request: { id } },
+      'Failed to remove the skill source'
+    );
   },
 };
 

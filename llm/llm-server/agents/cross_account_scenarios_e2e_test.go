@@ -272,3 +272,105 @@ func TestCrossAccountScenario_WritesOnTwoAccountsInOneTurn(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossAccountScenario_LogsFromACloudConversation replays three automatic
+// investigations seen on dev (2026-09-29..10-06) whose logs step was refused
+// with "agent aws_logs/gcp_logs does not support a delegated execution target":
+// a cloud conversation asking for logs on a cluster, on another account of
+// its own cloud, and on itself. None may be refused that way, and a step must
+// run on the account the question names.
+func TestCrossAccountScenario_LogsFromACloudConversation(t *testing.T) {
+	requireDelegateE2EEnv(t)
+	sc := tenantWideE2EContext()
+	userId := os.Getenv("TEST_USER")
+	for _, tc := range []struct {
+		name, origin, orchestrator, question, ranOn string
+	}{
+		{"aws conversation, cluster logs", envOr("TEST_LOGS_AWS_ORIGIN", "aws-prod"), "aws_orchestrator",
+			"Show the logs for cloud-collector-server in namespace nudgebee on k8s-prod for the last 30 minutes.", "k8s-prod"},
+		{"aws conversation, another aws account", envOr("TEST_LOGS_AWS_OTHER_ORIGIN", "Demo123"), "aws_orchestrator",
+			"Show CloudWatch log groups and the most recent errors on the dev-aws account for the last hour.", "dev-aws"},
+		{"gcp conversation, its own account", os.Getenv("TEST_DELEGATE_GCP_TARGET"), "gcp_orchestrator",
+			"Show error logs for Cloud SQL in this project for the last hour.", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.origin == "" {
+				t.Skip("set TEST_DELEGATE_GCP_TARGET (a GCP connection name) to replay the GCP conversation")
+			}
+			origin := scenarioAccountID(t, tc.origin)
+			agent, ok := core.GetNBAgent(sc, tc.orchestrator, origin, core.AgentStatusEnabled)
+			require.True(t, ok, "%s not found", tc.orchestrator)
+			sessionId := fmt.Sprintf("logs-cloud-origin-%d", time.Now().UnixNano())
+			resp, err := core.HandleConversationSessionRequest(sc, agent, userId, origin, sessionId, tc.question,
+				core.ConversationSessionRequestWithSource(core.ConversationSourceAutomation))
+			require.NoError(t, err)
+			t.Logf("Preserved sessionId=%s conversationId=%s status=%s", sessionId, resp.ConversationId, resp.Status)
+			ranThere := false
+			for _, c := range scenarioCalls(t, resp.ConversationId) {
+				assert.NotContains(t, c.Params+c.Status, "does not support a delegated execution target")
+				if tc.ranOn != "" && c.Status == "success" && c.RanOn == tc.ranOn {
+					ranThere = true
+				}
+			}
+			assertNoTargetRefusal(t, resp.ConversationId)
+			if tc.ranOn != "" {
+				assert.True(t, ranThere, "no step ran on %s", tc.ranOn)
+			}
+		})
+	}
+}
+
+// scenarioAccountID is the id of the tenant's active account with this name.
+func scenarioAccountID(t *testing.T, name string) string {
+	t.Helper()
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err)
+	var id string
+	require.NoError(t, dbm.Db.QueryRow(`SELECT id::text FROM cloud_accounts WHERE account_name = $1 AND tenant::text = $2 AND status = 'active' LIMIT 1`,
+		name, os.Getenv("TEST_TENANT")).Scan(&id), "account %q", name)
+	return id
+}
+
+// assertNoTargetRefusal checks the stored responses, where a refused
+// sub-agent call records its error.
+func assertNoTargetRefusal(t *testing.T, conversationId string) {
+	t.Helper()
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err)
+	var refused int
+	require.NoError(t, dbm.Db.QueryRow(`SELECT count(*) FROM llm_conversation_tool_calls WHERE conversation_id = $1
+		AND response::text ILIKE '%does not support a delegated execution target%'`, conversationId).Scan(&refused))
+	assert.Zero(t, refused, "a sub-agent refused the target")
+}
+
+// TestCrossAccountScenario_EventIDFromAnotherAccount replays a dev
+// conversation (2026-10-06): "Get the details of Event with id …" asked on
+// k8s-dev about an event on k8s-prod answered "No event found". An event id
+// is unique: Nubi finds it on the account it belongs to, says which, and
+// reads it there.
+func TestCrossAccountScenario_EventIDFromAnotherAccount(t *testing.T) {
+	requireDelegateE2EEnv(t)
+	sc := tenantWideE2EContext()
+	accountId, userId := os.Getenv("TEST_ACCOUNT"), os.Getenv("TEST_USER")
+	prod := delegateE2ETarget("TEST_DELEGATE_K8S_TARGET", "k8s-prod")
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	require.NoError(t, err)
+	var eventID string
+	require.NoError(t, dbm.Db.QueryRow(`SELECT id::text FROM events WHERE cloud_account_id::text = $1 ORDER BY starts_at DESC LIMIT 1`,
+		scenarioAccountID(t, prod)).Scan(&eventID), "an event on %s", prod)
+
+	sessionId := fmt.Sprintf("event-id-other-account-%d", time.Now().UnixNano())
+	resp, err := core.HandleConversationSessionRequest(sc, newK8sOrchestratorAgent(accountId), userId, accountId, sessionId,
+		"Get the details of Event with id - "+eventID)
+	require.NoError(t, err)
+	t.Logf("Preserved sessionId=%s conversationId=%s status=%s", sessionId, resp.ConversationId, resp.Status)
+	foundThere := false
+	for _, c := range scenarioCalls(t, resp.ConversationId) {
+		if c.Status == "success" && c.RanOn == prod && strings.Contains(c.Params, eventID) {
+			foundThere = true
+		}
+	}
+	assert.True(t, foundThere, "no lookup of the event ran on %s", prod)
+	answer := strings.ToLower(strings.Join(resp.Response, "\n"))
+	assert.Contains(t, answer, strings.ToLower(prod), "the answer must say the event is from %s", prod)
+}

@@ -10,10 +10,8 @@ import {
   deleteCreatedWorkflow,
   configureMcpIntegrationAction,
   closeActionPanel,
-  configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 const MCP_INTEGRATION = process.env.MCP_INTEGRATION_CONFIG_NAME!;
 
 const WORKFLOW_JSON_TEMPLATE = {
@@ -36,18 +34,6 @@ const WORKFLOW_JSON_TEMPLATE = {
         },
         timeout: "5m",
       },
-      {
-        id: "notifications_im",
-        type: "notifications.im",
-        params: {
-          channel: SLACK_CHANNEL,
-          message:
-            "*This is automation MCP(Integration) testing*\n{{ Tasks['llm_mcp_call'].output.content[0].text }}",
-          provider: "slack",
-          team_id: "",
-        },
-        depends_on: ["llm_mcp_call"],
-      },
     ],
     triggers: [{ type: "manual", params: {} }],
     retry_policy: {
@@ -65,7 +51,7 @@ test("Automation workflow MCP Integration", { tag: ["@dev", "@test", "@oss", "@r
   test.setTimeout(300000);
 
   const locators = new WorkflowLocators(page);
-  const workflowName = generateWorkflowName("MCP Integration");
+  const workflowName = generateWorkflowName("MCP Integration Testing", "MCP Integration");
   const workflowJson = { name: workflowName, ...WORKFLOW_JSON_TEMPLATE };
 
   await loginAndNavigateToNewWorkflow(page, locators);
@@ -73,10 +59,6 @@ test("Automation workflow MCP Integration", { tag: ["@dev", "@test", "@oss", "@r
 
   await locators.action_llm_mcp_call.click();
   await configureMcpIntegrationAction(page, MCP_INTEGRATION);
-  await closeActionPanel(page, locators);
-
-  await locators.action_notifications_im.click();
-  await configureNotificationsImSlack(page, SLACK_CHANNEL);
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);

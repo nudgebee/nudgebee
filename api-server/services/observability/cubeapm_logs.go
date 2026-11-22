@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	neturl "net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
@@ -213,6 +214,11 @@ func isSafeCubeAPMField(field string) bool {
 	return true
 }
 
+// cubeAPMRangeOps maps a range operator onto its LogsQL comparison filter.
+var cubeAPMRangeOps = map[query.BinaryWhereClauseType]string{
+	query.Gt: ">", query.Gte: ">=", query.Lt: "<", query.Lte: "<=",
+}
+
 // renderCubeAPMMatch renders the POSITIVE match of one operator on one field;
 // the caller applies negation for _neq.
 func renderCubeAPMMatch(col string, op query.BinaryWhereClauseType, value string) (string, error) {
@@ -230,6 +236,19 @@ func renderCubeAPMMatch(col string, op query.BinaryWhereClauseType, value string
 		return fmt.Sprintf("%s:~%s", col, cubeAPMQuote("(?i)"+regexp.QuoteMeta(value))), nil
 	case query.Regex:
 		return fmt.Sprintf("%s:~%s", col, cubeAPMQuote(value)), nil
+	case query.Gt, query.Gte, query.Lt, query.Lte:
+		// A range bound must be bare: quoted, LogsQL compares it as a string
+		// (verified live: duration:>="500000000" counted 2055 spans against 2021
+		// for the numeric bound). Bare also means it is not escaped, so anything
+		// that is not a finite number is rejected rather than spliced into the
+		// query — ParseFloat alone accepts NaN and the infinities — and the bound is
+		// rendered as the plain decimal it parsed to, so a hex or exponent spelling
+		// never reaches CubeAPM.
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return "", fmt.Errorf("CubeAPM range filter on %q needs a finite numeric value, got %q", col, value)
+		}
+		return fmt.Sprintf("%s:%s%s", col, cubeAPMRangeOps[op], strconv.FormatFloat(f, 'f', -1, 64)), nil
 	default:
 		return "", fmt.Errorf("unsupported operator for CubeAPM logs: %s", op)
 	}
@@ -253,7 +272,7 @@ func buildCubeAPMBinaryClause(binary query.BinaryWhereClause, mapping map[string
 		}
 
 		for op, val := range ops {
-			strVal := fmt.Sprintf("%v", val)
+			strVal := filterValueString(val)
 
 			var clause string
 			if primary != "" {
@@ -914,7 +933,7 @@ func buildCubeAPMLogGroupQuery(f cubeAPMLogGroupFieldSet, env, selectedNamespace
 		cubeAPMLogGroupMessageField, f.Namespace, f.Pod, f.Workload, f.Container, cubeAPMLogGroupLevelField, f.Service,
 	}), ", ")
 
-	return fmt.Sprintf(`%s | %s | stats by (%s) count() as cube_count | sort ("cube_count" desc) | limit %d`,
+	return fmt.Sprintf(`%s | %s | stats by (%s) count() as cube_count, max(_time) as last_time | sort ("cube_count" desc) | limit %d`,
 		cubeAPMBaseQuery(env, strings.Join(conditions, " AND ")), strings.Join(pipes, " | "), groupBy, limit)
 }
 
@@ -950,16 +969,14 @@ func (s *CubeAPMLogSource) QueryLogGroup(ctx *security.RequestContext, req Fetch
 		return LogGroupOutput{}, err
 	}
 
-	// The aggregation carries no per-group timestamp (LogsQL's documented stats
-	// functions have no max()), so every group is stamped with the end of the
-	// query window — the same fallback the OpenObserve path uses for groups whose
-	// aggregate timestamp is missing.
+	// endMs/1000 is only the fallback for a row whose last_time is missing or
+	// unparseable — the same fallback the OpenObserve path uses in that case.
 	return convertCubeAPMLogGroups(fields, rows, endMs/1000), nil
 }
 
 // convertCubeAPMLogGroups maps aggregated rows onto the shared LogGroup contract.
 // Timestamps are emitted in epoch seconds — the frontend multiplies by 1000.
-func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, timestampSec int64) LogGroupOutput {
+func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, fallbackTimestampSec int64) LogGroupOutput {
 	groups := make([]LogGroup, 0, len(rows))
 
 	for _, row := range rows {
@@ -972,6 +989,15 @@ func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, t
 		count, err := strconv.ParseInt(strings.TrimSpace(cubeAPMString(row["cube_count"])), 10, 64)
 		if err != nil || count <= 0 {
 			continue
+		}
+
+		// max(_time) comes back as the same RFC3339Nano string CubeAPM uses for
+		// every other timestamp field (see cubeAPMRowToOutputLog).
+		timestampSec := fallbackTimestampSec
+		if lastTime := cubeAPMString(row["last_time"]); lastTime != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, lastTime); err == nil {
+				timestampSec = parsed.Unix()
+			}
 		}
 
 		pod := cubeAPMString(row[f.Pod])

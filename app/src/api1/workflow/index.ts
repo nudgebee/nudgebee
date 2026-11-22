@@ -162,6 +162,7 @@ query ListWorkflows($accountIds:[String!], $status:String, $last_execution_statu
       }
       last_execution_time
       last_execution_version
+      last_execution_failed_step_count
       definition {
         triggers {
           type
@@ -394,6 +395,9 @@ query listWorkflowExecutions($accountId:String!, $id:String!, $limit:Int, $next_
       workflow_id
       version
       version_number
+      failed_step_count
+      first_failed_step
+      first_failed_step_error
     }
   }
 }
@@ -449,6 +453,9 @@ query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
     version_id
     version_number
     version_name
+    failed_step_count
+    first_failed_step
+    first_failed_step_error
   }
 }
 `;
@@ -661,6 +668,9 @@ query ListAccountExecutions($request: AccountExecutionListRequest!) {
       user_name
       failure_reason
       version_number
+      failed_step_count
+      first_failed_step
+      first_failed_step_error
     }
   }
 }
@@ -674,6 +684,8 @@ query AggregateExecutions($request: ExecutionAggregateRequest!) {
     failed
     running
     timed_out
+    terminated
+    canceled
     counts_are_approximate
     top_failed_is_approximate
     retention_days
@@ -704,6 +716,7 @@ query ListWorkflowTemplates($request: WorkflowListTemplateRequest!) {
           description
           type
           default
+          required
         }
         triggers {
           type
@@ -770,7 +783,29 @@ query ListWorkflowTemplates($request: WorkflowListTemplateRequest!) {
 }
 `;
 
+const GET_WORKFLOW_ACCOUNT = `
+query GetWorkflowAccount($workflowId:String!) {
+  workflow_get_account(request: {id: $workflowId}) {
+    id
+    account_id
+  }
+}
+`;
+
 const apiWorkflow = {
+  /** Resolves the account of a workflow, for a link that has no ?accountId=. */
+  async getWorkflowAccount(workflowId: string) {
+    try {
+      const response = await queryGraphQL(GET_WORKFLOW_ACCOUNT, 'GetWorkflowAccount', { workflowId });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+        status: response?.status,
+      };
+    } catch (error) {
+      return { data: null, errors: [error], status: undefined };
+    }
+  },
   async getWorkflowById(accountId: string, workflowId: string) {
     if (accountId === 'demo') return { data: null, errors: null };
     try {
@@ -823,14 +858,16 @@ const apiWorkflow = {
         variables.next_page_token = nextPageToken;
       }
 
-      // Only add name if provided and valid (non-empty string)
-      if (name && name.trim() !== '') {
-        variables.name = name;
+      // Name and tags arrive as typed (search box, URL, saved filters). Trim them:
+      // a pasted space would be part of the substring match and find nothing.
+      const trimmedName = name?.trim();
+      if (trimmedName) {
+        variables.name = trimmedName;
       }
 
-      // Only add tags if provided and valid (non-empty string)
-      if (tags && tags.trim() !== '') {
-        variables.tags = tags;
+      const trimmedTags = tags?.trim();
+      if (trimmedTags) {
+        variables.tags = trimmedTags;
       }
 
       // Only add created_by if provided and valid (non-empty string)

@@ -15,15 +15,16 @@ Part of the broader Nudgebee platform; see the [root README](../README.md) for t
                             │                 │ ───────────────────────▶  RabbitMQ
                             └─────────────────┘                              │
                                     │                                        ▼
-                                    │ (one Gunicorn worker = consumer)   downstream
+                                    │ (the :8081 worker = consumer)      downstream
                                     └────────────────────────────────────▶ services
                             ┌─────────────────┐
-              GET /health   │   health_app    │   (separate Flask app, separate port)
-              ──────────────▶ (sidecar port)  │
+              GET /health   │   health_app    │   (separate gunicorn on :8081, --workers 1;
+              ──────────────▶ (sidecar port)  │    also runs the queue consumer)
+                            │                 │
                             └─────────────────┘
 ```
 
-The RabbitMQ consumer is started exactly once via `gunicorn.conf.py`'s `post_fork` hook so TF-heavy work is isolated to a single Gunicorn worker.
+The RabbitMQ consumer runs in the `:8081` gunicorn (`server/worker.py`), which has one worker, so each pod runs one consumer and one scan at a time, away from the HTTP workers. It takes one message at a time (prefetch 1) and acks it when the scan ends, so queued scans wait in the broker for an idle pod and survive restarts. A redelivered message (an earlier attempt died mid-scan, or the broker restarted uncleanly) is requeued once as a copy marked `x-nb-attempt`; if that copy comes back redelivered too, it is dropped with a warning, so a scan that crashes its pod runs at most twice.
 
 ## Prerequisites
 
@@ -115,7 +116,7 @@ server/
 └── utils/         # Shared config (QueueConfig + env-var resolution)
 ```
 
-Entry point is `server/app.py` (`python -m server.app`). The RabbitMQ consumer is wired in `gunicorn.conf.py` via a `post_fork` hook so only one Gunicorn worker runs it.
+Entry point is `server/app.py` (`python -m server.app`). In the image, the RabbitMQ consumer starts in `server/worker.py`, the entry point of the one-worker `:8081` gunicorn.
 
 For deeper anomaly-detection algorithm notes, see [`ANOMALY_DETECTION.md`](./ANOMALY_DETECTION.md).
 For how the per-container CPU/memory recommendations are produced — the pipeline, the strategy

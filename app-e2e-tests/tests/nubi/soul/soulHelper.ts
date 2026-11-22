@@ -18,12 +18,18 @@ export function uniqueShorthand(): string {
 }
 
 // SoulTab renders no spinner — while the fetch is in flight it shows the same
-// form with empty values, its option cards non-interactive and Save/Reset
-// disabled. Save going enabled is the only observable end-of-load signal, and it
-// is why the option-card locators can double as proof the fetch returned.
-// Personal scope only: the tenant profile hides both buttons for a non-admin.
+// form with empty values and its option cards non-interactive. The header is on
+// screen in both states, so it is waited on first only to be sure the tab is
+// mounted. Newer builds flip the root's aria-busy to "false" once the fetch
+// returns; builds without that marker (what dev runs until this ships) keep Save
+// disabled while loading and enabled after, so that stays the fallback signal.
 export async function waitForSoulLoaded(locators: SoulLocators): Promise<void> {
-  await expect(locators.saveBtn).toBeEnabled({ timeout: 30000 });
+  await locators.personalHeader.waitFor({ state: "visible", timeout: 30000 });
+  if ((await locators.soulPanel.count()) > 0) {
+    await expect(locators.soulPanel).toHaveAttribute("aria-busy", "false", { timeout: 30000 });
+  } else {
+    await expect(locators.saveBtn).toBeEnabled({ timeout: 30000 });
+  }
 }
 
 // Logs in, opens the Nubi panel and lands on b-Cortex > Memory > Soul
@@ -71,9 +77,9 @@ export async function setDomainShorthand(locators: SoulLocators, text: string): 
 }
 
 // Commits the pending edits, asserting the upsert actually left the browser and
-// came back clean. SoulTab does not refetch on save and never gates Save on the
-// form being dirty, so the button's state says nothing about whether the write
-// landed — the captured mutation and the toast are the only signals there are.
+// came back clean. SoulTab does not refetch on save, so the captured mutation and
+// the toast prove the write landed. Save's own state afterwards is not asserted:
+// it stays enabled on older builds and returns to disabled on newer ones.
 export async function saveSoul(page: Page, locators: SoulLocators, testName: string): Promise<void> {
   await expect(locators.saveBtn).toBeEnabled({ timeout: 10000 });
   await waitForGraphQLAndValidate(
@@ -84,7 +90,6 @@ export async function saveSoul(page: Page, locators: SoulLocators, testName: str
     },
     { testName, operationNames: OP_SOUL_SAVE, timeoutMs: 45000 }
   );
-  await expect(locators.saveBtn).toBeEnabled({ timeout: 30000 });
 }
 
 // Puts the shorthand back to the text the test found and commits it, so a shared
@@ -95,6 +100,9 @@ export async function saveSoul(page: Page, locators: SoulLocators, testName: str
 export async function restoreDomainShorthand(page: Page, locators: SoulLocators, original: string): Promise<void> {
   try {
     await setDomainShorthand(locators, original);
+    // Save stays disabled when the field already matches what is saved — the
+    // case failed before its own save, so there is nothing to put back.
+    if (await locators.saveBtn.isDisabled()) return;
     await saveSoul(page, locators, "Nubi Soul - restore domain shorthand");
     await remountSoulTab(page, locators);
     await expect(locators.domainShorthandTextarea).toHaveValue(original, { timeout: 30000 });

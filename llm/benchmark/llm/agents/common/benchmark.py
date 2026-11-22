@@ -53,6 +53,7 @@ from benchmark_server.utils.run_manager import (
 )
 
 from .fixtures import find_test_cases, load_test_case
+from . import fixture_lock
 from .lifecycle import run_after_test, run_before_test
 from .metrics import (
     fetch_tool_command_from_db,
@@ -347,6 +348,21 @@ def test_case_data(request, agent_config):
     test_case["__global_index__"] = global_index
     test_case_dir = os.path.dirname(test_case_path)
 
+    # Another run executing this fixture would delete or overwrite its
+    # resources mid-test (see fixture_lock).
+    lock_holder = ""
+    if fixture_lock.needs_lock(test_case):
+        lock_holder = fixture_lock.holder_for(os.getenv("BENCHMARK_RUN_ID", ""))
+        give_up = int(os.getenv("BENCHMARK_FIXTURE_BUSY_GIVE_UP_SEC", "1200"))
+        try:
+            acquired = fixture_lock.acquire_waiting(test_case, lock_holder, give_up)
+        except fixture_lock.LockAccessError as e:
+            pytest.fail(f"Cannot lock fixture {test_case_id}: {e}")
+        if not acquired:
+            pytest.skip(
+                f"Fixture {test_case_id} in use by another benchmark run for {give_up // 60} min"
+            )
+
     try:
         if test_case.get("before_test"):
             result = run_before_test(test_case, cwd=test_case_dir)
@@ -365,6 +381,10 @@ def test_case_data(request, agent_config):
                 logger.warning(
                     "Cleanup failed for %s: %s", test_case_id, result.error_details
                 )
+        # A test waiting for a followup keeps its resources, so it keeps the
+        # lock too; it expires once this process ends and stops renewing it.
+        if lock_holder and not test_case.get("_skip_cleanup"):
+            fixture_lock.release(test_case, lock_holder)
 
 
 # ---------------------------------------------------------------------------

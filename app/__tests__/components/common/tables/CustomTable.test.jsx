@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import CustomTable, { buildResizeTableSx, buildLegacyTableSx } from '@shared/tables/CustomTable';
+import { buildResizeTableSx as buildResizeTableSx2, buildLegacyTableSx as buildLegacyTableSx2 } from '@shared/tables/CustomTable2';
 
 // ─── mocks ───────────────────────────────────────────────────────────────────
 
@@ -713,6 +714,21 @@ describe('CustomTable', () => {
       expect(document.querySelector('#closing-row').matches(rowSelector)).toBe(true);
       expect(document.querySelector('#hidden-row').matches(rowSelector)).toBe(false);
       expect(document.querySelector('#chevron-row').matches(rowSelector)).toBe(false);
+    });
+  });
+
+  // CloudAccountTable uses CustomTable2 — same sticky/action-menu stacking rules (Fixes #284).
+  describe('CustomTable2 buildResizeTableSx sticky z-index escalation', () => {
+    it('escalates the last-of-type sticky cell while a row popover is visible', () => {
+      const sx = buildResizeTableSx2({ totalTableWidth: 0, isResizing: false, stickyFirstColumn: false });
+      expect(sx['tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:last-of-type']).toEqual({ zIndex: 10 });
+    });
+  });
+
+  describe('CustomTable2 buildLegacyTableSx sticky z-index escalation', () => {
+    it('escalates stickyColumnIndex while a row popover is visible', () => {
+      const sx = buildLegacyTableSx2({ showExpandable: true, stickyColumnIndex: '9' });
+      expect(sx['tbody tr:has(.MuiModal-root:not(.MuiModal-hidden)) td:nth-of-type(9)']).toEqual({ zIndex: 10 });
     });
   });
 });

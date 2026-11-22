@@ -92,9 +92,10 @@ class Config:
     max_retry_duration = int(os.environ.get("MAX_RETRY_DURATION", 600))
     initial_wait_time = int(os.environ.get("INITIAL_WAIT_TIME", 1))
     ranking_threshold = float(os.environ.get("RANKING_THRESHOLD", 0.5))
-    rag_llm_provider_cache_ttl = int(
-        os.environ.get("RAG_LLM_PROVIDER_CACHE_TTL", 1800)
-    )  # LLM/embeddings provider config & client cache (default 30 min)
+    # LLM/embeddings provider config & client cache. Five minutes so a rotated
+    # key or endpoint reaches every replica quickly; rebuilding a client is
+    # cheap (the on-device model itself is loaded once per process) (#40807).
+    rag_llm_provider_cache_ttl = int(os.environ.get("RAG_LLM_PROVIDER_CACHE_TTL", 300))
     rag_collection_cache_ttl = int(
         os.environ.get("RAG_COLLECTION_CACHE_TTL", 1800)
     )  # Qdrant collection list cache (default 30 min)
@@ -156,6 +157,12 @@ class Config:
     reranker_threshold = float(os.environ.get("RAG_RERANKER_THRESHOLD", 0.50))
     reranker_max_length = int(os.environ.get("RAG_RERANKER_MAX_LENGTH", 128))  # tokens per (query, doc) pair
     reranker_max_doc_chars = int(os.environ.get("RAG_RERANKER_MAX_DOC_CHARS", 500))  # doc chars scored
+    # Chunk context: the page title, heading path and (inside a table) the table's
+    # header row, embedded and reranked with each chunk so a table row or a
+    # paragraph deep in a section still says what it is about. The stored chunk
+    # text is unchanged. Turning it off stops new chunks getting context; points
+    # already written keep theirs until their source re-syncs.
+    chunk_context_enabled = os.environ.get("RAG_CHUNK_CONTEXT_ENABLED", "true").lower() == "true"
     # Ranked mode: score every candidate, group chunks by their parent document,
     # and return the best N documents without filtering, leaving the relevance
     # decision to the caller that has the conversation to judge against. Off by
@@ -280,6 +287,11 @@ class Config:
     # llm-server — used by platform_capability_sync.py. Optional: unset
     # simply means platform_capability rows never populate.
     llm_server_url = os.environ.get("LLM_SERVER_URL", "")
+    # llm-server's authHandlerMiddleware (cmd/main.go) requires this header on
+    # every route when LLM_SERVER_TOKEN is configured server-side. Same shared
+    # secret both services already read; empty token means the gate is a no-op.
+    llm_server_token = os.environ.get("LLM_SERVER_TOKEN", "")
+    llm_server_token_header = os.environ.get("LLM_SERVER_TOKEN_HEADER", "X-ACTION-TOKEN")
 
 
 class OTELConfig:

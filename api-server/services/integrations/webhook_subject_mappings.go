@@ -698,7 +698,7 @@ func fetchPagerDutyResolvedIncidents(sc *security.RequestContext, apiToken strin
 func SyncWebhookSubjectMappingsFromZenduty(sc *security.RequestContext, request WebhookSubjectMappingsSyncRequest) (*WebhookSubjectMappingsSyncResponse, error) {
 	tenantId := sc.GetSecurityContext().GetTenantId()
 
-	apiKey, err := getZendutyAPIKey(sc, tenantId)
+	apiKey, rawURL, err := getZendutyAPIKey(sc, tenantId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get zenduty config: %w", err)
 	}
@@ -718,7 +718,7 @@ func SyncWebhookSubjectMappingsFromZenduty(sc *security.RequestContext, request 
 	bgSc := detachedContext(sc)
 	go func() {
 		sc := bgSc // use detached context in goroutine
-		incidents, err := fetchZendutyResolvedIncidents(sc, apiKey, days)
+		incidents, err := fetchZendutyResolvedIncidents(sc, apiKey, rawURL, days)
 		if err != nil {
 			sc.GetLogger().Error("zenduty sync: failed to fetch incidents", "error", err)
 			return
@@ -737,16 +737,22 @@ func SyncWebhookSubjectMappingsFromZenduty(sc *security.RequestContext, request 
 	return &WebhookSubjectMappingsSyncResponse{Status: "started"}, nil
 }
 
-// getZendutyAPIKey extracts the API key from the Zenduty integration config.
-func getZendutyAPIKey(sc *security.RequestContext, tenantId string) (string, error) {
+// getZendutyAPIKey extracts the API key and configured host (see
+// NormalizeZenDutyURL) from the Zenduty integration config.
+func getZendutyAPIKey(sc *security.RequestContext, tenantId string) (apiKey, rawURL string, err error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
-		return "", fmt.Errorf("failed to get database manager: %w", err)
+		return "", "", fmt.Errorf("failed to get database manager: %w", err)
 	}
 
-	var encryptedPassword string
-	err = dbms.Db.Get(&encryptedPassword, `
-		SELECT COALESCE(MAX(CASE WHEN icv.name = 'password' THEN icv.value END), '') as password
+	var row struct {
+		Password string `db:"password"`
+		URL      string `db:"url"`
+	}
+	err = dbms.Db.Get(&row, `
+		SELECT
+			COALESCE(MAX(CASE WHEN icv.name = 'password' THEN icv.value END), '') as password,
+			COALESCE(MAX(CASE WHEN icv.name = 'url' THEN icv.value END), '') as url
 		FROM integrations i
 		JOIN integration_config_values icv ON i.id = icv.integration_id
 		WHERE i.status = 'enabled' AND i.type = 'zenduty' AND i.tenant_id = $1
@@ -755,22 +761,22 @@ func getZendutyAPIKey(sc *security.RequestContext, tenantId string) (string, err
 		LIMIT 1
 	`, tenantId)
 	if err != nil {
-		return "", fmt.Errorf("no enabled zenduty integration found: %w", err)
+		return "", "", fmt.Errorf("no enabled zenduty integration found: %w", err)
 	}
-	if encryptedPassword == "" {
-		return "", fmt.Errorf("zenduty API key is empty")
+	if row.Password == "" {
+		return "", "", fmt.Errorf("zenduty API key is empty")
 	}
 
-	apiKey, err := common.Decrypt(encryptedPassword)
+	apiKey, err = common.Decrypt(row.Password)
 	if err != nil {
-		return "", fmt.Errorf("failed to decrypt zenduty api key: %w", err)
+		return "", "", fmt.Errorf("failed to decrypt zenduty api key: %w", err)
 	}
-	return apiKey, nil
+	return apiKey, row.URL, nil
 }
 
 // fetchZendutyResolvedIncidents calls the Zenduty API to list resolved incidents
 // and extracts the workload/service name from the summary field.
-func fetchZendutyResolvedIncidents(sc *security.RequestContext, apiKey string, days int) ([]incidentWithFields, error) {
+func fetchZendutyResolvedIncidents(sc *security.RequestContext, apiKey, rawURL string, days int) ([]incidentWithFields, error) {
 	createdAfter := time.Now().AddDate(0, 0, -days).UTC().Format(time.RFC3339)
 
 	zdHeaders := map[string]string{
@@ -784,7 +790,7 @@ func fetchZendutyResolvedIncidents(sc *security.RequestContext, apiKey string, d
 	for {
 		reqURL := fmt.Sprintf(
 			"%s/incidents?status=%d&creation_date__gte=%s&page=%d",
-			ZenDutyDefaultURL, ZenDutyStatusResolved, createdAfter, pageNum)
+			NormalizeZenDutyURL(rawURL), ZenDutyStatusResolved, createdAfter, pageNum)
 		sc.GetLogger().Info("zenduty sync: fetching incidents", "url", reqURL)
 
 		resp, err := common.HttpGet(reqURL, common.HttpWithHeaders(zdHeaders), common.HttpWithTimeout(60*time.Second))

@@ -171,6 +171,15 @@ def rollup(monkeypatch):
     return state
 
 
+@pytest.fixture(autouse=True)
+def catalog(monkeypatch):
+    """Whether a real capability catalog exists. Off by default, so a document that
+    only lacks the extraction stamp is left alone unless a test turns it on."""
+    state = SimpleNamespace(ready=False)
+    monkeypatch.setattr(backfill, "_catalog_ready", lambda: state.ready)
+    return state
+
+
 @pytest.fixture
 def classifier(monkeypatch):
     """Stand-in for the LLM classifier: stamps labels onto every document of
@@ -211,17 +220,21 @@ def test_pending_knowledgebases_names_manual_and_integration_collections(monkeyp
     assert pending["int-9_knowledge_base"] == backfill.KBCollection("int-9_knowledge_base", False, ["acct-2"])
 
 
-def test_an_integration_collection_keeps_every_account_that_shares_it(monkeypatch):
+def test_an_organisation_kb_is_classified_with_an_account_of_its_tenant(monkeypatch):
+    # An organisation row has no account; the query gives it an active account of
+    # its tenant, or none when the tenant has no active account.
     rows = [
-        SimpleNamespace(id="kb-1", account_id="acct-b", kb_type="integration", integration_id="int-9"),
-        SimpleNamespace(id="kb-2", account_id="acct-a", kb_type="integration", integration_id="int-9"),
-        SimpleNamespace(id="kb-3", account_id="acct-a", kb_type="integration", integration_id="int-9"),
+        SimpleNamespace(id="kb-1", account_id="acct-a", kb_type="integration", integration_id="int-9"),
+        SimpleNamespace(id="kb-2", account_id=None, kb_type="integration", integration_id="int-8"),
     ]
-    monkeypatch.setattr(db_query, "engine", _fake_engine({"FROM llm_knowledgebases": rows}))
+    engine = _fake_engine(
+        {"COALESCE(kb.account_id, (SELECT ca.id FROM cloud_accounts ca WHERE ca.tenant = kb.tenant_id": rows}
+    )
+    monkeypatch.setattr(db_query, "engine", engine)
 
     pending = backfill._pending_knowledgebases()
 
-    assert pending == [backfill.KBCollection("int-9_knowledge_base", False, ["acct-a", "acct-b"])]
+    assert pending == [backfill.KBCollection("int-9_knowledge_base", False, ["acct-a"])]
 
 
 def test_only_active_enabled_knowledgebases_are_listed(monkeypatch):
@@ -231,7 +244,7 @@ def test_only_active_enabled_knowledgebases_are_listed(monkeypatch):
         "engine",
         _fake_engine(
             {
-                "status = 'active' AND enabled = true": [
+                "kb.status = 'active' AND kb.enabled = true": [
                     SimpleNamespace(id="kb-1", account_id="acct-1", kb_type="manual", integration_id=None)
                 ]
             }
@@ -861,7 +874,7 @@ def test_run_backfills_every_pending_collection_within_budget(monkeypatch, rollu
     rollup.names = {"kb_x"}
     calls = []
 
-    def _fake(client, kb, budget, summarised):
+    def _fake(client, kb, budget, summarised, regrounding=None):
         calls.append((kb.name, budget, summarised))
         return backfill.CollectionResult(attempted=3, labelled_documents=3, labelled_chunks=9, summary_rebuilt=1)
 
@@ -886,7 +899,7 @@ def test_run_keeps_visiting_collections_once_the_budget_is_spent(monkeypatch):
     _pending(monkeypatch, _manual("kb_a"), _manual("kb_b"), _manual("kb_c"))
     calls = []
 
-    def _fake(client, kb, budget, summarised):
+    def _fake(client, kb, budget, summarised, regrounding=None):
         calls.append((kb.name, budget))
         return backfill.CollectionResult(attempted=budget, labelled_documents=budget, labelled_chunks=budget)
 
@@ -1038,7 +1051,8 @@ def test_run_stops_early_when_the_lock_is_lost(monkeypatch):
     monkeypatch.setattr(
         backfill,
         "_backfill_collection",
-        lambda client, kb, budget, summarised: calls.append(kb.name) or backfill.CollectionResult(attempted=1),
+        lambda client, kb, budget, summarised, regrounding=None: calls.append(kb.name)
+        or backfill.CollectionResult(attempted=1),
     )
     monkeypatch.setattr(backfill, "_max_documents_per_run", lambda: 100)
 
@@ -1061,7 +1075,7 @@ def test_run_does_nothing_when_the_lock_was_never_held(monkeypatch):
 def test_run_counts_a_failing_collection_as_an_error_and_continues(monkeypatch):
     _pending(monkeypatch, _manual("kb_a"), _manual("kb_b"))
 
-    def _fake(client, kb, budget, summarised):
+    def _fake(client, kb, budget, summarised, regrounding=None):
         if kb.name == "kb_a":
             raise RuntimeError("boom")
         return backfill.CollectionResult(attempted=1, labelled_documents=1, labelled_chunks=1)
@@ -1079,7 +1093,7 @@ def test_a_failing_collection_spends_no_budget(monkeypatch):
     _pending(monkeypatch, _manual("kb_a"), _manual("kb_b"))
     budgets = []
 
-    def _fake(client, kb, budget, summarised):
+    def _fake(client, kb, budget, summarised, regrounding=None):
         budgets.append(budget)
         if kb.name == "kb_a":
             raise RuntimeError("boom")
@@ -1098,7 +1112,7 @@ def test_run_surfaces_per_document_write_errors(monkeypatch):
     monkeypatch.setattr(
         backfill,
         "_backfill_collection",
-        lambda client, kb, budget, summarised: backfill.CollectionResult(attempted=1, errors=1),
+        lambda client, kb, budget, summarised, regrounding=None: backfill.CollectionResult(attempted=1, errors=1),
     )
     monkeypatch.setattr(backfill, "_max_documents_per_run", lambda: 100)
 
@@ -1121,9 +1135,9 @@ def test_a_collection_that_was_never_created_is_not_an_error(monkeypatch, classi
 
 @pytest.mark.parametrize(
     "value,expected",
-    [(None, False), ("false", False), ("true", True), ("True", True), (" true ", True), ("garbage", False)],
+    [(None, True), ("false", False), ("true", True), ("True", True), (" true ", True), ("garbage", False)],
 )
-def test_is_enabled_defaults_off(monkeypatch, value, expected):
+def test_is_enabled_defaults_on(monkeypatch, value, expected):
     if value is None:
         monkeypatch.delenv("RAG_KB_CAPABILITY_BACKFILL_ENABLED", raising=False)
     else:
@@ -1411,3 +1425,136 @@ def test_the_worker_runs_on_a_named_daemon_thread_that_does_not_block_startup(mo
     finally:
         release.set()
         _join(thread)
+
+
+# ---------------------------------------------------------------------------
+# Re-extracting capabilities for documents labelled before a catalog existed
+
+
+STAMPED = {**LABELS, "capabilities_extracted": True}
+
+
+def test_a_labelled_document_without_the_extraction_stamp_is_reclassified_once_a_catalog_exists(
+    classifier, catalog, rollup
+):
+    catalog.ready = True
+    classifier.labels = {**LABELS, "capabilities": ["kubectl_execute"], "capabilities_extracted": True}
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md={"source": "manual", **{**LABELS, "capabilities": []}})]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result.attempted == 1 and result.labelled_documents == 1
+    md = client.metadata("kb_kb-1")[UUID_A]
+    assert md["capabilities"] == ["kubectl_execute"] and md["capabilities_extracted"] is True
+    assert rollup.refreshed == ["kb_kb-1"]
+
+
+def test_once_stamped_the_document_is_never_reclassified_and_the_run_is_cheap(classifier, catalog):
+    catalog.ready = True
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md={"source": "manual", **STAMPED})]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result == backfill.CollectionResult()
+    assert classifier.calls == []
+    assert client.only_cheap_probes()
+
+
+def test_a_document_without_the_stamp_is_left_alone_while_there_is_no_catalog(classifier, catalog):
+    catalog.ready = False
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md={"source": "manual", **LABELS})]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result == backfill.CollectionResult()
+    assert classifier.calls == [], "re-classifying with no catalog would only produce the same empty list again"
+    assert client.metadata("kb_kb-1")[UUID_A] == {"source": "manual", **LABELS}
+
+
+def test_a_document_with_no_kind_is_still_classified_when_there_is_no_catalog(classifier, catalog):
+    catalog.ready = False
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md={"source": "manual"})]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result.labelled_documents == 1
+    assert client.metadata("kb_kb-1")[UUID_A]["kind"] == "sop"
+
+
+def test_reextraction_spends_the_same_per_run_budget(classifier, catalog):
+    catalog.ready = True
+    points = [_pt(_uid(n), md={"source": "m", "page_id": f"p{n}", **LABELS}) for n in range(1, 4)]
+    client = _Client({"int-9_knowledge_base": points})
+
+    result = backfill._backfill_collection(client, _integration(), budget=2, summarised={"int-9_knowledge_base"})
+
+    assert result.attempted == 2, "at most the budget, so a large backlog drains over several restarts"
+
+
+def test_run_reads_the_catalog_once_not_once_per_collection(monkeypatch, catalog):
+    _pending(monkeypatch, _manual("kb_a"), _manual("kb_b"), _manual("kb_c"))
+    reads, seen = [], []
+    monkeypatch.setattr(backfill, "_catalog_ready", lambda: reads.append(1) or True)
+
+    def _fake(client, kb, budget, summarised, regrounding=None):
+        seen.append(regrounding)
+        return backfill.CollectionResult()
+
+    monkeypatch.setattr(backfill, "_backfill_collection", _fake)
+
+    backfill.run(client=object())
+
+    assert len(reads) == 1
+    assert seen == [True, True, True]
+
+
+def test_reextraction_keeps_the_kind_and_shape_a_document_already_has(classifier, catalog):
+    # Postgres owns kind and shape; a second model call that answers differently must not
+    # make the query-time filter (Qdrant) disagree with the documents modal.
+    catalog.ready = True
+    classifier.labels = {
+        "kind": "knowledge",
+        "shape": "narrative_reference",
+        "capabilities": ["kubectl_execute"],
+        "capabilities_extracted": True,
+    }
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md={"source": "manual", **{**LABELS, "capabilities": []}})]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result.labelled_documents == 1
+    md = client.metadata("kb_kb-1")[UUID_A]
+    assert md["kind"] == "sop" and md["shape"] == "decision_tree", "the existing kind and shape stay"
+    assert md["capabilities"] == ["kubectl_execute"] and md["capabilities_extracted"] is True
+
+
+def test_a_reextraction_that_did_not_extract_writes_nothing(classifier, catalog):
+    # The catalog was there when the run started but the classifier answered without a stamp
+    # (e.g. it vanished mid-run): the document must stay outstanding and untouched.
+    catalog.ready = True
+    classifier.labels = {"kind": "knowledge", "shape": "narrative_reference", "capabilities": []}
+    before = {"source": "manual", **{**LABELS, "capabilities": []}}
+    client = _Client({"kb_kb-1": [_pt(UUID_A, md=before)]})
+
+    result = backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    assert result.labelled_documents == 0 and client.set_payloads == []
+    assert client.metadata("kb_kb-1")[UUID_A] == before
+
+
+def test_a_half_labelled_document_is_still_labelled_in_full_when_a_catalog_exists(classifier, catalog):
+    catalog.ready = True
+    classifier.labels = {**LABELS, "capabilities": ["kubectl_execute"], "capabilities_extracted": True}
+    client = _Client(
+        {
+            "kb_kb-1": [
+                _pt(UUID_A, md={"source": "manual", "chunk_index": 0, **STAMPED}),
+                _pt(UUID_B, md={"source": "manual", "chunk_index": 1}),
+            ]
+        }
+    )
+
+    backfill._backfill_collection(client, _manual(), budget=10, summarised={"kb_kb-1"})
+
+    metadata = client.metadata("kb_kb-1")
+    assert all(md["kind"] == "sop" and md["capabilities_extracted"] is True for md in metadata.values())

@@ -51,7 +51,8 @@ type MessagingPlatformDeleteResponse struct {
 	Id string `json:"id"`
 }
 
-// ListMessagingPlatforms returns messaging platforms filtered by tenant and optionally by platform type
+// ListMessagingPlatforms returns messaging platforms filtered by tenant and optionally by platform type.
+// MS Teams is never listed: a workspace reaches it only through a bound team.
 func ListMessagingPlatforms(ctx *security.RequestContext, request MessagingPlatformListRequest) (MessagingPlatformListResponse, error) {
 	tenantId := ctx.GetSecurityContext().GetTenantId()
 	if tenantId == "" {
@@ -66,11 +67,11 @@ func ListMessagingPlatforms(ctx *security.RequestContext, request MessagingPlatf
 	var platforms []MessagingPlatform
 	if request.Platform != "" {
 		err = dbms.Db.Select(&platforms,
-			"SELECT id, COALESCE(username, '') AS username, COALESCE(team_name, '') AS team_name, COALESCE(created_at::text, '') AS created_at, COALESCE(team_id, '') AS team_id, COALESCE(channels, '[]') AS channels, COALESCE(platform, '') AS platform FROM messaging_platforms WHERE tenant_id = $1 AND platform = $2 ORDER BY team_name",
+			"SELECT id, COALESCE(username, '') AS username, COALESCE(team_name, '') AS team_name, COALESCE(created_at::text, '') AS created_at, COALESCE(team_id, '') AS team_id, COALESCE(channels, '[]') AS channels, COALESCE(platform, '') AS platform FROM messaging_platforms WHERE tenant_id = $1 AND platform = $2 AND platform <> 'ms_teams' ORDER BY team_name",
 			tenantId, request.Platform)
 	} else {
 		err = dbms.Db.Select(&platforms,
-			"SELECT id, COALESCE(username, '') AS username, COALESCE(team_name, '') AS team_name, COALESCE(created_at::text, '') AS created_at, COALESCE(team_id, '') AS team_id, COALESCE(channels, '[]') AS channels, COALESCE(platform, '') AS platform FROM messaging_platforms WHERE tenant_id = $1 ORDER BY team_name",
+			"SELECT id, COALESCE(username, '') AS username, COALESCE(team_name, '') AS team_name, COALESCE(created_at::text, '') AS created_at, COALESCE(team_id, '') AS team_id, COALESCE(channels, '[]') AS channels, COALESCE(platform, '') AS platform FROM messaging_platforms WHERE tenant_id = $1 AND platform IS DISTINCT FROM 'ms_teams' ORDER BY team_name",
 			tenantId)
 	}
 	if err != nil {

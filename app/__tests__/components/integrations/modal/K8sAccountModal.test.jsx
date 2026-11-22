@@ -105,6 +105,7 @@ jest.mock('@api1/account', () => ({
         status: 'SUCCESS',
         data: {
           accounts_create: {
+            id: 'new-k8s-account-id',
             access_key: 'test-key',
             access_secret: 'test-secret',
           },
@@ -116,6 +117,13 @@ jest.mock('@api1/account', () => ({
 
 jest.mock('src/utils/common', () => ({
   isK8sAccountNameValid: jest.fn((value) => value.length >= 4 && value.length <= 50),
+}));
+
+jest.mock('@api1/kubernetes1', () => ({
+  __esModule: true,
+  default: {
+    listK8sAccAgentHealth: jest.fn().mockResolvedValue({ data: { data: { agent: [{ status: 'CONNECTED' }] } } }),
+  },
 }));
 
 // The modal reads the tour context to decide whether step 2 is a guided-tour
@@ -198,16 +206,20 @@ describe('K8sAccountModal', () => {
     });
   });
 
-  it('calls handleClose on Finish button click', async () => {
+  it('calls handleClose with true once the agent connects — an account was created', async () => {
     const { isK8sAccountNameValid } = require('src/utils/common');
     isK8sAccountNameValid.mockReturnValue(true);
     render(<K8sAccountModal {...defaultProps} />);
     fireEvent.change(screen.getByLabelText(/^Account Name/), { target: { value: 'MyCluster' } });
     fireEvent.click(screen.getByTestId('create-k8s-acc'));
     await waitFor(() => {
-      expect(screen.getByTestId('finish-btn')).toBeInTheDocument();
+      expect(defaultProps.handleClose).toHaveBeenCalledWith(true);
     });
-    fireEvent.click(screen.getByTestId('finish-btn'));
-    expect(defaultProps.handleClose).toHaveBeenCalled();
+  });
+
+  it('calls handleClose with false on Cancel — no account was created', () => {
+    render(<K8sAccountModal {...defaultProps} />);
+    fireEvent.click(screen.getByTestId('cancel-btn'));
+    expect(defaultProps.handleClose).toHaveBeenCalledWith(false);
   });
 });

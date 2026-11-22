@@ -207,11 +207,11 @@ func marksTableExists(ctx context.Context, tx *sqlx.Tx) (bool, error) {
 	return name.Valid, nil
 }
 
-// tryLock takes the cross-replica detector lock for the transaction. False
-// means another replica is already running.
-func tryLock(ctx context.Context, tx *sqlx.Tx) (bool, error) {
+// tryLock takes a tenant's cross-replica detector lock for the transaction.
+// False means another replica is probing that tenant.
+func tryLock(ctx context.Context, tx *sqlx.Tx, tenantID string) (bool, error) {
 	var ok bool
-	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('kg_inventory_detector', 0))`).Scan(&ok); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended('kg_inventory_detector:' || $1, 0))`, tenantID).Scan(&ok); err != nil {
 		return false, err
 	}
 	return ok, nil

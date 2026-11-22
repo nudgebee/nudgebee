@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +27,7 @@ type ApiResponseError struct {
 	Message string `json:"message"`
 }
 
-func buildApiResponse(data any, errors []error) ApiResponse {
+func BuildApiResponse(data any, errors []error) ApiResponse {
 	apiErrors := make([]ApiResponseError, 0)
 	for _, err := range errors {
 		apiErrors = append(apiErrors, ApiResponseError{
@@ -111,7 +113,7 @@ func sessionAllowedRoles(sv map[string]any) []string {
 	return out
 }
 
-func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionRequest, tracer trace.Tracer, meter metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
+func BuildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionRequest, tracer trace.Tracer, meter metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
 	// no need to handle role as its calculated by security context
 	tenantId := ""
 	userId := ""
@@ -173,4 +175,79 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	span := trace.SpanFromContext(ctx)
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+}
+
+// attributionUserId returns the user id to persist against a request's
+// conversation, messages and audit rows. A super admin visiting a tenant they
+// hold no grant in is recorded as the system user, which stores NULL and keeps
+// the operator out of that customer's conversation list; one who also holds a
+// role there is a member acting as themselves and keeps their own id.
+func attributionUserId(sc *security.SecurityContext, requestUserId string) string {
+	if sc == nil {
+		return requestUserId
+	}
+	// A context built without a user id carries a hard-coded tenant_admin, so
+	// HasExplicitTenantRole cannot vouch for it and there is nobody to credit.
+	identified := sc.GetUserId() != "" && sc.GetUserId() != security.GetSystemUserId()
+	tenantMember := identified && sc.HasExplicitTenantRole()
+	if sc.IsSuperAdmin() && !tenantMember {
+		return security.GetSystemUserId()
+	}
+	return requestUserId
+}
+
+// asSystemUserForVisitingSuperAdmin returns a tenant-admin context for the system
+// user when attributionUserId credits the request to the system user, and ctx
+// unchanged otherwise. The analysis then runs as the platform's own automatic
+// analyses do: api-server would refuse the operator's own id in a tenant they
+// are not a member of, failing every metrics, logs and traces lookup with 403.
+func asSystemUserForVisitingSuperAdmin(ctx *security.RequestContext) (*security.RequestContext, error) {
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		return nil, errors.New("asSystemUserForVisitingSuperAdmin: security context is nil")
+	}
+	if attributionUserId(sc, sc.GetUserId()) != security.GetSystemUserId() || sc.GetUserId() == security.GetSystemUserId() {
+		return ctx, nil
+	}
+	systemSc := security.NewSecurityContextForTenantAccountAdmin(sc.GetTenantId(), security.GetSystemUserId(), nil)
+	if systemSc == nil {
+		return nil, fmt.Errorf("asSystemUserForVisitingSuperAdmin: unable to build system user context for tenant %s", sc.GetTenantId())
+	}
+	return security.NewRequestContext(ctx.GetContext(), systemSc, ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter()), nil
+}
+
+// queuedMessageSecurityContext rebuilds the context a queued message runs with.
+// A message stored without a user was sent as the system user (attributionUserId),
+// so it runs as the system user's tenant admin, as its foreground turn did; a
+// lookup for the empty id would return no roles and refuse the run.
+func queuedMessageSecurityContext(tenantId string, userId uuid.UUID) (*security.SecurityContext, error) {
+	if userId != uuid.Nil {
+		return security.NewSecurityContext(tenantId, userId.String())
+	}
+	sc := security.NewSecurityContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), nil)
+	if sc == nil {
+		return nil, fmt.Errorf("queuedMessageSecurityContext: unable to build system user context for tenant %s", tenantId)
+	}
+	return sc, nil
+}
+
+// serviceErrorStatus is the HTTP status for an error from a service call: the
+// code the service set on a common.Error (e.g. 400 from common.ErrorBadRequest),
+// 500 otherwise.
+func serviceErrorStatus(err error) int {
+	var e common.Error
+	if errors.As(err, &e) && e.Code >= 400 && e.Code < 600 {
+		return e.Code
+	}
+	return 500
+}
+
+// toApiError is the error to send for err: the service's own common.Error when
+// err wraps one (a refusal, without the wrapping context), else err's text.
+func toApiError(err error) common.Error {
+	var e common.Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return common.Error{Message: err.Error()}
 }

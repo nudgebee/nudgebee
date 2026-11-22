@@ -3,6 +3,9 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/model"
 )
 
@@ -381,10 +385,7 @@ func (s *IntegrationTestSuite) TestApprovalWorkflow() {
 	s.T().Logf("Retrieved approval task token: %s", taskToken)
 
 	// 4. Approve the task via the API
-	approvalBody := map[string]any{
-		"status": "approved",
-		"result": "Approved by integration test",
-	}
+	approvalBody := s.signedApproval(taskToken, "approved", "Approved by integration test")
 	body, err := json.Marshal(approvalBody)
 	s.Require().NoError(err)
 
@@ -463,10 +464,7 @@ func (s *IntegrationTestSuite) TestApprovalWorkflow() {
 	}, 30*time.Second, 1*time.Second, "Failed to get approval token for rejection")
 
 	// 3. Reject the task via the API
-	rejectBody := map[string]any{
-		"status": "rejected",
-		"result": "Rejected by integration test",
-	}
+	rejectBody := s.signedApproval(taskTokenReject, "rejected", "Rejected by integration test")
 	bodyReject, err := json.Marshal(rejectBody)
 	s.Require().NoError(err)
 
@@ -604,10 +602,7 @@ func (s *IntegrationTestSuite) TestApprovalIMWorkflow() {
 	s.T().Logf("Retrieved approval task token: %s", taskToken)
 
 	// 4. Approve the task via the API
-	approvalBody := map[string]any{
-		"status": "approved",
-		"result": "Approved via IM params test",
-	}
+	approvalBody := s.signedApproval(taskToken, "approved", "Approved via IM params test")
 	body, err := json.Marshal(approvalBody)
 	s.Require().NoError(err)
 
@@ -1049,4 +1044,17 @@ func (s *IntegrationTestSuite) TestConditionalOutputWorkflow() {
 	}
 
 	s.True(taskExecuted, "Expected conditional task to have been executed")
+}
+
+// signedApproval is the body the app's email-link page sends: the decision, the
+// address the link was sent to, and the link's signature.
+func (s *IntegrationTestSuite) signedApproval(token, status string, result any) map[string]any {
+	if config.Config.ApprovalSigningKey == "" {
+		config.Config.ApprovalSigningKey = "integration-test-approval-key"
+		s.T().Cleanup(func() { config.Config.ApprovalSigningKey = "" })
+	}
+	approver := "approver@example.com"
+	mac := hmac.New(sha256.New, []byte(config.Config.ApprovalSigningKey))
+	mac.Write([]byte(token + "|" + status + "|" + approver))
+	return map[string]any{"status": status, "approver": approver, "sig": "v0=" + hex.EncodeToString(mac.Sum(nil)), "result": result}
 }

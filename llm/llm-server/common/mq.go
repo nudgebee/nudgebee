@@ -313,53 +313,22 @@ func waitBounded(ctx context.Context, step string, f func()) {
 }
 
 // MqConsume registers a supervised consumer for queue and returns at once; connecting happens in the
-// background until MqClose. Errors only if queue already has a consumer.
-func MqConsume(exchangeName string, routingKey string, queue string, processor func(ctx context.Context, data []byte) error) error {
+// background until MqClose. Errors only if queue already has a consumer. Up to concurrency messages
+// are handled at once (values below 1 mean 1); prefetch matches it, so a message is only delivered
+// when a handler is free, and each is still acked after its processor returns.
+func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(ctx context.Context, data []byte) error) error {
+	concurrency = max(concurrency, 1)
 	return startMqConsumer(queue, processor, func(conn *rabbitmq.Conn) (mqConsumer, error) {
 		return mqNewConsumer(
 			conn,
 			queue,
 			rabbitmq.WithConsumerOptionsRoutingKey(routingKey),
 			rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
-			rabbitmq.WithConsumerOptionsQOSPrefetch(1),
+			rabbitmq.WithConsumerOptionsQOSPrefetch(concurrency),
+			rabbitmq.WithConsumerOptionsConcurrency(concurrency),
 			rabbitmq.WithConsumerOptionsExchangeDeclare,
 			rabbitmq.WithConsumerOptionsExchangeDurable,
 			rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/"+routingKey+"/"+config.Config.ServerName),
-		)
-	})
-}
-
-// MqFanoutSubscribe subscribes to a fanout exchange so this pod receives
-// every message regardless of routing key, in addition to every other pod
-// bound to the same exchange. Used for cross-replica events like cache
-// invalidation where each pod must process the message independently —
-// NOT for work-distribution events where load-balancing is desired (use
-// MqConsume for those).
-//
-// Each pod gets its own auto-delete + exclusive queue named
-// "<exchangeName>_<ServerName>" so the queue is uniquely owned by this
-// pod's connection and cleaned up by RabbitMQ when the pod disconnects.
-// No leaked queues survive a pod restart. Supervised like MqConsume.
-func MqFanoutSubscribe(exchangeName string, processor func(ctx context.Context, data []byte) error) error {
-	queue := exchangeName + "_" + config.Config.ServerName
-	return startMqConsumer(queue, processor, func(conn *rabbitmq.Conn) (mqConsumer, error) {
-		return mqNewConsumer(
-			conn,
-			queue,
-			rabbitmq.WithConsumerOptionsExchangeName(exchangeName),
-			rabbitmq.WithConsumerOptionsExchangeKind("fanout"),
-			rabbitmq.WithConsumerOptionsExchangeDeclare,
-			rabbitmq.WithConsumerOptionsExchangeDurable,
-			// Empty routing key is fine for fanout (the exchange ignores it on
-			// publish), but we MUST call WithConsumerOptionsRoutingKey to make
-			// wagslane append a Binding entry — without it the queue is created
-			// but never bound to the exchange and every publish silently
-			// returns "Message published but NOT routed".
-			rabbitmq.WithConsumerOptionsRoutingKey(""),
-			rabbitmq.WithConsumerOptionsQueueAutoDelete,
-			rabbitmq.WithConsumerOptionsQueueExclusive,
-			rabbitmq.WithConsumerOptionsQOSPrefetch(1),
-			rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/fanout/"+queue),
 		)
 	})
 }
@@ -777,13 +746,13 @@ func getPublisher(key string, exchangeName string) (mqPublisher, error) {
 		slog.Error("rbmq: error connecting to rabbitmq")
 		return nil, ErrRbmqNoConn
 	}
-	newPublisher, err := mqNewPublisher(
-		conn,
+	opts := []func(*rabbitmq.PublisherOptions){
 		rabbitmq.WithPublisherOptionsLogging,
 		rabbitmq.WithPublisherOptionsExchangeName(exchangeName),
 		rabbitmq.WithPublisherOptionsExchangeDeclare,
 		rabbitmq.WithPublisherOptionsExchangeDurable,
-	)
+	}
+	newPublisher, err := mqNewPublisher(conn, opts...)
 	if err != nil {
 		slog.Error("rbmq: error creating publisher", "key", key, "error", err)
 		return nil, fmt.Errorf("rbmq: create publisher %s: %w", key, err)

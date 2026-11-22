@@ -27,6 +27,7 @@ func init() {
 // configured (e.g. Dynatrace). Use this for any provider that does not have a
 // dedicated tool (TracesExecuteClickhouseTool, TracesExecuteJaegerTool, ...).
 type TracesExecuteDefaultTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 
@@ -122,9 +123,7 @@ func (m TracesExecuteDefaultTool) Call(nbRequestContext core.NbToolContext, inpu
 		}, err
 	}
 
-	if len(queryResponse.Traces) > maxTracesInResponse {
-		queryResponse.Traces = queryResponse.Traces[:maxTracesInResponse]
-	}
+	queryResponse = capTraceResponse(queryResponse, maxTracesInResponse)
 
 	response, err := common.MarshalJson(tracePayloadForResponse(queryResponse))
 	if err != nil {

@@ -114,6 +114,18 @@ func TestApplyKnowledgePolicy(t *testing.T) {
 	}
 }
 
+// Always-load skills are operator instructions (e.g. per-tool conventions for the
+// code agent), not retrieved knowledge, so no policy may clear them.
+func TestApplyKnowledgePolicy_KeepsAgentInstructions(t *testing.T) {
+	for _, policy := range []KnowledgePolicy{KnowledgeAlways, KnowledgeAuto, KnowledgeLLMOnly, KnowledgeDisabled} {
+		r := NBAgentRequest{AgentInstructions: "<skill name=\"terraform\">select workspace first</skill>", AlwaysLoadedKBIDs: []string{"kb1"}}
+		applyKnowledgePolicy(&r, policy)
+		assert.Equal(t, "<skill name=\"terraform\">select workspace first</skill>", r.AgentInstructions, string(policy))
+		assert.Equal(t, []string{"kb1"}, r.AlwaysLoadedKBIDs, string(policy))
+		assert.Contains(t, AgentInstructionsBlock(r), "select workspace first")
+	}
+}
+
 func TestKnowledgePolicyTools(t *testing.T) {
 	for _, policy := range []KnowledgePolicy{KnowledgeAlways, KnowledgeAuto, KnowledgeLLMOnly, KnowledgeDisabled} {
 		custom := &nbCustomAgent{agent: AgentDto{Name: "custom", ExecutorType: AgentPlannerTypeReAct}}

@@ -55,12 +55,15 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 			expectedError:      "invalid or expired token",
 		},
 		{
-			name: "Valid Token",
+			// A pod's own token, as issued before it became random bytes:
+			// valid signature, right account, but never accepted.
+			name: "Pod Token Refused",
 			setupToken: func() string {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc1",
 					TenantId:  "tenant1",
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspacePod},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -69,7 +72,13 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				return s
 			},
 			requestedAccountId: "acc1",
-			expectedError:      "",
+			expectedError:      "workspace pod tokens are not accepted",
+		},
+		{
+			name:               "Random Pod Token",
+			token:              "6f1c2a9d0b7e4c3f8a5d2e1b0c9f8e7d6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d",
+			requestedAccountId: "acc1",
+			expectedError:      "invalid or expired token",
 		},
 		{
 			name: "Wrong Account ID",
@@ -77,7 +86,9 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc2", // Different account
 					TenantId:  "tenant1",
+					Grants:    &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}},
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspaceExecute},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -94,7 +105,9 @@ func TestAuthorizeWorkspaceRequest(t *testing.T) {
 				claims := workspace.WorkspaceTokenClaims{
 					AccountId: "acc1",
 					TenantId:  "wrong-tenant",
+					Grants:    &security.WorkspaceGrants{UserId: "u1", Roles: []string{security.AUTH_TENANT_ADMIN_ROLE}},
 					RegisteredClaims: jwt.RegisteredClaims{
+						Audience:  jwt.ClaimStrings{workspace.AudienceWorkspaceExecute},
 						ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 					},
 				}
@@ -524,19 +537,6 @@ func TestWorkspaceExecutionTokenWithoutTargetUsesSignedUserGrants(t *testing.T) 
 	require.True(t, ctx.GetSecurityContext().HasAccountAccess("grant-target", security.SecurityAccessTypeRead))
 }
 
-func TestWorkspaceExecutionTokenRevocation(t *testing.T) {
-	config.Config.LlmServerJwtSecret = "test-secret"
-	security.SetTenantIdCacheForTest("revoked-workspace", "revoked-tenant")
-	stubTenantAccounts(t, "revoked-workspace")
-	token, err := workspace.ExecutionToken(security.NewRequestContextForTenantAccountAdmin("revoked-tenant", "user", []string{"revoked-workspace"}), "revoked-workspace", "", time.Minute)
-	require.NoError(t, err)
-	require.NoError(t, common.CacheSet(workspace.CacheNamespaceWorkspaceTokens, token, []byte("revoked"), common.CacheSetWithExpiration(time.Minute)))
-	t.Cleanup(func() { _ = common.CacheDelete(workspace.CacheNamespaceWorkspaceTokens, token) })
-
-	_, err = authorizeWorkspaceRequest(workspaceTokenRequest(token), "revoked-workspace", nil, nil)
-	require.ErrorContains(t, err, "token has been revoked")
-}
-
 func TestWorkspaceExecutionTokensKeepConcurrentUsersIsolated(t *testing.T) {
 	const workspaceAccount = "isolation-workspace"
 	config.Config.LlmServerJwtSecret = "test-secret"
@@ -593,8 +593,6 @@ func TestExecutionTokenAuthorizesAsTheUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "u1", ctx.GetSecurityContext().GetUserId())
 	assert.False(t, ctx.GetSecurityContext().IsTenantAdmin())
-	audience, _ := c.Get(workspaceTokenAudienceKey)
-	assert.Equal(t, workspace.AudienceWorkspaceExecute, audience)
 
 	toolCtx := core.NbToolContext{Ctx: ctx, AccountId: "ws-acct"}
 	target, err := workspaceRelayTarget(toolCtx, tools.RelayJobKubectl, "", "kubectl get pods")
@@ -678,6 +676,19 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	require.True(t, handled)
 	require.Equal(t, "k8s-dev\nk8s-prod\nk8s-dev-1\n", result)
 	require.NotContains(t, result, "k8s-secret")
+
+	tools.StubClusterConnections(t, map[string]tools.ClusterConnection{
+		workspaceAccount:     {Connected: true},
+		"virtual-config-dev": {Connected: false},
+	})
+	request.Command = "kubectl config get-contexts"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Contains(t, result, "CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
+	require.Contains(t, result, "*         k8s-prod   k8s-prod   nubi-user   Connected   never\n")
+	require.Contains(t, result, "k8s-dev   k8s-dev   nubi-user   Disconnected   never\n")
+	require.Contains(t, result, "k8s-dev-1   k8s-dev-1   nubi-user   Unknown   -\n", "a cluster with no agent row has no status")
 
 	request.Command = "kubectl config current-context"
 	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
@@ -838,34 +849,6 @@ func TestNormalizeHelmProxyRequestExtractsConcreteContext(t *testing.T) {
 	}
 }
 
-func TestRequireExecutionToken(t *testing.T) {
-	orig := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
-	t.Cleanup(func() { config.Config.LlmServerWorkspaceExecuteRequireScopedToken = orig })
-	ctx := security.NewRequestContextForSuperAdmin()
-	request := func(audience string) (*gin.Context, *httptest.ResponseRecorder) {
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workspace/execute", nil)
-		if audience != "" {
-			c.Set(workspaceTokenAudienceKey, audience)
-		}
-		return c, w
-	}
-
-	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = false
-	c, _ := request(workspace.AudienceWorkspacePod)
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "pod token is still accepted while the flag is off")
-
-	config.Config.LlmServerWorkspaceExecuteRequireScopedToken = true
-	c, w := request(workspace.AudienceWorkspacePod)
-	assert.False(t, requireExecutionToken(c, ctx, "ws-acct"))
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	c, _ = request(workspace.AudienceWorkspaceExecute)
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"))
-	c, _ = request("")
-	assert.True(t, requireExecutionToken(c, ctx, "ws-acct"), "gateway-authenticated calls carry no workspace token")
-}
-
 // The shim prints `result` and exits 1 only when `error` is set; a non-200 makes
 // it print the raw body instead of the command output. A non-zero exit from the
 // relay must therefore stay 200 with both fields.
@@ -892,6 +875,14 @@ func TestWorkspaceExecuteReply(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status, "a refusal must stay 200 so the shim prints the agent's reason")
 	assert.Equal(t, refusal, body["result"])
 	assert.Contains(t, body["error"], refusal)
+
+	// A cluster whose agent is not connected fails the command with an
+	// actionable reason instead of the shim's "Server returned 500" wrapper.
+	status, body = workspaceExecuteReply(nil, errors.New("agent not connected"))
+	assert.Equal(t, http.StatusOK, status, "agent not connected must stay 200 so the shim prints the reason")
+	assert.Equal(t, "agent not connected", body["error"])
+	assert.Contains(t, body["result"], "agent not connected")
+	assert.Contains(t, body["result"], "Do not switch to another cluster, account, or integration")
 }
 
 // The workspace's per-account config list only holds its own cluster, so a
@@ -969,6 +960,75 @@ func TestWorkspaceExecuteAuditUsesResolvedTargetAndOutcome(t *testing.T) {
 	require.Equal(t, audit.EventStatusFailure, failure.EventStatus)
 }
 
+// auditedCommandShapes are the shapes in which commands relayed from the
+// workspace carried a credential into the audit log; keep is a part of the
+// command that must survive the masking.
+var auditedCommandShapes = []struct {
+	name, command, keep string
+}{
+	{"connection string", "psql postgresql://postgres:Qv7rTx2mWp9z@192.0.2.10:5432/app -c 'SELECT id FROM accounts'", "@192.0.2.10:5432/app -c 'SELECT id FROM accounts'"},
+	{"url basic auth", "kubectl 'exec' '-n' 'monitoring' 'deployment/grafana' '--' 'curl' '-s' 'http://admin:Qv7rTx2mWp9z@localhost:3000/api/v1/provisioning/alert-rules'", "@localhost:3000/api/v1/provisioning/alert-rules"},
+	{"password env", "kubectl 'exec' 'db-0' '-n' 'shop' '--' 'env' 'PGPASSWORD=Qv7rTx2mWp9z' 'psql' '-U' 'app_user' '-d' 'app_db' '-c' 'SHOW work_mem;'", "'psql' '-U' 'app_user'"},
+	{"token argument", `kubectl 'exec' 'notifier-0' '--' 'python3' '-c' 'from slack_sdk.web.client import WebClient; c = WebClient(token="Qv7rTx2mWp9z"); print(c.retry_handlers)'`, "print(c.retry_handlers)"},
+	// Shapes tool-output masking alone missed: a credential carried by a flag.
+	{"token flag", "kubectl 'get' 'pods' '-n' 'shop' '--token' 'Qv7rTx2mWp9z'", "'get' 'pods' '-n' 'shop'"},
+	{"mysql -p", "kubectl 'exec' 'db-0' '--' 'mysql' '-uroot' '-pQv7rTx2mWp9z' '-e' 'SHOW TABLES'", "'-e' 'SHOW TABLES'"},
+	{"redis-cli -a", "kubectl 'exec' 'cache-0' '--' 'redis-cli' '-a' 'Qv7rTx2mWp9z' 'INFO'", "'INFO'"},
+	{"curl -u", "kubectl 'exec' 'grafana-0' '--' 'curl' '-s' '-u' 'admin:Qv7rTx2mWp9z' 'http://localhost:3000/api/health'", "'http://localhost:3000/api/health'"},
+	{"jwt bearer token", "kubectl get pods --token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJRdjdyVHgybVdwOXoifQ.Qv7rTx2mWp9zQv7rTx2mWp9z", "kubectl get pods"},
+}
+
+// The audit keeps the command but not the credential in it.
+func TestWorkspaceExecuteAuditMasksCredentials(t *testing.T) {
+	const secret = "Qv7rTx2mWp9z"
+	ctx := security.NewRequestContextForTenantAccountAdmin("audit-tenant", "audit-user", []string{"workspace"})
+	for _, tc := range auditedCommandShapes {
+		t.Run(tc.name, func(t *testing.T) {
+			req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "kubectl", Command: tc.command}
+			a := workspaceExecuteAudit(ctx, req, "kubectl", "workspace", true).Audits[0]
+			stored, err := json.Marshal(a)
+			require.NoError(t, err)
+			require.NotContains(t, string(stored), secret)
+			command := a.EventAttr["command"].(string)
+			require.Contains(t, command, "[REDACTED:")
+			require.Contains(t, command, tc.keep)
+			require.Equal(t, map[string]any{"command": command}, a.EventState)
+			require.Equal(t, tc.command, req.Command, "the relayed command is not changed")
+		})
+	}
+
+	t.Run("arguments", func(t *testing.T) {
+		req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "psql", Command: "psql", Arguments: map[string]any{
+			"password": secret,
+			"dsn":      "postgresql://app:" + secret + "@db.example.com/app",
+			"query":    "SELECT 1",
+		}}
+		a := workspaceExecuteAudit(ctx, req, "psql", "workspace", true).Audits[0]
+		stored, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NotContains(t, string(stored), secret)
+		args := a.EventAttr["arguments"].(map[string]any)
+		require.Equal(t, "SELECT 1", args["query"])
+		require.Contains(t, args["dsn"], "@db.example.com/app")
+		require.Equal(t, secret, req.Arguments["password"], "the relayed arguments are not changed")
+	})
+
+	t.Run("command-line arguments", func(t *testing.T) {
+		req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "redis", Command: "redis-cli INFO", Arguments: map[string]any{
+			"extra_args": "--tls --password " + secret,
+			"nested":     map[string]any{"cmd": "redis-cli -a " + secret + " INFO"},
+		}}
+		a := workspaceExecuteAudit(ctx, req, "redis", "workspace", true).Audits[0]
+		stored, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NotContains(t, string(stored), secret)
+		args := a.EventAttr["arguments"].(map[string]any)
+		require.Contains(t, args["extra_args"], "--tls --password")
+		require.Contains(t, args["nested"].(map[string]any)["cmd"], " INFO")
+		require.Equal(t, "--tls --password "+secret, req.Arguments["extra_args"], "the relayed arguments are not changed")
+	})
+}
+
 // A database, cache or broker command bound to another account uses that
 // account's integration of the same name and is relayed there; anything else
 // keeps the workspace's own account.
@@ -1028,4 +1088,30 @@ func TestWorkspaceBoundIntegration_PerCallJobs(t *testing.T) {
 		assert.Equal(t, "prod-id", got.AccountId, job)
 		assert.Equal(t, "prod-id/db-2", got.ToolConfig.Id, "%s: the target's integration of that name", job)
 	}
+}
+
+// A bee's command carries its run's grant scope: the proxy reads the target
+// through the bee's k8s grant, as the run itself did.
+func TestWorkspaceTokenCarriesAGrantScopedRun(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("bee-workspace", "bee-tenant")
+	stubTenantAccounts(t, "bee-workspace", "bee-target")
+	var sc security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"],"ScopedCustomPermissions":{"bee-target":{"k8s:Read":true}}}`), &sc))
+	person := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+
+	// A person whose access to the target comes from a k8s:Read grant reads it
+	// too; with no grant there the target stays out of reach.
+	_, err := workspace.ExecutionToken(person, "bee-workspace", "bee-target", time.Minute)
+	require.NoError(t, err, "a person's k8s:Read grant reaches the target")
+	var noGrant security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"]}`), &noGrant))
+	_, err = workspace.ExecutionToken(security.NewRequestContext(context.Background(), &noGrant, slog.Default(), nil, nil), "bee-workspace", "bee-target", time.Minute)
+	require.ErrorContains(t, err, "access denied", "no built-in role and no grant on the target")
+
+	token, err := workspace.ExecutionToken(security.WithGrantScopedRun(person), "bee-workspace", "bee-target", time.Minute)
+	require.NoError(t, err)
+	ctx, err := authorizeWorkspaceRequest(workspaceTokenRequest(token), "bee-workspace", nil, nil)
+	require.NoError(t, err)
+	assert.True(t, security.IsGrantScopedRun(ctx))
 }

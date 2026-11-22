@@ -72,3 +72,89 @@ it('reports a populated draft so restoring another message can preserve it', () 
   fireEvent.change(screen.getByPlaceholderText('Ask'), { target: { value: 'new draft' } });
   expect(onDraftChange).toHaveBeenLastCalledWith(true);
 });
+
+describe('/ skill suggestions', () => {
+  const skills = [
+    { name: 'DB failover', description: 'Fail the primary over' },
+    { name: 'disk-cleanup', description: 'Free node disk' },
+  ];
+  const renderWithSkills = () =>
+    render(
+      <AutoSuggestTextarea
+        value=''
+        suggestionsAt={[]}
+        skillSuggestions={skills}
+        placeholder='Ask'
+        maxRows={8}
+        maxLength={1000}
+        onKeyDown={jest.fn()}
+        fontSize='14px'
+        fontWeight='400'
+        onClick={jest.fn()}
+        buttonProperties={{ show: true, enable: true, onClick: jest.fn() }}
+      />
+    );
+
+  it('suggests skills by command-name prefix and inserts /<command-name>', () => {
+    renderWithSkills();
+    const input = screen.getByPlaceholderText('Ask');
+    fireEvent.change(input, { target: { value: '/db-' } });
+    expect(screen.getByText('DB failover')).toBeInTheDocument();
+    expect(screen.getByText('Fail the primary over')).toBeInTheDocument();
+    expect(screen.queryByText('disk-cleanup')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('DB failover'));
+    expect(input).toHaveValue('/db-failover ');
+  });
+
+  it('shows nothing when no skill matches or once the command is followed by a space', () => {
+    renderWithSkills();
+    const input = screen.getByPlaceholderText('Ask');
+    fireEvent.change(input, { target: { value: '/var/log' } });
+    expect(screen.queryByText('DB failover')).not.toBeInTheDocument();
+    expect(screen.queryByText('disk-cleanup')).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '/d' } });
+    expect(screen.getByText('disk-cleanup')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: '/disk-cleanup now' } });
+    expect(screen.queryByText('disk-cleanup')).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'check /var/log/d' } });
+    expect(screen.queryByText('disk-cleanup')).not.toBeInTheDocument();
+  });
+
+  it('suggests a skill typed in the middle of the message and replaces only that word', () => {
+    renderWithSkills();
+    const input = screen.getByPlaceholderText('Ask') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'node is full, use /disk' } });
+    expect(screen.getByText('disk-cleanup')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('disk-cleanup'));
+    expect(input).toHaveValue('node is full, use /disk-cleanup ');
+  });
+
+  it('keeps a line break after the replaced word', () => {
+    renderWithSkills();
+    const input = screen.getByPlaceholderText('Ask') as HTMLTextAreaElement;
+    // Caret right after "/dis", before the line break.
+    fireEvent.change(input, { target: { value: 'use /dis\nnext line', selectionStart: 8, selectionEnd: 8 } });
+    fireEvent.click(screen.getByText('disk-cleanup'));
+    expect(input).toHaveValue('use /disk-cleanup \nnext line');
+  });
+
+  it('suggests skills after an @agent mention', () => {
+    render(
+      <AutoSuggestTextarea
+        value=''
+        suggestionsAt={[{ name: 'k8s_debug', display_name: 'k8s_debug' }]}
+        skillSuggestions={skills}
+        placeholder='Ask'
+        maxRows={8}
+        maxLength={1000}
+        onKeyDown={jest.fn()}
+        fontSize='14px'
+        fontWeight='400'
+        onClick={jest.fn()}
+        buttonProperties={{ show: true, enable: true, onClick: jest.fn() }}
+      />
+    );
+    fireEvent.change(screen.getByPlaceholderText('Ask'), { target: { value: '@k8s_debug /dis' } });
+    expect(screen.getByText('disk-cleanup')).toBeInTheDocument();
+  });
+});

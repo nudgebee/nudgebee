@@ -26,10 +26,7 @@ export const useUpdateAllClusterOption = () => {
   const { setAllCluster } = useData();
 
   const updateClusters = (refresh = false) => {
-    // includeDemoAccount=true: this feeds the header ClusterDropdown's allCluster state, which
-    // always includes the demo account. Omitting it here would overwrite that state with a
-    // demo-less list and silently drop the demo cluster out of the dropdown.
-    homeApi.getCloudAccounts('', refresh, true).then((res) => {
+    homeApi.getCloudAccounts('', refresh).then((res) => {
       const clusters = transformClusters(res);
       setAllCluster(clusters);
     });

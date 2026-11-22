@@ -66,9 +66,14 @@ const SetupProgressBannerContent = () => {
   const { data: session } = useSession();
   const tenantId = (session as { tenant?: { id?: string } } | null)?.tenant?.id;
   const { loading, locked, canManageSetup } = useSetupGate();
-  const { readiness } = useOnboardingReadiness();
-  const { title: brandTitle } = useBrandingConfig();
   const [hiddenUntil, setHiddenUntil] = React.useState<number>(0);
+  // Fetch only when the banner could render: the same gate, role and snooze
+  // checks as the early returns below. Otherwise every `/home` load spends up
+  // to one capabilities request per account from the viewer's GraphQL budget
+  // on a banner that was never going to show. The gate's `loading` covers the
+  // session resolving, so the stored snooze has been read by the time it clears.
+  const { readiness } = useOnboardingReadiness([], { enabled: !loading && !locked && canManageSetup && Date.now() >= hiddenUntil });
+  const { title: brandTitle } = useBrandingConfig();
 
   // `tenantId` resolves asynchronously (the session), so — unlike the old
   // flat-key read — it is not necessarily known on the very first render;

@@ -661,8 +661,9 @@ const Charts = ({
     };
   }
 
-  // Ensure data points are clickable for "What happened here?" even with pointRadius: 0
-  if (onAskNubi) {
+  // Ensure data points are clickable for "What happened here?" or a drill-down
+  // menu even with pointRadius: 0 (dashboard lines are drawn point-less).
+  if (onAskNubi || onDataPointClick) {
     chartDatasets.forEach((ds) => {
       if (!ds.pointHitRadius || ds.pointHitRadius < 10) {
         ds.pointHitRadius = 10;
@@ -771,7 +772,18 @@ const Charts = ({
       const label = chartData.labels?.[index] || '';
 
       if (onDataPointClick) {
-        onDataPointClick({ dataValue, labelValue, label });
+        // `datasetIndex` lets a dashboard map the point back to its series (and so
+        // to that series' labels/account); `clientX/Y` anchor a menu at the cursor.
+        onDataPointClick({
+          dataValue,
+          labelValue,
+          label,
+          datasetIndex,
+          index,
+          epochTimestamp: timestamps?.[index] ?? null,
+          clientX: event?.clientX,
+          clientY: event?.clientY,
+        });
       }
 
       if (onAskNubi && labelValue.toLowerCase().includes('usage')) {

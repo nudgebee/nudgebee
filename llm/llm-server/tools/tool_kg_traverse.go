@@ -31,6 +31,7 @@ func init() {
 // KGTraverseTool exposes the Knowledge Graph `kg_traverse` RPC action as an
 // LLM tool for directional multi-hop infrastructure topology exploration.
 type KGTraverseTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 
@@ -85,7 +86,9 @@ func (t KGTraverseTool) InputSchema() core.ToolSchema {
 				Description: `Restrict node types. With query/name seeding it filters the STARTING node ` +
 					`(e.g. ["Workload"], ["LoadBalancer"]). With node_ids seeding it filters the RETURNED ` +
 					`neighbors — e.g. node_ids:[...] + node_types:["Database","Cache","MessageQueue"] keeps only ` +
-					`data-tier neighbors. Safe to combine with node_ids.`,
+					`data-tier neighbors. Safe to combine with node_ids. A Workload or ComputeInstance acting as a ` +
+					`database/cache/queue is still a Workload/ComputeInstance here (that filter drops it); its role ` +
+					`shows in the output as "acts as <role>" — leave node_types off to keep such data dependencies.`,
 				Items: map[string]any{"type": "string"},
 			},
 			"namespace": {

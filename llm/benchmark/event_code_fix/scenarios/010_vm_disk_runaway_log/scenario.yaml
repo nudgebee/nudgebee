@@ -1,0 +1,42 @@
+name: vm_disk_runaway_log
+type: vm_event
+tags: [vm, disk, logs]
+
+# Unlike the Kubernetes scenarios, the alert body carries no diagnostic signal:
+# on a VM the evidence has to come from the investigation's own metrics, logs
+# and SSH probes against the alerted host. ${NAME} placeholders are the fleet
+# (see vm/README.md); the run reports any that are unset.
+alert:
+  alertname: HostDiskSpaceCritical
+  labels:
+    instance_id: ${VM_A_INSTANCE_ID}
+    severity: critical
+    mountpoint: /var
+  summary: "Filesystem /var is 97% full on ${VM_A_HOST}"
+  log_lines: |
+    Filesystem /var on ${VM_A_HOST} is above the 90% usage threshold (97% used).
+  fingerprint: bench-vm-disk-runaway-log-010
+
+vm:
+  settle_seconds: 90
+  inject:
+    - vm/fault.sh disk_runaway_log inject ${VM_A_SSH} ${VM_A_FILL_MB}
+  restore:
+    - vm/fault.sh disk_runaway_log restore ${VM_A_SSH}
+
+# Metrics show the filesystem filling, read from the alerted host and not from
+# the rest of the fleet. Logs are not expected: nothing on the fleet ships
+# /var/log/nb-bench to the logs store, so there would be nothing to query. Add
+# `logs` here once promtail/alloy ships that directory (see vm/README.md).
+expected_telemetry:
+  signals: [metrics]
+  target_markers:
+    - ${VM_A_INSTANCE}
+    - ${VM_A_HOST}
+  forbidden_markers:
+    - ${VM_B_INSTANCE}
+    - ${VM_B_HOST}
+
+expected_diagnosis:
+  - "The response must identify a single log file under /var/log/nb-bench (app.log) that has grown very large as what is filling /var on ${VM_A_HOST}, not many small files and not a package or cache directory, and name the systemd service writing it (nb-bench-logger.service)."
+  - "The response must connect the file's growth to the repeated 'upstream request timed out' error from billing-api, and must not blame ${VM_B_HOST}."

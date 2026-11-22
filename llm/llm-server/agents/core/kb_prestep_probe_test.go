@@ -3,12 +3,12 @@ package core
 import (
 	"testing"
 
-	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/knowledge"
 )
 
 // allJudged is the judge-disabled case: every retrieved document survived, so
 // any drop reported must come from attribution.
-func allJudged(docs toolcore.RAGSearchResults) map[string]struct{} {
+func allJudged(docs knowledge.RAGSearchResults) map[string]struct{} {
 	keys := make(map[string]struct{}, len(docs))
 	for _, doc := range docs {
 		keys[ragDocDedupKey(doc)] = struct{}{}
@@ -16,8 +16,8 @@ func allJudged(docs toolcore.RAGSearchResults) map[string]struct{} {
 	return keys
 }
 
-func probeDoc(url, title, text string, score float32) toolcore.RAGSearchResult {
-	return toolcore.RAGSearchResult{
+func probeDoc(url, title, text string, score float32) knowledge.RAGSearchResult {
+	return knowledge.RAGSearchResult{
 		Document:        text,
 		SimilarityScore: score,
 		Metadata:        map[string]any{"url": url, "title": title, "source": "confluence"},
@@ -31,8 +31,8 @@ func TestBuildProbeDocumentsClassifiesInjectedAndDropped(t *testing.T) {
 	owned := probeDoc("https://kb/a", "Never auto-restart the auth service", "body a", 0.85)
 	orphan := probeDoc("https://kb/b", "Change freeze during peak hours", "body b", 0.84)
 
-	kept := toolcore.RAGSearchResults{owned, orphan}
-	attributed := toolcore.RAGSearchResults{owned}
+	kept := knowledge.RAGSearchResults{owned, orphan}
+	attributed := knowledge.RAGSearchResults{owned}
 	refs := []AgentReference{{
 		Type:        AgentReferenceTypeKB,
 		ReferenceID: "kb-123:deadbeef",
@@ -88,7 +88,7 @@ func TestBuildProbeDocumentsUnownedDocumentHasNoKBId(t *testing.T) {
 		Metadata:    map[string]any{"name": "Product documentation"},
 	}}
 
-	docs, matched := buildProbeDocuments(toolcore.RAGSearchResults{doc}, refs, toolcore.RAGSearchResults{doc}, allJudged(toolcore.RAGSearchResults{doc}))
+	docs, matched := buildProbeDocuments(knowledge.RAGSearchResults{doc}, refs, knowledge.RAGSearchResults{doc}, allJudged(knowledge.RAGSearchResults{doc}))
 
 	if !docs[0].Injected {
 		t.Fatalf("un-owned document is still injected")
@@ -106,7 +106,7 @@ func TestBuildProbeDocumentsSurvivesRefAttributedDrift(t *testing.T) {
 	doc := probeDoc("https://kb/a", "A", "body a", 0.8)
 	// attributed claims the doc, but refs is empty (defensive: production keeps
 	// them in lockstep).
-	docs, _ := buildProbeDocuments(toolcore.RAGSearchResults{doc}, nil, toolcore.RAGSearchResults{doc}, allJudged(toolcore.RAGSearchResults{doc}))
+	docs, _ := buildProbeDocuments(knowledge.RAGSearchResults{doc}, nil, knowledge.RAGSearchResults{doc}, allJudged(knowledge.RAGSearchResults{doc}))
 	if len(docs) != 1 {
 		t.Fatalf("expected 1 document, got %d", len(docs))
 	}
@@ -121,7 +121,7 @@ func TestBuildProbeDocumentsSurvivesRefAttributedDrift(t *testing.T) {
 // the question. Shapes mirror a real dev account, where 11 of 29 candidates
 // were non-active.
 func TestSummarizeCandidatesMarksNonActiveIneligible(t *testing.T) {
-	candidates := []toolcore.Knowledgebase{
+	candidates := []knowledge.Knowledgebase{
 		{Id: "kb-active-hit", Name: "crashloop_triage_runbook", KBType: "manual", Status: "active", Enabled: true},
 		{Id: "kb-active-miss", Name: "office_meeting_rooms", KBType: "manual", Status: "active", Enabled: true},
 		{Id: "kb-archived", Name: "dev-confluence", KBType: "integration", Status: "archived"},
@@ -160,7 +160,7 @@ func TestSummarizeCandidatesMarksNonActiveIneligible(t *testing.T) {
 
 // A KB with no id cannot be attributed to either - guard mirrors matchKB.
 func TestSummarizeCandidatesTreatsMissingIdAsIneligible(t *testing.T) {
-	got := summarizeCandidates([]toolcore.Knowledgebase{{Id: "", Name: "orphan", Status: "active"}}, nil)
+	got := summarizeCandidates([]knowledge.Knowledgebase{{Id: "", Name: "orphan", Status: "active"}}, nil)
 	if got[0].Eligible {
 		t.Errorf("a candidate with no id must be ineligible")
 	}
@@ -174,11 +174,11 @@ func TestKBCollectionNameRoundTripsClassifyCollection(t *testing.T) {
 	integrationId := "9f1c2e3d-0000-4444-8888-aaaabbbbcccc"
 	cases := []struct {
 		name string
-		kb   toolcore.Knowledgebase
+		kb   knowledge.Knowledgebase
 		want string
 	}{
-		{"manual", toolcore.Knowledgebase{Id: "kb-uuid-1", KBType: "manual"}, "kb_kb-uuid-1"},
-		{"integration", toolcore.Knowledgebase{Id: "kb-uuid-2", KBType: "integration", IntegrationId: &integrationId},
+		{"manual", knowledge.Knowledgebase{Id: "kb-uuid-1", KBType: "manual"}, "kb_kb-uuid-1"},
+		{"integration", knowledge.Knowledgebase{Id: "kb-uuid-2", KBType: "integration", IntegrationId: &integrationId},
 			integrationId + "_knowledge_base"},
 	}
 	for _, tc := range cases {
@@ -202,11 +202,11 @@ func TestKBCollectionNameRoundTripsClassifyCollection(t *testing.T) {
 
 // An integration KB with no integration id owns no collection of its own.
 func TestKBCollectionNameRejectsIntegrationWithoutId(t *testing.T) {
-	if _, ok := kbCollectionName(toolcore.Knowledgebase{Id: "kb-1", KBType: "integration"}); ok {
+	if _, ok := kbCollectionName(knowledge.Knowledgebase{Id: "kb-1", KBType: "integration"}); ok {
 		t.Errorf("an integration KB with no integration id has no collection")
 	}
 	empty := "  "
-	if _, ok := kbCollectionName(toolcore.Knowledgebase{Id: "kb-1", KBType: "integration", IntegrationId: &empty}); ok {
+	if _, ok := kbCollectionName(knowledge.Knowledgebase{Id: "kb-1", KBType: "integration", IntegrationId: &empty}); ok {
 		t.Errorf("a blank integration id has no collection")
 	}
 }
@@ -214,11 +214,11 @@ func TestKBCollectionNameRejectsIntegrationWithoutId(t *testing.T) {
 // The scoped probe must stay truthful against an older rag-server that treats
 // collection_name as additive and answers from every collection.
 func TestFilterDocsToCollectionDropsForeignCollections(t *testing.T) {
-	mine := toolcore.RAGSearchResult{Document: "mine", Metadata: map[string]any{"collection": "kb_wanted"}}
-	theirs := toolcore.RAGSearchResult{Document: "theirs", Metadata: map[string]any{"collection": "kb_other"}}
-	untagged := toolcore.RAGSearchResult{Document: "untagged", Metadata: map[string]any{}}
+	mine := knowledge.RAGSearchResult{Document: "mine", Metadata: map[string]any{"collection": "kb_wanted"}}
+	theirs := knowledge.RAGSearchResult{Document: "theirs", Metadata: map[string]any{"collection": "kb_other"}}
+	untagged := knowledge.RAGSearchResult{Document: "untagged", Metadata: map[string]any{}}
 
-	got := filterDocsToCollection(toolcore.RAGSearchResults{mine, theirs, untagged}, "kb_wanted")
+	got := filterDocsToCollection(knowledge.RAGSearchResults{mine, theirs, untagged}, "kb_wanted")
 
 	if len(got) != 2 {
 		t.Fatalf("expected the scoped doc and the untagged one, got %d", len(got))
@@ -244,11 +244,11 @@ func TestBuildProbeDocumentsSeparatesJudgeDropsFromAttributionDrops(t *testing.T
 	rejected := probeDoc("https://kb/b", "Change freeze during peak hours", "body b", 0.84)
 	orphan := probeDoc("https://kb/c", "Unowned page", "body c", 0.83)
 
-	kept := toolcore.RAGSearchResults{winner, rejected, orphan}
+	kept := knowledge.RAGSearchResults{winner, rejected, orphan}
 	// The judge kept the winner and the orphan; attribution then dropped the
 	// orphan because no candidate KB owns it.
-	judgedKeys := allJudged(toolcore.RAGSearchResults{winner, orphan})
-	attributed := toolcore.RAGSearchResults{winner}
+	judgedKeys := allJudged(knowledge.RAGSearchResults{winner, orphan})
+	attributed := knowledge.RAGSearchResults{winner}
 	refs := []AgentReference{{
 		Type:        AgentReferenceTypeKB,
 		ReferenceID: "kb-123:deadbeef",

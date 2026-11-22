@@ -1,5 +1,6 @@
 // Not for OSS
 import { Page, Response, expect } from "@playwright/test";
+import { skipWhenMissing } from "../memoryFixtures";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
 import { DigestsLocators } from "./digestsLocators";
@@ -119,14 +120,12 @@ export async function remountDigestsTab(locators: DigestsLocators): Promise<void
 // by the llm-server scheduler's weekly job (RegisterEventAnalysisDigestJob, which runs
 // every six hours and backfills gaps), so this is a data precondition, not a product bug.
 export async function requireDigestWeeks(locators: DigestsLocators, minimum: number): Promise<number> {
-  await expect(locators.emptyState).toHaveCount(0);
+  // A failed read is a real failure and is checked first; an empty list is only "no digest yet".
   await expect(locators.listErrorState).toHaveCount(0);
   const weeks = await locators.weekIncidentCounts.count();
-  if (weeks < minimum) {
-    throw new Error(
-      `this case needs at least ${minimum} generated week(s) in b-Cortex > Insights > Digests, found ${weeks} — no weekly digest has been generated for this tenant on this environment`
-    );
-  }
+  // Skipped, not failed: digests are written by a scheduled job and nothing a test does makes one
+  // appear, so a tenant without one says "not generated here", not "broken".
+  skipWhenMissing(weeks, minimum, "generated week(s) in b-Cortex > Insights > Digests");
   return weeks;
 }
 
@@ -159,11 +158,7 @@ export async function railIncidentCount(locators: DigestsLocators, index: number
 // that was generated but found nothing to summarise has no incident rows to expand.
 export async function requireFindings(locators: DigestsLocators, minimum: number): Promise<number> {
   const findings = await locators.findingSummaries.count();
-  if (findings < minimum) {
-    throw new Error(
-      `this case needs at least ${minimum} incident row(s) under "What broke & why", found ${findings} — the selected week's digest carries no per-class findings on this environment`
-    );
-  }
+  skipWhenMissing(findings, minimum, `incident row(s) under "What broke & why" in the selected week's digest`);
   return findings;
 }
 

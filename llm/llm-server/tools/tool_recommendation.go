@@ -172,6 +172,13 @@ func PrimarySavingsSubquery(groupCol, scopeFilter string) string {
 		)`, groupCol, PrimaryRecommendationRank("r2", "ca2"), scopeFilter)
 }
 
+// popeyeNamespaceSQL derives a Popeye finding's namespace from its
+// "namespace/Kind/name" account_object_id. Copy of api-server's
+// models.PopeyeNamespaceSQL; change both together.
+const popeyeNamespaceSQL = `CASE WHEN r.rule_name ~ '.+_misconfigurations$' AND r.account_object_id ~ '^[^/]*/[^/]+/.'
+	THEN NULLIF(CASE split_part(r.account_object_id, '/', 2) WHEN 'Namespace' THEN split_part(r.account_object_id, '/', 3)
+		ELSE split_part(r.account_object_id, '/', 1) END, '') END`
+
 // recommendationView is the read-only projection the recommendations agent
 // queries. Composed at init (not a const) so the dedupe ranking is built from
 // the same pieces as PrimaryRecommendationRank rather than a second copy.
@@ -186,7 +193,7 @@ var recommendationView = `
 					WHEN cr.meta -> 'config' ->> 'namespace' IS NOT NULL THEN cr.meta -> 'config' ->> 'namespace'
 					WHEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'spec' -> 'claimRef' ->> 'namespace'
 					WHEN r.recommendation -> 'metadata' ->> 'namespace' IS NOT NULL THEN r.recommendation -> 'metadata' ->> 'namespace'
-					ELSE r.recommendation ->> 'namespace'
+					ELSE COALESCE(r.recommendation ->> 'namespace', ` + popeyeNamespaceSQL + `)
 				END
         	) AS namespace,
 			COALESCE(cr.service_name, r.recommendation ->> 'service_name') AS service,
@@ -341,6 +348,7 @@ func (m RecommendationExecuteTool) ToolPrompt() []string {
 const ToolRecommendationExecuteSql = "recommendation_execute"
 
 type RecommendationExecuteTool struct {
+	core.ReadOnlyTool
 }
 
 func (m RecommendationExecuteTool) Name() string {

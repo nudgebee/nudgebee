@@ -221,6 +221,8 @@ func boundLogWindow(fetch logWindow, user logWindow, fromCommand bool) (result l
 // canonical query (ExpandNarrowTimeWindow), by up to fifteen minutes either
 // side. That widening is deliberate for alert windows of a few seconds and is
 // not undone here, so such a fetch can reach slightly past the user's window.
+// When the widened read stops at its limit before covering the user's window,
+// the tool reads that window alone instead.
 func applyLogPlanConstraints(request core.NBAgentRequest, plan *logQueryPlan, now time.Time) {
 	commandLimit, _, commandHasLimit, _ := parseExplicitLogQueryConstraints(request.Query)
 	limit, hasLimit := commandLimit, commandHasLimit

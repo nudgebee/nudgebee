@@ -13,7 +13,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Set
 
-from rag.core.cache_backend import get_cache_backend
+from rag.core import replica_broadcast
+from rag.core.cache_backend import drop_local, get_cache_backend
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,21 @@ class MetadataCache:
                 self._keys.clear()
             logger.info("Metadata cache cleared")
 
+    def drop_local(self, collection_name: Optional[str] = None) -> None:
+        """Forget this process's copy of one collection, or all of them.
+
+        Used when another replica changed collections: it already cleared the
+        shared tier, so only this pod's in-memory tier is stale.
+        """
+        if collection_name:
+            drop_local(key=self._key(collection_name))
+            with self._lock:
+                self._keys.discard(collection_name)
+        else:
+            drop_local(prefix=_KEY_PREFIX)
+            with self._lock:
+                self._keys.clear()
+
     def exists(self, collection_name: str) -> bool:
         """
         Check if collection metadata is cached.
@@ -160,3 +176,15 @@ _metadata_cache = MetadataCache()
 def get_metadata_cache() -> MetadataCache:
     """Get global metadata cache instance."""
     return _metadata_cache
+
+
+def _drop_collections(names) -> None:
+    for name in names:
+        _metadata_cache.drop_local(name)
+
+
+replica_broadcast.on_replica_broadcast(
+    replica_broadcast.CHANGE_RAG_COLLECTIONS,
+    on_keys=_drop_collections,
+    on_all=_metadata_cache.drop_local,
+)

@@ -2,6 +2,7 @@
 import { Page, Response, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
+import { memoryGql } from "../memoryFixtures";
 import { CollectiveLocators } from "./collectiveLocators";
 
 // app/src/api1/memory/index.ts wraps every memory call as Memory_<action>, and both the
@@ -112,6 +113,33 @@ export async function expectNoLoadFailure(locators: CollectiveLocators): Promise
   await expect(locators.toastWithText("Could not load Collective")).toHaveCount(0);
 }
 
+// Collective rows are written by the agents as the team uses Nubi, so a tenant nobody has
+// chatted with has none and every row-dependent case would fail on a data precondition, not a
+// product bug. Waiting for a chat to produce one is not an option either: extraction is
+// asynchronous and non-deterministic, so it would make the suite flaky instead of the
+// environment. This seeds through the same ai_memory_upsert(layer=collective) path the server
+// exposes for services contributing durable team facts (memV2CollectiveSet), and only when the
+// tenant has no rows at all — a tenant with real shared memory is left exactly as it was.
+//
+// The upsert is keyed on (tenant, module, kind, subject), so a fixed subject means every run
+// re-asserts the same single row instead of adding one per run. That is also why nothing here
+// deletes it: no cleanup to race between workers, and the suite's own delete cases only ever
+// open the confirmation and Cancel.
+export const SEED_SUBJECT = "E2E fixture - Collective tab";
+const SEED_BODY =
+  "Automated end-to-end fixture that keeps the Collective tab populated on a tenant with no captured team knowledge. Safe to ignore.";
+
+export async function ensureCollectiveSeed(page: Page): Promise<void> {
+  const existing = await memoryGql(page, "ai_memory_list", { layer: COLLECTIVE_LAYER, limit: 1, agent_module: "" });
+  if ((existing?.entries?.length ?? 0) > 0) return;
+  await memoryGql(page, "ai_memory_upsert", {
+    layer: COLLECTIVE_LAYER,
+    subject: SEED_SUBJECT,
+    body: SEED_BODY,
+    entry_kind: "team_fact",
+  });
+}
+
 // Logs in, opens the Nubi panel and lands on b-Cortex > Memory > Collective. Memory is
 // b-Cortex's default group but Patterns is that group's default sub-tab, so unlike Digests
 // this needs the sub-tab click as well.
@@ -121,6 +149,8 @@ export async function openCollectiveTab(page: Page): Promise<{ locators: Collect
   const locators = new CollectiveLocators(page);
 
   await loginPage.doFullLogin();
+  // Before the tab mounts, so its first browse already sees the row.
+  await ensureCollectiveSeed(page);
   await nubi.openPanel();
   await nubi.openBCortex(locators.memoryGroupTab);
 
@@ -153,7 +183,7 @@ export async function requireCollectiveRows(locators: CollectiveLocators, minimu
   const rows = await locators.deleteButtons.count();
   if (rows < minimum) {
     throw new Error(
-      `this case needs at least ${minimum} insight row(s) in b-Cortex > Memory > Collective, found ${rows} — no collective knowledge has been captured for this tenant on this environment`
+      `this case needs at least ${minimum} insight row(s) in b-Cortex > Memory > Collective, found ${rows} — the fixture seed in ensureCollectiveSeed did not leave a row behind`
     );
   }
   return rows;
@@ -165,7 +195,7 @@ export async function requireCollectiveRows(locators: CollectiveLocators, minimu
 //
 // Returns the read at `seen` — the FIRST read after the action — not the most recent one.
 // The two differ only when the action produced more than one read, and then the first is
-// the honest answer: for the debounce case a second read means the collapse failed, and
+// the honest answer: for the Enter-to-search case a second read means a keystroke searched, and
 // reporting the last one would quietly hand back the full query and hide exactly that.
 export async function waitForNewRead(log: CollectiveReadLog, seen: number): Promise<string> {
   await expect
@@ -174,11 +204,10 @@ export async function waitForNewRead(log: CollectiveReadLog, seen: number): Prom
   return log.reads[seen];
 }
 
-// Types a query into the search box one character at a time and waits for the read it
-// triggers. pressSequentially with no delay rather than fill(): the debounce case needs the
-// per-character input events a real user produces, and firing them back-to-back keeps the
-// whole burst well inside CollectiveTab's 250ms window on any runner — a fixed inter-key
-// delay close to that window would make the collapse itself a race.
+// Types a query into the search box one character at a time, presses Enter and waits for the
+// read it triggers. CollectiveTab only commits the query on Enter (#40743), and pressSequentially
+// produces the per-character input events a real user does, so a search fired per keystroke
+// would show up in the log as extra reads.
 export async function searchFor(
   locators: CollectiveLocators,
   log: CollectiveReadLog,
@@ -188,13 +217,14 @@ export async function searchFor(
   await locators.searchInput.click();
   await locators.searchInput.pressSequentially(query);
   await expect(locators.searchInput).toHaveValue(query, { timeout: 15000 });
+  await locators.searchInput.press("Enter");
   const readQ = await waitForNewRead(log, readsBefore);
   await waitForCollectiveSettled(locators);
   return { readQ, readsBefore };
 }
 
 // Empties the search box, which CollectiveTab treats as a browse and fetches immediately
-// rather than on the debounce.
+// without waiting for Enter.
 export async function clearSearch(locators: CollectiveLocators, log: CollectiveReadLog): Promise<string> {
   const readsBefore = log.reads.length;
   await locators.searchInput.fill("");

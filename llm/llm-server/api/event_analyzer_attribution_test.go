@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/events"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -31,4 +32,28 @@ func TestShouldAttributeToSystemUser(t *testing.T) {
 	// reliable signal of a deliberate human action — keep the caller's
 	// identity in that case alone.
 	assert.False(t, shouldAttributeToSystemUser(existing, true))
+}
+
+func TestHttpAnalysisOrigin(t *testing.T) {
+	system := security.GetSystemUserId()
+	cases := []struct {
+		name       string
+		regenerate bool
+		source     string
+		userId     string
+		want       events.AnalysisTrigger
+		wantBy     string
+	}{
+		{"card opened", false, "", "user-1", events.AnalysisTriggerOnView, "user-1"},
+		{"refresh button", true, "", "user-1", events.AnalysisTriggerRerun, "user-1"},
+		{"slack button", false, "InstantNotification", "user-2", events.AnalysisTriggerNotification, "user-2"},
+		{"system user is not a person", false, "", system, events.AnalysisTriggerOnView, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, by := httpAnalysisOrigin(tc.regenerate, tc.source, tc.userId)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantBy, by)
+		})
+	}
 }

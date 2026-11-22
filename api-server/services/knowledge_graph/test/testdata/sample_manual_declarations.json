@@ -1,0 +1,83 @@
+{
+  "nodes": [
+    {
+      "ref": "billing-db",
+      "node_type": "Database",
+      "name": "billing-db",
+      "namespace": "finance",
+      "description": "N0: outside any connected account - tenant-scoped; never merges with a collector",
+      "labels": { "team": "finance", "env": "prod" },
+      "properties": { "engine": "postgres" }
+    },
+    {
+      "ref": "payments-api",
+      "node_type": "ExternalService",
+      "name": "payments-api.example.com",
+      "description": "N1: third-party API - tenant-scoped ExternalService"
+    },
+    {
+      "ref": "orders-queue",
+      "cloud_account": "<AWS account number>",
+      "specific_type": "SQSQueue",
+      "name": "orders-queue",
+      "region": "us-east-1",
+      "description": "N2: SQS in a connected account - keyed like the collector; adopted when collected",
+      "labels": { "team": "orders" }
+    },
+    {
+      "ref": "orders-db",
+      "cloud_account": "<AWS account number>",
+      "specific_type": "RDSInstance",
+      "name": "orders-db",
+      "region": "us-east-1",
+      "network": "<vpc id>",
+      "description": "N3: RDS in a VPC - network is the VPC id or name as the graph knows it"
+    },
+    {
+      "ref": "ledger-worker",
+      "cloud_account": "<K8s account id>",
+      "specific_type": "KubernetesDeployment",
+      "name": "ledger-worker",
+      "namespace": "payments",
+      "description": "N4: Deployment in a connected cluster - a key/value property and a number, both typed",
+      "properties": { "annotations": { "owner": "ledger-team", "oncall": "payments" }, "replicas": 3 }
+    },
+    {
+      "ref": "no-region",
+      "cloud_account": "<AWS account number>",
+      "specific_type": "SQSQueue",
+      "name": "no-region",
+      "description": "N5: rejected - region is required in a connected account"
+    },
+    {
+      "ref": "not-allowed",
+      "node_type": "Pod",
+      "name": "not-allowed",
+      "description": "N6: rejected - Pods cannot be declared anywhere"
+    },
+    {
+      "ref": "no-namespace",
+      "cloud_account": "<K8s account id>",
+      "specific_type": "KubernetesDeployment",
+      "name": "no-namespace",
+      "description": "N7: rejected - namespace is required for a Kubernetes resource"
+    }
+  ],
+  "dependencies": [
+    { "source": "ledger-worker", "dest": "billing-db", "relationship_type": "CALLS", "notes": "D0: both sides are nodes of this document" },
+    { "source": "ledger-worker", "dest": "orders-queue", "relationship_type": "PUBLISHES_TO", "notes": "D1: ref to ref, across accounts" },
+    {
+      "source": { "node_type": "Workload", "name": "<a workload>", "namespace": "<its namespace>", "cluster": "<its cluster>" },
+      "dest": "payments-api",
+      "notes": "D2: a node already in the graph calls a node of this document; relationship_type defaults to CALLS"
+    },
+    {
+      "source": "orders-queue",
+      "dest": { "node_type": "Workload", "name": "<a workload>", "namespace": "<its namespace>", "cluster": "<its cluster>" },
+      "relationship_type": "SUBSCRIBES_TO",
+      "notes": "D3: a node of this document to a node already in the graph"
+    },
+    { "source": "ledger-worker", "dest": "orders-db", "notes": "D4: ref to ref" },
+    { "source": "ledger-worker", "dest": "no-region", "notes": "D5: rejected - its destination node was rejected" }
+  ]
+}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"nudgebee/services/account"
 	"nudgebee/services/account/adapter"
@@ -28,6 +29,7 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/triage"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +39,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/samber/lo"
 	"gopkg.in/yaml.v2"
+	"nudgebee/services/forecast/keys"
 )
 
 func init() {
@@ -329,18 +332,36 @@ func isCloudAccountDisabled(sc *security.RequestContext, dbms *database.Database
 	return status == cloudAccountStatusDisabled
 }
 
+// GetEvent loads an event by id, within the caller's tenant: an event of
+// another tenant is not found. A server-internal context has no tenant (the
+// queue consumers learn it from the event they load) and loads any event; a
+// context with neither finds nothing. It does not check the caller's access to
+// the event's account: callers do that once they know which account it is.
 func GetEvent(context *security.RequestContext, id string) (models.Event, error) {
+	var sc *security.SecurityContext
+	if context != nil {
+		sc = context.GetSecurityContext()
+	}
+	if sc == nil || (sc.GetTenantId() == "" && !sc.IsSuperAdmin()) {
+		return models.Event{}, sql.ErrNoRows
+	}
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return models.Event{}, err
 	}
-	r := databaseManager.Db.QueryRowx(`SELECT id, created_at, updated_at, finding_id, title, description, source, aggregation_key,
+	query := `SELECT id, created_at, updated_at, finding_id, title, description, source, aggregation_key,
 			failure, finding_type, category, priority, subject_type, subject_name, subject_namespace,
 			subject_node, service_key, cluster, ends_at, starts_at, fingerprint, evidences, tenant,
 			cloud_account_id, cloud_resource_id, status, nb_status, nb_status_changed_at,
 			nb_status_changed_by, snoozed_until, principal, subject_owner, subject_owner_kind, labels,
 			urgency, computed_score, computed_priority, score_factors, score_confidence
-		FROM events WHERE id = $1`, id)
+		FROM events WHERE id = $1`
+	args := []any{id}
+	if tenantId := sc.GetTenantId(); tenantId != "" {
+		query += ` AND tenant = $2`
+		args = append(args, tenantId)
+	}
+	r := databaseManager.Db.QueryRowx(query, args...)
 	if r.Err() != nil {
 		return models.Event{}, r.Err()
 	}
@@ -408,41 +429,36 @@ func updateContainerImage(pod map[any]any, containerName string, newImage string
 	return pod, fmt.Errorf("container %s not found", containerName)
 }
 
-func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendationApplyRequest) (EventRecommendationApplyResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
-		return EventRecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
-	}
-
-	queryData, ok := query.Data.(map[string]any)
-	if !ok {
-		return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: invalid data format, expected map")
-	}
-	a, err := account.GetAccount(ctx, query.AccountId)
+// loadResolutionTarget loads what an event resolution acts on: the event and the resource it is
+// about, in an account the caller has already been authorized for. The apply and the rollback
+// check both start here, so neither can accept an event the other would refuse.
+func loadResolutionTarget(ctx *security.RequestContext, accountId, eventId string) (models.Event, models.Resource, error) {
+	a, err := account.GetAccount(ctx, accountId)
 	if err != nil {
 		ctx.GetLogger().Error("error getting account", "error", err)
-		return EventRecommendationApplyResponse{}, err
+		return models.Event{}, models.Resource{}, err
 	}
 	if a.Id == "" {
-		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: account not found - %s", query.AccountId)
+		return models.Event{}, models.Resource{}, fmt.Errorf("recommendation: account not found - %s", accountId)
 	}
 
 	if a.AccountType != "kubernetes" {
-		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: account type not supported - %s", a.AccountType)
+		return models.Event{}, models.Resource{}, fmt.Errorf("recommendation: account type not supported - %s", a.AccountType)
 	}
 
-	r, err := GetEvent(ctx, query.EventId)
+	r, err := GetEvent(ctx, eventId)
 	if err != nil {
 		ctx.GetLogger().Error("error getting events", "error", err)
-		return EventRecommendationApplyResponse{}, err
+		return models.Event{}, models.Resource{}, err
 	}
 	if r.Id == "" {
-		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: event not found - %s", query.EventId)
+		return models.Event{}, models.Resource{}, fmt.Errorf("recommendation: event not found - %s", eventId)
 	}
 	// The event is loaded by id alone, and every change below is dispatched to the
 	// event's own account. The account authorized above is the one the request
 	// named, so the two have to be the same account.
-	if r.CloudAccountId == nil || *r.CloudAccountId != query.AccountId {
-		return EventRecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
+	if r.CloudAccountId == nil || *r.CloudAccountId != accountId {
+		return models.Event{}, models.Resource{}, common.ErrorUnauthorized("error: account access not found")
 	}
 
 	var cr models.Resource
@@ -450,7 +466,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		cr, err = account.GetResource(ctx, *r.CloudResourceId)
 		if err != nil {
 			ctx.GetLogger().Error("error getting resource", "error", err)
-			return EventRecommendationApplyResponse{}, err
+			return models.Event{}, models.Resource{}, err
 		}
 	} else if r.SubjectNamespace != nil && *r.SubjectNamespace != "" && r.SubjectName != nil && *r.SubjectName != "" {
 		// Event was never linked to a cloud_resource_id (e.g. resolved before the
@@ -461,13 +477,27 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		if r.SubjectType != nil {
 			subjectType = *r.SubjectType
 		}
-		cr, err = account.GetResourceByWorkload(ctx, query.AccountId, *r.SubjectNamespace, *r.SubjectName, subjectType)
+		cr, err = account.GetResourceByWorkload(ctx, accountId, *r.SubjectNamespace, *r.SubjectName, subjectType)
 		if err != nil {
 			ctx.GetLogger().Error("error resolving resource from subject", "error", err)
-			return EventRecommendationApplyResponse{}, err
+			return models.Event{}, models.Resource{}, err
 		}
-	} else {
-		cr = models.Resource{}
+	}
+	return r, cr, nil
+}
+
+func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendationApplyRequest) (EventRecommendationApplyResponse, error) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
+		return EventRecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
+	}
+
+	queryData, ok := query.Data.(map[string]any)
+	if !ok {
+		return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: invalid data format, expected map")
+	}
+	r, cr, err := loadResolutionTarget(ctx, query.AccountId, query.EventId)
+	if err != nil {
+		return EventRecommendationApplyResponse{}, err
 	}
 
 	// Determine the provider
@@ -566,6 +596,17 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			Resource:       cr,
 			ProviderConfig: query.ProviderConfig,
 		}
+	} else if revert && strings.HasPrefix(cardId, "LastDeploymentCard") {
+		// The rollback row is offered on every kind of alert that carries a recorded change, so it
+		// is answered before the alert-specific fixes below. Those took the request first and
+		// refused it for lacking their own fields — a size, a container name — which left the
+		// rollback of a bad image unreachable from the image-pull alert it caused. The card id is
+		// what tells this request from the older resolve dialog's, which keeps its own branch.
+		revertRequest, err := revertApplyRequest(ctx, r, cr, query, queryData)
+		if err != nil {
+			return EventRecommendationApplyResponse{}, err
+		}
+		recommendationRequest = revertRequest
 	} else if *r.AggregationKey == "KubePersistentVolumeFillingUp" || *r.AggregationKey == "KubernetesVolumeOutOfDiskSpace" {
 		if queryData["size"] == "" || queryData["size"] == nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: to increase persistent volume size is required")
@@ -625,7 +666,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			Resource:       cr,
 			ProviderConfig: query.ProviderConfig,
 		}
-	} else if *r.AggregationKey == "CPUThrottlingHigh" {
+	} else if isCPUThrottlingResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -667,13 +708,25 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					}
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// A CPU SLO forecast has no alert-labels table; it names the one
+					// container with a CPU limit in its labels, when there is one.
+					containerName = labelValue(r.Labels, "container")
+				}
+				if containerName == "" {
+					// An event's labels are fixed when it is first raised, so an alert
+					// raised before its container was known still has none; the workload
+					// inventory answers when exactly one container has a CPU limit.
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "cpu")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a CPU limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -683,7 +736,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"cpu_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -697,7 +750,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -707,7 +760,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -722,7 +775,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -740,7 +793,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		} else {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: unsupported service type- %s", *r.SubjectOwnerKind)
 		}
-	} else if *r.AggregationKey == "PodMemoryReachingLimit" {
+	} else if isMemoryLimitResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -782,13 +835,22 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					}
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// A memory SLO forecast has no alert-labels table; it names the
+					// container it watches in its labels.
+					containerName = labelValue(r.Labels, "container")
+				}
+				if containerName == "" {
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "memory")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a memory limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -798,7 +860,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"memory_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -812,7 +874,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -822,7 +884,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -837,7 +899,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -956,41 +1018,11 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		}
 	} else if okRevert {
 		if revert {
-			// Undo re-applies what the change introduced. It is the same operation in the other
-			// direction, so it goes through the same builder, dispatch, audit and record.
-			undo, _ := queryData["undo"].(bool)
-			// The operator can pick WHICH recorded change to undo. Without a selection this is
-			// the alert's own attached change, which is what the single-change card sends.
-			changeEventId, _ := queryData["change_event_id"].(string)
-			changeSource, err := resolveRevertSource(ctx, r, changeEventId)
+			revertRequest, err := revertApplyRequest(ctx, r, cr, query, queryData)
 			if err != nil {
 				return EventRecommendationApplyResponse{}, err
 			}
-			request, err := getRevertRecommendationRequest(cr, changeSource, undo)
-			if err != nil {
-				return EventRecommendationApplyResponse{}, err
-			}
-			if err := assertNoLaterChangeOnSamePaths(ctx, changeSource, request); err != nil {
-				return EventRecommendationApplyResponse{}, err
-			}
-			recommendationRequest = adapter.ApplyRecommendationRequest{
-				Data: query.Data.(map[string]any),
-				Recommendation: models.Recommendation{
-					Category:       "EventResolution",
-					RuleName:       *r.AggregationKey,
-					Id:             r.Id,
-					CloudAccountId: *r.CloudAccountId,
-					TenantId:       *r.Tenant,
-					Recommendation: models.NewJsonObject(map[string]any{
-						"account_id":    *r.CloudAccountId,
-						"action_name":   "replace_workload",
-						"action_params": request,
-					}),
-					AccountObjectId: &query.EventId,
-				},
-				Resource:       cr,
-				ProviderConfig: query.ProviderConfig,
-			}
+			recommendationRequest = revertRequest
 		} else {
 			ctx.GetLogger().Error("error applying at revert resolution", "error", "select atleast one resolution")
 			return EventRecommendationApplyResponse{}, fmt.Errorf("select atleast one resolution")
@@ -1280,6 +1312,16 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			})
 
 		}
+	}
+
+	// A refusal the adapter can see coming is returned before the attempt is
+	// recorded. Stored as Failed it would be offered for a retry that replays the
+	// same values and is refused again, and it would count as a failed apply. It
+	// is still audited: someone tried to change the cluster and was refused.
+	if err := adapter.PrecheckApply(ctx, adptr, recommendationRequest); err != nil {
+		ctx.GetLogger().Info("event resolution refused before an attempt was recorded", "error", err, "event_id", r.Id)
+		auditEventResolutionApply(ctx, r, recommendationRequest, err)
+		return EventRecommendationApplyResponse{}, err
 	}
 
 	if !found {
@@ -1585,6 +1627,104 @@ func auditEventResolutionApply(ctx *security.RequestContext, r models.Event, req
 	}
 }
 
+// revertApplyRequest builds the apply request that rolls one recorded change back, or undoes that
+// rollback. Undo re-applies what the change introduced: the same operation in the other
+// direction, so it goes through the same builder, dispatch, audit and record.
+func revertApplyRequest(ctx *security.RequestContext, r models.Event, cr models.Resource, query EventRecommendationApplyRequest, queryData map[string]any) (adapter.ApplyRecommendationRequest, error) {
+	undo, _ := queryData["undo"].(bool)
+	// The operator can pick WHICH recorded change to undo. Without a selection this is the
+	// alert's own attached change, which is what the single-change card sends.
+	changeEventId, _ := queryData["change_event_id"].(string)
+	request, err := prepareRevert(ctx, r, cr, changeEventId, undo)
+	if err != nil {
+		return adapter.ApplyRecommendationRequest{}, err
+	}
+	return adapter.ApplyRecommendationRequest{
+		Data: queryData,
+		Recommendation: models.Recommendation{
+			Category:       "EventResolution",
+			RuleName:       *r.AggregationKey,
+			Id:             r.Id,
+			CloudAccountId: *r.CloudAccountId,
+			TenantId:       *r.Tenant,
+			Recommendation: models.NewJsonObject(map[string]any{
+				"account_id":    *r.CloudAccountId,
+				"action_name":   "replace_workload",
+				"action_params": request,
+			}),
+			AccountObjectId: &query.EventId,
+		},
+		Resource:       cr,
+		ProviderConfig: query.ProviderConfig,
+	}, nil
+}
+
+// prepareRevert builds the request that reverts one recorded change, or refuses. It is everything
+// a revert decides before anything is dispatched or recorded, and it only reads — which is what
+// lets CheckEventRollback ask the same question ahead of the click.
+func prepareRevert(ctx *security.RequestContext, alert models.Event, cr models.Resource, changeEventId string, undo bool) (map[string]any, error) {
+	changeSource, err := resolveRevertSource(ctx, alert, changeEventId)
+	if err != nil {
+		return nil, err
+	}
+	request, err := getRevertRecommendationRequest(cr, changeSource, undo)
+	if err != nil {
+		return nil, err
+	}
+	if err := assertNoLaterChangeOnSamePaths(ctx, changeSource, request, undo); err != nil {
+		return nil, err
+	}
+	return request, nil
+}
+
+// CheckEventRollback reports whether rolling back a recorded change would be refused right now,
+// and why, without attempting it. The rollback dialog shows recorded values; only this can say
+// that the workload was changed again since, which until now the operator learned by clicking.
+//
+// It answers for the moment it is asked. The apply runs the same steps again on the click, so a
+// change that lands in between is still caught there.
+func CheckEventRollback(ctx *security.RequestContext, query EventRollbackCheckRequest) (EventRollbackCheckResponse, error) {
+	// Same access as the apply: the answer names changes on the workload, and only someone who
+	// may roll back is shown the dialog that asks. A custom grant passes only when the action is
+	// classified as a write: a Read key never authorizes this (see security.actionGrant).
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
+		return EventRollbackCheckResponse{}, common.ErrorUnauthorized("error: account access not found")
+	}
+	r, cr, err := loadResolutionTarget(ctx, query.AccountId, query.EventId)
+	if err != nil {
+		return EventRollbackCheckResponse{}, err
+	}
+	_, err = prepareRevert(ctx, r, cr, query.ChangeEventId, false)
+	return rollbackCheckResult(err)
+}
+
+// revertUnverified is the guard refusing because its own lookup failed, not because of anything
+// it found. To the apply it is a refusal like any other — it reads and unwraps as the same bad
+// request. The check must tell the two apart: a failed lookup says nothing about the change.
+type revertUnverified struct{ refusal common.Error }
+
+func (e revertUnverified) Error() string { return e.refusal.Error() }
+func (e revertUnverified) Unwrap() error { return e.refusal }
+
+// rollbackCheckResult turns what prepareRevert returned into the check's answer. A refusal is an
+// answer — the apply would say the same thing. Anything else (a failed lookup, a malformed
+// resource key) is a fault, and reporting it as "blocked" would show the operator a reason that
+// is not about their change.
+func rollbackCheckResult(err error) (EventRollbackCheckResponse, error) {
+	if err == nil {
+		return EventRollbackCheckResponse{Allowed: true}, nil
+	}
+	var unverified revertUnverified
+	if errors.As(err, &unverified) {
+		return EventRollbackCheckResponse{}, err
+	}
+	var refusal common.Error
+	if errors.As(err, &refusal) && refusal.Code < 500 {
+		return EventRollbackCheckResponse{Allowed: false, Reason: refusal.Error()}, nil
+	}
+	return EventRollbackCheckResponse{}, err
+}
+
 // resolveRevertSource picks the event whose recorded diff the revert acts on.
 //
 // An empty changeEventId keeps the historical behaviour: the alert carries one attached change
@@ -1645,14 +1785,14 @@ func sameStringValue(a, b *string) bool {
 // assertNoLaterChangeOnSamePaths refuses a revert that would silently undo a more recent change.
 //
 // The agent applies a revert by writing each recorded `old` value at its path on the LIVE object.
-// That is safe for the newest change and only for the newest change: if the image went v1 -> v2 in
-// the change being reverted and v2 -> v3 in a later one, writing v1 discards v3 with nothing said.
-// Reverting the newest change was accidentally safe from this; letting the operator choose an
-// older one removes that accident, so the check arrives with the choice.
+// That is safe only while the object still holds what the change left there: if the image went
+// v1 -> v2 in the change being reverted and v2 -> v3 in a later one, writing v1 discards v3 with
+// nothing said.
 //
-// A conflict blocks rather than warns. The operator cannot see the later change from the revert
-// dialog, so a warning asks them to accept a risk they have no way to evaluate.
-func assertNoLaterChangeOnSamePaths(ctx *security.RequestContext, change models.Event, request map[string]any) error {
+// A conflict blocks rather than warns, and says which field, which later change and what to do
+// about it. undo is the same question the other way round: an undo writes the change's `new`
+// values and expects to find its `old` ones.
+func assertNoLaterChangeOnSamePaths(ctx *security.RequestContext, change models.Event, request map[string]any, undo bool) error {
 	revertPaths, _ := request["revert_paths"].([]any)
 	// The conflict query filters on these, and Postgres compares NULL with `=` as UNKNOWN — a nil
 	// here returns no rows, which reads as "no later change" and waves the revert through. That is
@@ -1677,8 +1817,7 @@ func assertNoLaterChangeOnSamePaths(ctx *security.RequestContext, change models.
 		}
 		later, err := laterChangesOnResource(ctx, change)
 		if err != nil {
-			ctx.GetLogger().Error("event resolution: could not check for later changes", "error", err, "event_id", change.Id)
-			return common.ErrorBadRequest("event resolution: cannot verify whether a later change exists; not reverting")
+			return laterChangesRefusal(ctx, change, err, "event resolution: cannot verify whether a later change exists; not reverting")
 		}
 		if len(later) > 0 {
 			when := ""
@@ -1706,15 +1845,25 @@ func assertNoLaterChangeOnSamePaths(ctx *security.RequestContext, change models.
 
 	later, err := laterChangesOnResource(ctx, change)
 	if err != nil {
-		// Fail closed. Reverting without knowing what came after is the mutation this guards, so
-		// a lookup failure must not become a silent green light.
-		ctx.GetLogger().Error("event resolution: could not check for later changes", "error", err, "event_id", change.Id)
-		return common.ErrorBadRequest("event resolution: cannot verify whether a later change touched the same fields; not reverting")
+		return laterChangesRefusal(ctx, change, err, "event resolution: cannot verify whether a later change touched the same fields; not reverting")
 	}
-	if reason := laterChangeConflict(change, targeted, later); reason != "" {
+	if reason := laterChangeConflict(change, targeted, later, undo); reason != "" {
 		return common.ErrorBadRequest("event resolution: " + reason)
 	}
 	return nil
+}
+
+// laterChangesRefusal is the guard's answer when it could not read the later changes. More of
+// them than one check reads is an answer about the workload, and comes with the way out. Any
+// other failure is not: the guard still fails closed — reverting without knowing what came after
+// is the mutation it exists to stop — but marks the refusal as one it could not verify.
+func laterChangesRefusal(ctx *security.RequestContext, change models.Event, err error, unverified string) error {
+	if errors.Is(err, errTooManyLaterChanges) {
+		return common.ErrorBadRequest(fmt.Sprintf(
+			"event resolution: more than %d changes have been recorded on this workload since this one, too many to check here; not reverting. Roll back with the tool that deploys it instead.", laterChangesCap))
+	}
+	ctx.GetLogger().Error("event resolution: could not check for later changes", "error", err, "event_id", change.Id)
+	return revertUnverified{common.ErrorBadRequest(unverified)}
 }
 
 // listIndex matches one list position in a recorded path: "env[2]" in
@@ -1724,51 +1873,206 @@ var (
 	listItem  = regexp.MustCompile(`^(.*)\[(\d+)\]$`)
 )
 
-// laterChangeConflict reports why reverting `change` at the targeted paths would be unsafe given
-// the changes recorded after it, or "" when it is safe.
+// rolloutMarkerAnnotations are the pod-template annotations whose only job is to force a rollout:
+// Helm charts stamp a random `rollme` on every upgrade and `kubectl rollout restart` stamps
+// `restartedAt`. They carry no configuration and are never put back — the next deploy writes
+// another value — so a later one must not stand between an operator and a rollback, and writing
+// an older one back loses nothing. The page tags the same keys as restart markers
+// (ROLLOUT_ONLY_ANNOTATIONS in app/src/components/k8s/investigate/changeRollback.js; a test
+// there reads this list and fails when a key here is not one of its own).
+var rolloutMarkerAnnotations = []string{"kubectl.kubernetes.io/restartedAt", "rollme"}
+
+// isRolloutMarkerAnnotation reports whether an annotation key is a rollout marker.
+func isRolloutMarkerAnnotation(key string) bool {
+	for _, marker := range rolloutMarkerAnnotations {
+		if key == marker {
+			return true
+		}
+	}
+	return false
+}
+
+// isRolloutMarkerPath reports whether a recorded path is a rollout marker's own: the annotation,
+// under an annotations map. A label or an env var that happens to be called `rollme` is not one.
+func isRolloutMarkerPath(path string) bool {
+	for _, marker := range rolloutMarkerAnnotations {
+		if strings.HasSuffix(path, "metadata.annotations."+marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// isRolloutMarkerRecord reports whether one recorded field change moved nothing but rollout
+// markers. Most records name the annotation's own path; some carry the annotations map whole,
+// and there the keys that differ between the two sides decide.
+func isRolloutMarkerRecord(path string, old, new any) bool {
+	if isRolloutMarkerPath(path) {
+		return true
+	}
+	if !strings.HasSuffix(path, "metadata.annotations") {
+		return false
+	}
+	oldMap, oldOk := old.(map[string]any)
+	newMap, newOk := new.(map[string]any)
+	if (old != nil && !oldOk) || (new != nil && !newOk) {
+		return false
+	}
+	differs := false
+	for _, side := range []map[string]any{oldMap, newMap} {
+		for key := range side {
+			if sameChangedValue(oldMap[key], newMap[key]) {
+				continue
+			}
+			if !isRolloutMarkerAnnotation(key) {
+				return false
+			}
+			differs = true
+		}
+	}
+	return differs
+}
+
+// laterRecord is one later change to one path: what it replaced there and what it left.
+type laterRecord struct {
+	at  *time.Time
+	old any
+	new any
+}
+
+// laterRecordsByPath groups what the later changes did by the path each record touched, oldest
+// first within a path (the changes arrive in that order). Rollout markers are left out.
+func laterRecordsByPath(later []models.Event) map[string][]laterRecord {
+	groups := map[string][]laterRecord{}
+	for _, l := range later {
+		olds := changedOldValuesOf(l)
+		for path, newValue := range changedValuesOf(l) {
+			if isRolloutMarkerRecord(path, olds[path], newValue) {
+				continue
+			}
+			groups[path] = append(groups[path], laterRecord{at: l.StartsAt, old: olds[path], new: newValue})
+		}
+	}
+	return groups
+}
+
+func sameInstant(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Equal(*b)
+}
+
+// laterRecordsUndone reports whether the later changes to one path have left it holding
+// `baseline` again, in which case they no longer stand in the way.
+//
+// A record at a path states that path's whole value, so only the newest one says what it holds
+// now — every record at the newest instant, since two changes recorded at the same instant
+// cannot be put in order, and guessing the order is guessing which value is live. A tie that
+// disagrees therefore still stands: it can cost a refusal, never an overwrite. With no baseline
+// given, the path is back when it holds what the oldest of the later changes replaced.
+func laterRecordsUndone(records []laterRecord, baseline any, hasBaseline bool) bool {
+	if len(records) == 0 {
+		return true
+	}
+	oldest, newest := records[0].at, records[len(records)-1].at
+	if !hasBaseline {
+		baseline = records[0].old
+		for _, r := range records {
+			if sameInstant(r.at, oldest) && !sameChangedValue(r.old, baseline) {
+				return false
+			}
+		}
+	}
+	for _, r := range records {
+		if sameInstant(r.at, newest) && !sameChangedValue(r.new, baseline) {
+			return false
+		}
+	}
+	return true
+}
+
+// addsOrRemovesItem reports whether any of the records added or removed the item at their path:
+// one side of it absent.
+func addsOrRemovesItem(records []laterRecord) bool {
+	for _, r := range records {
+		if r.old == nil || r.new == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// laterChangeConflict reports why writing this change back (or, for an undo, forward again) would
+// be unsafe given the changes recorded after it, or "" when it is safe.
+//
+// A later change counts only while it still stands. Its records are grouped by the path they
+// touched, and a path that has since been put back — by rolling that later change back, by hand,
+// by an autoscaler swinging round again — is as if never touched. That is what makes "revert the
+// later change first" something an operator can do: before this, any later record that ever
+// differed refused the revert for good. Rollout markers never count, on either side.
 //
 // Recorded paths address list items by POSITION ("containers[1].env[2]"), and the agent writes a
 // revert at that position. A position only means the same item while nothing was added to or
-// removed from the list ahead of it, so three kinds of later change conflict:
+// removed from the list ahead of it, so three kinds of standing later change conflict:
 //   - the same path moved to a different value (reverting would undo that later change);
 //   - a parent or child of the path changed — a whole env entry replaced, or one field inside an
 //     entry the revert rewrites whole;
 //   - an item was added or removed at or before the position in the same list, so the position
 //     now points at a different item and the revert would overwrite the wrong entry.
 //
-// A later record carrying the value this change itself left is the same change recorded twice
-// (dev has these in quantity) and is not a conflict.
-func laterChangeConflict(change models.Event, targeted map[string]bool, later []models.Event) string {
-	// What the change being reverted left behind at each path. Reverting writes this change's
-	// `old` back, which is safe exactly while the live value is still this change's `new`.
-	appliedValues := changedValuesOf(change)
-	for _, l := range later {
-		when := ""
-		if l.StartsAt != nil {
-			when = l.StartsAt.UTC().Format(time.RFC3339)
+// Paths are walked in sorted order, so the same conflict is named the same way every time, and the
+// time given is that of the newest change to the conflicting path — the one to roll back first.
+func laterChangeConflict(change models.Event, targeted map[string]bool, later []models.Event, undo bool) string {
+	// What the request expects to find at each path it writes. Writing is safe exactly while the
+	// live value is still the expected one.
+	expected := changedValuesOf(change)
+	if undo {
+		expected = changedOldValuesOf(change)
+	}
+	// A marker's own path is not checked: nothing is lost by writing an older marker. A whole
+	// annotations map IS, even when this change moved only a marker inside it — writing the map
+	// back replaces every annotation in it, including one a later change added or edited.
+	targets := make([]string, 0, len(targeted))
+	for path := range targeted {
+		if !isRolloutMarkerPath(path) {
+			targets = append(targets, path)
 		}
-		laterNew := changedValuesOf(l)
-		laterOld := changedOldValuesOf(l)
-		for laterPath, laterValue := range laterNew {
-			if applied, ok := appliedValues[laterPath]; ok && sameChangedValue(applied, laterValue) {
+	}
+	sort.Strings(targets)
+
+	groups := laterRecordsByPath(later)
+	touched := make([]string, 0, len(groups))
+	for path := range groups {
+		touched = append(touched, path)
+	}
+	sort.Strings(touched)
+
+	for _, target := range targets {
+		for _, path := range touched {
+			records := groups[path]
+			sameField := path == target || isPathAncestor(path, target) || isPathAncestor(target, path)
+			shiftsPosition := addsOrRemovesItem(records) && shiftsListPosition(path, target)
+			if !sameField && !shiftsPosition {
 				continue
 			}
-			for path := range targeted {
-				if laterPath == path || isPathAncestor(laterPath, path) || isPathAncestor(path, laterPath) {
-					return fmt.Sprintf(
-						"%q was changed again by a later change (%s) — reverting this one would undo that too. Revert the later change first.",
-						path, when)
-				}
-				// An add or remove shows as one side of the item absent.
-				if laterValue != nil && laterOld[laterPath] != nil {
-					continue
-				}
-				if shiftsListPosition(laterPath, path) {
-					return fmt.Sprintf(
-						"a later change (%s) added or removed an item in the list %q belongs to, so that position now holds a different item — reverting would write to the wrong entry.",
-						when, path)
-				}
+			// A path this request writes is back when it holds what the request expects there.
+			baseline, writes := expected[path]
+			if laterRecordsUndone(records, baseline, writes) {
+				continue
 			}
+			when := ""
+			if at := records[len(records)-1].at; at != nil {
+				when = at.UTC().Format(time.RFC3339)
+			}
+			if sameField {
+				return fmt.Sprintf(
+					"%q was changed again by a later change (%s) — reverting this one would undo that too. Revert the later change first.",
+					target, when)
+			}
+			return fmt.Sprintf(
+				"a later change (%s) added or removed an item in the list %q belongs to, so that position now holds a different item — reverting would write to the wrong entry.",
+				when, target)
 		}
 	}
 	return ""
@@ -1830,9 +2134,26 @@ func hasManifestPayload(request map[string]any) bool {
 	return false
 }
 
+// laterChangesCap is how many later changes one check reads. Every one of them is needed — the
+// newest decides what a path holds now — so past the cap the revert is refused rather than
+// judged on part of the history. It is sized well clear of the busiest workloads measured when
+// it was set; laterChangesOnResource logs how many rows each check read, so how close real
+// workloads come is visible before one meets it.
+const laterChangesCap = 1000
+
+var errTooManyLaterChanges = errors.New("more later changes than one check reads")
+
+// laterDiffsOnly is all the conflict check reads of a later change's evidences: each diff block's
+// recorded field changes. The before/after manifests beside them are nearly the whole column —
+// kilobytes a row against a few hundred bytes — and carrying them is what kept this to 50 rows.
+const laterDiffsOnly = `COALESCE((SELECT jsonb_agg(jsonb_build_object('type', 'diff', 'data', jsonb_build_object('updated_values', ev->'data'->'updated_values')))
+		FROM jsonb_array_elements(CASE WHEN jsonb_typeof(evidences) = 'array' THEN evidences ELSE '[]'::jsonb END) ev
+		WHERE ev->>'type' = 'diff'), '[]'::jsonb)`
+
 // laterChangesOnResource returns the configuration changes recorded on the same resource after
-// the given change. Bounded: a revert only needs to know whether ANY later change collides, and
-// the check runs on the click path.
+// the given change, oldest first, each carrying only its recorded field changes. It returns
+// errTooManyLaterChanges rather than a partial list: a conflict or a put-back beyond the cut
+// would go unseen, and this runs on the path that writes to the cluster.
 func laterChangesOnResource(ctx *security.RequestContext, change models.Event) ([]models.Event, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -1864,8 +2185,10 @@ func laterChangesOnResource(ctx *security.RequestContext, change models.Event) (
 		return nil, fmt.Errorf("event resolution: change %s identifies no resource", change.Id)
 	}
 
-	query := "SELECT id, starts_at, evidences FROM events WHERE " + strings.Join(conditions, " AND ") +
-		" ORDER BY starts_at ASC LIMIT 50"
+	// The id breaks ties so that the same rows come back in the same order every time; which of
+	// two same-instant changes came first is never read off it (see laterRecordsUndone).
+	query := "SELECT id, starts_at, " + laterDiffsOnly + " AS evidences FROM events WHERE " + strings.Join(conditions, " AND ") +
+		" ORDER BY starts_at ASC, id ASC LIMIT " + strconv.Itoa(laterChangesCap+1)
 	rows, err := dbms.Db.Queryx(query, args...)
 	if err != nil {
 		return nil, err
@@ -1884,7 +2207,16 @@ func laterChangesOnResource(ctx *security.RequestContext, change models.Event) (
 		}
 		later = append(later, e)
 	}
-	return later, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	capHit := len(later) > laterChangesCap
+	// How close real workloads come to the cap is only known where they run.
+	ctx.GetLogger().Info("event resolution: read later changes", "event_id", change.Id, "later_rows", len(later), "cap_hit", capHit)
+	if capHit {
+		return nil, errTooManyLaterChanges
+	}
+	return later, nil
 }
 
 // changedValuesOf maps each path a config-change event touched to the value it left there. Read
@@ -1968,10 +2300,20 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		"kind":      kind,
 	}
 	revertPaths := extractRevertPaths(r, undo)
+	if path := firstRedactedPath(revertPaths); path != "" {
+		return map[string]any{}, common.ErrorBadRequest(fmt.Sprintf(
+			"event resolution: this change set a value Nudgebee does not keep (%s), so it cannot be put back from the record. "+
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it", path))
+	}
 	if len(revertPaths) > 0 {
 		request["revert_paths"] = revertPaths
 	}
-	if oldYaml := extractDiffOldManifest(r); oldYaml != "" {
+	// A redacted manifest is never sent back: the legacy agent replaces the whole object with it,
+	// which would write markers into the workload and drop the annotations redaction removed
+	// (kubectl's last-applied copy is the merge base of the customer's next `kubectl apply`).
+	oldYaml := extractDiffOldManifest(r)
+	manifestRedacted := diffWasRedacted(r) || strings.Contains(oldYaml, redactionMarker)
+	if oldYaml != "" && !manifestRedacted {
 		var yamlMap map[string]any
 		if err := yaml.Unmarshal([]byte(oldYaml), &yamlMap); err != nil {
 			return map[string]any{}, common.ErrorBadRequest("event resolution: the recorded pre-change manifest is not valid YAML")
@@ -1979,6 +2321,10 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		request[strings.ToLower(kind)] = yamlMap
 	}
 	if len(revertPaths) == 0 && request[strings.ToLower(kind)] == nil {
+		if manifestRedacted {
+			return map[string]any{}, common.ErrorBadRequest("event resolution: this change's recorded manifest had secret values removed, so it cannot be put back from the record. " +
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it")
+		}
 		return map[string]any{}, common.ErrorBadRequest("event resolution: cannot revert, this event has no recorded configuration change to undo")
 	}
 	return request, nil
@@ -2117,6 +2463,65 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 	return paths
 }
 
+// redactionMarker starts the value the k8s-collector stores in recorded change evidence in place
+// of a secret or an inline env value: "[redacted]" or "[redacted:<fingerprint>]". The marker is
+// not the value, so a revert must never write it: the field would be set to the marker itself.
+// It is matched as a substring, not a whole value: a credential inside a longer string (a
+// connection string's password) is replaced in place, leaving the rest of the string around it.
+const redactionMarker = "[redacted"
+
+// firstRedactedPath returns the path of the first revert entry whose value to write holds a
+// redaction marker anywhere (a whole env entry or container is one value), or "".
+func firstRedactedPath(revertPaths []any) string {
+	for _, p := range revertPaths {
+		entry, _ := p.(map[string]any)
+		if containsRedactionMarker(entry["old"]) {
+			path, _ := entry["path"].(string)
+			return path
+		}
+	}
+	return ""
+}
+
+func containsRedactionMarker(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(t, redactionMarker)
+	case map[string]any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// diffWasRedacted reports whether the k8s-collector rewrote a diff block of r when it redacted it
+// (it sets data.redacted). Such a block's manifests are no longer the object as it was.
+func diffWasRedacted(r models.Event) bool {
+	if r.Evidences == nil || !r.Evidences.IsArray() {
+		return false
+	}
+	for _, item := range r.Evidences.Array() {
+		evidence, _ := item.(map[string]any)
+		if evidenceType, _ := evidence["type"].(string); evidenceType != "diff" {
+			continue
+		}
+		data, _ := evidence["data"].(map[string]any)
+		if redacted, _ := data["redacted"].(bool); redacted {
+			return true
+		}
+	}
+	return false
+}
+
 // hasInProgressRecommendation looks for an existing InProgress resolution for
 // the same card (cardId) so a retry reuses its row instead of creating a
 // duplicate. Scoped by card_id — an event can have several cards each with
@@ -2127,7 +2532,9 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 func hasInProgressRecommendation(existingRecommendations []models.EventResolution, cardId string) (bool, string) {
 	recommendationResolutionId := common.GenerateUUID()
 	for _, resolution := range existingRecommendations {
-		if resolution.Status != models.RecommendationResolutionStatusInProgress {
+		// A remediation run (CommandExecution) is InProgress while llm-server's command is out and carries
+		// no card_id: it is never a card's own in-flight fix to reuse and overwrite.
+		if resolution.Status != models.RecommendationResolutionStatusInProgress || resolution.Type == "CommandExecution" {
 			continue
 		}
 		obj, _ := resolution.Data.Object().(map[string]any)
@@ -2138,6 +2545,23 @@ func hasInProgressRecommendation(existingRecommendations []models.EventResolutio
 		}
 	}
 	return false, recommendationResolutionId
+}
+
+// staleWorkflowExecutionAge is how long an automation run may stay InProgress before it is given
+// up on. Workflow timeouts are per-definition, so this is a generous ceiling rather than the exact limit.
+const staleWorkflowExecutionAge = 24 * time.Hour
+
+// failStaleWorkflowExecutionResolutions fails automation runs that runbook-server never settled
+// (terminated, crashed before its final-status step, or out of retries), so they do not show
+// "In progress" on the alert forever.
+func failStaleWorkflowExecutionResolutions(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	now := time.Now().UTC()
+	_, err := dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $3
+		WHERE status = $4 AND type = $5 AND created_at < $6`,
+		models.RecommendationResolutionStatusFailed, now.Format(time.RFC3339), "automation run did not finish",
+		models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionTypeWorkflowExecution,
+		now.Add(-staleWorkflowExecutionAge))
+	return err
 }
 
 func UpdateResolutionStatus(ctx *security.RequestContext) error {
@@ -2151,10 +2575,17 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// only check resolutions that are in progress and are user resolutions
+	if err := failStaleWorkflowExecutionResolutions(ctx, dbms); err != nil {
+		ctx.GetLogger().Error("error failing stale workflow execution resolutions", "error", err)
+	}
+
+	// only check resolutions that are in progress and are user resolutions. A remediation run
+	// (CommandExecution) is settled by llm-server, which sent it; it has no adapter here.
+	// An automation run (WorkflowExecution) is settled by runbook-server, so it is skipped too;
+	// failStaleWorkflowExecutionResolutions covers the runs that never reported back.
 	rows, err := dbms.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
-		FROM event_resolution WHERE status = $1 AND resolver_type = $2`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
+		FROM event_resolution WHERE status = $1 AND resolver_type = $2 AND type NOT IN ('CommandExecution', 'WorkflowExecution')`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
 	if err != nil {
 		ctx.GetLogger().Error("error getting event resolutions", "error", err)
 		return err
@@ -2399,14 +2830,30 @@ func WithPublishContext(ctx context.Context) InsertOption {
 }
 
 // WithoutWorkflowRefire disables the event-trigger workflow re-fire that
-// InsertEvent otherwise enqueues when it UPDATES an existing FIRING event.
+// InsertEvent otherwise enqueues when it UPDATES an existing FIRING event, and
+// the resolved notification it enqueues when it updates one to RESOLVED.
 // Use it for callers that re-persist an event for a reason OTHER than a fresh
 // occurrence — e.g. UpdateEvent's user-facing metadata edits (urgency/subject) —
-// where re-running matched event-trigger workflows would be spurious. Genuine
-// occurrence/ingestion paths (alert webhooks, anomaly/SLO detection) must NOT
-// pass this, so repeat firings keep matching workflows (issue #25251).
+// where re-running matched event-trigger workflows would be spurious. A webhook
+// alert's repeat delivery never reaches the re-fire: InvestigateEvent updates
+// an existing row itself (repeatDeliveryUpdateSQL), so this branch serves the
+// scheduled jobs, which pass ScheduledDetection.
 func WithoutWorkflowRefire() InsertOption {
 	return func(c *insertConfig) { c.skipWorkflowRefire = true }
+}
+
+// ScheduledDetection is for alerts a scheduled job raises itself and stores
+// again on every run that still sees them (Kubernetes and spend anomalies,
+// SLO breaches). Each of those runs is a re-detection, not a new occurrence,
+// so it re-runs event-trigger workflows only when
+// FeatureScheduledAlertWorkflowRefireEnabled is on. Pass it only on a FIRING
+// write: it also suppresses the resolved notification of a RESOLVED one.
+func ScheduledDetection() InsertOption {
+	return func(c *insertConfig) {
+		if !config.Config.FeatureScheduledAlertWorkflowRefireEnabled {
+			c.skipWorkflowRefire = true
+		}
+	}
 }
 
 // WithDeferredPostProcess redirects the post-process enqueue that InsertEvent
@@ -2583,7 +3030,7 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 				, urgency = EXCLUDED.urgency
 				, subject_owner = EXCLUDED.subject_owner
 				, subject_owner_kind = EXCLUDED.subject_owner_kind
-			 RETURNING (xmax = 0) AS is_insert`
+			 RETURNING id, (xmax = 0) AS is_insert`
 
 	if id == "" {
 		id = common.GenerateUUID()
@@ -2626,12 +3073,17 @@ func InsertEvent(event Event, id string, opts ...InsertOption) (string, error) {
 		nbStatus = triage.NBStatusResolved
 	}
 
+	// The stored id, not the one passed or generated above: an update keeps the
+	// row's own id, and a caller that passed "" (the scheduled jobs) would
+	// otherwise be handed, and publish, an id that names no event (#40181).
+	var storedId string
 	var isInsert bool
-	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind, nbStatus).Scan(&isInsert)
+	err = dbms.Db.QueryRow(query, id, event.FindingId, event.Title, event.Description, event.Source, event.AggregationKey, event.Priority, event.SubjectType, event.SubjectName, event.SubjectNamespace, event.SubjectNode, event.ServiceKey, event.Fingerprint, evidences, event.Tenant, event.AccountId, event.Status, event.FindingType, event.Cluster, event.StartsAt, labels, time.Now().UTC(), event.EndsAt, nullableCloudResourceId, event.Category, event.CreatedAt, event.Urgency, event.SubjectOwner, event.SubjectOwnerKind, nbStatus).Scan(&storedId, &isInsert)
 	if err != nil {
 		slog.Error("event: failed to insert event", "error", err)
 		return id, err
 	}
+	id = storedId
 
 	// Publish new events for post-processing (replaces RPC new_event_notification trigger).
 	// Use background-retry: the row is already committed and the caller (webhook / cron /
@@ -2976,6 +3428,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// merge in repeatDeliveryUpdateSQL needs: a nil map marshals to null.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 		// The correction can miss on a repeat where the first delivery resolved it
 		// (the exporter pod was rescheduled and its row is gone). The delivery then
 		// still names the exporter pod, and writing that would move a corrected
@@ -3046,6 +3499,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// rewritten by an enricher.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 
 		if webhookEvent.CreatedAt == nil {
 			webhookEvent.CreatedAt = &start
@@ -3147,7 +3601,11 @@ func applySubjectFallbacks(webhookEvent *Event) {
 		}
 	}
 
-	if webhookEvent.SubjectNamespace == "" {
+	// A node is cluster-scoped, so a node subject takes no namespace from its
+	// labels: the `namespace` label on a node alert is the namespace of the
+	// exporter pod that reported it. An agent that works out the node itself
+	// sends the subject as a node with no namespace and those labels still on it.
+	if webhookEvent.SubjectNamespace == "" && !strings.EqualFold(webhookEvent.SubjectType, "node") {
 		for _, key := range namespaceKeys {
 			if namespace, ok := webhookEvent.Labels[key]; ok {
 				webhookEvent.SubjectNamespace = namespace
@@ -3222,6 +3680,58 @@ func applyNodeSubjectCorrection(sc *security.RequestContext, dbms *database.Data
 	linkK8sCloudResourceId(sc, dbms, tenantId, webhookEvent)
 }
 
+// applyVMSubject links an alert on a VM account to the VM it is about. An alert
+// whose subject fell back to the raw `instance` label is renamed to the VM; one
+// that already names a service keeps that name and only gains the link.
+//
+// It also sets the subject owner, which is what the events list shows as the
+// application: the service the alert is about when its labels name one,
+// otherwise the VM itself (a disk, CPU or memory alert is about the host).
+func applyVMSubject(sc *security.RequestContext, webhookEvent *Event) {
+	if !vmSubjectLookupNeeded(webhookEvent) {
+		return
+	}
+	vm, ok := integrationcore.ResolveVMSubject(sc, webhookEvent.AccountId, integrationcore.VMSubjectInput{Labels: webhookEvent.Labels})
+	if !ok {
+		return
+	}
+	setVMSubjectFields(webhookEvent, vm)
+}
+
+// vmSubjectLookupNeeded is false when there is nothing for the VM lookup to add: the
+// event is already linked, already has an owner of its own (a Kubernetes workload,
+// say) and names no service in its labels. Skipping it keeps the per-event hot path
+// free of a query for those events. A service label still goes through the lookup,
+// which is what confirms the account is a VM account before the owner is set.
+func vmSubjectLookupNeeded(webhookEvent *Event) bool {
+	if webhookEvent.CloudResourceId == "" {
+		return true
+	}
+	if integrationcore.VMServiceName(webhookEvent.Labels) != "" {
+		return true
+	}
+	return webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == webhookEvent.CloudResourceId
+}
+
+// setVMSubjectFields applies a resolved VM to the event: the link, the subject
+// rename and the owner.
+func setVMSubjectFields(webhookEvent *Event, vm integrationcore.VMSubject) {
+	if webhookEvent.CloudResourceId == "" {
+		webhookEvent.CloudResourceId = vm.CloudResourceID
+		if strings.EqualFold(webhookEvent.SubjectType, "instance") {
+			webhookEvent.SubjectType = "vm"
+			webhookEvent.SubjectName = vm.Name
+		}
+	}
+	if service := integrationcore.VMServiceName(webhookEvent.Labels); service != "" {
+		webhookEvent.SubjectOwner = service
+		webhookEvent.SubjectOwnerKind = "service"
+	} else if webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == vm.CloudResourceID {
+		webhookEvent.SubjectOwner = vm.Name
+		webhookEvent.SubjectOwnerKind = "vm"
+	}
+}
+
 // runPlaybookEnrichment executes the event's playbook and applies every
 // post-playbook mutation to webhookEvent in place: it appends evidence cards,
 // merges aggregated-alert labels and links the cloud resource.
@@ -3285,6 +3795,7 @@ func runPlaybookEnrichment(sc *security.RequestContext, webhookEvent *Event, eve
 			SubjectNode:             webhookEvent.SubjectNode,
 			AggregationKey:          webhookEvent.AggregationKey,
 			ExistingEvidenceActions: existingEvidenceActions,
+			CloudResourceId:         webhookEvent.CloudResourceId,
 		})
 		if err != nil {
 			sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", webhookEvent.AggregationKey, "account_id", webhookEvent.AccountId, "event_id", webhookEvent.Fingerprint)
@@ -3605,6 +4116,9 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		subjectNode = *event.SubjectNode
 	}
 
+	// The playbook writes the labels it extracts into this same map, so the snapshot is taken first: a label
+	// a playbook adds is then in the patch the refresh writes back.
+	labelsBefore := maps.Clone(labels)
 	newEvidenceResponse, err := eventrule.ExecutePlaybook(eventSc, accountId, playbooks.PlaybookEvent{
 		EventId:     eventId,
 		Name:        playbookName,
@@ -3623,6 +4137,7 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		SubjectNamespace: subjectNamespace,
 		SubjectNode:      subjectNode,
 		AggregationKey:   *event.AggregationKey,
+		CloudResourceId:  common.StrVal(event.CloudResourceId),
 	})
 	if err != nil {
 		sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", *event.AggregationKey, "account_id", accountId, "event_id", event.Id)
@@ -3732,12 +4247,12 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		return err
 	}
 
-	if labelsUpdated {
-		labelsJson, err := common.MarshalJson(labels)
+	if patch := refreshedLabelsPatch(labelsBefore, labels); labelsUpdated && len(patch) > 0 {
+		labelsJson, err := common.MarshalJson(patch)
 		if err != nil {
 			return fmt.Errorf("failed to marshal updated labels: %w", err)
 		}
-		_, err = dbms.Db.Exec("UPDATE events SET evidences = $1, labels = $2, updated_at = $3 WHERE id = $4", evidencesJson, labelsJson, time.Now().UTC(), eventId)
+		_, err = dbms.Db.Exec(refreshLabelsUpdateSQL, evidencesJson, labelsJson, time.Now().UTC(), eventId)
 		if err != nil {
 			return fmt.Errorf("failed to update event: %w", err)
 		}
@@ -3749,6 +4264,28 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 	}
 
 	return nil
+}
+
+// refreshLabelsUpdateSQL writes a refresh's evidences and merges only the labels it changed into the row as it
+// is now. The labels were read before the playbooks ran, often minutes earlier; writing that whole map back
+// dropped every label set meanwhile, such as the remediation loop's resolve and re-fire labels.
+const refreshLabelsUpdateSQL = `UPDATE events SET evidences = $1,
+	labels = (CASE WHEN jsonb_typeof(labels) = 'object' THEN labels ELSE '{}'::jsonb END) || $2::jsonb,
+	updated_at = $3 WHERE id = $4`
+
+// refreshedLabelsPatch is the labels a refresh added or changed (after against before). Never the remediation
+// loop's own labels: they are written only by the loop, so a refresh never replaces them with a stale value.
+func refreshedLabelsPatch(before, after map[string]string) map[string]string {
+	patch := map[string]string{}
+	for k, v := range after {
+		if k == triage.LabelResolvedBy || k == triage.LabelRefire {
+			continue
+		}
+		if old, ok := before[k]; !ok || old != v {
+			patch[k] = v
+		}
+	}
+	return patch
 }
 
 // aggregatedAlertLabelDefs maps aggregation keys to the labels that should be
@@ -4490,7 +5027,11 @@ func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 // PostProcessEvent it deliberately skips triage/llm/notification — those ran on
 // first insert and must not re-run on every re-fire — and only publishes for
 // workflow matching (event.created phase). Invoked by the post-process consumer
-// for workflow_only messages enqueued by InsertEvent on a FIRING re-fire.
+// for workflow_only messages enqueued by InsertEvent when it updates a stored
+// FIRING or point-in-time event and the caller did not skip the re-fire: a
+// scheduled job's re-detection only with FeatureScheduledAlertWorkflowRefireEnabled
+// (see ScheduledDetection), and a webhook insert that lost a race to its own
+// duplicate.
 func ReEmitForWorkflows(ctx *security.RequestContext, newEvent map[string]any) {
 	emitWorkflowOnly(ctx, lifecycle.PhaseEventCreated, newEvent)
 }
@@ -4512,7 +5053,7 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return models.Event{}, fmt.Errorf("event %s has no account association", request.EventId)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return models.Event{}, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 	if request.Urgency != "" {
@@ -4684,7 +5225,7 @@ func UpdateEventStatus(ctx *security.RequestContext, request UpdateEventStatusRe
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return nil, fmt.Errorf("event %s has no account association", request.EventID)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return nil, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 
@@ -4819,7 +5360,7 @@ func GetEventManualStatusChanges(ctx *security.RequestContext, eventIDs []string
 		// account the caller can't see — event_history carries no row-level
 		// scoping of its own, so this is the only check standing between an
 		// arbitrary event id and another account's "who closed this" data.
-		if !ctx.GetSecurityContext().HasAccountAccess(row.CloudAccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanAccessAccount(row.CloudAccountId, security.SecurityAccessTypeRead) {
 			continue
 		}
 		status := stringFromJSON(row.NewValue)
@@ -5047,4 +5588,56 @@ func stampEvidencesWithSourceWorkflow(evidences []any, source *models.EvidenceSo
 		}
 		additionalInfo[evidenceSourceWorkflowKey] = stamp
 	}
+}
+
+// isCPUThrottlingResolvable reports whether an event takes the CPU throttling fixes
+// (resize the CPU limit, add replicas, restart): the CPUThrottlingHigh alert, and the
+// CPU SLO forecasts and breach alerts.
+func isCPUThrottlingResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "CPUThrottlingHigh", "CPUThrottlingPredicted", "CPUSaturationPredicted",
+		"CPUThrottlingSLOBreached", "CPUSaturationSLOBreached":
+		return true
+	}
+	return false
+}
+
+// isMemoryLimitResolvable reports whether an event takes the memory fixes (resize the
+// memory limit, add replicas, restart): the PodMemoryReachingLimit alert, and the memory
+// SLO forecasts and breach alerts.
+func isMemoryLimitResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "PodMemoryReachingLimit", keys.MemorySaturationPredicted, keys.MemorySaturationSLOBreached:
+		return true
+	}
+	return false
+}
+
+// workloadKindName is the Kubernetes kind name a workload action expects. Forecast
+// events store the kind lower-cased (it is part of their fingerprint); every other
+// caller of these actions sends "Deployment", "StatefulSet" or "DaemonSet".
+func workloadKindName(kind *string) string {
+	switch k := common.StrVal(kind); strings.ToLower(k) {
+	case "deployment":
+		return "Deployment"
+	case "statefulset":
+		return "StatefulSet"
+	case "daemonset":
+		return "DaemonSet"
+	default:
+		return k
+	}
+}
+
+// labelValue reads one string label from an event's labels JSON.
+func labelValue(labels *models.Json, key string) string {
+	if labels == nil || !labels.IsObject() {
+		return ""
+	}
+	m, ok := labels.Object().(map[string]any)
+	if !ok {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }

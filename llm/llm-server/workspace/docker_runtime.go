@@ -329,7 +329,6 @@ func dockerWorkspaceEnv(accountID, token string) []string {
 		ENV_NB_LLM_SERVER_URL + "=" + config.Config.LlmServerUrl,
 		ENV_NB_ACCOUNT_ID + "=" + accountID,
 		ENV_NB_WORKSPACE_TOKEN + "=" + token,
-		ENV_NB_RELAY_SERVER_ENDPOINT + "=" + config.Config.RelayServerEndpoint,
 		"SERVER_WRITE_TIMEOUT=" + config.Config.LlmServerWorkspaceCommandTimeout,
 	}
 	for _, key := range []string{"LLM_PROVIDER", "LLM_MODEL_NAME", "LLM_PROVIDER_API_KEY", "LLM_PROVIDER_API_ENDPOINT", "LLM_PROVIDER_REGION", "LLM_PROVIDER_API_VERSION", "LLM_PROVIDER_API_TYPE", "LLM_PROVIDER_MAX_RETRIES", "BASE_URL"} {

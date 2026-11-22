@@ -15,7 +15,6 @@ NS="${GHCR_NAMESPACE:-ghcr.io/nudgebee}"
 
 # src -> dst:tag
 IMAGES=(
-  "docker.io/qdrant/qdrant:v1.19.2 qdrant:v1.19.2"
   # Temporal. The upstream chart defaults these to docker.io/temporalio/*; the
   # chart's temporal.{server,admintools,web}.image.repository values point at
   # these clones. web/ui is disabled in values.yaml but cloned anyway so
@@ -28,14 +27,19 @@ IMAGES=(
   # service charts). Pinned rather than the previous untagged `busybox`, which
   # resolved to :latest.
   "docker.io/library/busybox:1.37.0 busybox:1.37.0"
+  # The umbrella chart's own Redis (templates/redis/, redis.image). The Redis
+  # 7.0 Debian image it replaced was built by infra-mirrors-image.yaml.
+  "docker.io/library/redis:7.2.17-alpine redis:7.2.17-alpine"
+  # The umbrella chart's own RabbitMQ (templates/rabbitmq/, rabbitmq.image).
+  # The -management variant: the migration Job's rabbitmq scripts use the
+  # management HTTP API.
+  "docker.io/library/rabbitmq:4.2.9-management-alpine rabbitmq:4.2.9-management-alpine"
   # Init container for the service pods (global.initImages.curl).
   "docker.io/curlimages/curl:8.23.0 curl:8.23.0"
   # Consumed by the nudgebee-agent chart (k8s-agent repo), not the chart in this
   # repo — listed here so the mirror has one documented, reproducible source
-  # instead of an ad-hoc push. 0.157.0 is built on Go 1.26.5 with grpc v1.82.1
-  # (verified against the release binary), clearing the 1H/1M stdlib pair and the
-  # grpc HIGH that 0.156.0 carried. Bump the chart's tag in the same change.
-  "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.157.0 opentelemetry-collector-contrib:0.157.0"
+  # instead of an ad-hoc push. Bump the chart's tag in the same change.
+  "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0 opentelemetry-collector-contrib:0.164.0"
 )
 
 for entry in "${IMAGES[@]}"; do

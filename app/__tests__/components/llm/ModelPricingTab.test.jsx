@@ -19,6 +19,7 @@ const mockIsTenantAdmin = jest.fn(() => true);
 jest.mock('@lib/auth', () => ({ isTenantAdmin: () => mockIsTenantAdmin() }));
 
 import ModelPricingTab from '@components/llm/ModelPricingTab';
+import { toast } from '@ui/Toast';
 
 // The tab reads exactly one table. A model absent from it has no price — that
 // IS "not priced" — so there is nothing else to cross-reference and no account
@@ -217,6 +218,17 @@ it('refuses a negative cache rate before it reaches the server', async () => {
 
 // ─── adding a price for something not on file ──────────────────────────────
 
+// Provider is a ds/Select in the Add form: open it and click an option. While
+// its panel is up MUI marks the Modal around it aria-hidden, so the options are
+// only reachable with `hidden: true`.
+const providerOptions = () => {
+  fireEvent.click(screen.getByLabelText('Provider'));
+  return screen.getAllByRole('option', { hidden: true });
+};
+const pickProvider = (name) => {
+  fireEvent.click(providerOptions().find((option) => option.textContent === name));
+};
+
 it('adds a price for a model the table has never seen', async () => {
   // The custom-endpoint case: nothing prices it, so it must be addable by name
   // rather than discovered from somewhere else.
@@ -229,7 +241,7 @@ it('adds a price for a model the table has never seen', async () => {
 
   // Provider is a Select, not free text: a typo like `open-ai` would store a
   // price that never matches a usage row, so the value has to be picked.
-  fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'custom' } });
+  pickProvider('custom');
   fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'Qwen/Qwen3.6-35B-A3B-FP8' } });
   fireEvent.change(screen.getByLabelText('Input rate'), { target: { value: '0.4' } });
   fireEvent.change(screen.getByLabelText('Output rate'), { target: { value: '0.6' } });
@@ -392,52 +404,58 @@ it('keeps the dialog open when the server refuses', async () => {
 
 // The typo class: `open-ai` or a stray capital would store a row that never
 // matches a usage row, so the model reads as priced and still reports $0.
-it('rejects a provider that is not a real one, rather than storing an unmatchable row', async () => {
+// The provider is the one field that can no longer be mistyped, only left out.
+// Everything else is filled here, so it is the missing provider that is refused.
+it('asks for a provider when none is picked, with the rest of the form filled', async () => {
   mockListModelPricing.mockResolvedValue(pricing([]));
 
   render(<ModelPricingTab />);
   await waitFor(() => expect(screen.getByTestId('add-model-price')).toBeTruthy());
   fireEvent.click(screen.getByTestId('add-model-price'));
 
-  fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'open-ai' } });
-  fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-4o' } });
-  fireEvent.change(screen.getByLabelText('Input rate'), { target: { value: '1' } });
-  fireEvent.change(screen.getByLabelText('Output rate'), { target: { value: '1' } });
-  fireEvent.click(screen.getByText('Save'));
-
-  await waitFor(() => expect(mockUpsert).not.toHaveBeenCalled());
-});
-
-// Case and whitespace are recoverable, so recover them instead of rejecting.
-it('normalises provider case and whitespace so a near-miss still matches', async () => {
-  mockListModelPricing.mockResolvedValue(pricing([]));
-  mockUpsert.mockResolvedValue({ data: { saved: 1 }, errors: [] });
-
-  render(<ModelPricingTab />);
-  await waitFor(() => expect(screen.getByTestId('add-model-price')).toBeTruthy());
-  fireEvent.click(screen.getByTestId('add-model-price'));
-
-  fireEvent.change(screen.getByLabelText('Provider'), { target: { value: '  OpenAI ' } });
   fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-4o' } });
   fireEvent.change(screen.getByLabelText('Input rate'), { target: { value: '1' } });
   fireEvent.change(screen.getByLabelText('Output rate'), { target: { value: '2' } });
   fireEvent.click(screen.getByText('Save'));
 
-  await waitFor(() => expect(mockUpsert).toHaveBeenCalled());
-  expect(mockUpsert.mock.calls[0][0][0].provider_name).toBe('openai');
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Select a provider and enter a model name.'));
+  expect(mockUpsert).not.toHaveBeenCalled();
 });
 
-// The warning lookup must normalise exactly as the save does. Typing `GoogleAI`
-// used to find no built-in, so the tier-drop warning stayed hidden while the
-// save itself matched and dropped the tier.
-it('warns about dropping a tier even when the provider is typed with odd casing', async () => {
+it('offers only the providers a usage row can carry, so an unmatchable one cannot be entered', async () => {
+  mockListModelPricing.mockResolvedValue(pricing([]));
+
+  render(<ModelPricingTab />);
+  await waitFor(() => expect(screen.getByTestId('add-model-price')).toBeTruthy());
+  fireEvent.click(screen.getByTestId('add-model-price'));
+
+  // A picker, not a text field: `open-ai` used to be typeable here.
+  expect(screen.queryByRole('textbox', { name: 'Provider' })).toBeNull();
+  expect(providerOptions().map((option) => option.textContent)).toEqual([
+    'anthropic',
+    'azure',
+    'bedrock',
+    'custom',
+    'googleai',
+    'huggingface',
+    'openai',
+    'sagemaker',
+    'vertexai',
+    'vertexai_endpoint',
+    'vllm',
+  ]);
+});
+
+// Adding a price for a model that already has a tiered built-in is an override
+// like any other: the warning has to find that built-in from the picked provider.
+it('warns about dropping a tier when the added price is for a model with a tiered built-in', async () => {
   mockListModelPricing.mockResolvedValue(pricing([BUILT_IN_GEMINI_TIERED]));
 
   render(<ModelPricingTab />);
   await waitFor(() => expect(screen.getByTestId('add-model-price')).toBeTruthy());
   fireEvent.click(screen.getByTestId('add-model-price'));
 
-  fireEvent.change(screen.getByLabelText('Provider'), { target: { value: ' GoogleAI ' } });
+  pickProvider('googleai');
   fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gemini-2.5-pro' } });
 
   expect(await screen.findByText(/under-report spend/)).toBeInTheDocument();

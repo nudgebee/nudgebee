@@ -30,6 +30,7 @@ import { IoIosLogIn, IoIosStats } from 'react-icons/io';
 import TextSelectionHoverBox from './common/TextSelectionHoverBox';
 import LLMConversationWithTabs from './LLMConversationWithTabs';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
+import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import { Skeleton } from '@ui/Skeleton';
 import { v4 as uuidv4 } from 'uuid';
 import AutoSuggestTextarea from '@components/k8s/common/TextArea';
@@ -184,11 +185,12 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
   const listAgents = () => {
     setAllAgents([]);
     setLoadingAgents(true);
-    apiAskNudgebee.listAgents({ accountId }).then((res) => {
+    apiAskNudgebee.listAgents({ accountId, includeSwitchedOff: true }).then((res) => {
       let listAgentResponse = res?.data?.data?.ai_list_agents?.data ?? [];
       if (listAgentResponse.length > 0) {
         const agents = listAgentResponse
-          .filter((agent) => agent.status === 'enabled')
+          // Switched-off organisation agents are listed for switching back on, not offered.
+          .filter((agent) => agent.status === 'enabled' && !agent.switched_off)
           .map((agent) => {
             return { name: agent.name, display_name: agent.aliases?.[0] ?? agent.name };
           });
@@ -612,7 +614,10 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
             if (!popup) {
               applyFiltersOnRouter(router, { session_id: '' });
             }
-            snackbar.error(parseHttpResponseBodyMessage(response) || "Can't process your request right now.");
+            snackbar.error(
+              getGraphqlErrorMessage(res, parseHttpResponseBodyMessage(response) || "Can't process your request right now.") ||
+                "Can't process your request right now."
+            );
           } else {
             if (!popup) {
               applyFiltersOnRouter(router, { session_id: llmSessionId });

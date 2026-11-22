@@ -50,13 +50,13 @@ const (
 // of a declared dependency. NodeType + Name are required (validated above the
 // resolver); the rest are optional qualifiers used to narrow the match.
 type ManualEndpoint struct {
-	NodeType  string
-	Name      string
-	Namespace string
-	Cluster   string
-	ARN       string
-	AccountID string
-	Region    string
+	NodeType  string `json:"node_type"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	ARN       string `json:"arn,omitempty"`
+	AccountID string `json:"account_id,omitempty"`
+	Region    string `json:"region,omitempty"`
 }
 
 // ManualMatchCandidate is what the operator (or UI) sees when a row is
@@ -176,7 +176,9 @@ func (r *ManualEndpointResolver) buildQuery(tenantID string, e ManualEndpoint) (
 	}
 
 	if e.Namespace != "" {
-		fmt.Fprintf(&sb, " AND query_attributes->>'namespace' = $%d", idx)
+		// Only some node types hoist namespace into query_attributes; a node
+		// declared outside any account keeps it in properties.
+		fmt.Fprintf(&sb, " AND COALESCE(query_attributes->>'namespace', properties->>'namespace') = $%d", idx)
 		args = append(args, e.Namespace)
 		idx++
 	}
@@ -186,14 +188,19 @@ func (r *ManualEndpointResolver) buildQuery(tenantID string, e ManualEndpoint) (
 		idx++
 	}
 	if e.AccountID != "" {
-		// Strict match: when the operator supplies an account_id, treat it as
-		// a hard qualifier. The earlier `OR aws_account_number IS NULL` leg
-		// silently matched every non-AWS node (where the property is
-		// universally NULL), defeating the qualifier entirely.
-		// Operators declaring an AWS-side endpoint should benefit from the
-		// narrowing; operators who accidentally fill account_id for a K8s
-		// endpoint will get an unmatched status and learn to leave it blank.
-		fmt.Fprintf(&sb, " AND query_attributes->>'aws_account_number' = $%d", idx)
+		// Strict match: an account_id is a hard qualifier naming the
+		// connected account the node belongs to. The form and CSV imports send
+		// the provider's account number (AWS account, GCP project, Azure
+		// subscription — or the account's own id when it has none, as K8s
+		// accounts don't), so it is resolved through cloud_accounts to the
+		// node's cloud_account_id. Matching query_attributes.aws_account_number
+		// alone, as this did, only ever matched identity nodes: no other node
+		// type hoists that property, so the qualifier left every EC2 / RDS /
+		// SQS / GCP / Azure endpoint unmatched. It stays as a third leg so
+		// identities keyed by a role's own account still match.
+		fmt.Fprintf(&sb, ` AND (cloud_account_id::text = $%[1]d
+			OR cloud_account_id IN (SELECT id FROM cloud_accounts WHERE tenant = $1 AND account_number = $%[1]d)
+			OR query_attributes->>'aws_account_number' = $%[1]d)`, idx)
 		args = append(args, e.AccountID)
 		// idx is no longer used past this point; LIMIT below doesn't take a
 		// bind param. Don't increment — golangci-lint flags it as

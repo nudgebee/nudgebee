@@ -240,7 +240,7 @@ func containsAny(s string, words []string) bool {
 }
 
 // secretNameSuffix matches a setting name that ends in a secret word.
-const secretNameSuffix = `(?:password|passwd|[_-]pwd|secret|token|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|credentials?|auth[_-]?key|encryption[_-]?key|signing[_-]?key|erlang[_-]?cookie|license)`
+const secretNameSuffix = `(?:password|passwd|[_-]pwd|secret|token|api[_-]?key|apikey|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|credentials?|auth[_-]?key|encryption[_-]?key|signing[_-]?key|passphrase|cookie|license)`
 
 // secretAssignmentRules match `NAME=value`, `NAME: value` and `"name": "value"`
 // where NAME ends in a secret word. Group "v" is the value. The patterns start
@@ -321,7 +321,8 @@ var (
 // urlPassword matches the password part of scheme://user:password@host.
 var urlPassword = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^\s/:@"'<>]+:)([^\s@"'\\<>/]+)(@)`)
 
-var privateKeyBlock = regexp.MustCompile(`-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----`)
+// privateKeyBlock stays inside one quoted string and accepts YAML-folded markers.
+var privateKeyBlock = regexp.MustCompile(`-----BEGIN(?:\s|\\+n)+(?:[A-Z]+(?:\s|\\+n)+)?PRIVATE(?:\s|\\+n)+KEY-----[^"']*?-----END(?:\s|\\+n)+(?:[A-Z]+(?:\s|\\+n)+)?PRIVATE(?:\s|\\+n)+KEY-----`)
 
 // toolOutputTokenPatterns match credentials by their own shape, wherever they
 // appear. A first capture group, when present, is kept (a header name).
@@ -339,5 +340,9 @@ var toolOutputTokenPatterns = []struct {
 	{"gcp-api-key", []string{"AIza"}, regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
 	{"anthropic-api-key", []string{"sk-ant-"}, regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{32,}\b`)},
 	{"openai-api-key", []string{"sk-"}, regexp.MustCompile(`\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}\b`)},
+	// Three base64url segments, the header and payload each a JSON object
+	// ("eyJ" is `{"` encoded). Same pattern as the EE outbound jwt rule; no
+	// trailing \b, because a signature can end in - or _.
+	{"jwt", []string{"eyJ"}, regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`)},
 	{RuleIDAuthorizationValue, []string{"uthorization", "UTHORIZATION"}, regexp.MustCompile(`(?i)\b(Authorization:[ \t]*(?:Bearer|Basic|Token)[ \t]+)[A-Za-z0-9._~+/=-]{8,}`)},
 }

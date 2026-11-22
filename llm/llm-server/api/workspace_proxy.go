@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -78,6 +81,9 @@ func handleWorkspaceApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter)
 
 	// Tool Execution
 	group.POST("/execute", func(c *gin.Context) { handleWorkspaceExecute(c, tracer, meter) })
+
+	// nbctl in the workspace (NUDGEBEE_ENDPOINT=<llm-server>/api/v1/workspace/nbctl)
+	group.POST("/nbctl/api/graphql", func(c *gin.Context) { handleWorkspaceNbctlGraphQL(c, tracer, meter) })
 }
 
 func handleWorkspaceFiles(c *gin.Context, tracer trace.Tracer, meter metric.Meter) {
@@ -103,34 +109,44 @@ func handleWorkspaceFiles(c *gin.Context, tracer trace.Tracer, meter metric.Mete
 	}
 }
 
+// workspaceServiceToken reports whether the request carries the service token
+// (LLM_SERVER_TOKEN) and whether it matches. The middleware lets every
+// /api/v1/workspace/ request through and workspace pods can reach this port,
+// so this is the only service-token check these routes get. With no token
+// configured nothing matches: fail closed.
+func workspaceServiceToken(c *gin.Context) (presented, valid bool) {
+	header := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
+	if header == "" {
+		return false, false
+	}
+	return true, ServiceTokenMatches(header)
+}
+
+// ServiceTokenMatches compares a presented token to LLM_SERVER_TOKEN in
+// constant time. SHA-256 digests keep both sides 32 bytes so the compare
+// can't reveal the token's length. False when no token is configured.
+func ServiceTokenMatches(presented string) bool {
+	token := config.Config.LlmServerToken
+	if token == "" {
+		return false
+	}
+	got, want := sha256.Sum256([]byte(presented)), sha256.Sum256([]byte(token))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+}
+
+// extractWorkspacePayloadAndContext authenticates a workspace request:
+//   - An RPC action (body has action.name, sent by the app gateway) must carry
+//     the service token; its identity then comes from the gateway's headers
+//     and session_variables. Those are caller-supplied, so they are trusted
+//     only after the token check.
+//   - Any other request with the service token runs as the server.
+//   - Everything else must carry a workspace execution JWT.
 func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, meter metric.Meter) (map[string]any, *security.RequestContext, string, error) {
-	// 1. Try Global Token Auth (X-ACTION-TOKEN)
-	authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-	if authHeader != "" && authHeader == config.Config.LlmServerToken {
-		requestMap := make(map[string]any)
-		if err := c.ShouldBindJSON(&requestMap); err != nil {
-			return nil, nil, "", err
-		}
-
-		var actionRequest ActionRequest
-		_ = common.DecodeMapToStruct(requestMap, &actionRequest)
-
-		payload := requestMap
-		actionName := actionRequest.Action.Name
-		if actionName != "" {
-			payload = actionRequest.Input
-			if rawRequest, ok := payload["request"]; ok {
-				if castedRequest, castOk := rawRequest.(map[string]any); castOk {
-					payload = castedRequest
-				}
-			}
-		}
-
-		ctx := security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), slog.Default(), tracer, meter)
-		return payload, ctx, actionName, nil
+	presented, valid := workspaceServiceToken(c)
+	if presented && !valid {
+		return nil, nil, "", errors.New("invalid " + config.Config.LlmServerTokenHeader)
 	}
 
-	// 2. Standard Auth Flow
 	requestMap := make(map[string]any)
 	if err := c.ShouldBindJSON(&requestMap); err != nil {
 		return nil, nil, "", err
@@ -144,15 +160,25 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 	payload := requestMap
 	actionName := actionRequest.Action.Name
 
-	if actionName != "" {
-		ctx, err = buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+	switch {
+	case actionName != "":
+		if !valid {
+			slog.Warn("workspace: refused an RPC action without the service token", "route", c.FullPath(), "action", actionName)
+			if config.Config.LlmServerToken == "" {
+				return nil, nil, "", errors.New("workspace actions are disabled until LLM_SERVER_TOKEN is configured")
+			}
+			return nil, nil, "", errors.New("missing " + config.Config.LlmServerTokenHeader)
+		}
+		ctx, err = BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		payload = actionRequest.Input
 		if rawRequest, ok := payload["request"]; ok {
 			if castedRequest, castOk := rawRequest.(map[string]any); castOk {
 				payload = castedRequest
 			}
 		}
-	} else {
+	case valid:
+		ctx = security.NewRequestContext(c.Request.Context(), security.NewSecurityContextForSuperAdmin(), slog.Default(), tracer, meter)
+	default:
 		accountId, _ := requestMap["account_id"].(string)
 		ctx, err = authorizeWorkspaceRequest(c, accountId, tracer, meter)
 	}
@@ -196,8 +222,14 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if _, found := common.CacheGet(workspace.CacheNamespaceWorkspaceTokens, tokenString); found {
-		return nil, fmt.Errorf("token has been revoked")
+	if !slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute) {
+		// A pod's own token (a JWT on pods created before it became random
+		// bytes). It never authorizes anything here: requests must carry the
+		// execution token issued for the user's command or analysis. Checked
+		// before the account match so every use of it is counted.
+		recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspacePod)
+		slog.Warn("workspace: refused the pod token", "route", c.FullPath(), "account_id", requestedAccountId)
+		return nil, fmt.Errorf("workspace pod tokens are not accepted; use the execution token issued for this command")
 	}
 	if claims.AccountId != requestedAccountId {
 		return nil, fmt.Errorf("token does not match account")
@@ -206,17 +238,10 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 		return nil, fmt.Errorf("token does not match tenant")
 	}
 
-	isExecutionToken := slices.Contains(claims.Audience, workspace.AudienceWorkspaceExecute)
-	if isExecutionToken != (claims.Grants != nil) {
+	if claims.Grants == nil {
 		return nil, fmt.Errorf("invalid token claims")
 	}
-	if !isExecutionToken {
-		// The pod's own token (or one issued before audiences existed).
-		c.Set("workspace_allowed_target", claims.AccountId)
-		c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspacePod)
-		return security.NewRequestContextForTenantAdmin(tenantId), nil
-	}
-	c.Set(workspaceTokenAudienceKey, workspace.AudienceWorkspaceExecute)
+	recordWorkspaceAuth(c.Request.Context(), c.FullPath(), workspace.AudienceWorkspaceExecute)
 	if claims.TenantId == "" {
 		return nil, fmt.Errorf("token does not match tenant")
 	}
@@ -224,41 +249,17 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if err != nil {
 		return nil, fmt.Errorf("invalid token grants: %w", err)
 	}
-	if claims.TargetAccountId != "" && !sc.HasAccountAccess(claims.TargetAccountId, security.SecurityAccessTypeRead) {
+	ctx := security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter)
+	if claims.Grants.GrantScoped {
+		ctx = security.WithGrantScopedRun(ctx)
+	}
+	if claims.TargetAccountId != "" && !security.ToolPathTargetReadable(ctx, claims.TargetAccountId) {
 		return nil, fmt.Errorf("token does not permit its target")
 	}
 	if claims.TargetAccountId != "" {
 		c.Set("workspace_allowed_target", claims.TargetAccountId)
 	}
-	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
-}
-
-// workspaceTokenAudienceKey records which kind of workspace token
-// authenticated the request (set only on the workspace-token path).
-const workspaceTokenAudienceKey = "workspace_token_audience"
-
-// requireExecutionToken enforces, and counts, that tool execution through the
-// workspace token path uses a per-command execution token rather than the
-// pod's own token. Requests authenticated another way (action gateway, global
-// token) carry no workspace token and are not affected. It reports whether the
-// request may continue.
-func requireExecutionToken(c *gin.Context, ctx *security.RequestContext, accountId string) bool {
-	value, viaWorkspaceToken := c.Get(workspaceTokenAudienceKey)
-	if !viaWorkspaceToken {
-		return true
-	}
-	audience, _ := value.(string)
-	enforced := config.Config.LlmServerWorkspaceExecuteRequireScopedToken
-	allowed := audience == workspace.AudienceWorkspaceExecute || !enforced
-	recordWorkspaceExecuteAuth(c.Request.Context(), audience, enforced, allowed)
-	if audience == workspace.AudienceWorkspaceExecute {
-		return true
-	}
-	ctx.GetLogger().Warn("workspace: execute called with the pod token", "account_id", accountId, "enforced", enforced)
-	if !allowed {
-		c.JSON(http.StatusUnauthorized, common.ErrorActionBadRequest("workspace execution requires a per-command execution token; run the command through a Nudgebee tool"))
-	}
-	return allowed
+	return ctx, nil
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {
@@ -396,9 +397,6 @@ func handleWorkspaceExecute(c *gin.Context, tracer trace.Tracer, meter metric.Me
 
 	var req WorkspaceExecuteRequest
 	_ = common.DecodeMapToStruct(payload, &req)
-	if !requireExecutionToken(c, ctx, req.AccountId) {
-		return
-	}
 
 	var relayJob tools.RelayJob
 	var registeredToolName string
@@ -554,6 +552,10 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 	if !success {
 		status = audit.EventStatusFailure
 	}
+	// The audit keeps the command, not the credentials in it: a connection
+	// string, PGPASSWORD=..., --token x, mysql -px or token="..." is masked.
+	// The relay still runs the command as given.
+	command := redactAuditCommand(req.Command)
 	return &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     targetAccountId,
 		TenantId:      tenantId,
@@ -565,16 +567,66 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 		EventAction:   audit.EventActionCreate,
 		EventTarget:   toolName,
 		EventStatus:   status,
-		EventState:    map[string]any{"command": req.Command},
+		EventState:    map[string]any{"command": command},
 		EventAttr: map[string]any{
-			"command":              req.Command,
+			"command":              command,
 			"tool":                 req.Tool,
-			"arguments":            req.Arguments,
+			"arguments":            redactAuditArguments(req.Arguments),
 			"source":               "workspace-shim",
 			"workspace_account_id": req.AccountId,
 			"target_context":       req.TargetName,
 		},
 	}}}
+}
+
+// redactAuditArguments masks credential values in a command's arguments as
+// its command line is masked. Each string value is masked as a command line
+// first (an argument can be one: "--token abc"), then the whole set as JSON
+// text so a value under a secret-named key ("password": "...") is caught too.
+// If the masked text no longer parses, the arguments are left out rather than
+// stored unmasked. args is not modified.
+func redactAuditArguments(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return args
+	}
+	raw, err := json.Marshal(redactCommandLineStrings(args))
+	if err != nil {
+		return nil
+	}
+	var masked map[string]any
+	if err := json.Unmarshal([]byte(egressfilter.RedactSecrets(string(raw))), &masked); err != nil {
+		return nil
+	}
+	return masked
+}
+
+// redactCommandLineStrings returns a copy of v with every string in it masked
+// by egressfilter.RedactCommandLine.
+func redactCommandLineStrings(v any) any {
+	switch t := v.(type) {
+	case string:
+		return egressfilter.RedactCommandLine(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, child := range t {
+			out[k] = redactCommandLineStrings(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, child := range t {
+			out[i] = redactCommandLineStrings(child)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, child := range t {
+			out[i] = egressfilter.RedactCommandLine(child)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequest, defaultContext string) (string, bool, error) {
@@ -591,7 +643,7 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	}
 	subcommand := argv[configIndex+1]
 	if subcommand != "current-context" && subcommand != "get-contexts" && subcommand != "get-clusters" && subcommand != "view" {
-		return "", true, fmt.Errorf("kubectl config %s is unavailable: workspace kubeconfig is virtual and read-only", subcommand)
+		return "", true, fmt.Errorf("kubectl config %s is unavailable: workspace kubeconfig is virtual and read-only. To run a command on another cluster, add --context <name> to it", subcommand)
 	}
 	contexts, err := tools.ListKubernetesTargets(ctx, req.AccountId)
 	if err != nil {
@@ -641,14 +693,20 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 			}
 			return strings.Join(names, "\n") + trailingNewline(names), true, nil
 		}
+		// STATUS and LAST-SEEN are not kubectl columns: they say whether the
+		// cluster's Nudgebee agent is connected, so commands are not sent to
+		// clusters that cannot answer.
+		connections := tools.ClusterConnectionsFor(contexts)
 		var b strings.Builder
-		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   NAMESPACE\n")
+		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
 		for _, target := range aliases {
 			marker := " "
 			if strings.EqualFold(target.Name, current) {
 				marker = "*"
 			}
-			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   \n", marker, target.Name, target.Name)
+			connection, known := connections[tools.KubernetesTargetAccountID(target.Config)]
+			status, lastSeen := tools.ClusterStatusColumns(connection, known)
+			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   %s   %s\n", marker, target.Name, target.Name, status, lastSeen)
 		}
 		return b.String(), true, nil
 	}
@@ -838,6 +896,12 @@ func trailingNewline(values []string) string {
 	return "\n"
 }
 
+// workspaceAgentNotConnectedReply serves every agent type the relay gates on
+// (Kubernetes cluster, VM and database proxies), so it names the target, not a cluster.
+const workspaceAgentNotConnectedReply = "agent not connected: the Nudgebee agent that serves this target is not connected, so no command can run on it. " +
+	"Report that this target is unavailable for inspection. " +
+	"Do not switch to another cluster, account, or integration unless the user asked about it.\n"
+
 // workspaceExecuteReply maps a relay execution result to the shim's HTTP reply.
 // The shim prints `result`, then exits 1 when `error` is set; a non-200 makes it
 // print the raw body instead of the output.
@@ -850,6 +914,10 @@ func trailingNewline(values []string) string {
 // would reach the model inside the shim's "Server returned 500" wrapper, which
 // reads as an infrastructure fault; the agent's own reason (a read-only
 // allowlist, an unregistered action) is what it needs to see.
+//
+// A cluster whose agent is not connected is answered the same way. Read as an
+// infrastructure fault, the bare relay error led investigations to retry on
+// every other cluster the workspace could reach (#37223).
 func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var exitErr *tools.RelayCommandExitError
 	if errors.As(err, &exitErr) {
@@ -858,6 +926,9 @@ func workspaceExecuteReply(result any, err error) (int, gin.H) {
 	var refusedErr *tools.RelayCommandRefusedError
 	if errors.As(err, &refusedErr) {
 		return http.StatusOK, gin.H{"result": result, "error": refusedErr.Error()}
+	}
+	if err != nil && strings.Contains(err.Error(), "agent not connected") {
+		return http.StatusOK, gin.H{"result": workspaceAgentNotConnectedReply, "error": err.Error()}
 	}
 	if err != nil {
 		return http.StatusInternalServerError, gin.H{"error": err.Error(), "result": result}

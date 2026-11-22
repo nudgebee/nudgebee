@@ -16,13 +16,20 @@ import { Button } from '@ui/Button';
 import { Divider } from '@ui/Divider';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
-import { safeJSONParse } from '@utils/common';
 import apiUser from '@api1/user';
 import apiIntegrations from '@api1/integrations';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { computeTierDefaults } from '@utils/tierDefaults';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import LLMDefaultsSummary, { needsLLMDefaultsConfirm } from './LLMDefaultsSummary';
+import DecisionModelSection, {
+  decisionConfigValues,
+  decisionProviderChange,
+  decisionStateFromConfig,
+  emptyDecisionState,
+  validateDecisionState,
+} from './DecisionModelSection';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -52,34 +59,34 @@ const TIER_HINTS = {
 // summarisation, memory, acknowledgments).
 const PROVIDER_EXAMPLES = {
   anthropic: {
-    reasoning: 'claude-opus-4-7',
-    retrieval: 'claude-sonnet-4-6',
-    summary: 'claude-haiku-4-5',
+    reasoning: 'claude-opus-5-5',
+    retrieval: 'claude-sonnet-5-5',
+    summary: 'claude-haiku-5-5',
   },
   azure: {
-    reasoning: 'gpt-5-pro',
-    retrieval: 'gpt-5',
-    summary: 'gpt-5-mini',
+    reasoning: 'gpt-5.5-pro',
+    retrieval: 'gpt-5.5',
+    summary: 'gpt-5.4-mini',
   },
   bedrock: {
-    reasoning: 'anthropic.claude-opus-4-7',
-    retrieval: 'anthropic.claude-sonnet-4-6',
-    summary: 'anthropic.claude-haiku-4-5',
+    reasoning: 'us.anthropic.claude-opus-5-5',
+    retrieval: 'us.anthropic.claude-sonnet-5-5',
+    summary: 'us.anthropic.claude-haiku-5-5',
   },
   googleai: {
-    reasoning: 'gemini-3-pro-preview',
+    reasoning: 'gemini-3.1-pro-preview',
     retrieval: 'gemini-3-flash-preview',
-    summary: 'gemini-2.5-flash',
+    summary: 'gemini-3.1-flash-lite',
   },
   huggingface: {
-    reasoning: 'meta-llama/Llama-3-70b-instruct',
-    retrieval: 'meta-llama/Llama-3-13b-instruct',
-    summary: 'meta-llama/Llama-3-8b-instruct',
+    reasoning: 'meta-llama/Llama-3.3-70B-Instruct',
+    retrieval: 'meta-llama/Llama-3.1-8B-Instruct',
+    summary: 'meta-llama/Llama-3.1-8B-Instruct',
   },
   openai: {
-    reasoning: 'gpt-5-pro',
-    retrieval: 'gpt-5',
-    summary: 'gpt-5-mini',
+    reasoning: 'gpt-5.5-pro',
+    retrieval: 'gpt-5.5',
+    summary: 'gpt-5.4-mini',
   },
   sagemaker: {
     reasoning: 'endpoint-name-reasoning',
@@ -87,11 +94,18 @@ const PROVIDER_EXAMPLES = {
     summary: 'endpoint-name-summary',
   },
   vertexai: {
-    reasoning: 'gemini-3-pro-preview',
+    reasoning: 'gemini-3.1-pro-preview',
     retrieval: 'gemini-3-flash-preview',
-    summary: 'gemini-2.5-flash',
+    summary: 'gemini-3.1-flash-lite',
   },
 };
+
+// Models pre-filled into the primary + tier fields on provider change
+// (#41118). Every entry must be a current chat model the provider's API
+// accepts, because Test Connection probes each tier and Save waits on it.
+// Hugging Face and SageMaker are left out: their model names are the
+// tenant's own repo / endpoint names, so they stay placeholder-only.
+const PROVIDER_DEFAULT_MODELS = Object.fromEntries(Object.entries(PROVIDER_EXAMPLES).filter(([p]) => !['huggingface', 'sagemaker'].includes(p)));
 
 // Per-tier and per-agent override shape. provider === '' means "inherit from
 // global"; any other value triggers conditional credential fields for that
@@ -488,7 +502,6 @@ const FallbackModelEditor = ({
   optionsError,
   errors,
   secretsConfigured,
-  noAccounts,
   pricingRows,
   onModeChange,
   onPickRef,
@@ -524,8 +537,7 @@ const FallbackModelEditor = ({
           required
           value={refValue}
           onChange={onPickRef}
-          disabled={noAccounts}
-          placeholder={noAccounts ? 'Select an account first' : options === null ? 'Loading configured models…' : 'Select a configured model'}
+          placeholder={options === null ? 'Loading configured models…' : 'Select a configured model'}
           options={[
             ...(options || []).map((m) => ({
               value: fallbackOptionValue(m.llm_config_source, m.model),
@@ -796,7 +808,6 @@ FallbackModelEditor.propTypes = {
   optionsError: PropTypes.string,
   errors: PropTypes.object.isRequired,
   secretsConfigured: PropTypes.object.isRequired,
-  noAccounts: PropTypes.bool,
   pricingRows: PropTypes.array.isRequired,
   onModeChange: PropTypes.func.isRequired,
   onPickRef: PropTypes.func.isRequired,
@@ -916,20 +927,18 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [accounts, setAccounts] = useState([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [selectedAccountIds, setSelectedAccountIds] = useState([]);
-  // Whether this config serves requests that don't pin one. An account may
-  // have several enabled LLM configs; the one flagged here is what llm-server
-  // resolves to by default, and with none flagged it falls back to the
-  // system ENV credential.
-  const [isDefault, setIsDefault] = useState(false);
-  // Save-time guard: an account with zero enabled LLM integrations left
-  // without a default after this save has no working LLM until someone
-  // marks one — the RPC path (integrations_create_config called directly,
-  // not through this modal) has no equivalent check. showDefaultConfirm
-  // gates a 3-way dialog (set default & save / save anyway / cancel)
-  // instead of saving silently. EXPERIMENTAL — not yet validated.
-  const [showDefaultConfirm, setShowDefaultConfirm] = useState(false);
-  const [accountsMissingDefault, setAccountsMissingDefault] = useState([]);
-  const [checkingDefaultCoverage, setCheckingDefaultCoverage] = useState(false);
+  // The two defaults (spec: llm/llm-server/docs/llm-default-provider-spec.md).
+  // An account uses its own default, else the tenant default, else the platform
+  // LLM. No accounts selected means the config is available to every account.
+  const [tenantDefault, setTenantDefault] = useState(false);
+  const [accountDefault, setAccountDefault] = useState(false);
+  // On Save the backend reports what the change does to each account
+  // (integrations_check_llm_defaults); defaultsPrompt holds the popup built from
+  // it: 'blocked' (accounts would have no LLM), 'first' (the tenant has no
+  // default yet) or 'confirm' (a default is replaced, accounts move, or the
+  // config becomes organisation-wide).
+  const [checkingDefaults, setCheckingDefaults] = useState(false);
+  const [defaultsPrompt, setDefaultsPrompt] = useState(null);
   // Mirrors the `open` prop in a ref so handleSave's async coverage check can
   // tell, AFTER an await, whether the modal was closed in the meantime.
   // Reading the closed-over `open` prop directly would not work: the running
@@ -940,9 +949,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   useEffect(() => {
     openRef.current = open;
     if (!open) {
-      setShowDefaultConfirm(false);
-      setAccountsMissingDefault([]);
-      setCheckingDefaultCoverage(false);
+      setDefaultsPrompt(null);
+      setCheckingDefaults(false);
     }
   }, [open]);
 
@@ -1022,6 +1030,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // expand/collapse state.
   const [agentRows, setAgentRows] = useState([]);
 
+  // Decision model (#40902): the integration's decision slot and per-decision settings.
+  const [decisionCfg, setDecisionCfg] = useState(emptyDecisionState);
+
   // Free-text filter applied to agent override cards. Only shown when there
   // are more than 3 rows — at small counts the filter just adds noise.
   const [agentFilter, setAgentFilter] = useState('');
@@ -1052,9 +1063,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [testStatus, setTestStatus] = useState('idle');
   const [testMessage, setTestMessage] = useState('');
 
-  // Pricing rows for computing tier auto-fills on provider change (#35174).
-  // Loaded once when the modal opens; empty array is a safe fallback (the
-  // computeTierDefaults helper falls back to PROVIDER_EXAMPLES per provider).
+  // Pricing rows, loaded once when the modal opens; used to read the recorded
+  // image-input support for the chosen model. Empty array is a safe fallback.
   const [pricingRows, setPricingRows] = useState([]);
 
   // Collapse for the "Advanced options" section (per-tenant pricing overrides
@@ -1102,10 +1112,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     };
   }, [open]);
 
-  // Load pricing rows once on modal open. Used by the tier auto-fill on
-  // provider change (#35174) — the sort determines which model becomes each
-  // tier's default. A failed fetch is non-fatal: computeTierDefaults falls
-  // back to the curated PROVIDER_EXAMPLES map for the selected provider.
+  // Load pricing rows once on modal open. A failed fetch is non-fatal.
   useEffect(() => {
     if (!open) {
       return;
@@ -1119,7 +1126,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         }
         // Same resolve-with-errors contract as elsewhere in this file
         // (see the tier/cache carry-forward at handleSave). Missing pricing
-        // is not fatal — the fallback map still populates sensible tiers.
+        // is not fatal.
         if (res?.errors && res.errors.length > 0) {
           setPricingRows([]);
           return;
@@ -1205,7 +1212,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const selectedAccountsKey = selectedAccountIds.slice().sort().join(',');
   const anyExistingFallback = Object.values(fallbackCfg).some((f) => f.mode === 'existing');
   useEffect(() => {
-    if (!open || !anyExistingFallback || selectedAccountIds.length === 0) {
+    if (!open || !anyExistingFallback) {
       setFallbackOptions(null);
       setFallbackOptionsError('');
       return;
@@ -1213,14 +1220,19 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     let cancelled = false;
     (async () => {
       try {
-        const perAccount = await Promise.all(selectedAccountIds.map((id) => apiAskNudgebee.listModels(id)));
+        // No accounts selected: the config is organisation-wide, so it may only
+        // fall back to organisation-wide configs or the tenant default.
+        const perAccount =
+          selectedAccountIds.length > 0
+            ? await Promise.all(selectedAccountIds.map((id) => apiAskNudgebee.listModels(id)))
+            : [await apiAskNudgebee.listTenantModels()];
         if (cancelled) {
           return;
         }
-        const failed = perAccount.find((r) => r?.errors?.length || !r?.data);
+        const failed = perAccount.some((r) => r?.errors?.length || !r?.data);
         if (failed) {
           setFallbackOptions([]);
-          setFallbackOptionsError('Could not load configured models for the selected accounts.');
+          setFallbackOptionsError('Could not load the configured models.');
           return;
         }
         const rowsFor = (res) => (res.data.models || []).filter((m) => m.llm_config_source && !m.llm_config_source.endsWith(':all'));
@@ -1241,7 +1253,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       } catch {
         if (!cancelled) {
           setFallbackOptions([]);
-          setFallbackOptionsError('Could not load configured models for the selected accounts.');
+          setFallbackOptionsError('Could not load the configured models.');
         }
       }
     })();
@@ -1284,10 +1296,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           ? editData.integrations_cloud_accounts.map((a) => a?.cloud_account_id).filter(Boolean)
           : []
       );
-      // The checkbox is the tenant's default LLM provider, recorded as the
-      // integration's own default_llm_provider config value rather than on its
-      // account links.
-      setIsDefault(cfg.default_llm_provider === 'true' || cfg.default_llm_provider === true);
+      // Tenant default: the integration's own default_llm_provider config value.
+      // Account default: ticked when this config is the default of every
+      // account it is linked to.
+      setTenantDefault(cfg.default_llm_provider === 'true' || cfg.default_llm_provider === true);
+      const links = Array.isArray(editData.integrations_cloud_accounts) ? editData.integrations_cloud_accounts : [];
+      setAccountDefault(links.length > 0 && links.every((a) => a?.default_llm_provider === true));
       setConfigName(editData.name || '');
       setProvider(cfg.llm_provider || '');
       setModel(cfg.llm_model_name || '');
@@ -1354,7 +1368,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           secretsCfg[k] = !!hasValueByName[k];
         }
       });
+      secretsCfg.llm_tier_api_key_decision = !!hasValueByName.llm_tier_api_key_decision;
       setSecretsConfigured(secretsCfg);
+      setDecisionCfg(decisionStateFromConfig(cfg));
 
       // Per-tier load. A tier's provider field is "Inherit" (empty in form
       // state) when the saved llm_tier_provider_<tier> matches the global
@@ -1500,7 +1516,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setTestMessage('');
     } else {
       setSelectedAccountIds([]);
-      setIsDefault(false);
+      setTenantDefault(false);
+      setAccountDefault(false);
       setConfigName('');
       setProvider('');
       setModel('');
@@ -1527,6 +1544,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setExtraHeaders('');
       setSecretsConfigured({});
       setInitialOverrideKeys(new Set());
+      setDecisionCfg(emptyDecisionState());
       setTiers({
         reasoning: emptyConfig(),
         retrieval: emptyConfig(),
@@ -1580,15 +1598,15 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   // provider is virtually never valid for another.
   const handleProviderChange = (value) => {
     setProvider(value);
-    // Primary + tier auto-fill (#35174): compute per-family defaults from
-    // llm_model_pricing (fallback: curated PROVIDER_EXAMPLES). Primary is
+    // Primary + tier auto-fill (#35174): curated per-provider defaults from
+    // PROVIDER_DEFAULT_MODELS (#41118). Primary is
     // the mid-cost retrieval-tier model — most call sites are untagged
     // and running the flagship on every one of them was the cost-inflation
     // pattern this ticket is fixing. Reasoning tier is set explicitly to
     // the flagship (opt-in for heavy investigation), summary to the
     // cheapest (opt-in for cheap tasks). Retrieval tier is left blank so
     // it inherits from primary — no need to name the same model twice.
-    const tierDefaults = computeTierDefaults(value, pricingRows, PROVIDER_EXAMPLES);
+    const tierDefaults = computeTierDefaults(value, PROVIDER_DEFAULT_MODELS);
     setModel(tierDefaults.retrieval);
     setFallbacks('');
     setApiKey('');
@@ -1616,7 +1634,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     // configured, letting the form submit without re-entry.
     // The configured fallback is its own slot, independent of the primary's
     // provider, so its "✓ Configured" flags survive the switch.
-    setSecretsConfigured((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => k.startsWith('llm_fallback_'))));
+    setSecretsConfigured((prev) =>
+      Object.fromEntries(Object.entries(prev).filter(([k]) => k.startsWith('llm_fallback_') || k === 'llm_tier_api_key_decision'))
+    );
     // Category-tier and per-agent overrides reference provider-specific
     // model names (e.g. gemini-3-flash-preview, claude-3-5-sonnet,
     // gpt-4o). They are invalid for the new provider, so clear both so
@@ -1987,7 +2007,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const fallbackErrors = Object.fromEntries(FALLBACK_SCOPES.map((scope) => [scope, fallbackErrorsFor(scope)]));
 
   const errors = {
-    accounts: selectedAccountIds.length === 0 ? 'At least one account must be selected' : null,
     model: validateModelName(model),
     fallbacks: validateFallbacks(fallbacks, model),
     oauthTokenUrl: oauthSelected ? validateOAuthTokenUrl(oauthTokenUrl) : null,
@@ -2023,8 +2042,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       creds: validateOverrideCreds(row, (c) => `llm_provider_${c}_${row.agent || ''}`),
     })),
   };
+  const decisionErrors = validateDecisionState(decisionCfg, !!secretsConfigured.llm_tier_api_key_decision);
   const hasAnyError =
-    !!errors.accounts ||
+    Object.keys(decisionErrors).length > 0 ||
     !!errors.model ||
     !!errors.fallbacks ||
     !!errors.oauthTokenUrl ||
@@ -2045,17 +2065,12 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const canTest = formComplete;
   const canSubmit = formComplete && testStatus === 'passed';
 
-  const buildConfigValues = (isDefaultOverride = isDefault) => {
+  // The defaults travel as their own save fields (llm_tenant_default,
+  // llm_account_default), not as config values.
+  const buildConfigValues = () => {
     const out = [
       { name: 'llm_provider', value: provider },
       { name: 'llm_model_name', value: model.trim() },
-      // Always sent, both ways: 'false' is what clears the flag when the user
-      // unchecks it, which is how an account is handed back to the ENV
-      // credential. Stored on the account link row, not as a config value —
-      // see DefaultLLMProvider in api-server integration_config.go.
-      // Overridable so the "Set as Default & Save" confirm-dialog action can
-      // force true without waiting on the isDefault state update to land.
-      { name: 'default_llm_provider', value: isDefaultOverride ? 'true' : 'false' },
     ];
     if (fallbacks.trim()) {
       out.push({ name: 'llm_model_fallbacks', value: fallbacks.trim() });
@@ -2210,6 +2225,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         pushPlain(shape.showsApiType, `llm_provider_api_type_${row.agent}`, row.apiType);
       }
     });
+    // Decision model slot and per-decision settings.
+    out.push(...decisionConfigValues(decisionCfg));
     // Emit explicit empty values for tier / agent override keys that were
     // present when the modal opened but are no longer in `out`. This signals
     // DELETE on the backend save path so cleared tier models / removed
@@ -2231,7 +2248,6 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       optionsError={fallbackOptionsError}
       errors={fallbackErrors[scope]}
       secretsConfigured={secretsConfigured}
-      noAccounts={selectedAccountIds.length === 0}
       pricingRows={pricingRows}
       onModeChange={(mode) => updateFallback(scope, { mode })}
       onPickRef={(value) => pickFallbackRef(scope, value)}
@@ -2450,71 +2466,57 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     }
   };
 
-  // findAccountsMissingLLMDefault returns the selected accounts that would be
-  // left with several LLM providers and none flagged default if this save goes
-  // through unchecked. llm-server cannot choose between them and falls back to
-  // the environment credential, which is what this dialog warns about. An
-  // account whose only provider is this one needs no flag: it resolves to it.
-  //
-  // Saving unchecked keeps this config's existing per-account flags unless it
-  // was the tenant default (the backend only clears flags when un-marking), so
-  // an account it is already flagged on stays resolvable. A check failure
-  // fails OPEN (the account is not flagged) rather than blocking the save on a
-  // client-side read that isn't the source of truth.
-  const findAccountsMissingLLMDefault = async () => {
-    const isFlaggedOn = (row, accId) =>
-      (Array.isArray(row?.integrations_cloud_accounts)
-        ? row.integrations_cloud_accounts
-        : safeJSONParse(row?.integrations_cloud_accounts) || []
-      ).some((a) => a?.cloud_account_id === accId && a?.default_llm_provider === true);
-    const wasTenantDefault = (Array.isArray(editData?.integration_config_values) ? editData.integration_config_values : []).some(
-      (v) => v?.name === 'default_llm_provider' && v?.value === 'true'
-    );
-    const missing = await Promise.all(
-      selectedAccountIds.map(async (accId) => {
-        try {
-          if (isEdit && !wasTenantDefault && isFlaggedOn(editData, accId)) {
-            return null;
-          }
-          const res = await apiIntegrations.listIntegrations({ type: 'llm', status: 'enabled', cloudAccountId: accId, limit: 50 });
-          const rows = res?.data?.data?.integrations_list?.rows;
-          const others = Array.isArray(rows) ? rows.filter((row) => !(isEdit && editData?.id && row.id === editData.id)) : [];
-          return others.length > 0 && !others.some((row) => isFlaggedOn(row, accId)) ? accId : null;
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error('AddLLMConfigModal: default-coverage check failed', accId, err);
-          return null;
-        }
-      })
-    );
-    return missing.filter(Boolean);
-  };
+  const checkDefaults = (td, ad) =>
+    apiIntegrations.checkLLMDefaults({
+      op: 'save',
+      integration_id: isEdit ? editData.id : '',
+      account_ids: selectedAccountIds,
+      llm_tenant_default: td,
+      ...(selectedAccountIds.length > 0 && { llm_account_default: ad }),
+    });
 
-  const handleSave = async () => {
+  // handleSave asks the backend what this save does to each account and shows
+  // at most one popup before saving. skipFirstPrompt is set once the user has
+  // answered the "no tenant default yet" popup, so it is not asked twice.
+  const handleSave = async (td = tenantDefault, ad = accountDefault, skipFirstPrompt = false) => {
     if (!canSubmit) {
       return;
     }
-    if (isDefault) {
-      await performSave(true);
+    setCheckingDefaults(true);
+    let report;
+    try {
+      report = await checkDefaults(td, ad);
+    } catch (err) {
+      snackbar.error(err?.message || 'Could not check the LLM defaults');
       return;
+    } finally {
+      setCheckingDefaults(false);
     }
-    setCheckingDefaultCoverage(true);
-    const missing = await findAccountsMissingLLMDefault();
-    setCheckingDefaultCoverage(false);
     if (!openRef.current) {
-      // Modal was closed while the coverage check was in flight — don't show
-      // the dialog or save into a form the user already dismissed.
+      // Closed while the check was in flight — don't show a popup or save.
       return;
     }
-    if (missing.length > 0) {
-      setAccountsMissingDefault(missing);
-      setShowDefaultConfirm(true);
+    if (!report) {
+      snackbar.error('Could not check the LLM defaults');
       return;
     }
-    await performSave(false);
+    if ((report.blocked || []).length > 0) {
+      setDefaultsPrompt({ kind: 'blocked', report, td, ad });
+      return;
+    }
+    if (!skipFirstPrompt && !report.tenant_default && !td) {
+      // No tenant default yet: offer it, ticked when there is no platform LLM to fall back to.
+      setDefaultsPrompt({ kind: 'first', report, td: !report.env_configured, ad, askAccountDefault: selectedAccountIds.length > 0 && !ad });
+      return;
+    }
+    if (needsLLMDefaultsConfirm(report)) {
+      setDefaultsPrompt({ kind: 'confirm', report, td, ad });
+      return;
+    }
+    await performSave(td, ad);
   };
 
-  const performSave = async (forcedIsDefault) => {
+  const performSave = async (td, ad) => {
     setSaving(true);
     try {
       const payload = {
@@ -2523,7 +2525,9 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
         integration_config_name: configName.trim(),
         account_ids: selectedAccountIds,
         source: editData?.source || 'user',
-        integration_config_values: buildConfigValues(forcedIsDefault),
+        integration_config_values: buildConfigValues(),
+        llm_tenant_default: td,
+        ...(selectedAccountIds.length > 0 && { llm_account_default: ad }),
       };
       const response = await apiIntegrations.addIntegrations(payload);
       // GraphQL errors are returned at response.data.errors (axios wraps the
@@ -2581,21 +2585,39 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             grouped
             groupIcon={renderAccountGroupIcon}
             value={selectedAccountIds}
-            onChange={setSelectedAccountIds}
+            onChange={(ids) => {
+              setSelectedAccountIds(ids);
+              if (ids.length === 0) {
+                setAccountDefault(false);
+              }
+            }}
             label='Accounts'
-            required
-            error={errors.accounts}
-            help='At least one account must be selected. Auto-populated from listAccounts. The configuration applies to all selected accounts.'
+            help={
+              selectedAccountIds.length === 0
+                ? 'No accounts selected: every account in the organisation can use this config.'
+                : 'Only the selected accounts can use this config.'
+            }
           />
 
           <Checkbox
-            id='llm-config-default-provider'
+            id='llm-config-tenant-default'
             size='sm'
-            checked={isDefault}
-            onChange={setIsDefault}
-            label='Default LLM provider'
-            description='Used for requests that do not pick a specific provider, and linked automatically to accounts added later. Only one provider can be the default; marking this one unmarks the previous default, but accounts already using it keep it. An account with a single provider always uses that provider.'
+            checked={tenantDefault}
+            onChange={setTenantDefault}
+            label='Use as the organisation default'
+            description="Accounts that don't have their own default use this config. Only one config can be the organisation default."
           />
+
+          {selectedAccountIds.length > 0 && (
+            <Checkbox
+              id='llm-config-account-default'
+              size='sm'
+              checked={accountDefault}
+              onChange={setAccountDefault}
+              label='Use as the default for the selected accounts'
+              description='The selected accounts use this config even if the organisation default is different. Each account has only one default.'
+            />
+          )}
 
           <Input
             label='Integration Config Name'
@@ -2623,7 +2645,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
             onChange={setConnField(setModel)}
             onBlur={trimOnBlur(model, setModel)}
             error={errors.model}
-            help={provider === 'azure' ? AZURE_MODEL_HELP : 'Name of the primary model (e.g., gpt-4, claude-opus-4-7, gemini-3.1-pro-preview).'}
+            help={provider === 'azure' ? AZURE_MODEL_HELP : 'Name of the primary model (e.g., gpt-5.5, claude-sonnet-5-5, gemini-3-flash-preview).'}
             required
           />
 
@@ -3047,6 +3069,20 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
 
         <Divider />
 
+        {/* ---------- Decision models ---------- */}
+        <Box sx={{ mb: 'var(--ds-space-4)' }}>
+          <DecisionModelSection
+            state={decisionCfg}
+            errors={decisionErrors}
+            apiKeyConfigured={!!secretsConfigured.llm_tier_api_key_decision}
+            onChange={(field, value) => setDecisionCfg((prev) => ({ ...prev, [field]: value }))}
+            onProviderChange={(provider) => setDecisionCfg((prev) => decisionProviderChange(prev, provider))}
+            renderSecretInput={(props) => <SecretInput {...props} />}
+          />
+        </Box>
+
+        <Divider />
+
         {/* ---------- Agent Overrides ---------- */}
         <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 'var(--ds-space-2)' }}>
           Agent Overrides
@@ -3374,11 +3410,11 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               id='add-llm-config-save-btn'
               tone='primary'
               size='md'
-              onClick={handleSave}
-              disabled={!canSubmit || saving || testing || checkingDefaultCoverage}
-              loading={saving || checkingDefaultCoverage}
+              onClick={() => handleSave()}
+              disabled={!canSubmit || saving || testing || checkingDefaults}
+              loading={saving || checkingDefaults}
             >
-              {saving ? 'Saving…' : checkingDefaultCoverage ? 'Checking…' : isEdit ? 'Save' : 'Add LLM Provider'}
+              {saving ? 'Saving…' : checkingDefaults ? 'Checking…' : isEdit ? 'Save' : 'Add LLM Provider'}
             </Button>
           </Box>
         </Box>
@@ -3388,48 +3424,80 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           <CircularProgress size={16} />
         </Box>
       )}
-      {showDefaultConfirm && (
-        <Modal width='sm' title='No default LLM provider for this account' open={showDefaultConfirm} onClose={() => setShowDefaultConfirm(false)}>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
-            <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], lineHeight: 1.5 }}>
-              {accountsMissingDefault.length === 1
-                ? 'The selected account already has another LLM provider, and none is marked default.'
-                : `${accountsMissingDefault.length} of the selected accounts already have another LLM provider, and none is marked default.`}{' '}
-              If you save without marking this one as default, {accountsMissingDefault.length === 1 ? 'that account' : 'those accounts'} will fall
-              back to the environment credential. Set this as default now, or save anyway?
-            </Typography>
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
-              <Button id='llm-default-confirm-cancel-btn' tone='secondary' size='md' onClick={() => setShowDefaultConfirm(false)} disabled={saving}>
-                Cancel
+      {defaultsPrompt && (
+        <Modal
+          width='sm'
+          open
+          onClose={() => setDefaultsPrompt(null)}
+          title={
+            defaultsPrompt.kind === 'blocked'
+              ? 'Accounts would have no LLM'
+              : defaultsPrompt.kind === 'first'
+              ? defaultsPrompt.report.env_configured
+                ? 'Make this the organisation default?'
+                : 'Your organisation has no default LLM'
+              : 'Save and change defaults?'
+          }
+          actionButtons={
+            defaultsPrompt.kind === 'blocked' ? (
+              <Button id='llm-defaults-prompt-ok-btn' tone='secondary' size='md' onClick={() => setDefaultsPrompt(null)}>
+                Back
               </Button>
-              <Button
-                id='llm-default-confirm-save-anyway-btn'
-                tone='secondary'
-                size='md'
-                onClick={() => {
-                  setShowDefaultConfirm(false);
-                  performSave(false);
-                }}
-                disabled={saving}
-                loading={saving}
-              >
-                Save Without Default
-              </Button>
-              <Button
-                id='llm-default-confirm-set-default-btn'
-                tone='primary'
-                size='md'
-                onClick={() => {
-                  setShowDefaultConfirm(false);
-                  setIsDefault(true);
-                  performSave(true);
-                }}
-                disabled={saving}
-                loading={saving}
-              >
-                Set as Default & Save
-              </Button>
-            </Box>
+            ) : (
+              <>
+                <Button id='llm-defaults-prompt-back-btn' tone='secondary' size='md' onClick={() => setDefaultsPrompt(null)} disabled={saving}>
+                  Back
+                </Button>
+                <Button
+                  id='llm-defaults-prompt-save-btn'
+                  tone='primary'
+                  size='md'
+                  loading={saving || checkingDefaults}
+                  onClick={() => {
+                    const { kind, td, ad } = defaultsPrompt;
+                    setDefaultsPrompt(null);
+                    setTenantDefault(td);
+                    setAccountDefault(ad);
+                    if (kind === 'first') {
+                      handleSave(td, ad, true);
+                    } else {
+                      performSave(td, ad);
+                    }
+                  }}
+                >
+                  Save
+                </Button>
+              </>
+            )
+          }
+        >
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
+            {defaultsPrompt.kind === 'first' && (
+              <>
+                <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], lineHeight: 1.5 }}>
+                  {defaultsPrompt.report.env_configured
+                    ? "Accounts that don't have their own default currently use the LLM provided by Nudgebee. Make this config the organisation default to switch them to it."
+                    : "Your organisation doesn't have a default LLM yet. Accounts that don't have their own default can't use AI features until you set one. You can make this config the default below."}
+                </Typography>
+                <Checkbox
+                  id='llm-defaults-prompt-tenant-default'
+                  size='sm'
+                  checked={defaultsPrompt.td}
+                  onChange={(v) => setDefaultsPrompt((p) => ({ ...p, td: v }))}
+                  label='Use this config as the organisation default'
+                />
+                {defaultsPrompt.askAccountDefault && (
+                  <Checkbox
+                    id='llm-defaults-prompt-account-default'
+                    size='sm'
+                    checked={defaultsPrompt.ad}
+                    onChange={(v) => setDefaultsPrompt((p) => ({ ...p, ad: v }))}
+                    label='Use as the default for the selected accounts'
+                  />
+                )}
+              </>
+            )}
+            <LLMDefaultsSummary report={defaultsPrompt.report} action='save' />
           </Box>
         </Modal>
       )}

@@ -2,9 +2,11 @@ package core
 
 import (
 	"encoding/json"
+	"nudgebee/llm/security"
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -371,8 +373,76 @@ func TestSkillReferenceMetadata_NoSnippetLeavesContentUnset(t *testing.T) {
 // The snippet is capped so one long chunk cannot bloat every reference row.
 func TestSkillReferenceMetadata_SnippetTruncated(t *testing.T) {
 	long := strings.Repeat("x", kbRefSnippetMaxChars+500)
-	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+	got := skillReferenceMetadata(AgentReferenceKindSkill, "load_skills",
 		toolcore.NBToolResponseReference{Text: "big", Url: "kb-3", Snippet: long})
 
 	assert.LessOrEqual(t, len(got["content"].(string)), kbRefSnippetMaxChars)
+}
+
+// A loaded document keeps its page so the panel can show more than the first 700 characters.
+func TestSkillReferenceMetadata_DocumentKeepsPage(t *testing.T) {
+	page := strings.Repeat("x", 9000)
+	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: page})
+	assert.Equal(t, page, got["content"])
+
+	huge := strings.Repeat("x", knowledge.MaxKnowledgeReferenceBytes+500)
+	got = skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills",
+		toolcore.NBToolResponseReference{Text: "runbook", Url: "https://kb/1", Snippet: huge})
+	assert.LessOrEqual(t, len(got["content"].(string)), knowledge.MaxKnowledgeReferenceBytes)
+}
+
+func TestSkillReferenceMetadataKeepsTheDocumentsHandleAndLink(t *testing.T) {
+	got := skillReferenceMetadata(AgentReferenceKindKBDocument, "load_skills", toolcore.NBToolResponseReference{
+		Text: "Queue runbook", Snippet: "Step 1", Handle: "knowledge:a", SourceUrl: "https://wiki.example.com/queue"})
+	assert.Equal(t, "knowledge:a", got["handle"])
+	assert.Equal(t, "https://wiki.example.com/queue", got["url"])
+	assert.Equal(t, "Step 1", got["content"])
+
+	got = skillReferenceMetadata(AgentReferenceKindSkill, "load_skills", toolcore.NBToolResponseReference{Text: "skill"})
+	assert.NotContains(t, got, "handle")
+	assert.NotContains(t, got, "url")
+}
+
+// toolArgsDao records the parameters and params_sql each tool-call row is saved with.
+type toolArgsDao struct {
+	fakeConversationDao
+	toolArgs, toolArgsSql string
+}
+
+func (d *toolArgsDao) SaveConversationToolCall(_, _, _, _, _, _, _, toolArgs, _, toolArgsSql, _ string, _ toolcore.NBToolResponseStatus, _ toolcore.NBToolType, _ *string, _ []toolcore.NBToolResponseReference, _, _ []byte) error {
+	d.toolArgs, d.toolArgsSql = toolArgs, toolArgsSql
+	return nil
+}
+
+// SQL in a customer-side command (shell, kubectl, customer DBs) or the notebook is
+// saved as-is in `parameters`, which the UI shows as the Query box. Tools that
+// query our own data save no `parameters`, so no Query box. The SQL always goes
+// to params_sql.
+func TestBeforeToolCall_SQLInputParameters(t *testing.T) {
+	input := `{"command":"kubectl exec postgres-0 -- psql -c \"select state, count(*) from pg_stat_activity group by 1\""}`
+	cases := []struct {
+		tool, wantParams string
+	}{
+		{"shell_execute", input},
+		{"update_notebook", input},
+		{"events_execute", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			dao := &toolArgsDao{}
+			previous := GetConversationDao()
+			SetConversationDao(dao)
+			t.Cleanup(func() { SetConversationDao(previous) })
+
+			tool := &MockContextCapturingTool{NameVal: tc.tool}
+			request := NBAgentRequest{ConversationId: "c", MessageId: "m", AgentId: "a", AccountId: "acc", UserId: "u"}
+			handler := newPlannerExecutorCallbackHandler(security.NewRequestContextForSuperAdmin(), request, &MockAgent{SupportedTools: []toolcore.NBTool{tool}})
+
+			handler.BeforeToolCall(NBAgentPlannerToolAction{Tool: tc.tool, ToolID: tc.tool + "-1", ToolInput: input})
+
+			assert.Equal(t, tc.wantParams, dao.toolArgs)
+			assert.Equal(t, input, dao.toolArgsSql)
+		})
+	}
 }

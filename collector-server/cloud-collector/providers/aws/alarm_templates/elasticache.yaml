@@ -5,10 +5,10 @@ service_name: "elasticache"
 templates:
   - name: "aws_elasticache_memory_usage_alarm_missing"
     alarm_type: "PERFORMANCE"
-    metric_type: "NATIVE"
+    metric_type: "CONDITIONAL"
     category: "Configuration"
-    severity: "High"
-    description: "High memory usage in Redis/Memcached can cause evictions and performance issues"
+    severity: "Medium"
+    description: "High memory usage in Redis/Valkey can cause evictions and performance issues"
     configuration:
       namespace: "AWS/ElastiCache"
       metric_name: "DatabaseMemoryUsagePercentage"
@@ -20,12 +20,17 @@ templates:
       treat_missing_data: "notBreaching"
     threshold_rules:
       default: 90.0
+    conditions:
+      # DatabaseMemoryUsagePercentage is not published for Memcached
+      - field: "Meta.Engine"
+        operator: "not_equals"
+        value: "memcached"
 
   - name: "aws_elasticache_freeable_memory_alarm_missing"
     alarm_type: "PERFORMANCE"
     metric_type: "NATIVE"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Low freeable memory can indicate spike in connections or high memory pressure"
     configuration:
       namespace: "AWS/ElastiCache"

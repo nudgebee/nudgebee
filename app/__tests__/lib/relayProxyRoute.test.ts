@@ -43,16 +43,16 @@ async function call(relay: unknown) {
 }
 
 describe('/api/proxy/relay/[relay] allowlist', () => {
-  // The segments every relay caller in the app posts to: `hitRelayServer`
-  // (HttpService.ts) sends `/request` and `/grafana`, XtermTerminal.jsx sends `/ws`
+  // The segment every relay caller in the app posts to: XtermTerminal.jsx sends `/ws`
   // for all four of start/exec/read/close.
-  it.each(['request', 'grafana', 'ws'])('lets through the %s segment the app posts to', async (relay) => {
+  it.each(['ws'])('lets through the %s segment the app posts to', async (relay) => {
     const res = await call(relay);
     expect(res.body).not.toEqual(expect.objectContaining({ error: 'invalid_relay_endpoint' }));
     expect(res.statusCode).toBe(401);
   });
 
-  it.each([['register'], ['../secret'], [''], [undefined]])('rejects the %s segment', async (relay) => {
+  // `request` and `grafana` forwarded any agent action for any role (finding 11).
+  it.each([['request'], ['grafana'], ['register'], ['../secret'], [''], [undefined]])('rejects the %s segment', async (relay) => {
     const res = await call(relay);
     expect(res.statusCode).toBe(400);
     expect(res.body.error).toBe('invalid_relay_endpoint');
@@ -73,7 +73,7 @@ describe('/api/proxy/relay/[relay] scoped API keys', () => {
     await handler(
       {
         method: 'POST',
-        query: { relay: 'request' },
+        query: { relay: 'ws' },
         headers: { authorization: 'Bearer enc' },
         body: { account_id: 'a1' },
       } as unknown as NextApiRequest,

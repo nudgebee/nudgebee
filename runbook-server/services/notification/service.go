@@ -30,6 +30,14 @@ func validatePlatform(platform string) error {
 	return nil
 }
 
+var webhookPlatforms = []string{"slack_webhook", "ms_teams_webhook", "google_chat_webhook"}
+
+// IsWebhookPlatform reports whether platform is an incoming-webhook integration,
+// whose channel is the integration id and which can't thread or carry buttons.
+func IsWebhookPlatform(platform string) bool {
+	return slices.Contains(webhookPlatforms, platform)
+}
+
 // Event types stamped on every IM notification so notification rules can
 // select automation events individually. The rule source for all of them is
 // SourceAutomation.
@@ -46,6 +54,11 @@ const (
 	// StatusSuppressed is notifications-server's reply when a rule dropped the
 	// message; the request succeeded but nothing was posted.
 	StatusSuppressed = "suppressed"
+	// StatusFailed and StatusNotSent are its replies when nothing was posted
+	// because the platform refused it or there was nowhere to send it; Reason
+	// says which.
+	StatusFailed  = "failed"
+	StatusNotSent = "not_sent"
 )
 
 type SendImNotificationRequest struct {
@@ -68,10 +81,16 @@ type SendImNotificationResponse struct {
 	Status            string `json:"status"`
 	Reason            string `json:"reason"`
 	RuleManagementURL string `json:"rule_management_url"`
+	// Retryable is set on a failed result: whether sending again may work.
+	Retryable *bool `json:"retryable"`
 }
 
 func SendNotification(ctx *security.RequestContext, request SendImNotificationRequest) (SendImNotificationResponse, error) {
-	if err := validatePlatform(request.Platform); err != nil {
+	if IsWebhookPlatform(request.Platform) {
+		if request.ThreadId != "" {
+			return SendImNotificationResponse{}, fmt.Errorf("a %s can't reply in a thread; leave the message thread ID empty", PlatformName(request.Platform))
+		}
+	} else if err := validatePlatform(request.Platform); err != nil {
 		return SendImNotificationResponse{}, err
 	}
 
@@ -154,7 +173,7 @@ func SendNotification(ctx *security.RequestContext, request SendImNotificationRe
 	}
 
 	if len(responses) == 0 {
-		return SendImNotificationResponse{}, errors.New("notifications: unable to parse response")
+		return SendImNotificationResponse{}, errors.New("notifications: nothing was sent; the notifications service returned no result")
 	}
 
 	return responses[0], nil
@@ -476,6 +495,17 @@ func SendEmail(ctx *security.RequestContext, request SendEmailRequest) (SendEmai
 	err = json.Unmarshal(body, &response)
 	if err != nil {
 		return SendEmailResponse{Success: false, Error: "unable to parse response"}, err
+	}
+
+	// A 200 with success=false shouldn't be silently treated as a success;
+	// surface it as an error so the automation step fails instead of
+	// reporting every recipient as sent.
+	if !response.Success {
+		errMsg := response.Error
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return response, fmt.Errorf("notifications: unable to send email - %s", errMsg)
 	}
 
 	return response, nil

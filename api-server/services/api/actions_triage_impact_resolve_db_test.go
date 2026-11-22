@@ -59,7 +59,7 @@ func TestResolveEventSubjectNodeID_DB(t *testing.T) {
 	          VALUES ($1,$2,$3,'ComputeInstance','Tenant',true,
 	                  jsonb_build_object('name',$4::text), $5::jsonb, $6)`,
 		nodeID, tenantID, accountID, nodeName,
-		fmt.Sprintf(`{"name":%q,"resource_id":%q,"arn":"arn:aws:ec2:us-east-1:864186153326:instance/%s"}`,
+		fmt.Sprintf(`{"name":%q,"resource_id":%q,"arn":"arn:aws:ec2:us-east-1:888888888888:instance/%s"}`,
 			nodeName, instID, instID),
 		"aws:"+accountID+":us-east-1:ComputeInstance:vpc-1:"+nodeName)
 

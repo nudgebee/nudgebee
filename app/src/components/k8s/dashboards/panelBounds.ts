@@ -68,15 +68,18 @@ function peak(series: RawSeries): number {
  * lines a viewer would look for on the chart. Stable, so two series with the
  * same peak keep the provider's order.
  */
-export function capSeries(raw: RawSeries[], max: number): { kept: RawSeries[]; dropped: number } {
+export function capSeries(raw: RawSeries[], max: number, prefer?: (series: RawSeries) => boolean): { kept: RawSeries[]; dropped: number } {
   if (raw.length <= max) return { kept: raw, dropped: 0 };
   const ranked = raw
-    .map((series, index) => ({ series, index, peak: peak(series) }))
+    // A preferred series ranks ahead of every other, however quiet: a line that
+    // has crossed a threshold must be drawn, or the panel would judge the lines
+    // it kept and stay plain over the one that mattered.
+    .map((series, index) => ({ series, index, peak: peak(series), preferred: prefer ? prefer(series) : false }))
     // Compared rather than subtracted: `peak` is -Infinity for an all-null
     // series, and -Infinity - -Infinity is NaN. NaN happens to fall through to
     // the index tiebreak today, but a comparator is only defined for negative,
     // zero and positive — engines owe us nothing for NaN.
-    .sort((a, b) => (a.peak === b.peak ? a.index - b.index : b.peak > a.peak ? 1 : -1))
+    .sort((a, b) => (a.preferred !== b.preferred ? (a.preferred ? -1 : 1) : a.peak === b.peak ? a.index - b.index : b.peak > a.peak ? 1 : -1))
     .slice(0, max)
     .sort((a, b) => a.index - b.index)
     .map((r) => r.series);
@@ -97,7 +100,11 @@ export function capSeries(raw: RawSeries[], max: number): { kept: RawSeries[]; d
  * is exactly what this avoids. Order within an account is the provider's, and
  * accounts keep the order they were queried in.
  */
-export function capSeriesByAccount(raw: RawSeries[], maxTotal: number): { kept: RawSeries[]; perAccount: AccountCap[] } {
+export function capSeriesByAccount(
+  raw: RawSeries[],
+  maxTotal: number,
+  prefer?: (series: RawSeries) => boolean
+): { kept: RawSeries[]; perAccount: AccountCap[] } {
   const order: string[] = [];
   const byAccount = new Map<string, RawSeries[]>();
   for (const series of raw) {
@@ -116,7 +123,7 @@ export function capSeriesByAccount(raw: RawSeries[], maxTotal: number): { kept: 
   const perAccount: AccountCap[] = [];
   for (const key of order) {
     const mine = byAccount.get(key)!;
-    const capped = capSeries(mine, share);
+    const capped = capSeries(mine, share, prefer);
     kept.push(...capped.kept);
     perAccount.push({ account: key, kept: capped.kept.length, total: mine.length });
   }

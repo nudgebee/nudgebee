@@ -73,7 +73,9 @@ function findScreenshot(raw) {
   // The file sits in test-results/ on the same machine, but a missing or
   // unreadable screenshot must not take the whole report down with it.
   if (!found) return "";
-  const mime = /\.jpe?g$/i.test(found) ? "image/jpeg" : "image/png";
+  // scripts/compress-screenshots.js leaves a smaller WebP copy beside the PNG.
+  if (fs.existsSync(found + ".webp")) found += ".webp";
+  const mime = /\.webp$/i.test(found) ? "image/webp" : /\.jpe?g$/i.test(found) ? "image/jpeg" : "image/png";
   try {
     return "data:" + mime + ";base64," + fs.readFileSync(found).toString("base64");
   } catch (e) {
@@ -368,6 +370,22 @@ const fmtStamp = (t) =>
 
 const runFile = readRunFile(resultsFile);
 const tests = readResults(runFile.attempts);
+// Zero attempts means Playwright stopped before any test started, e.g. an invalid --grep.
+const noTestsRan = tests.length === 0;
+const runErrors = (runFile.run && runFile.run.errors) || [];
+// Screenshots are most of the report's weight, and Slack will not preview a file past ~8MB, so they share a budget: failures first, then flaky retries, in file order.
+const SCREENSHOT_BUDGET = Number(process.env.E2E_REPORT_SCREENSHOT_BUDGET_MB || 4) * 1024 * 1024;
+let screenshotBytes = 0;
+let screenshotsDropped = 0;
+for (const t of tests.filter((x) => x.screenshot && !x.flaky).concat(tests.filter((x) => x.screenshot && x.flaky))) {
+  if (screenshotBytes + t.screenshot.length > SCREENSHOT_BUDGET) {
+    t.screenshot = "";
+    t.screenshotDropped = true;
+    screenshotsDropped++;
+  } else {
+    screenshotBytes += t.screenshot.length;
+  }
+}
 const startTimes = tests.map((t) => t.start).filter(Boolean);
 const runStartedAt = startTimes.length ? startTimes.reduce((a, b) => (b < a ? b : a)) : Date.now();
 // Wall time, not the sum of test durations: tests run on several workers at
@@ -399,7 +417,8 @@ if (fs.existsSync(historyFile)) {
   try {
     // Restored from a CI cache, so it is not necessarily the array it was.
     const parsed = scrub(JSON.parse(fs.readFileSync(historyFile, "utf8")));
-    history = Array.isArray(parsed) ? parsed : [];
+    // Entries with no test outcomes are runs that never started a test; kept, they become a bogus "previous" run and a 0% trend point.
+    history = Array.isArray(parsed) ? parsed.filter((h) => h && h.tests && Object.keys(h.tests).length) : [];
   } catch (e) {
     history = [];
   }
@@ -465,7 +484,7 @@ history = history.slice(-20);
 // against-previous comparison wrong. That holds for the chart as much as for
 // the file, so a partial run is left off both.
 const partialRun = !!process.env.E2E_REPORT_TREND_READONLY;
-if (!partialRun) {
+if (!partialRun && !noTestsRan) {
   fs.mkdirSync(path.dirname(historyFile), { recursive: true });
   // Compact: per-test maps across 20 runs are thousands of keys, and nobody
   // reads this file by hand.
@@ -474,7 +493,7 @@ if (!partialRun) {
 // The runs up to and including this one. The file can also hold later runs
 // when an older run's report is regenerated; those are not this run's past.
 const upToNow = priorRuns.concat([currentEntry]).slice(-20);
-const trendHistory = partialRun ? priorRuns.slice(-20) : upToNow;
+const trendHistory = partialRun || noTestsRan ? priorRuns.slice(-20) : upToNow;
 
 const isBad = (o) => o === "failed" || o === "apifailed" || o === "broken";
 
@@ -1191,7 +1210,9 @@ const testHtml = `${section("Test Details", "(failures and flaky tests first —
           ? `<div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mt-2 mb-1">Screenshot at failure</div>
             <img src="${t.screenshot}" alt="Screenshot at the point of failure"
                  class="rounded-md border border-gray-200 max-w-full mb-2">`
-          : "";
+          : t.screenshotDropped
+            ? `<div class="text-[11px] text-gray-400 mt-2 mb-2">Screenshot left out to keep this report small enough for Slack to preview; it is in the run's Playwright report artifact.</div>`
+            : "";
 
         const flakyNote = t.flaky
           ? `<div class="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 mb-2">
@@ -1327,6 +1348,13 @@ const plural = (x, word) => x + " " + word + (x === 1 ? "" : "s");
 // The one line a monitor reads first. Red means someone has to act today;
 // amber means known or intermittent trouble; green means nothing to do.
 const verdict = (function () {
+  if (noTestsRan) {
+    return {
+      tone: "red",
+      icon: "error",
+      text: "No test ran — Playwright stopped before any test started" + (runErrors.length ? ": " + runErrors[0] : ""),
+    };
+  }
   if (newFailures.length || stats.apiFailures) {
     // The same three buckets as the cards below, so the numbers match; API
     // failures are a note on top of them rather than a fourth bucket that
@@ -1841,7 +1869,11 @@ const trendHtml =
           " full run" +
           (trendPoints.length > 1 ? "s" : "") +
           " on record" +
-          (partialRun ? " — this run covered only the affected tests, so it is not plotted" : "") +
+          (partialRun
+            ? " — this run covered only the affected tests, so it is not plotted"
+            : noTestsRan
+              ? " — no test ran in this run, so it is not plotted"
+              : "") +
           ")"
       )}
 <div class="bg-white border border-gray-100 rounded-xl p-3 shadow-sm mb-4">
@@ -2656,5 +2688,6 @@ fs.writeFileSync(
 );
 console.log(
   `Wrote ${outFile} — ${stats.total} tests, ${stats.passed} passed, ${stats.failed + stats.broken} failed, ` +
-    `${stats.flaky} flaky, ${quarantined} quarantined (${quarantinedRan.length ? quarantinedRan.length + " ran" : "excluded"}), ${trendHistory.length} run(s) in trend`
+    `${stats.flaky} flaky, ${quarantined} quarantined (${quarantinedRan.length ? quarantinedRan.length + " ran" : "excluded"}), ${trendHistory.length} run(s) in trend, ` +
+    `${screenshotsDropped} screenshot(s) left out over the ${SCREENSHOT_BUDGET / 1048576}MB budget`
 );

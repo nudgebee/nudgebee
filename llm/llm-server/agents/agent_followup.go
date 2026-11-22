@@ -103,6 +103,13 @@ func (m FollowupAgent) InputSchema() toolcore.ToolSchema {
 }
 
 func (m FollowupAgent) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	if core.IsReadOnlyRun(nbRequestContext.Ctx) {
+		return toolcore.NBToolResponse{
+			Data:   core.ReadOnlyQuestionRefusal,
+			Type:   toolcore.NBToolResponseTypeText,
+			Status: toolcore.NBToolResponseStatusError,
+		}, nil
+	}
 	question := strings.TrimSpace(input.Command)
 	if question == "" {
 		return toolcore.NBToolResponse{

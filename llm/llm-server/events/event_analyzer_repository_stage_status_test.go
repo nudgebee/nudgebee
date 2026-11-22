@@ -113,3 +113,21 @@ func TestUpsertEventAnalysisStatus(t *testing.T) {
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
 }
+
+// A pause or failure belongs to the event that ran, so it is written through
+// that event's mapping and never to the fingerprint's latest row, which can be
+// an older firing's finished analysis (dev 10-06: db3acbce's approval pause
+// marked b266129a's 25-day-old investigation in progress).
+func TestUpdateEventAnalysisStatusForEvent(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	repo, mock := newClaimTestRepo(t)
+
+	mock.ExpectExec(`UPDATE event_log_analysis a SET status=\$3, status_reason=\$4, updated_at=NOW\(\)\s+FROM event_analysis_mapping m\s+WHERE m.analysis_id = a.id AND m.event_id = \$1 AND m.analysis_type = \$2`).
+		WithArgs("evt-new", AnalysisTypeInvestigation, string(AnalysisStatusInProgress), "investigation paused awaiting tool approval").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := repo.UpdateEventAnalysisStatusForEvent(ctx, "evt-new", AnalysisTypeInvestigation,
+		string(AnalysisStatusInProgress), "investigation paused awaiting tool approval")
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -140,7 +141,7 @@ func withResolvedToolTarget(additionalDetails map[string]any, queryConfig toolco
 }
 
 func actionExecutionMetadata(action NBAgentPlannerToolAction) map[string]any {
-	if action.ExecutionBatchID == "" && action.PlannerIteration <= 0 {
+	if action.ExecutionBatchID == "" && action.PlannerIteration <= 0 && action.PlanStep == "" {
 		return nil
 	}
 	metadata := map[string]any{}
@@ -157,6 +158,12 @@ func actionExecutionMetadata(action NBAgentPlannerToolAction) map[string]any {
 	}
 	if action.SequentialFallbackReason != "" {
 		metadata["sequential_fallback_reason"] = action.SequentialFallbackReason
+	}
+	if action.PlanStep != "" {
+		metadata["plan_step"] = action.PlanStep
+		if action.PlanStepInferred {
+			metadata["plan_step_inferred"] = true
+		}
 	}
 	return metadata
 }
@@ -228,6 +235,16 @@ func (h *plannerExecutorCallbackHandler) findTool(toolName string) (toolcore.NBT
 	return nil, false
 }
 
+// sqlVisibleTools keep their real input in `parameters` even when it contains SQL.
+var sqlVisibleTools = map[string]struct{}{
+	toolcore.ToolExecuteShellCommand: {},
+	tools.ToolExecuteKubectlCommand:  {},
+	tools.ToolExecuteMySQLQuery:      {},
+	tools.ToolExecuteMSSQLQuery:      {},
+	tools.ToolExecuteOracleQuery:     {},
+	toolcore.NotebookToolName:        {},
+}
+
 func (h *plannerExecutorCallbackHandler) BeforeToolCall(toolcall NBAgentPlannerToolAction) {
 	tool, ok := h.findTool(toolcall.Tool)
 
@@ -243,12 +260,13 @@ func (h *plannerExecutorCallbackHandler) BeforeToolCall(toolcall NBAgentPlannerT
 	log := toolcall.Log
 	var sqlArgs = ""
 	if toolcall.Tool != tools.ToolExecutePostgresQuery && containsSQLQuery(fmt.Sprintf("%v", toolcall.ToolInput)) {
-		agentInput, err := GetConversationDao().GetConversationAgentInput(h.request.AgentId, h.request.AccountId)
-		if err != nil {
-			h.ctx.GetLogger().Error("toolcallbackhandler: unable to get agent input", "error", err.Error())
-		}
-		parameters = agentInput
 		sqlArgs = fmt.Sprintf("%v", toolcall.ToolInput)
+		// Tools that query our own data (events, anomalies, traces) save no
+		// `parameters`, so the UI shows no Query box for them. A command run on
+		// the customer's systems, or the notebook text, is the user's to see.
+		if _, visible := sqlVisibleTools[toolcall.Tool]; !visible {
+			parameters = ""
+		}
 	}
 	// memoryRefsJSON is the LLM's per-action attribution (point 7 of the
 	// memory data-audit baseline). Marshalled here so the DAO layer stays
@@ -293,7 +311,18 @@ func skillReferenceMetadata(kind, tool string, ref toolcore.NBToolResponseRefere
 		"description": ref.Description,
 	}
 	if snippet := strings.TrimSpace(ref.Snippet); snippet != "" {
-		metadata["content"] = TruncateHead(snippet, kbRefSnippetMaxChars)
+		limit := kbRefSnippetMaxChars
+		if kind == AgentReferenceKindKBDocument {
+			// Synced pages have no stored KB body, so this is all the panel can show.
+			limit = knowledge.MaxKnowledgeReferenceBytes
+		}
+		metadata["content"] = TruncateHead(snippet, limit)
+	}
+	if ref.Handle != "" {
+		metadata["handle"] = ref.Handle
+	}
+	if ref.SourceUrl != "" {
+		metadata["url"] = ref.SourceUrl
 	}
 	return metadata
 }

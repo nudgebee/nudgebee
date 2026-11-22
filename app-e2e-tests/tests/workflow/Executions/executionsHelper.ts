@@ -1,4 +1,5 @@
 // Not for OSS
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { ExecutionsLocators } from "./executionsLocators";
@@ -34,7 +35,7 @@ export async function openExecutions(page: Page): Promise<ExecutionsLocators> {
   await new LoginPage(page).doFullLogin();
 
   await locators.automationSidenavBtn.waitFor({ state: "visible", timeout: 30000 });
-  await locators.automationSidenavBtn.click();
+  await clickSidenavRail(locators.automationSidenavBtn);
   // Anchored: an unanchored /automation also matches the builder at
   // /automation/<id>, so a stray navigation there would satisfy this wait.
   await expect(page).toHaveURL(/\/automation(\?|#|$)/, { timeout: 30000 });

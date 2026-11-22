@@ -1,8 +1,4 @@
-import LastDeploymentCard, {
-  isScaleOnlyChange,
-  markSupersededChanges,
-  summarizeChangedFields,
-} from '@components/k8s/investigate/cards/LastDeploymentCard';
+import LastDeploymentCard, { isScaleOnlyChange, summarizeChangedFields } from '@components/k8s/investigate/cards/LastDeploymentCard';
 import { describeChangeTiming, revertTargetLabel } from '@components/k8s/investigate/changeRollback';
 import { detectGitOpsManager } from '@utils/workloadManager';
 
@@ -43,74 +39,19 @@ describe('isScaleOnlyChange', () => {
   });
 });
 
-// The server refuses to roll back a change whose fields a later change moved again. Offering the button
-// anyway meant a click that could only fail — 69% of the history card's Revert buttons on dev.
-describe('markSupersededChanges', () => {
-  const toRows = (list) => list.map(([eventId, timestamp, changedFields]) => ({ eventId, timestamp, changedFields }));
-
-  it('marks an older change superseded by the nearest newer one on the same field', () => {
-    const rows = markSupersededChanges(
-      toRows([
-        ['c3', '2026-09-16T17:12:28Z', [rollme('F', 'U'), image('v2', 'v3')]],
-        ['c2', '2026-09-16T09:41:54Z', [restartedAt]],
-        ['c1', '2026-09-15T08:27:09Z', [rollme('m', 'F'), image('v1', 'v2')]],
-      ])
-    );
-    expect(rows[0].supersededBy).toBeUndefined();
-    expect(rows[1].supersededBy).toBeUndefined();
-    expect(rows[2].supersededBy).toBe('2026-09-16T17:12:28Z');
-  });
-
-  it('leaves changes to different fields alone', () => {
-    const rows = markSupersededChanges(
-      toRows([
-        ['c2', 't2', [{ path: 'spec.template.spec.containers[0].env[1].value', old: 'a', new: 'b' }]],
-        ['c1', 't1', [image('v1', 'v2')]],
-      ])
-    );
-    expect(rows.map((r) => r.supersededBy)).toEqual([undefined, undefined]);
-  });
-
-  // The server skips a later record that set the same value — the same change recorded twice.
-  it('does not treat a duplicate record of the same change as a later change', () => {
-    const rows = markSupersededChanges(
-      toRows([
-        ['dup', 't2', [image('v1', 'v2')]],
-        ['orig', 't1', [image('v1', 'v2')]],
-      ])
-    );
-    expect(rows[1].supersededBy).toBeUndefined();
-  });
-
-  // Raw evidence carries object values; two parses of the same record are never ===.
-  it('recognises a duplicate record whose value is an object', () => {
-    const annotations = () => ({ path: 'spec.template.metadata.annotations', old: { a: '1' }, new: { a: '2' } });
-    const rows = markSupersededChanges([
-      { eventId: 'dup', timestamp: 't2', changedFields: [annotations()] },
-      { eventId: 'orig', timestamp: 't1', changedFields: [annotations()] },
-    ]);
-    expect(rows[1].supersededBy).toBeUndefined();
-  });
-
-  it('does not judge a change whose field list was cut short', () => {
-    const rows = markSupersededChanges([
-      { eventId: 'c2', timestamp: 't2', changedFields: [image('v2', 'v3')] },
-      { eventId: 'c1', timestamp: 't1', changedFields: [image('v1', 'v2')], fieldsOmitted: 3 },
-    ]);
-    expect(rows[1].supersededBy).toBeUndefined();
-  });
-});
-
 describe('rollback choices', () => {
-  // A change a later one overwrote is refused by the server, so it is not offered at all.
-  it('offers only the changes that can be rolled back on their own', async () => {
+  // Whether a later change stands in the way of a choice is the server's to say, when it is picked:
+  // this history ends at the alert, so the page cannot know what changed after it, nor that a later
+  // change (c3 here, over c1's image) has itself been undone since. It used to decide anyway, and hid
+  // c1 for good.
+  it('offers every change that is a deploy to put back', async () => {
     const card = await cardFor([
       change('c3', '2026-09-16T17:12:28Z', [rollme('F', 'U'), image('v2', 'v3')]),
       change('c2', '2026-09-16T12:00:00Z', [{ path: 'spec.template.spec.containers[0].env[1].value', old: 'a', new: 'b' }]),
       change('c1', '2026-09-15T08:27:09Z', [rollme('m', 'F'), image('v1', 'v2')]),
     ]);
     const choices = card.rollbackChoices;
-    expect(choices.map((c) => c.changeEventId)).toEqual(['c3', 'c2']);
+    expect(choices.map((c) => c.changeEventId)).toEqual(['c3', 'c2', 'c1']);
     expect(choices[0]).toMatchObject({ timing: '31h before the alert', summary: 'image' });
     expect(card.resolveButton).toBe(true);
   });
@@ -123,13 +64,21 @@ describe('rollback choices', () => {
     ]);
     expect(several.choosesTarget).toBe(true);
     expect(several.actionSubject).toBe('');
-    expect(several.actionDetail).toBe('2 recent changes can be rolled back · newest 31h before the alert');
+    // It counts the changes; which of them can still be rolled back is asked when one is picked.
+    expect(several.actionDetail).toBe('2 recent changes to choose from · newest 31h before the alert');
 
     const single = await cardFor([change('c1', '2026-09-16T17:12:28Z', [image('v1', 'v2')])]);
     expect(single.choosesTarget).toBe(false);
     expect(single.actionSubject).toBeTruthy();
     // A single change states what the rollback writes back: running now → after rollback.
     expect(single.actionDetail).toBe('31h before the alert · rolls back image v2 → v1');
+    // "Running now" is the change's recorded value, so the row that states it asks the server whether
+    // the workload was changed again since, and has this to say when it was. A row that only counts
+    // changes makes no such claim; the dialog checks the one that is picked.
+    expect(single.checksRollback).toBe(true);
+    expect(single.blockedActionDetail).toBe('31h before the alert · changed again since, so this change cannot be rolled back on its own');
+    expect(several.checksRollback).toBe(false);
+    expect(several.blockedActionDetail).toBe('');
   });
 
   // app-test: the newest change was a cron scaling 0 → 2, and the row offered to "fix" it by scaling

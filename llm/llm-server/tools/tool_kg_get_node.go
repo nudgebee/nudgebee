@@ -20,6 +20,7 @@ func init() {
 // LLM tool for fetching the full payload of a single node by ID — the
 // drill-down companion to kg_search_nodes / kg_traverse.
 type KGGetNodeTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 

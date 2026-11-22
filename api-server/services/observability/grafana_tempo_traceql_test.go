@@ -56,8 +56,20 @@ func TestTempoCondition_Operators(t *testing.T) {
 		{"contains", "resource", query.Contains, "/api", `span.http.target =~ "(?i).*/api.*"`},
 		{"not contains", "resource", query.NIContains, "/api", `span.http.target !~ "(?i).*/api.*"`},
 		{"like", "workload_name", query.Like, "%pay%", `resource.service.name =~ "(?i).*pay.*"`},
-		{"regex", "span_name", query.Regex, "GET .*", `name =~ "GET .*"`},
+		{"regex", "span_name", query.Regex, "GET .*", `name =~ "(?s).*(?:GET .*).*"`},
+		{"regex is a search, not a full match", "workload_name", query.Regex, "pay", `resource.service.name =~ "(?s).*(?:pay).*"`},
+		{"regex alternation", "workload_name", query.Regex, "payment|ledger", `resource.service.name =~ "(?s).*(?:payment|ledger).*"`},
+		{"regex keeps explicit anchors", "workload_name", query.Regex, "^payments$", `resource.service.name =~ "(?s).*(?:^payments$).*"`},
+		{"not regex", "workload_name", query.NRegex, "server", `resource.service.name !~ "(?s).*(?:server).*"`},
+		{"like underscore is one char", "resource", query.Like, "/charg_", `span.http.target =~ "(?i)/charg."`},
+		{"like escaped wildcards are literal", "resource", query.Like, `100\%\_x`, `span.http.target =~ "(?i)100%_x"`},
+		{"like escapes regex metacharacters", "workload_name", query.Like, "a.b%", `resource.service.name =~ "(?i)a\\.b.*"`},
 		{"duration gt", "duration_ns", query.Gt, "500000000", `duration > 500000000ns`},
+		{"duration as a JSON number", "duration_ns", query.Gt, float64(300000000), `duration > 300000000ns`},
+		{"duration as a Go duration", "duration_ns", query.Gte, "300ms", `duration >= 300000000ns`},
+		{"duration in exponent form", "duration_ns", query.Lt, "3e+08", `duration < 300000000ns`},
+		{"status code as a JSON number", "http_status_code", query.Gte, float64(500), `span.http.status_code >= 500`},
+		{"status codes as JSON numbers", "http_status_code", query.In, []any{float64(500), float64(503)}, `(span.http.status_code = 500 || span.http.status_code = 503)`},
 		{"trace id", "trace_id", query.Eq, "abc", `trace:id = "abc"`},
 		{"destination", "destination_workload_name", query.Eq, "payments", `span.net.peer.name = "payments"`},
 	}
@@ -78,6 +90,13 @@ func TestTempoCondition_Escaping(t *testing.T) {
 	sel, err = tempoSelector(tempoWhereOf(query.BinaryWhereClause{"resource": {query.Contains: "/api/v1/*"}}))
 	require.NoError(t, err)
 	assert.Equal(t, `{ span.http.target =~ "(?i).*/api/v1/\\*.*" }`, sel)
+}
+
+func TestTempoCondition_InvalidRegexStillFails(t *testing.T) {
+	// Wrapped in (?:…), an unbalanced pattern would parse as a different valid regex.
+	_, err := tempoSelector(tempoWhereOf(query.BinaryWhereClause{"workload_name": {query.Regex: "a)(b"}}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid regex")
 }
 
 func TestTempoWhere_StripsUnsupportedAndRejectsUnknown(t *testing.T) {
@@ -221,5 +240,45 @@ func TestTempoAttrFor_AcceptsEveryMappingValue(t *testing.T) {
 		attr, err := tempoAttrFor(mapped)
 		require.NoError(t, err, "%s maps to %s, which the builder must accept once service.go has applied the mapping", canonical, mapped)
 		assert.Equal(t, mapped, attr)
+	}
+}
+
+// The service map's label filter sends span/resource attributes under one "spanattributes"
+// key as {operator: {attribute: value}}. Tempo matches an unscoped ".attr" in either scope,
+// so a plain OTel key works whether it is a span or a resource attribute.
+func TestTempoWhere_SpanAttributesFilter(t *testing.T) {
+	sel, err := tempoSelector(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"spanattributes": {
+			query.Eq: map[string]any{"http.method": "GET", "k8s.namespace.name": "demo"},
+			query.Nq: map[string]any{"span.http.target": "/health"},
+		},
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, `{ .http.method = "GET" && .k8s.namespace.name = "demo" && span.http.target != "/health" }`, sel)
+
+	_, err = tempoSelector(query.QueryWhereClause{Binary: query.BinaryWhereClause{
+		"spanattributes": {query.Eq: map[string]any{`bad" || true`: "x"}},
+	}})
+	require.Error(t, err, "an attribute name that is not a plain dotted key must not reach TraceQL")
+}
+
+// tempoLikePattern follows the canonical SQL LIKE contract in sqllike.go: a backslash
+// escapes only `%`, `_` and `\`; before any other character, or at the end, it is a
+// literal backslash. It used to treat every `\` as an escape, so `C:\assets`
+// silently became `C:assets` and matched nothing.
+func TestTempoLikePatternEscapes(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{`100\%`, `100%`},
+		{`a\_b`, `a_b`},
+		{`a\\b`, `a\\b`},
+		{`C:\assets`, `C:\\assets`},
+		{`trailing\`, `trailing\\`},
+		{`%x_`, `.*x.`},
+		{`a.b`, `a\.b`},
+	}
+	for _, tt := range tests {
+		if got := tempoLikePattern(tt.in); got != tt.want {
+			t.Errorf("tempoLikePattern(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }

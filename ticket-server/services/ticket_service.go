@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"nudgebee/tickets-server/common"
 	"nudgebee/tickets-server/database"
@@ -258,10 +259,11 @@ func fetchIntegrationWithConfigValues(dbManager *database.DatabaseManager, integ
 }
 
 // ListTicketConfigsForTenant returns the enabled ticketing integrations for a
-// tenant with only the fields the create-ticket form needs to pick a config
-// and project (id, name, tool, status, projects). It never returns URLs or
-// credentials, so it is safe to expose at read level to roles that can create
-// tickets but not manage integrations (see ListTicketConfigs / NB-32822).
+// tenant with only the fields the create-ticket form (and other read-level
+// pickers) need (id, name, tool, status, url, projects). url is plain
+// metadata (e.g. a self-hosted GitLab base URL), not a credential, so it is
+// safe to expose at read level to roles that can create tickets but not
+// manage integrations (see ListTicketConfigs / NB-32822).
 func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, error) {
 	dbManager, err := database.GetDatabaseManager()
 	if err != nil {
@@ -274,20 +276,24 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 		Name              string  `db:"name"`
 		Tool              string  `db:"tool"`
 		Status            string  `db:"status"`
+		URL               *string `db:"url"`
 		Projects          *string `db:"projects"`
 		ProjectsEncrypted bool    `db:"projects_encrypted"`
 	}
 
 	var rows []configRow
-	// LEFT JOIN the single 'projects' config value so configs without projects
-	// still appear in the dropdown. Only metadata is selected — no secrets.
+	// LEFT JOIN the 'url' and 'projects' config values so configs missing
+	// either still appear in the dropdown. Only metadata is selected — no secrets.
 	err = dbManager.Select(&rows, `
 		SELECT i.id, i.name, i.type AS tool, i.status,
+		       urlcv.value AS url,
 		       cv.value AS projects,
 		       COALESCE(cv.is_encrypted, false) AS projects_encrypted
 		FROM integrations i
 		LEFT JOIN integration_config_values cv
 		  ON cv.integration_id = i.id AND cv.name = 'projects'
+		LEFT JOIN integration_config_values urlcv
+		  ON urlcv.integration_id = i.id AND urlcv.name = 'url'
 		WHERE i.tenant_id = $1
 		  AND i.status = 'enabled'
 		  AND i.type IN ('jira', 'github', 'gitlab', 'servicenow', 'pagerduty', 'zenduty', 'freshdesk')
@@ -306,6 +312,9 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 			Tool:     r.Tool,
 			Status:   r.Status,
 			Projects: []models.Project{},
+		}
+		if r.URL != nil {
+			opt.URL = *r.URL
 		}
 		if r.Projects != nil && *r.Projects != "" {
 			value := *r.Projects
@@ -332,25 +341,38 @@ func ListTicketConfigsForTenant(tenantId string) ([]models.TicketConfigOption, e
 	return options, nil
 }
 
-// encodeJiraTicketFields normalizes a Jira ticket's additional_fields into
-// wire shapes before create, using the cached create-meta that drove the form.
-// Best-effort: on meta failure the payload passes through unchanged.
-func encodeJiraTicketFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
-	if configuration.Tool != "jira" {
+// encodeTicketAdditionalFields normalizes a ticket's additional_fields into its
+// tool's wire shapes before create, using the cached create-meta that drove the
+// form. Best-effort: on meta failure the payload passes through unchanged. Only
+// Jira and Freshdesk need this - every other supported tool's create-meta
+// fields already map directly to wire-ready scalars.
+func encodeTicketAdditionalFields(ctx *gin.Context, configuration models.TicketConfigurations, ticket *models.Ticket) {
+	// Gate first so a tool neither encoder knows about is a plain no-op, never
+	// a silent fall-through to the wrong tool's encoder.
+	switch configuration.Tool {
+	case "jira", "freshdesk":
+	default:
 		return
 	}
+
 	additionalFields, ok := ticket.AdditionalFields.(map[string]interface{})
 	if !ok || len(additionalFields) == 0 {
 		return
 	}
 	var fieldMeta map[string]tools.FieldInfo
 	if meta, err := fetchCreateMetaCached(ctx, configuration, ticket.ProjectKey); err != nil {
-		slog.Warn("jira create: create-meta unavailable, sending additional fields unencoded",
-			"integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
+		slog.Warn("ticket create: create-meta unavailable, sending additional fields unencoded",
+			"tool", configuration.Tool, "integration", configuration.ID, "project", ticket.ProjectKey, "error", slog.AnyValue(err))
 	} else {
 		fieldMeta = tools.FieldsForIssueType(meta, ticket.TicketType)
 	}
-	ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+
+	switch configuration.Tool {
+	case "jira":
+		ticket.AdditionalFields = tools.EncodeJiraAdditionalFields(fieldMeta, additionalFields)
+	case "freshdesk":
+		ticket.AdditionalFields = tools.EncodeFreshdeskAdditionalFields(fieldMeta, additionalFields)
+	}
 }
 
 func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertResponse, error) {
@@ -395,7 +417,7 @@ func CreateIssue(ctx *gin.Context, ticket models.Ticket) (models.TicketInsertRes
 	if !ok {
 		return GetErrorResponse("unsupported ticketing tool."), fmt.Errorf("unsupported tool: %s", configuration.Tool)
 	}
-	encodeJiraTicketFields(ctx, configuration, &ticket)
+	encodeTicketAdditionalFields(ctx, configuration, &ticket)
 	ticket, err = manager.Create(ctx, configuration, ticket)
 
 	if err != nil {
@@ -541,7 +563,7 @@ func lookupStoredProjectKey(ticket models.Ticket, tenant string) string {
 }
 
 func FetchTicketComments(ctx *gin.Context, ticket models.Ticket) (models.CommentsResponse, error) {
-	configuration, err := fetchToolConfiguration(ticket.IntegrationID)
+	configuration, err := fetchToolConfigurationForTenant(ticket.IntegrationID, ticket.Tenant)
 	if err != nil {
 		slog.Error("Error fetching tool configuration:", "integrationID", ticket.IntegrationID, "tenant", ticket.Tenant, "error", slog.AnyValue(err))
 		return GetErrorCommentResponse(fmt.Sprintf("unable to fetch configuration for integration %s", ticket.IntegrationID)), err
@@ -590,6 +612,47 @@ func FetchTicketComments(ctx *gin.Context, ticket models.Ticket) (models.Comment
 		TicketID: ticket.TicketID,
 		Comments: comments,
 	}, nil
+}
+
+// FetchTicketAttachment streams a comment attachment's bytes for the platforms
+// that need an authenticated proxy (ServiceNow, Jira) - the browser can't fetch
+// those URLs directly since doing so requires credentials only ticket-server
+// holds. Caller must close the returned ReadCloser when non-nil.
+func FetchTicketAttachment(ctx *gin.Context, ticket models.Ticket) (contentType string, data io.ReadCloser, err error) {
+	if ticket.AttachmentID == "" {
+		return "", nil, fmt.Errorf("attachment_id is required")
+	}
+
+	configuration, err := fetchToolConfigurationForTenant(ticket.IntegrationID, ticket.Tenant)
+	if err != nil {
+		return "", nil, fmt.Errorf("unable to fetch configuration for integration %s: %w", ticket.IntegrationID, err)
+	}
+
+	// Mirrors the Projects[0] override in FetchTicketComments above - an integration
+	// can have multiple repos, and the attachment isn't necessarily in the first one.
+	tool := strings.ToLower(configuration.Tool)
+	if ticket.ProjectKey == "" && (tool == "github" || tool == "gitlab") {
+		ticket.ProjectKey = lookupStoredProjectKey(ticket, configuration.Tenant)
+	}
+	if ticket.ProjectKey != "" {
+		projects := make([]models.Project, len(configuration.Projects))
+		copy(projects, configuration.Projects)
+		configuration.Projects = projects
+		if len(configuration.Projects) > 0 {
+			configuration.Projects[0].Key = ticket.ProjectKey
+		} else {
+			configuration.Projects = []models.Project{{Key: ticket.ProjectKey}}
+		}
+	} else if tool == "github" || tool == "gitlab" {
+		return "", nil, fmt.Errorf("project_key (owner/repo) is required for %s — set it in the request or configure it in the integration", configuration.Tool)
+	}
+
+	manager, ok := ticketmgr.GetTicketManager(configuration.Tool)
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported platform %s", configuration.Tool)
+	}
+
+	return manager.GetAttachment(ctx, configuration, ticket.TicketID, ticket.AttachmentID)
 }
 
 func AddCommentToTicket(ctx *gin.Context, ticket models.Ticket) (models.CommentsResponse, error) {
@@ -815,7 +878,14 @@ func UpdateTicket(ctx *gin.Context, ticket models.Ticket, updateFields models.Up
 		return fmt.Errorf("unsupported platform: %s", configuration.Tool)
 	}
 
-	if err := manager.Update(ctx, configuration, ticket.TicketID, updateFields); err != nil {
+	persistedStatus := updateFields.Status
+	if statusManager, ok := manager.(ticketmgr.StatusReturningTicketManager); ok && updateFields.Status != "" {
+		var err error
+		persistedStatus, err = statusManager.UpdateWithStatus(ctx, configuration, ticket.TicketID, updateFields)
+		if err != nil {
+			return err
+		}
+	} else if err := manager.Update(ctx, configuration, ticket.TicketID, updateFields); err != nil {
 		return err
 	}
 	if configuration.Tool == "servicenow" {
@@ -830,6 +900,7 @@ func UpdateTicket(ctx *gin.Context, ticket models.Ticket, updateFields models.Up
 			}
 		}
 	}
+	updateFields.Status = ticketStatusToPersist(configuration.Tool, persistedStatus)
 	syncTicketToDB(ticket.TicketID, ticket.IntegrationID, updateFields)
 	return nil
 }
@@ -863,6 +934,20 @@ func ListTicketsFromProvider(ctx *gin.Context, integrationID, tenantID string, p
 	return result, nil
 }
 
+// A GitHub Project field is separate from the issue state stored in tickets.status.
+func ticketStatusToPersist(tool, status string) string {
+	if tool != "github" {
+		return status
+	}
+	if strings.EqualFold(status, "open") || strings.EqualFold(status, "closed") {
+		return strings.ToLower(status)
+	}
+	if strings.HasPrefix(status, "github-project:") {
+		return ""
+	}
+	return status
+}
+
 // TransitionTicket changes the status of a ticket.
 func TransitionTicket(ctx *gin.Context, ticket models.Ticket, status string) error {
 	configuration, err := fetchToolConfiguration(ticket.IntegrationID)
@@ -894,9 +979,18 @@ func TransitionTicket(ctx *gin.Context, ticket models.Ticket, status string) err
 		return fmt.Errorf("unsupported platform: %s", configuration.Tool)
 	}
 
-	if err := manager.Transition(ctx, configuration, ticket.TicketID, status); err != nil {
+	persistedStatus := status
+	if statusManager, ok := manager.(ticketmgr.StatusReturningTransitioner); ok {
+		var err error
+		persistedStatus, err = statusManager.TransitionWithStatus(ctx, configuration, ticket.TicketID, status)
+		if err != nil {
+			return err
+		}
+	} else if err := manager.Transition(ctx, configuration, ticket.TicketID, status); err != nil {
 		return err
 	}
-	syncTicketToDB(ticket.TicketID, ticket.IntegrationID, models.UpdateFields{Status: status})
+	if storedStatus := ticketStatusToPersist(configuration.Tool, persistedStatus); storedStatus != "" {
+		syncTicketToDB(ticket.TicketID, ticket.IntegrationID, models.UpdateFields{Status: storedStatus})
+	}
 	return nil
 }

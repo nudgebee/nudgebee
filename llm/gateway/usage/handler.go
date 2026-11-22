@@ -26,11 +26,12 @@ type apiRequest struct {
 type apiListRequest struct {
 	StartDate string   `json:"start_date"`
 	EndDate   string   `json:"end_date"`
-	UserID    string   `json:"user_id"`   // optional; Users-tab drill-down or the User filter
-	Providers []string `json:"providers"` // optional; empty = all providers
-	Models    []string `json:"models"`    // optional; empty = all (routed) models
-	Status    string   `json:"status"`    // optional; "success" (2xx) | "error" (everything else)
-	Tool      string   `json:"tool"`      // optional drill-down from the Tools tab
+	UserID    string   `json:"user_id"`    // optional; Users-tab drill-down or the User filter
+	APIKeyID  string   `json:"api_key_id"` // optional; Keys-tab drill-down or the Key filter
+	Providers []string `json:"providers"`  // optional; empty = all providers
+	Models    []string `json:"models"`     // optional; empty = all (routed) models
+	Status    string   `json:"status"`     // optional; "success" (2xx) | "error" (everything else)
+	Tool      string   `json:"tool"`       // optional drill-down from the Tools tab
 	// Governance-tab drill-ins (each maps a Governance count to the rows behind it).
 	RoutingReason string `json:"routing_reason"` // optional; e.g. substitute | fallback | deprecated
 	RejectReason  string `json:"reject_reason"`  // optional; e.g. rate_limited | secret_blocked
@@ -69,6 +70,13 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		if !ok {
 			return
 		}
+		viewer := rpc.IsTenantViewer(c)
+		// Non-admins get totals over their own requests, matching their scoped request list.
+		userID, ok := scopeToCaller("", c.GetHeader("x-user-id"), viewer)
+		if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only a tenant admin can view another user's usage"})
+			return
+		}
 		start, end, ok := parseWindow(c, req.StartDate, req.EndDate)
 		if !ok {
 			return
@@ -79,12 +87,13 @@ func RegisterRoutes(r *gin.Engine, token string) {
 			return
 		}
 		res, err := Aggregate(c.Request.Context(), db, Request{
-			TenantID: tenantID, StartDate: start, EndDate: end, Granularity: req.Granularity,
+			TenantID: tenantID, StartDate: start, EndDate: end, Granularity: req.Granularity, UserID: userID,
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "aggregation failed"})
 			return
 		}
+		redactUserBreakdown(res, viewer)
 		// {"data": …} matches the cost-analyser RPC envelope the frontend reads.
 		c.JSON(http.StatusOK, gin.H{"data": res})
 	})
@@ -99,6 +108,11 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		if !ok {
 			return
 		}
+		userID, ok := scopeToCaller(req.UserID, c.GetHeader("x-user-id"), rpc.IsTenantViewer(c))
+		if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only a tenant admin can view another user's usage"})
+			return
+		}
 		start, end, ok := parseWindow(c, req.StartDate, req.EndDate)
 		if !ok {
 			return
@@ -110,11 +124,11 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		}
 		res, err := ListRequests(c.Request.Context(), db, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Providers: req.Providers, Models: req.Models, Status: req.Status,
+			UserID: userID, APIKeyID: req.APIKeyID, Providers: req.Providers, Models: req.Models, Status: req.Status,
 			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
 			SessionID:     req.SessionID,
 			CallerUserID:  c.GetHeader("x-user-id"),
-			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			CallerIsAdmin: rpc.IsTenantViewer(c),
 			Limit:         req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
@@ -134,6 +148,11 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		if !ok {
 			return
 		}
+		userID, ok := scopeToCaller(req.UserID, c.GetHeader("x-user-id"), rpc.IsTenantViewer(c))
+		if !ok {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only a tenant admin can view another user's usage"})
+			return
+		}
 		start, end, ok := parseWindow(c, req.StartDate, req.EndDate)
 		if !ok {
 			return
@@ -145,10 +164,10 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		}
 		res, err := ListSessions(c.Request.Context(), db, ListSessionsRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: req.UserID, Search: req.Search, Model: req.Model,
+			UserID: userID, Search: req.Search, Model: req.Model,
 			Sort: req.Sort, Order: req.Order,
 			CallerUserID:  c.GetHeader("x-user-id"),
-			CallerIsAdmin: rpc.IsTenantAdmin(c),
+			CallerIsAdmin: rpc.IsTenantViewer(c),
 			Limit:         req.Limit, Offset: req.Offset,
 		})
 		if err != nil {
@@ -173,4 +192,24 @@ func parseWindow(c *gin.Context, startStr, endStr string) (time.Time, time.Time,
 		return time.Time{}, time.Time{}, false
 	}
 	return start, end, true
+}
+
+// redactUserBreakdown empties the per-user breakdown for callers who may not see other users' usage.
+func redactUserBreakdown(m *Metrics, viewer bool) {
+	if !viewer && m != nil && m.Breakdowns != nil {
+		m.Breakdowns["user"] = []GroupRow{}
+	}
+}
+
+// scopeToCaller returns the user filter to apply: tenant admins ask for anyone, everyone else gets
+// only their own rows. ok=false means refuse (someone else's rows, or no caller to scope to).
+func scopeToCaller(asked, caller string, viewer bool) (string, bool) {
+	switch {
+	case viewer:
+		return asked, true
+	case caller == "" || (asked != "" && asked != caller):
+		return "", false
+	default:
+		return caller, true
+	}
 }

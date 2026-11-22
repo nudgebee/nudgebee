@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -11,13 +12,13 @@ import (
 
 func disableCachingValue(t *testing.T, ctx *security.RequestContext) bool {
 	t.Helper()
-	v, _ := ctx.GetContext().Value(ContextKeyDisableCaching).(bool)
+	v, _ := ctx.GetContext().Value(llmruntime.ContextKeyDisableCaching).(bool)
 	return v
 }
 
 func optedOutContext() *security.RequestContext {
 	return security.NewRequestContext(
-		context.WithValue(context.Background(), ContextKeyDisableCaching, true),
+		context.WithValue(context.Background(), llmruntime.ContextKeyDisableCaching, true),
 		nil, nil, nil, nil)
 }
 
@@ -38,7 +39,7 @@ func TestSubAgentCacheContext_DoesNotMutateParent(t *testing.T) {
 func TestSubAgentCacheContext_PreservesOtherFields(t *testing.T) {
 	sec := security.NewSecurityContextForSuperAdmin()
 	parent := security.NewRequestContext(
-		context.WithValue(context.Background(), ContextKeyDisableCaching, true),
+		context.WithValue(context.Background(), llmruntime.ContextKeyDisableCaching, true),
 		sec, nil, nil, nil)
 
 	child := subAgentCacheContext(parent)

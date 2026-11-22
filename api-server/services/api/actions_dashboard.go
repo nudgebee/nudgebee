@@ -86,6 +86,8 @@ func dashboardError(c *gin.Context, err error) {
 		c.JSON(404, common.ErrorActionBadRequest(err.Error()))
 	case errors.Is(err, dashboard.ErrForbidden):
 		c.JSON(403, common.ErrorActionForbidden(err.Error()))
+	case errors.Is(err, dashboard.ErrConflict):
+		c.JSON(409, common.ErrorActionBadRequest(err.Error()))
 	default:
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 	}
@@ -297,11 +299,11 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		if !dashboardReadAllowed(ctx) {
-			c.JSON(403, common.ErrorActionForbidden("access denied for dashboards"))
-			return
-		}
-		if !ctx.GetSecurityContext().CanReadAccountData(req.AccountId, "dashboards") {
+		// The account check is the whole gate: a built-in role that may read the
+		// account passes (that implies dashboardReadAllowed), and so does a custom
+		// role holding this action's grant (dashboards:Execute) on it, which
+		// dashboardReadAllowed — a dashboards:Read/Write check — would refuse.
+		if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeRead) {
 			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+req.AccountId))
 			return
 		}
@@ -334,12 +336,10 @@ func handleDashboardAction(actionPayload *ActionRequest, c *gin.Context, tracer 
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		if !dashboardReadAllowed(ctx) {
-			c.JSON(403, common.ErrorActionForbidden("access denied for dashboards"))
-			return
-		}
+		// As for dashboards_execute_query, the per-account check is the gate. An
+		// empty account list never reaches the engine (applyAccountScope refuses it).
 		for _, accountId := range req.AccountIds {
-			if !ctx.GetSecurityContext().CanReadAccountData(accountId, "dashboards") {
+			if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeRead) {
 				c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
 				return
 			}

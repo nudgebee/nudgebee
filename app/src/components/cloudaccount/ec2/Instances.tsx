@@ -467,6 +467,9 @@ const InstancesView = (props: {
     'Compute Engine': ['compute.googleapis.com/Instance'],
   };
   const ec2Type = ec2TypeMap[props?.serviceName] || ['virtualmachines'];
+  // The metrics the list query filters on; the Region options query mirrors them
+  // so the dropdown lists exactly the regions the table can populate.
+  const ec2ListMetrics = ['average_cpuutilization', 'average_memoryutilization'];
 
   const onSearchEnter = () => {
     setAppliedInstanceIdName(selectedInstanceIdName);
@@ -502,7 +505,7 @@ const InstancesView = (props: {
   useEffect(() => {
     if (props?.accountId) {
       apiCloudAccount.getDistinctTagKeys(props.accountId, props?.serviceName, ec2Type).then(setAvailableTagKeys);
-      apiCloudAccount.getDistinctRegions(props.accountId, props?.serviceName).then(setAvailableRegions);
+      apiCloudAccount.getInstanceRegions(props.accountId, props?.serviceName, ec2Type, ec2ListMetrics).then(setAvailableRegions);
     }
   }, [props?.accountId, props?.serviceName]);
 
@@ -543,7 +546,7 @@ const InstancesView = (props: {
           account_id: props?.accountId,
           serviceName: props?.serviceName,
           type: ec2Type,
-          metric: ['average_cpuutilization', 'average_memoryutilization'],
+          metric: ec2ListMetrics,
           nameFilter: appliedInstanceIdName,
           tagFilterKey: selectedTagKey || undefined,
           tagFilterValue: selectedTagValue || undefined,
@@ -636,6 +639,7 @@ const InstancesView = (props: {
                 <DsDropdownMenu
                   align='end'
                   size='sm'
+                  disablePortal={false}
                   items={menuItems.map((m: any) => ({
                     id: `ec2-action-${item.resourse_id}-${m.id}`,
                     label: m.label,
@@ -728,9 +732,10 @@ const InstancesView = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setPage(0);
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setPage(0);
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}
@@ -885,7 +890,7 @@ const InstancesView = (props: {
                         {drilldownQuery.meta.VpcId && <DataBlock title={'VPC'} data={drilldownQuery.meta.VpcId} />}
                         {drilldownQuery.meta.RootDeviceType && <DataBlock title={'Root device name'} data={drilldownQuery.meta.RootDeviceName} />}
                         {drilldownQuery.meta.EbsOptimized !== undefined && (
-                          <DataBlock title={'Ebs optimization'} isCopyable={false} data={drilldownQuery.meta.EbsOptimized ? 'enabled' : 'disabled'} />
+                          <DataBlock title={'EBS Optimization'} isCopyable={false} data={drilldownQuery.meta.EbsOptimized ? 'enabled' : 'disabled'} />
                         )}
                         {drilldownQuery.meta.RootDeviceType && (
                           <DataBlock title={'Root device type'} isCopyable={false} data={drilldownQuery.meta.RootDeviceType} />

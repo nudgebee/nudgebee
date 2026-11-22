@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, Locator, test } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { checkIntegrationWithCache } from "../../utils/IntegrationStatusCache";
@@ -122,7 +123,7 @@ export class AzureLocators extends CommonLocators {
   async checkAzureIntegration(): Promise<boolean> {
     console.log("Checking Azure integration status via Admin > Integrations...");
 
-    await this.adminBtn.click();
+    await clickSidenavRail(this.adminBtn);
 
     const navigated = await this.page.waitForURL(/user-management/, { timeout: 15000 })
       .then(() => true)

@@ -21,7 +21,12 @@ type RequestContext struct {
 	context         context.Context
 }
 
+// GetSecurityContext tolerates a nil receiver and returns nil, so a caller's
+// `sc == nil` check fails closed instead of panicking.
 func (rc *RequestContext) GetSecurityContext() *SecurityContext {
+	if rc == nil {
+		return nil
+	}
 	return rc.securityContext
 }
 

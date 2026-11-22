@@ -5,6 +5,7 @@ import {
   isSafeLinkUrl,
   panelColumnsOf,
   referencedColumns,
+  renderDataLinks,
   renderRowUrl,
   setHiddenColumns,
 } from '../panelColumns';
@@ -65,6 +66,48 @@ describe('renderRowUrl', () => {
     expect(renderRowUrl('/investigate?id={{id}}', columns, ['t', '', 'acc-1'])).toBeNull();
     expect(renderRowUrl('/investigate?id={{missing}}', columns, ['t', 'evt-1', 'acc-1'])).toBeNull();
     expect(renderRowUrl('https://evil.test/{{id}}', columns, ['t', 'evt-1', 'acc-1'])).toBeNull();
+  });
+});
+
+describe('renderDataLinks', () => {
+  const metric = { pod: 'api-7f', namespace: 'prod' };
+  const ctx = { metric, accountId: 'acc-1', from: '1000', to: '2000' };
+
+  it('fills series labels, account and range into a menu of links', () => {
+    const links = renderDataLinks(
+      [{ title: 'Open logs', url: '/kubernetes/details/{{__account_id}}?pod={{pod}}&start_time={{__from}}&end_time={{__to}}#logs' }],
+      ctx
+    );
+    expect(links).toEqual([{ title: 'Open logs', href: '/kubernetes/details/acc-1?pod=api-7f&start_time=1000&end_time=2000#logs' }]);
+  });
+
+  it('drops a link whose tokens the clicked point cannot fill', () => {
+    // A consolidated ("All accounts") series carries no account id, so an
+    // account-dependent link is skipped rather than opened dead.
+    const links = renderDataLinks(
+      [
+        { title: 'Needs account', url: '/kubernetes/details/{{__account_id}}' },
+        { title: 'Needs a label we lack', url: '/x?node={{node}}' },
+        { title: 'Range only', url: '/logs?from={{__from}}&to={{__to}}' },
+      ],
+      { metric, from: '1000', to: '2000' } // no accountId
+    );
+    expect(links).toEqual([{ title: 'Range only', href: '/logs?from=1000&to=2000' }]);
+  });
+
+  it('refuses an off-product link and a titleless one', () => {
+    expect(renderDataLinks([{ title: 'Evil', url: 'https://evil.test/{{pod}}' }], ctx)).toEqual([]);
+    expect(renderDataLinks([{ title: '  ', url: '/ok/{{pod}}' }], ctx)).toEqual([]);
+  });
+
+  it('encodes a label value', () => {
+    const links = renderDataLinks([{ title: 'Logs', url: '/logs?pod={{pod}}' }], { metric: { pod: 'a&b' }, from: '1', to: '2' });
+    expect(links).toEqual([{ title: 'Logs', href: '/logs?pod=a%26b' }]);
+  });
+
+  it('is empty when no links are configured', () => {
+    expect(renderDataLinks(undefined, ctx)).toEqual([]);
+    expect(renderDataLinks([], ctx)).toEqual([]);
   });
 });
 

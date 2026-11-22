@@ -11,11 +11,15 @@ import {
 } from 'graphql';
 import { authenticateApiToken, isApiToken } from '@lib/apiToken';
 import { readSessionToken } from '@lib/sessionCookie';
+import { restrictSuperAdmin } from '@lib/superAdminAccess';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type RpcRoute, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
+import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isTokenScopeBlockedAction } from '@lib/permissionCatalog';
+import { actionHasProviderGrant } from '@lib/integrationProviderGrants';
+import { TAB_TENANT_HEADER } from '@lib/tabTenant';
 
 // Shared primitives for the RPC-bypass path. Used by both /api/rpc
 // (JSON-RPC envelope) and /api/graphql (GraphQL envelope when the bypass is
@@ -132,7 +136,9 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   // NextAuth cookie: running as the cookie's user while forwarding the PAT's
   // session upstream would split identity across the two hops.
   if (apiTokenJwt) {
-    jwt = apiTokenJwt;
+    // The cookie path is restricted in readSessionToken; an API key's session is
+    // built from its tenant's role rows, so restrict it here too.
+    jwt = restrictSuperAdmin(apiTokenJwt);
   }
   // Browser flow: jwt comes from the NextAuth cookie and is sufficient on
   // its own — no Bearer token is forwarded. `token` stays empty; downstream
@@ -155,6 +161,20 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   return { token: token ?? '', jwt };
 }
 
+// The session's tenant when the browser tab that sent `req` pinned a different
+// one — i.e. the tab is still on a tenant that another tab switched away from,
+// and anything it sends would pair this tenant with the old tenant's accounts
+// (see @lib/tabTenant). null when they agree, or when the caller sent
+// no pin: API tokens, nbctl and the server-side bypass never do.
+export function staleTabTenant(req: NextApiRequest, jwt: JWT): { id: string; name: string } | null {
+  const raw = req.headers[TAB_TENANT_HEADER];
+  const tabTenantId = Array.isArray(raw) ? raw[0] : raw;
+  if (!tabTenantId) return null;
+  const tenant = (jwt.tenant as { id?: string; name?: string } | undefined) || {};
+  if (tabTenantId === tenant.id) return null;
+  return { id: tenant.id || '', name: tenant.name || '' };
+}
+
 // SessionVariables is the body block sent to upstream action handlers.
 // Snake_case matches typical JSON-API conventions and Go's default json
 // tag style. The account-ids family (previously RPC RLS inputs) has no
@@ -175,7 +195,10 @@ export type SessionVariables = {
 };
 
 export function buildSessionVariables(jwt: JWT): SessionVariables {
-  const userRoles = (jwt.roles as string[]) || [];
+  // A super-admin role among the tenant roles came from a tenant-scoped row and
+  // grants nothing: super admin comes only from jwt.isSuperAdmin* below.
+  // Stripped here, at request time, so sessions minted before the fix lose it too.
+  const userRoles = stripSuperAdminRoles((jwt.roles as string[]) || []);
   const tenantId = ((jwt.tenant as { id?: string } | undefined)?.id as string) || '';
   const userId = ((jwt.id || jwt.sub) as string) || '';
   // Default role: pick the highest-priority role the user holds (shared with
@@ -241,28 +264,23 @@ const SCOPED_PERMISSION_PREFIX = 'scoped:';
 // exact):
 //   - Tenant-global grants (`<module>:<Class>`) authorize the action on ANY route.
 //   - Account-scoped grants (`scoped:<module>:<Class>`) authorize ONLY when the
-//     action routes to the query engine (`/rpc/query`) — the one uniformly
-//     per-account-gateable path, where the query engine restricts the read to the
-//     granted accounts (ScopedAccountIdsForModule). Custom-handler actions have no
-//     per-account gate, so a scoped grant never admits them; the caller falls
-//     through to the built-in role check and is denied (fail-closed).
-// Actions whose upstream handler has been VERIFIED to re-check the caller's
-// account-scoped grant (HasScopedPermission / CanReadAccountData) against the
-// account carried in the request. A scoped key is admitted for these; every
-// other non-/rpc/query action fails closed, because the gateway cannot know
-// which account a custom handler will operate on.
+//     action routes to the query engine (`/rpc/query`), which restricts the read
+//     to the granted accounts (ScopedAccountIdsForModule), or when actions.yaml
+//     flags it `account_enforced: true`: its handler has been VERIFIED to check
+//     every account it reads or writes against the caller's grant
+//     (CanAccessAccount / CanReadAccountData / HasScopedPermission, runbook
+//     ResolveReadableAccounts). Every other custom-handler action fails closed,
+//     because the gateway cannot know which account it will operate on; the
+//     caller falls through to the built-in role check and is denied.
 //
-// This is the opt-in ledger for account-scoped enforcement: add an action here
-// ONLY in the same change that adds the check to its handler. Removing a check
-// without removing the entry silently widens a scoped role to tenant-wide.
-//
-//   relay_forward_request — services/api/relay.go's validateRelayAccountAccess
-//     re-checks the account in the request body against the caller's k8s grant
-//     (CanReadAccountData for reads, HasScopedPermission(k8s,Write) for writes),
-//     so an account-scoped k8s grant is safe to admit here.
-export const ACCOUNT_ENFORCED_ACTIONS = new Set<string>(['relay_forward_request']);
+// The flag is the opt-in ledger for account-scoped enforcement: set it ONLY in
+// the change that verifies the handler, and give the action a case in the
+// backend's bound-grant table (TestAccountEnforcedActionsHaveABoundGrantCase pins
+// both). Removing a check without removing the flag silently widens a bound role
+// to tenant-wide.
+type GrantRoute = Pick<RpcRoute, 'permission' | 'handler'> & Partial<Pick<RpcRoute, 'accountEnforced'>>;
 
-export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, permissions: string[]): boolean {
+export function actionHasCustomGrant(route: GrantRoute, permissions: string[]): boolean {
   const perm = route.permission;
   if (!perm) return false;
   const writeVariant = perm.endsWith(':Read') ? perm.replace(/:Read$/, ':Write') : null;
@@ -270,10 +288,7 @@ export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, '
   if (permissions.includes(perm) || (writeVariant !== null && permissions.includes(writeVariant))) {
     return true;
   }
-  // Account-scoped: the query engine enforces the account for every /rpc/query
-  // read (ScopedAccountIdsForModule); other actions qualify only by being on the
-  // verified-handler ledger above.
-  if (!route.handler.endsWith('/rpc/query') && !ACCOUNT_ENFORCED_ACTIONS.has(actionName)) return false;
+  if (!route.handler.endsWith('/rpc/query') && !route.accountEnforced) return false;
   return (
     permissions.includes(SCOPED_PERMISSION_PREFIX + perm) || (writeVariant !== null && permissions.includes(SCOPED_PERMISSION_PREFIX + writeVariant))
   );
@@ -285,9 +300,9 @@ export function actionHasCustomGrant(actionName: string, route: Pick<RpcRoute, '
 // Same matcher as custom grants (Write⇒Read), so a scope means exactly what the
 // same box means in the role editor. Unclassified actions fail closed, and
 // credential/role management is refused outright (isTokenScopeBlockedAction).
-export function actionAllowedByTokenScopes(actionName: string, route: Pick<RpcRoute, 'permission' | 'handler'>, tokenScopes: string[]): boolean {
+export function actionAllowedByTokenScopes(actionName: string, route: GrantRoute, tokenScopes: string[]): boolean {
   if (isTokenScopeBlockedAction(actionName)) return false;
-  return actionHasCustomGrant(actionName, route, tokenScopes);
+  return actionHasCustomGrant(route, tokenScopes);
 }
 
 export type ForwardOptions = {
@@ -366,7 +381,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   // we couldn't classify (route.permission undefined) is never grantable this
   // way, only via a built-in role in allowedRoles.
   const permissions = opts.sessionVariables.permissions || [];
-  const hasPermission = actionHasCustomGrant(opts.method, route, permissions);
+  // A per-provider integration grant admits its write actions here; which
+  // provider it covers is decided by the API server against the stored type.
+  const hasPermission = actionHasCustomGrant(route, permissions) || actionHasProviderGrant(opts.method, permissions);
   // Tenant-agnostic actions (actions.yaml `tenant_agnostic: true`) authorize on
   // the authenticated user's identity alone, not on a role within the active
   // tenant, so both gates below are skipped for them. This is what keeps
@@ -422,7 +439,13 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
   const coercedInput = coerceActionInput(opts.method, opts.params);
 
   const upstreamBody = {
-    action: { name: opts.method },
+    // `permission` is the action's classified "<module>:<Class>" key (empty when
+    // unclassified / non-grantable). It names the grant that covers the action,
+    // so a handler checks the caller's custom grants against the account it
+    // operates on without hardcoding a module — see Go RequestContext.CanAccessAccount.
+    // It is a classification, not a claim: the handler still looks the grant up
+    // in the caller's own security context.
+    action: { name: opts.method, permission: route.permission || '' },
     input: coercedInput,
     request_query: opts.requestQuery || '',
     session_variables: opts.sessionVariables,
@@ -439,6 +462,9 @@ export async function forwardAction(opts: ForwardOptions): Promise<ForwardResult
     // The caller's effective role, so a service (e.g. the AI Gateway) can grant a
     // tenant admin tenant-wide reads — viewing another user's captured request body.
     'x-user-role': opts.sessionVariables?.role || '',
+    // Every role the caller holds in this tenant; "-" = none, so a proxy dropping an empty
+    // header can't push the gateway onto the x-user-role label fallback.
+    'x-user-roles': (opts.sessionVariables?.allowed_roles || []).join(',') || '-',
   };
   // Apply per-action headers declared in actions.yaml's `headers:` block.
   // The yaml is authoritative — every action must explicitly declare which
@@ -714,6 +740,7 @@ export async function tryBypassGraphQL(opts: {
     )
   );
 
+  const traceId = traceIdFromTraceparent(opts.traceparent);
   const data: Record<string, unknown> = {};
   const errors: Array<{ message: string; path?: string[] }> = [];
   parsed.fields.forEach((f, i) => {
@@ -735,6 +762,9 @@ export async function tryBypassGraphQL(opts: {
       } else if (r.error.kind === 'upstream_error') {
         err.extensions = { upstream: { status: r.error.status, body: r.error.payload } };
       }
+      // The upstream stamps this trace_id on its log lines, so a generic message
+      // ("database connection failed") can be matched to the logged cause.
+      if (traceId) err.extensions = { ...err.extensions, trace_id: traceId };
       errors.push(err);
     }
   });
@@ -811,6 +841,12 @@ export function bypassGraphQLAsServer(opts: {
   });
 }
 
+// Trace id field of a W3C traceparent (`00-<trace_id>-<span_id>-<flags>`); '' when malformed.
+export function traceIdFromTraceparent(traceparent: string | undefined): string {
+  const traceId = traceparent?.split('-')[1] ?? '';
+  return /^[0-9a-f]{32}$/.test(traceId) ? traceId : '';
+}
+
 function forwardErrorMessage(err: ForwardError): string {
   switch (err.kind) {
     case 'method_not_found':
@@ -852,18 +888,20 @@ function genericMessageForStatus(status: number): string {
   return 'Request failed. Please retry.';
 }
 
-// Handles `{message}`, `{errors:[{message}]}`, and `[{message}]` (api-server's
-// common.Error shape) envelopes our Go services emit; degenerate JSON
-// (`{}` / `[]` / `null`) is treated as no-detail so the caller falls through
-// to a per-status generic.
+// Handles `{message}`, `{error}`, `{errors:[{message}]}`, and `[{message}]`
+// (api-server's common.Error shape, plus the `{error}` shape some handlers
+// use for structured success/error responses) envelopes our Go services
+// emit; degenerate JSON (`{}` / `[]` / `null`) is treated as no-detail so
+// the caller falls through to a per-status generic.
 function extractUpstreamErrorDetail(payload: unknown): string {
   if (Array.isArray(payload) && payload.length > 0) {
     const first = (payload[0] as { message?: unknown } | undefined)?.message;
     if (typeof first === 'string' && first.length > 0) return first;
   }
   if (payload && typeof payload === 'object') {
-    const obj = payload as { message?: unknown; errors?: Array<{ message?: unknown } | undefined> };
+    const obj = payload as { message?: unknown; error?: unknown; errors?: Array<{ message?: unknown } | undefined> };
     if (typeof obj.message === 'string' && obj.message.length > 0) return obj.message;
+    if (typeof obj.error === 'string' && obj.error.length > 0) return obj.error;
     if (Array.isArray(obj.errors) && obj.errors.length > 0) {
       const first = obj.errors[0]?.message;
       if (typeof first === 'string' && first.length > 0) return first;

@@ -2,12 +2,14 @@ package traces
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -131,6 +133,21 @@ type TraceServiceMapBuilder struct {
 	spans          []TraceSpan
 	config         *ServiceMapConfig
 	excludeFilters []LabelFilter // Filters to exclude external services (e.g., redis, kafka)
+	// barePeerNamespace is read once per builder so one build never mixes
+	// the two behaviours; see barePeerNamespaceEnabled.
+	barePeerNamespace bool
+}
+
+// barePeerNamespaceEnvEnabled turns on bare-peer namespace resolution: a bare
+// net_peer / http_client callee that emitted no spans of its own resolves to
+// the caller's namespace and gets one namespaced Service application, database
+// attributes and redis-/postgres-/mysql- peers are typed db_connection, and
+// loopback / metadata hosts stay ExternalService. Off (the default), the
+// service map behaves as it did before (nb-39485).
+const barePeerNamespaceEnvEnabled = "TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED"
+
+func barePeerNamespaceEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(barePeerNamespaceEnvEnabled)), "true")
 }
 
 func NewTraceServiceMapBuilder() *TraceServiceMapBuilder {
@@ -138,6 +155,8 @@ func NewTraceServiceMapBuilder() *TraceServiceMapBuilder {
 		spans:          make([]TraceSpan, 0),
 		config:         DefaultServiceMapConfig(),
 		excludeFilters: nil,
+
+		barePeerNamespace: barePeerNamespaceEnabled(),
 	}
 }
 
@@ -146,6 +165,8 @@ func NewTraceServiceMapBuilderWithConfig(config *ServiceMapConfig) *TraceService
 		spans:          make([]TraceSpan, 0),
 		config:         config,
 		excludeFilters: nil,
+
+		barePeerNamespace: barePeerNamespaceEnabled(),
 	}
 }
 
@@ -247,7 +268,8 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 	parsedSpans := make([]ParsedSpan, 0, len(t.spans))
 	byTrace := make(map[string][]*ParsedSpan, len(t.spans))
 	bySpanID := make(map[string]*ParsedSpan, len(t.spans))
-	parentMap := make(map[string][]*ParsedSpan, len(t.spans)) // parent_span_id -> children
+	type spanKey struct{ traceID, spanID string }
+	parentMap := make(map[spanKey][]*ParsedSpan, len(t.spans))
 
 	var earliestTime, latestTime time.Time
 
@@ -286,7 +308,10 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		psp := &parsedSpans[len(parsedSpans)-1]
 		bySpanID[psp.Span.SpanID] = psp
 		byTrace[psp.Span.TraceID] = append(byTrace[psp.Span.TraceID], psp)
-		parentMap[psp.Span.ParentSpanID] = append(parentMap[psp.Span.ParentSpanID], psp)
+		if s.TraceID != "" && s.ParentSpanID != "" {
+			key := spanKey{s.TraceID, s.ParentSpanID}
+			parentMap[key] = append(parentMap[key], psp)
+		}
 	}
 
 	// ---- Namespace backfill ----
@@ -378,7 +403,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 				SpanID:       span.SpanID,
 				SpanName:     span.SpanName,
 				Timestamp:    span.Timestamp,
-				MatchedKey:   "service_name",
+				MatchedKey:   creationEvidenceKeyServiceName,
 				MatchedValue: serviceName,
 			},
 		}
@@ -519,7 +544,10 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 		span := p.Span
 
 		// children of this span (i.e., spans where this span is parent)
-		children := parentMap[span.SpanID]
+		if span.TraceID == "" || span.SpanID == "" {
+			continue
+		}
+		children := parentMap[spanKey{span.TraceID, span.SpanID}]
 		if len(children) == 0 {
 			continue
 		}
@@ -594,6 +622,7 @@ func (t *TraceServiceMapBuilder) BuildServiceMapWithTimeWindow(queryStartTime, q
 			dep.SourceNamespace, _ = t.resolveEndpointNamespace(dep.Source, dep.TargetNamespace, dep.DependencyType, serviceStats, nsIndex, externalServices)
 		}
 	}
+	t.addUnobservedNamespacedTargets(dependencyMap, serviceStats)
 
 	// Build Applications (same output logic but using prepared maps)
 	applications := make([]ServiceApplication, 0, len(serviceStats)+len(externalServices))
@@ -747,12 +776,21 @@ func FetchTracesAndBuildServiceMap(requestContext *security.RequestContext, para
 }
 
 func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, params TraceQueryParams, builder *TraceServiceMapBuilder) (*ServiceMap, error) {
+	return fetchTracesWithFocusedStrategy(requestContext, params, builder, executeFocusedQuery)
+}
+
+func fetchTracesWithFocusedStrategy(requestContext *security.RequestContext, params TraceQueryParams, builder *TraceServiceMapBuilder, fetch func(*security.RequestContext, TraceQueryParams, FocusedQueryParams) ([]common.OpenTelemetryTrace, error)) (*ServiceMap, error) {
+	if params.AccountID == "" {
+		return nil, fmt.Errorf("account ID is required")
+	}
+
 	strategyStartTime := time.Now()
 
 	// Generate focused queries using different filtering strategies
 	focusedQueries := generateFocusedQueries(params)
 
 	successfulQueries := 0
+	unconfiguredQueries := 0
 
 	slog.Info("Executing focused trace queries",
 		"total_queries", len(focusedQueries),
@@ -779,7 +817,7 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	for w := 0; w < maxConcurrent; w++ {
 		go func() {
 			for job := range jobs {
-				response, err := executeFocusedQuery(requestContext, params, job.params)
+				response, err := fetch(requestContext, params, job.params)
 				result := queryResult{
 					index:    job.index,
 					strategy: job.params.strategy,
@@ -801,6 +839,9 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 	for i := 0; i < len(focusedQueries); i++ {
 		result := <-results
 		if result.err != nil {
+			if errors.Is(result.err, observability.ErrTraceProviderNotConfigured) {
+				unconfiguredQueries++
+			}
 			continue
 		}
 		rows = append(rows, result.rows...)
@@ -810,8 +851,23 @@ func FetchTracesWithFocusedStrategy(requestContext *security.RequestContext, par
 
 	slog.Info("Focused queries completed",
 		"successful_queries", successfulQueries,
+		"unconfigured_queries", unconfiguredQueries,
 		"traces_found", len(rows),
 		"query_duration_ms", queryElapsed.Milliseconds())
+	if successfulQueries == 0 {
+		if err := requestContext.GetContext().Err(); err != nil {
+			return nil, err
+		}
+		// An account with no configured trace provider fails every focused
+		// query with ErrTraceProviderNotConfigured. Preserve the previous
+		// no-traces/empty-map behavior instead of surfacing a query failure
+		// or letting callers count it as an error.
+		if unconfiguredQueries == len(focusedQueries) {
+			serviceMap, err := builder.BuildServiceMapWithTimeWindow(params.StartTime, params.EndTime)
+			return serviceMap, err
+		}
+		return nil, fmt.Errorf("all focused trace queries failed")
+	}
 
 	err := builder.LoadSpansFromRows(requestContext, rows, params)
 	if err != nil {
@@ -957,6 +1013,88 @@ func buildFocusedWhereClause(params TraceQueryParams, focusedParams FocusedQuery
 	return whereClause
 }
 
+// CreationEvidence.MatchedKey values. An application built from spans it
+// emitted itself is keyed by its service name; one known only from a caller's
+// span (an ExternalService, or a target addUnobservedNamespacedTargets
+// synthesized) is keyed by the dependency type, and carries default metadata.
+const (
+	creationEvidenceKeyServiceName = "service_name"
+	creationEvidenceKeyDependency  = "dependency_type"
+)
+
+// IsSynthesizedApplication reports whether app was built from a caller's span
+// alone rather than from spans it emitted itself, so its Type, TypeEvidence,
+// CreationEvidence, UncertainMatch, Category and Indicators are defaults. A
+// consumer merging several maps must let an observed copy of the same
+// application win over a synthesized one: under a workload filter the callee is
+// synthesized in the caller's map and observed in its own.
+func IsSynthesizedApplication(app *ServiceApplication) bool {
+	return app.CreationEvidence == nil || app.CreationEvidence.MatchedKey != creationEvidenceKeyServiceName
+}
+
+// synthesizesTargetApplication reports whether an unobserved external-typed
+// dependency target gets a namespaced application from
+// addUnobservedNamespacedTargets instead of an ExternalService application from
+// createExternalServiceApplications. Both ask it, so each target gets exactly
+// one. The node sentinel is not a namespace: a node-level caller has no DNS
+// search path, and a synthesized node:Node:<name> would be read as a worker
+// node, so such a target keeps its ExternalService application. With
+// TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED off nothing is synthesized.
+func (t *TraceServiceMapBuilder) synthesizesTargetApplication(namespace string) bool {
+	return t.barePeerNamespace && dependencyTargetKind(namespace, true) == "Service"
+}
+
+// addUnobservedNamespacedTargets gives a serviceStats entry to every external-typed
+// dependency target that resolveEndpointNamespace placed in a namespace but that
+// emitted no spans in this batch: an in-cluster service reached by its DNS name
+// that is uninstrumented, or — under a workload filter — a callee whose own spans
+// the focused queries never load. Registering it here instead of minting an
+// ExternalService is what makes its application id the id the caller's link
+// already carries (dependencyTargetKind), and it then gets its links, including
+// the Downstream back to each caller, from buildServiceLinks exactly as an
+// observed service does. Its counts are the calls made into it.
+func (t *TraceServiceMapBuilder) addUnobservedNamespacedTargets(dependencyMap map[string]*ServiceDependency, serviceStats map[string]*serviceMetrics) {
+	synthesized := make(map[string]bool)
+	for _, dep := range dependencyMap {
+		if !t.isExternalDependency(dep.DependencyType) || t.shouldExcludeDependency(dep) {
+			continue
+		}
+		if !t.synthesizesTargetApplication(dep.TargetNamespace) {
+			continue
+		}
+		key := serviceKey(dep.TargetNamespace, dep.Target)
+		stats, exists := serviceStats[key]
+		if exists && !synthesized[key] {
+			continue // an observed service already has its application
+		}
+		if !exists {
+			sampleTraceID := ""
+			if len(dep.TraceIds) > 0 {
+				sampleTraceID = dep.TraceIds[0]
+			}
+			stats = &serviceMetrics{
+				ServiceName:      dep.Target,
+				Namespace:        dep.TargetNamespace,
+				Environment:      dep.Environment,
+				TelemetryLabels:  make(map[string]string),
+				ApplicationTypes: make(map[string]bool),
+				TypeEvidence:     make(map[string]TypeEvidence),
+				CreationEvidence: &TypeEvidence{
+					TraceID:      sampleTraceID,
+					SpanID:       dep.SampleSpanID,
+					MatchedKey:   creationEvidenceKeyDependency,
+					MatchedValue: dep.DependencyType,
+				},
+			}
+			serviceStats[key] = stats
+			synthesized[key] = true
+		}
+		stats.CallCount += dep.CallCount
+		stats.ErrorCount += dep.ErrorCount
+		stats.TotalDuration += dep.TotalDuration
+	}
+}
+
 // createExternalServiceApplications creates application nodes for external dependencies
 // like databases, messaging systems, caches, etc. that are not actual microservices
 func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap map[string]*ServiceDependency, serviceStats map[string]*serviceMetrics, durationMinutes float64) []ServiceApplication {
@@ -969,6 +1107,12 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 		if t.isExternalDependency(dep.DependencyType) {
 			// Skip if this external service matches exclusion filters
 			if t.shouldExcludeDependency(dep) {
+				continue
+			}
+
+			// A target resolved into a namespace is that namespace's application,
+			// not an ExternalService: the caller's link already points at it.
+			if t.synthesizesTargetApplication(dep.TargetNamespace) {
 				continue
 			}
 
@@ -1138,7 +1282,7 @@ func (t *TraceServiceMapBuilder) createExternalServiceApplications(dependencyMap
 			app.CreationEvidence = &TypeEvidence{
 				TraceID:      info.SampleTraceID,
 				SpanID:       info.SampleSpanID,
-				MatchedKey:   "dependency_type",
+				MatchedKey:   creationEvidenceKeyDependency,
 				MatchedValue: info.DependencyType,
 			}
 		}

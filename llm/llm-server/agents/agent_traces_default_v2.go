@@ -88,16 +88,17 @@ const maxDiscoveredTraceAttrs = 40
 // for the account (via traces_list_labels), excluding curated snake_case fields (already
 // covered by the schema docs) and anything already advertised in the mapping. These are
 // the dotted attribute keys the prompt surfaces as additional queryable fields — the
-// trace counterpart of the log agent's live get_labels. Returns (attrs, capped).
-func discoveredTraceAttributes(accountId string, provider services_server.ObservabilityProvider, advertised map[string]string) ([]string, bool) {
+// trace counterpart of the log agent's live get_labels. Returns (attrs, total), where
+// total counts every qualifying key before the cap.
+func discoveredTraceAttributes(accountId string, provider services_server.ObservabilityProvider, advertised map[string]string) ([]string, int) {
 	return filterDiscoveredTraceAttributes(tools.FetchTraceLabelKeys(accountId, provider), advertised)
 }
 
 // filterDiscoveredTraceAttributes is the pure selection/cap logic behind
 // discoveredTraceAttributes, split out so it can be unit-tested without a live
 // label fetch. Keeps only dotted attribute keys not already advertised, sorted
-// and capped at maxDiscoveredTraceAttrs. Returns (attrs, capped).
-func filterDiscoveredTraceAttributes(labels []string, advertised map[string]string) ([]string, bool) {
+// and capped at maxDiscoveredTraceAttrs. Returns (attrs, total).
+func filterDiscoveredTraceAttributes(labels []string, advertised map[string]string) ([]string, int) {
 	var attrs []string
 	for _, k := range labels {
 		if !strings.Contains(k, ".") {
@@ -109,10 +110,11 @@ func filterDiscoveredTraceAttributes(labels []string, advertised map[string]stri
 		attrs = append(attrs, k)
 	}
 	sort.Strings(attrs)
-	if len(attrs) > maxDiscoveredTraceAttrs {
-		return attrs[:maxDiscoveredTraceAttrs], true
+	total := len(attrs)
+	if total > maxDiscoveredTraceAttrs {
+		return attrs[:maxDiscoveredTraceAttrs], total
 	}
-	return attrs, false
+	return attrs, total
 }
 
 func (l TracesDefaultAgentV2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -124,7 +126,7 @@ func (l TracesDefaultAgentV2) GetSystemPrompt(ctx *security.RequestContext, quer
 	// advertised via the mapping. services-server makes these queryable as flat fields
 	// (any non-curated key resolves to the attribute maps). Degrades to empty on a
 	// discovery failure so query generation still works.
-	discoveredAttrs, discoveredCapped := discoveredTraceAttributes(l.accountId, l.provider, labelMappings)
+	discoveredAttrs, discoveredTotal := discoveredTraceAttributes(l.accountId, l.provider, labelMappings)
 
 	instructions := []string{
 		// Provider-independent framing (mirrors the log agent): the agent only emits
@@ -168,8 +170,10 @@ func (l TracesDefaultAgentV2) GetSystemPrompt(ctx *security.RequestContext, quer
 			"Additional attributes present in THIS account's traces — queryable directly as a flat field, e.g. `{\"where\": {\"http.method\": {\"_eq\": \"POST\"}}}`:",
 			"   "+strings.Join(discoveredAttrs, ", "),
 		)
-		if discoveredCapped {
-			instructions = append(instructions, "   (most common shown; more attributes exist)")
+		if discoveredTotal > len(discoveredAttrs) {
+			instructions = append(instructions, fmt.Sprintf(
+				"   (first %d of %d alphabetically, not by frequency; the unlisted attributes are queryable the same way)",
+				len(discoveredAttrs), discoveredTotal))
 		}
 	}
 

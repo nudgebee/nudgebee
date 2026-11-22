@@ -246,7 +246,7 @@ const PendingAgentInstallBanner = () => {
             {fleets.length > 0 && (
               <Box component='div' data-testid='pending-agent-install-vm' sx={{ mt: clusters.length > 0 ? 'var(--ds-space-1)' : 0 }}>
                 No agent has connected for {nameList(fleets, 'self-hosted account(s)')} yet, so no machines are being discovered. Add a VM Agent
-                integration for each network segment — that is where the install command comes from.
+                integration for each network segment and run the install command it gives you.
               </Box>
             )}
             <Box component='div' sx={{ mt: 'var(--ds-space-1)' }}>

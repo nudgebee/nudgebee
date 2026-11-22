@@ -1,9 +1,9 @@
 package api
 
 import (
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,16 +14,21 @@ import (
 var (
 	asyncOperationWorkerPool     *common.WorkerPool
 	asyncUserOperationWorkerPool *common.WorkerPool
-	auditWorkerPool              *common.WorkerPool
 	metricsWorkerPool            *common.WorkerPool
 )
+
+// HandleMemoryV2ApisFn registers the memory-v2 HTTP routes. Defaults to a
+// no-op so OSS builds (which strip ee/, including ee/memory/httpapi)
+// compile without a reference to handleMemoryV2Apis. Prod / EE builds
+// override this via ee/memory/httpapi's init() and register the real
+// routes.
+var HandleMemoryV2ApisFn = func(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {}
 
 func init() {
 	asyncOperationWorkerPool = common.NewWorkerPool("async_api_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
 	asyncUserOperationWorkerPool = common.NewWorkerPool("async_api_user_operations", config.Config.AsyncApiWorkerCount, config.Config.AsyncApiQueueSize)
-	auditWorkerPool = common.NewWorkerPool("audit_operations", config.Config.AuditApiWorkerCount, config.Config.AsyncApiQueueSize)
 	metricsWorkerPool = common.NewWorkerPool("metrics_tracking", 10, 5000)
-	core.SetMetricsWorkerPool(metricsWorkerPool)
+	llmruntime.SetMetricsWorkerPool(metricsWorkerPool)
 }
 
 func GetMetricsWorkerPool() *common.WorkerPool {
@@ -34,8 +39,8 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleHeathCheckApis(r, tracer, meter)
 	handleCompletionApis(r, tracer, meter)
 	handleAgentsApis(r, tracer, meter)
-	handleFunctionsApis(r, tracer, meter)
 	handleToolsApis(r, tracer, meter)
+	handleMCPIntegrationApis(r, tracer, meter)
 	handleAnalysisApis(r, tracer, meter)
 	handleSyncConversationStatusApi(r)
 	handleAiCostDailyReportApi(r)
@@ -48,12 +53,14 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleConversationApis(r, tracer, meter)
 	handleKnowledgebaseApis(r, tracer, meter)
 	handleMemoryApis(r, tracer, meter)
+	HandleMemoryV2ApisFn(r, tracer, meter)
 	handleGlobalContextApis(r, tracer, meter)
 	handleWorkspaceApis(r, tracer, meter)
 	handleWorkspaceLLM(r, tracer, meter)
 	handleLLMConfigTestApis(r, tracer, meter)
 	handleEgressfilterTenantApis(r)
 	handleEgressfilterConfigApis(r, tracer, meter)
+	handleToolApprovalConfigApis(r, tracer, meter)
 	handleSwagger(r)
 }
 

@@ -27,7 +27,7 @@ func init() {
 		return WorkflowGetTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowTrigger, func(accountId string) (core.NBTool, error) {
-		return WorkflowTriggerTool{}, nil
+		return WorkflowTriggerTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowCreate, func(accountId string) (core.NBTool, error) {
 		return WorkflowCreateTool{}, nil
@@ -54,7 +54,7 @@ func init() {
 		return WorkflowExecutionGetTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowExecutionRetrigger, func(accountId string) (core.NBTool, error) {
-		return WorkflowExecutionRetriggerTool{}, nil
+		return WorkflowExecutionRetriggerTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowState, func(accountId string) (core.NBTool, error) {
 		return WorkflowStateTool{}, nil
@@ -69,7 +69,7 @@ func init() {
 		return WorkflowConfigSaveTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowDryRun, func(accountId string) (core.NBTool, error) {
-		return WorkflowDryRunTool{}, nil
+		return WorkflowDryRunTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowListVersions, func(accountId string) (core.NBTool, error) {
 		return WorkflowListVersionsTool{}, nil
@@ -102,7 +102,7 @@ func init() {
 		return WorkflowDeleteTool{}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowExecutionCancel, func(accountId string) (core.NBTool, error) {
-		return WorkflowExecutionCancelTool{}, nil
+		return WorkflowExecutionCancelTool{accountId: accountId}, nil
 	})
 	core.RegisterNBToolFactory(ToolWorkflowTaskExecute, func(accountId string) (core.NBTool, error) {
 		return WorkflowTaskExecuteTool{}, nil
@@ -176,6 +176,24 @@ func DoRunbookRequest(method, path string, body any, accountId, tenantId, userId
 // callers can bound a request that the shared (timeout-less) HTTP client would
 // otherwise let block indefinitely — notably the synchronous dry-run endpoint.
 func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string) ([]byte, error) {
+	return doRunbookRequestWithHeaders(reqCtx, method, path, body, accountId, tenantId, userId, nil)
+}
+
+// runbookStatusError is a response from runbook-server with an error status.
+// Its text is what DoRunbookRequest has always returned; the fields let a
+// caller act on the status and body.
+type runbookStatusError struct {
+	status int
+	body   string
+}
+
+func (e *runbookStatusError) Error() string {
+	return fmt.Sprintf("runbook server returned error (status %d): %s", e.status, e.body)
+}
+
+// doRunbookRequestWithHeaders is DoRunbookRequestWithContext with extra
+// request headers, set after the standard ones.
+func doRunbookRequestWithHeaders(reqCtx context.Context, method, path string, body any, accountId, tenantId, userId string, headers map[string]string) ([]byte, error) {
 	url := getRunbookServerURL(path)
 
 	var reqBody io.Reader
@@ -196,6 +214,9 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	// Assuming authentication via token or account ID headers is handled similarly to other services
 	req.Header.Set("X-Account-ID", accountId)
 	req.Header.Set("X-Tenant-ID", tenantId)
+	if config.Config.WorkflowServerToken != "" {
+		req.Header.Set("X-ACTION-TOKEN", config.Config.WorkflowServerToken)
+	}
 	if userId != "" && userId != uuid.Nil.String() {
 		req.Header.Set("X-User-ID", userId)
 	}
@@ -207,6 +228,9 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	// trigger + feature flag) to workflow execution. Reads and non-execution
 	// endpoints ignore it.
 	req.Header.Set(headerTriggerSource, triggerSourceAI)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	client := common.HttpClient()
 	resp, err := client.Do(req)
@@ -223,7 +247,7 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("runbook server returned error (status %d): %s", resp.StatusCode, string(respBytes))
+		return nil, &runbookStatusError{status: resp.StatusCode, body: string(respBytes)}
 	}
 
 	return respBytes, nil
@@ -231,13 +255,15 @@ func DoRunbookRequestWithContext(reqCtx context.Context, method, path string, bo
 
 // --- Workflow List Tool ---
 
-type WorkflowListTool struct{}
+type WorkflowListTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowListTool) Name() string             { return ToolWorkflowList }
 func (t WorkflowListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowListTool) Description() string {
 	return "Lists existing automations with optional filtering — for managing and " +
-		"inspecting them (what exists, its status, when it last ran). To find an " +
+		"inspecting them (what exists, its status, when it last ran). This conversation's account's " +
+		"automations come under this_account, those of other accounts the user can access under " +
+		"other_accounts, grouped by account with its account_id and account_name. To find an " +
 		"automation that fits a problem someone described, use workflow_search: it " +
 		"matches against what each automation is for and reads published data, which " +
 		"this listing does not. " + automationURLToolHint
@@ -275,7 +301,9 @@ func (t WorkflowListTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(projectWorkflowListResponse(resp, ctx.AccountId)), Type: core.NBToolResponseTypeJson}, nil
+	groups, otherTotal, problem := otherWorkflowAccounts(ctx, path, projectWorkflowListResponse)
+	own := projectWorkflowListResponse(resp, ctx.AccountId)
+	return core.NBToolResponse{Data: string(withWorkflowAccounts(own, ctx.AccountId, groups, otherTotal, problem)), Type: core.NBToolResponseTypeJson}, nil
 }
 
 // projectWorkflowListResponse trims the runbook-server `GET /workflows` payload
@@ -373,18 +401,20 @@ func truncateRunes(s string, maxRunes int) string {
 
 // --- Workflow Get Tool ---
 
-type WorkflowGetTool struct{}
+type WorkflowGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowGetTool) Name() string             { return ToolWorkflowGet }
 func (t WorkflowGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowGetTool) Description() string {
-	return "Gets the definition and details of a specific automation. Arg: id (string, required). " + automationURLToolHint
+	return "Gets the definition and details of a specific automation. Args: id (string, required), " +
+		"account_id (string, optional: for an automation listed under other_accounts). " + automationURLToolHint
 }
 func (t WorkflowGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id": {Type: core.ToolSchemaTypeString, Description: "The ID of the automation to retrieve"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of the automation to retrieve"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id"},
 	}
@@ -394,27 +424,77 @@ func (t WorkflowGetTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 	if !ok || id == "" {
 		return core.NBToolResponse{}, errors.New("id is required")
 	}
-	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	accountId, err := workflowCallAccount(ctx, input)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
+	resp, err := t.get(ctx, input, accountId, id)
+	return ranOnWorkflowAccount(resp, ctx, accountId), err
+}
 
-	link := core.BuildAutomationURL(ctx.AccountId, id, nil, "")
+func (t WorkflowGetTool) get(ctx core.NbToolContext, input core.NBToolCallRequest, accountId, id string) (core.NBToolResponse, error) {
+	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, withOtherAccountHint(err, input, ctx.AccountId)
+	}
+
+	link := core.BuildAutomationURL(accountId, id, nil, "")
 	var references []core.NBToolResponseReference
 	if link != "" {
 		references = []core.NBToolResponseReference{{Text: "Open automation", Url: link, Type: "link"}}
 	}
+
+	// Steps whose integration points at nothing. Without this an answer to "why doesn't it run"
+	// works from status and configs alone, and tells the person to create a config when what is
+	// missing is the integration itself (#42204).
+	problems := workflowIntegrationProblems(ctx.Ctx, accountId, resp)
 
 	// For large workflows (>8KB), return a compact summary to fit within the ReAct scratchpad budget
 	const compactThreshold = 8192
 	if len(resp) > compactThreshold {
 		compact := compactWorkflowResponse(resp, link)
 		if compact != "" {
-			return core.NBToolResponse{Data: compact, Type: core.NBToolResponseTypeJson, References: references}, nil
+			return core.NBToolResponse{Data: string(withIntegrationProblems([]byte(compact), problems)), Type: core.NBToolResponseTypeJson, References: references}, nil
 		}
 	}
 
-	return core.NBToolResponse{Data: string(withAutomationURL(resp, link)), Type: core.NBToolResponseTypeJson, References: references}, nil
+	return core.NBToolResponse{Data: string(withIntegrationProblems(withAutomationURL(resp, link), problems)), Type: core.NBToolResponseTypeJson, References: references}, nil
+}
+
+// workflowIntegrationProblems describes the automation's steps whose integration points at
+// nothing; nil when there are none or the check cannot run.
+func workflowIntegrationProblems(ctx *security.RequestContext, accountId string, raw []byte) []string {
+	var workflow map[string]interface{}
+	if json.Unmarshal(raw, &workflow) != nil {
+		return nil
+	}
+	gaps := WorkflowIntegrationGaps(ctx, accountId, workflow)
+	if len(gaps) == 0 {
+		return nil
+	}
+	return IntegrationGapLines(ctx, accountId, gaps)
+}
+
+// withIntegrationProblems sets a top-level `integration_problems` list on a single-automation
+// JSON object. raw is returned unchanged when there are none or raw is not a JSON object.
+func withIntegrationProblems(raw []byte, problems []string) []byte {
+	if len(problems) == 0 {
+		return raw
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil || obj == nil {
+		return raw
+	}
+	encoded, err := marshalNoHTMLEscape(problems, "")
+	if err != nil {
+		return raw
+	}
+	obj["integration_problems"] = encoded
+	b, err := marshalNoHTMLEscape(obj, "")
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // withAutomationURL sets a top-level `url` on a single-automation JSON object.
@@ -537,9 +617,33 @@ func compactWorkflowResponse(resp []byte, link string) string {
 
 // --- Workflow Trigger Tool ---
 
-type WorkflowTriggerTool struct{}
+type WorkflowTriggerTool struct {
+	// accountId is only for naming the automation on the approval card; Call
+	// runs against the account in its context.
+	accountId string
+}
 
 func (t WorkflowTriggerTool) Name() string { return ToolWorkflowTrigger }
+
+// ConfirmationQuestion names the automation behind the id on the approval
+// card. An id that is not among the account's AI-invocable automations (or
+// whose list could not be loaded) is shown as the id, in the same plain words.
+func (t WorkflowTriggerTool) ConfirmationQuestion(toolInput string) string {
+	args := confirmationArgs(toolInput)
+	id, _ := args["id"].(string)
+	if id = strings.TrimSpace(id); id == "" {
+		return ""
+	}
+	inputs, _ := args["inputs"].(map[string]any)
+	accountId := t.accountId
+	if other := requestedWorkflowAccount(args, t.accountId); other != "" {
+		accountId = other
+	}
+	if automation, ok := automationForConfirmation(accountId, id); ok {
+		return automationRunQuestion(automation.name, id, automation.description, inputs, "")
+	}
+	return automationRunQuestion("", id, "", inputs, "")
+}
 
 // InferToolRequestType classifies triggering a live run as create so the executor
 // gates it behind user confirmation + RBAC (it has real effects).
@@ -553,24 +657,44 @@ func (t WorkflowTriggerTool) Description() string {
 		"If it is still running after a few minutes, or is paused waiting for someone's approval, " +
 		"returns the current status with a note — check back later with workflow_execution_get. " +
 		"Only automations the account has opted in to AI invocation can be run this way. " +
-		"Args: id (string, required), inputs (object, optional)."
+		"Args: id (string, required), inputs (object, optional), account_id (string, optional: the account " +
+		"of an automation listed under other_accounts; it then runs there)."
 }
 func (t WorkflowTriggerTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":     {Type: core.ToolSchemaTypeString, Description: "The ID of the automation to trigger"},
-			"inputs": {Type: core.ToolSchemaTypeObject, Description: "Input parameters for the automation execution"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of the automation to trigger"},
+			"inputs":           {Type: core.ToolSchemaTypeObject, Description: "Input parameters for the automation execution"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id"},
 	}
 }
+
+// RequestedAccountID is the other account a run names, so its approval, its
+// write-access check and its card are that account's.
+func (t WorkflowTriggerTool) RequestedAccountID(toolInput string) string {
+	return requestedWorkflowAccount(confirmationArgs(toolInput), t.accountId)
+}
+
 func (t WorkflowTriggerTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	id, ok := input.Arguments["id"].(string)
 	if !ok || id == "" {
 		return core.NBToolResponse{}, errors.New("id is required")
 	}
+	accountId, err := workflowCallAccount(ctx, input)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	// The run, its name and the wait are all the automation's account's.
+	onAccount := ctx
+	onAccount.AccountId = accountId
+	resp, err := t.trigger(onAccount, input, id)
+	return ranOnWorkflowAccount(resp, ctx, accountId), err
+}
 
+func (t WorkflowTriggerTool) trigger(ctx core.NbToolContext, input core.NBToolCallRequest, id string) (core.NBToolResponse, error) {
 	inputs := input.Arguments["inputs"]
 	if inputs == nil {
 		inputs = map[string]any{}
@@ -593,6 +717,9 @@ func (t WorkflowTriggerTool) Call(ctx core.NbToolContext, input core.NBToolCallR
 
 	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/trigger", id), inputs, ctx.AccountId, tenantId, userId)
 	if err != nil {
+		if refused, ok := runNotStartedResponse(refusedAutomationName(ctx, ToolWorkflowTrigger, id), err); ok {
+			return refused, nil
+		}
 		return core.NBToolResponse{}, err
 	}
 
@@ -647,6 +774,17 @@ func (t WorkflowCreateTool) InputSchema() core.ToolSchema {
 		Required: []string{"definition"},
 	}
 }
+
+// Creating an automation changes the account, so a person approves it, and
+// the approval covers only this exact definition.
+func (t WorkflowCreateTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
+	return core.ToolRequestTypeCreate, nil
+}
+
+func (t WorkflowCreateTool) ConfirmationKey(toolInput string) string {
+	return perActionConfirmationKey(t.Name(), toolInput)
+}
+
 func (t WorkflowCreateTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	// The input args might contain the whole definition mixed in or nested.
 	// Expecting the agent to pass the workflow object directly or under a key.
@@ -673,7 +811,7 @@ func (t WorkflowCreateTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 
 // --- Workflow Validate Tool ---
 
-type WorkflowValidateTool struct{}
+type WorkflowValidateTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowValidateTool) Name() string             { return ToolWorkflowValidate }
 func (t WorkflowValidateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -704,7 +842,7 @@ func (t WorkflowValidateTool) Call(ctx core.NbToolContext, input core.NBToolCall
 
 // --- Task List Tool ---
 
-type TaskListTool struct{}
+type TaskListTool struct{ core.ReadOnlyTool }
 
 func (t TaskListTool) Name() string             { return ToolWorkflowTaskList }
 func (t TaskListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -727,7 +865,7 @@ func (t TaskListTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest)
 
 // --- Workflow Examples Tool ---
 
-type WorkflowExamplesTool struct{}
+type WorkflowExamplesTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExamplesTool) Name() string             { return ToolWorkflowExamples }
 func (t WorkflowExamplesTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -964,7 +1102,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
         },
         "failure_policy": {"action": "continue"},
         "params": {
-          "integration_id": "{{ Configs.github_integration_id }}",
+          "integration_id": "github-main",
           "command": "gh issue edit {{ Matrix.issue.number | int }} --repo org/repo --add-label stale"
         }
       },
@@ -1060,7 +1198,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
         "id": "trigger-workflow",
         "type": "scm.github.cli",
         "params": {
-          "integration_id": "{{ Configs.github_integration_id }}",
+          "integration_id": "github-main",
           "command": "gh workflow run {{ Inputs.workflow_file }} --repo {{ Inputs.repo }}"
         }
       },
@@ -1111,7 +1249,7 @@ func (t WorkflowExamplesTool) Call(ctx core.NbToolContext, input core.NBToolCall
 
 // --- Task Schema Lookup Tool ---
 
-type TaskSchemaLookupTool struct{}
+type TaskSchemaLookupTool struct{ core.ReadOnlyTool }
 
 func (t TaskSchemaLookupTool) Name() string             { return ToolWorkflowTaskSchema }
 func (t TaskSchemaLookupTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1352,20 +1490,22 @@ func fetchWorkflowName(ctx core.NbToolContext, id string) (string, error) {
 
 // --- Workflow Executions Tool ---
 
-type WorkflowExecutionsTool struct{}
+type WorkflowExecutionsTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExecutionsTool) Name() string             { return ToolWorkflowExecutions }
 func (t WorkflowExecutionsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionsTool) Description() string {
-	return "Lists executions (runs) of an automation with optional filtering by status."
+	return "Lists executions (runs) of an automation with optional filtering by status. " +
+		"Pass account_id for an automation in another account."
 }
 func (t WorkflowExecutionsTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":     {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
-			"limit":  {Type: core.ToolSchemaTypeString, Description: "Number of executions to return (default 20)"},
-			"status": {Type: core.ToolSchemaTypeString, Description: "Filter by execution status (e.g., FAILED, COMPLETED, RUNNING)"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
+			"limit":            {Type: core.ToolSchemaTypeString, Description: "Number of executions to return (default 20)"},
+			"status":           {Type: core.ToolSchemaTypeString, Description: "Filter by execution status (e.g., FAILED, COMPLETED, RUNNING)"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id"},
 	}
@@ -1389,28 +1529,33 @@ func (t WorkflowExecutionsTool) Call(ctx core.NbToolContext, input core.NBToolCa
 		path += "?" + strings.Join(queryParams, "&")
 	}
 
-	resp, err := DoRunbookRequest("GET", path, nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	accountId, err := workflowCallAccount(ctx, input)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	resp, err := DoRunbookRequest("GET", path, nil, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return ranOnWorkflowAccount(core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, ctx, accountId), nil
 }
 
 // --- Workflow Execution Get Tool ---
 
-type WorkflowExecutionGetTool struct{}
+type WorkflowExecutionGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowExecutionGetTool) Name() string             { return ToolWorkflowExecutionGet }
 func (t WorkflowExecutionGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionGetTool) Description() string {
-	return "Gets details of a specific automation execution including task-level errors, inputs, and outputs. Args: id (string, required), execution_id (string, required)."
+	return "Gets details of a specific automation execution including task-level errors, inputs, and outputs. Args: id (string, required), execution_id (string, required), account_id (string, optional: when the automation is in another account)."
 }
 func (t WorkflowExecutionGetTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":           {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
-			"execution_id": {Type: core.ToolSchemaTypeString, Description: "The ID of the execution to retrieve"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
+			"execution_id":     {Type: core.ToolSchemaTypeString, Description: "The ID of the execution to retrieve"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id", "execution_id"},
 	}
@@ -1424,19 +1569,33 @@ func (t WorkflowExecutionGetTool) Call(ctx core.NbToolContext, input core.NBTool
 	if !ok || executionId == "" {
 		return core.NBToolResponse{}, errors.New("execution_id is required")
 	}
-
-	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s/runs/%s", id, executionId), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	accountId, err := workflowCallAccount(ctx, input)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+
+	resp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s/runs/%s", id, executionId), nil, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	return ranOnWorkflowAccount(core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, ctx, accountId), nil
 }
 
 // --- Workflow Execution Retrigger Tool ---
 
-type WorkflowExecutionRetriggerTool struct{}
+type WorkflowExecutionRetriggerTool struct {
+	// accountId is the conversation's account; Call runs on the one a call
+	// names (account_id), else this one.
+	accountId string
+}
 
 func (t WorkflowExecutionRetriggerTool) Name() string { return ToolWorkflowExecutionRetrigger }
+
+// RequestedAccountID is the other account a re-run names, so its approval,
+// write-access check and card are that account's.
+func (t WorkflowExecutionRetriggerTool) RequestedAccountID(toolInput string) string {
+	return requestedWorkflowAccount(confirmationArgs(toolInput), t.accountId)
+}
 
 // InferToolRequestType classifies re-running an execution as create (new run, real
 // effects) so the executor gates it behind confirmation + RBAC.
@@ -1446,15 +1605,17 @@ func (t WorkflowExecutionRetriggerTool) InferToolRequestType(_ *security.Request
 
 func (t WorkflowExecutionRetriggerTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionRetriggerTool) Description() string {
-	return "Re-triggers an automation execution. Useful for retrying a failed execution. Args: id (string, required), execution_id (string, required), inputs (object, optional)."
+	return "Re-triggers an automation execution. Useful for retrying a failed execution. Args: id (string, required), execution_id (string, required), inputs (object, optional), " +
+		"account_id (string, optional: when the automation is in another account)."
 }
 func (t WorkflowExecutionRetriggerTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":           {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
-			"execution_id": {Type: core.ToolSchemaTypeString, Description: "The ID of the execution to retrigger"},
-			"inputs":       {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the new execution"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of the automation"},
+			"execution_id":     {Type: core.ToolSchemaTypeString, Description: "The ID of the execution to retrigger"},
+			"inputs":           {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the new execution"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id", "execution_id"},
 	}
@@ -1474,16 +1635,26 @@ func (t WorkflowExecutionRetriggerTool) Call(ctx core.NbToolContext, input core.
 		body = map[string]any{}
 	}
 
-	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/runs/%s/retrigger", id, executionId), body, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	accountId, err := workflowCallAccount(ctx, input)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	// The re-run and the name of a refused one are the automation's account's.
+	onAccount := ctx
+	onAccount.AccountId = accountId
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/runs/%s/retrigger", id, executionId), body, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		if refused, ok := runNotStartedResponse(refusedAutomationName(onAccount, ToolWorkflowExecutionRetrigger, id), err); ok {
+			return ranOnWorkflowAccount(refused, ctx, accountId), nil
+		}
+		return ranOnWorkflowAccount(core.NBToolResponse{}, ctx, accountId), err
+	}
+	return ranOnWorkflowAccount(core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, ctx, accountId), nil
 }
 
 // --- Workflow State Tool ---
 
-type WorkflowStateTool struct{}
+type WorkflowStateTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowStateTool) Name() string             { return ToolWorkflowState }
 func (t WorkflowStateTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1514,7 +1685,7 @@ func (t WorkflowStateTool) Call(ctx core.NbToolContext, input core.NBToolCallReq
 
 // --- Workflow Config List Tool ---
 
-type WorkflowConfigListTool struct{}
+type WorkflowConfigListTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowConfigListTool) Name() string             { return ToolWorkflowConfigList }
 func (t WorkflowConfigListTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1549,7 +1720,7 @@ func (t WorkflowConfigListTool) Call(ctx core.NbToolContext, input core.NBToolCa
 
 // --- Workflow Config Get Tool ---
 
-type WorkflowConfigGetTool struct{}
+type WorkflowConfigGetTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowConfigGetTool) Name() string             { return ToolWorkflowConfigGet }
 func (t WorkflowConfigGetTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1639,12 +1810,22 @@ func (t WorkflowConfigSaveTool) Call(ctx core.NbToolContext, input core.NBToolCa
 // ground failure diagnosis in real task-level errors. It is classified `create`
 // so the executor gates it behind explicit user approval — dry-run is not assumed
 // to be free of side effects.
-type WorkflowDryRunTool struct{}
+type WorkflowDryRunTool struct {
+	// accountId is the conversation's account; Call dry-runs on the one a call
+	// names (account_id), else this one.
+	accountId string
+}
+
+// RequestedAccountID is the other account a dry-run names, so its approval,
+// write-access check and card are that account's.
+func (t WorkflowDryRunTool) RequestedAccountID(toolInput string) string {
+	return requestedWorkflowAccount(confirmationArgs(toolInput), t.accountId)
+}
 
 func (t WorkflowDryRunTool) Name() string             { return ToolWorkflowDryRun }
 func (t WorkflowDryRunTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowDryRunTool) Description() string {
-	return "Dry-runs an automation: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Use it to verify an automation works and to diagnose why a run failed. Provide either an automation `id` or a raw `definition`."
+	return "Dry-runs an automation: executes its tasks against the engine without persisting external side effects, returning per-task status and errors. Use it to verify an automation works and to diagnose why a run failed. Provide either an automation `id` or a raw `definition`; pass account_id for an automation listed under other_accounts."
 }
 
 // InferToolRequestType classifies dry-run as create so it is gated behind user
@@ -1657,15 +1838,25 @@ func (t WorkflowDryRunTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":         {Type: core.ToolSchemaTypeString, Description: "The ID of an existing automation to dry-run (its current definition is fetched). Provide this OR `definition`."},
-			"definition": {Type: core.ToolSchemaTypeObject, Description: "A raw automation definition (version/triggers/tasks) to dry-run. Provide this OR `id`."},
-			"inputs":     {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the dry-run."},
-			"name":       {Type: core.ToolSchemaTypeString, Description: "Optional automation name, used in any notifications the dry-run produces."},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The ID of an existing automation to dry-run (its current definition is fetched). Provide this OR `definition`."},
+			"definition":       {Type: core.ToolSchemaTypeObject, Description: "A raw automation definition (version/triggers/tasks) to dry-run. Provide this OR `id`."},
+			"inputs":           {Type: core.ToolSchemaTypeObject, Description: "Optional input parameters for the dry-run."},
+			"name":             {Type: core.ToolSchemaTypeString, Description: "Optional automation name, used in any notifications the dry-run produces."},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 	}
 }
 
 func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	accountId, err := workflowCallAccount(ctx, input)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+	resp, err := t.dryRun(ctx, input, accountId)
+	return ranOnWorkflowAccount(resp, ctx, accountId), err
+}
+
+func (t WorkflowDryRunTool) dryRun(ctx core.NbToolContext, input core.NBToolCallRequest, accountId string) (core.NBToolResponse, error) {
 	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
 	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 
@@ -1675,9 +1866,9 @@ func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 		if !ok || id == "" {
 			return core.NBToolResponse{}, errors.New("provide either `id` or `definition` to dry-run")
 		}
-		wfResp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, ctx.AccountId, tenantId, userId)
+		wfResp, err := DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", id), nil, accountId, tenantId, userId)
 		if err != nil {
-			return core.NBToolResponse{}, fmt.Errorf("failed to fetch automation %s for dry-run: %w", id, err)
+			return core.NBToolResponse{}, fmt.Errorf("failed to fetch automation %s for dry-run: %w", id, withOtherAccountHint(err, input, ctx.AccountId))
 		}
 		var wf map[string]interface{}
 		if err := json.Unmarshal(wfResp, &wf); err != nil {
@@ -1700,7 +1891,7 @@ func (t WorkflowDryRunTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 	reqCtx, cancel := context.WithTimeout(context.Background(), dryRunTimeout)
 	defer cancel()
 
-	resp, err := DoRunbookRequestWithContext(reqCtx, "POST", "workflows/dry-run", body, ctx.AccountId, tenantId, userId)
+	resp, err := DoRunbookRequestWithContext(reqCtx, "POST", "workflows/dry-run", body, accountId, tenantId, userId)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
 			return core.NBToolResponse{
@@ -1785,7 +1976,7 @@ func requireWorkflowID(args map[string]any) (string, error) {
 }
 
 // WorkflowListVersionsTool — list published versions of an automation (read).
-type WorkflowListVersionsTool struct{}
+type WorkflowListVersionsTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowListVersionsTool) Name() string             { return ToolWorkflowListVersions }
 func (t WorkflowListVersionsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -1812,7 +2003,7 @@ func (t WorkflowListVersionsTool) Call(ctx core.NbToolContext, input core.NBTool
 }
 
 // WorkflowGetVersionTool — get a specific published version's definition (read).
-type WorkflowGetVersionTool struct{}
+type WorkflowGetVersionTool struct{ core.ReadOnlyTool }
 
 func (t WorkflowGetVersionTool) Name() string             { return ToolWorkflowGetVersion }
 func (t WorkflowGetVersionTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -2106,7 +2297,29 @@ func (t WorkflowResumeTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	return core.NBToolResponse{Data: withResumeNote(resp), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// resumeNote travels with every resume result. Resuming only switches an
+// automation's triggers back on, and without saying so a resume was reported
+// as a run, with an execution id and per-step results that no tool returned.
+const resumeNote = "The automation is now ACTIVE. Resuming does not run it: no execution was created and there is no execution ID or result."
+
+// withResumeNote returns the resume result with resumeNote beside it. A body
+// that is not JSON is kept as a string.
+func withResumeNote(raw []byte) string {
+	out := map[string]any{"note": resumeNote}
+	var parsed any
+	if err := common.UnmarshalJson(raw, &parsed); err == nil {
+		out["result"] = parsed
+	} else {
+		out["result"] = string(raw)
+	}
+	b, err := marshalNoHTMLEscape(out, "")
+	if err != nil {
+		return string(raw)
+	}
+	return string(b)
 }
 
 // WorkflowDeleteTool — delete an automation and its versions (delete).
@@ -2142,12 +2355,22 @@ func (t WorkflowDeleteTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 // --- Workflow Execution Control & Advanced Tools (Phase 4) ---
 
 // WorkflowExecutionCancelTool — cancel a running execution (delete; stops a live run).
-type WorkflowExecutionCancelTool struct{}
+type WorkflowExecutionCancelTool struct {
+	// accountId is the conversation's account; Call cancels on the one a call
+	// names (account_id), else this one.
+	accountId string
+}
+
+// RequestedAccountID is the other account a cancel names, so its approval,
+// write-access check and card are that account's.
+func (t WorkflowExecutionCancelTool) RequestedAccountID(toolInput string) string {
+	return requestedWorkflowAccount(confirmationArgs(toolInput), t.accountId)
+}
 
 func (t WorkflowExecutionCancelTool) Name() string             { return ToolWorkflowExecutionCancel }
 func (t WorkflowExecutionCancelTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 func (t WorkflowExecutionCancelTool) Description() string {
-	return "Cancels a running automation execution. Args: id (string, required), execution_id (string, required). Requires user approval (stops a live run)."
+	return "Cancels a running automation execution. Args: id (string, required), execution_id (string, required), account_id (string, optional: when the automation is in another account). Requires user approval (stops a live run)."
 }
 func (t WorkflowExecutionCancelTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
 	return core.ToolRequestTypeDelete, nil
@@ -2156,8 +2379,9 @@ func (t WorkflowExecutionCancelTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
 		Type: core.ToolSchemaTypeObject,
 		Properties: map[string]core.ToolSchemaProperty{
-			"id":           {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
-			"execution_id": {Type: core.ToolSchemaTypeString, Description: "The execution ID to cancel"},
+			"id":               {Type: core.ToolSchemaTypeString, Description: "The automation ID"},
+			"execution_id":     {Type: core.ToolSchemaTypeString, Description: "The execution ID to cancel"},
+			workflowAccountArg: workflowAccountSchemaProperty(),
 		},
 		Required: []string{"id", "execution_id"},
 	}
@@ -2171,11 +2395,15 @@ func (t WorkflowExecutionCancelTool) Call(ctx core.NbToolContext, input core.NBT
 	if !ok || execId == "" {
 		return core.NBToolResponse{}, errors.New("execution_id is required")
 	}
-	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/executions/%s/cancel", id, execId), nil, ctx.AccountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	accountId, err := workflowCallAccount(ctx, input)
 	if err != nil {
 		return core.NBToolResponse{}, err
 	}
-	return core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, nil
+	resp, err := DoRunbookRequest("POST", fmt.Sprintf("workflows/%s/executions/%s/cancel", id, execId), nil, accountId, ctx.Ctx.GetSecurityContext().GetTenantId(), ctx.Ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		return ranOnWorkflowAccount(core.NBToolResponse{}, ctx, accountId), err
+	}
+	return ranOnWorkflowAccount(core.NBToolResponse{Data: string(resp), Type: core.NBToolResponseTypeJson}, ctx, accountId), nil
 }
 
 // WorkflowTaskExecuteTool — run a single task type in isolation for testing (create).

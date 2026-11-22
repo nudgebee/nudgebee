@@ -3,6 +3,7 @@ import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
 import { IoIosStats } from 'react-icons/io';
 import Tooltip from '@ui/Tooltip';
+import { Link } from '@ui/Link';
 import { ds } from '@utils/colors';
 
 /**
@@ -41,6 +42,32 @@ const formatCost = (cost) => {
   return `$${cost.toFixed(4)}`;
 };
 
+// $0 from a model with no Model Pricing entry is a missing price, not a free model.
+const formatModelCost = (cost, unpricedRequests) => (unpricedRequests > 0 && !cost ? 'No price' : formatCost(cost));
+
+const unpricedCostColor = (unpricedRequests, cost) => (unpricedRequests > 0 && !cost ? 'var(--ds-amber-700)' : 'var(--ds-gray-500)');
+
+// Reasoning tokens are billed at the output rate but are not part of Output, so
+// without this column Input / Cached / Output do not add up to Cost.
+const THINKING_HEADER_TITLE = 'Reasoning (thinking) tokens — billed at the output rate, in addition to Output';
+
+const MODEL_PRICING_URL = '/user-management?budgetsTab=pricing#ai-tools/budgets-limits';
+
+const UnpricedModelsNote = ({ show }) =>
+  show ? (
+    <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)', marginTop: ds.space[1] }}>
+      Set a price in Admin → AI & Tools → Budgets & Limits →{' '}
+      <Link href={MODEL_PRICING_URL} openInNew secondaryText>
+        Model Pricing
+      </Link>
+      .
+    </Typography>
+  ) : null;
+
+UnpricedModelsNote.propTypes = {
+  show: PropTypes.bool.isRequired,
+};
+
 /**
  * Common styles for token usage display containers
  */
@@ -65,7 +92,8 @@ const tooltipStyles = {
   padding: 0,
   border: '1px solid var(--ds-blue-400)',
   borderRadius: ds.radius.lg,
-  maxWidth: ds.space.mul(1, 135),
+  // Must fit the widest popover (Message Metrics: 145 + padding), or its right-hand columns are clipped.
+  maxWidth: ds.space.mul(1, 155),
   maxHeight: 'none',
   overflow: 'visible',
 };
@@ -343,8 +371,10 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
     total_input_tokens = 0,
     total_output_tokens = 0,
     total_cached_input_tokens = 0,
+    total_thinking_tokens = 0,
     total_cache_hit_rate_percentage: _total_cache_hit_rate_percentage = null,
     total_cost_usd = 0,
+    total_unpriced_requests = 0,
     model_usage = [],
     cache_savings = null,
     success_rate_percentage = null,
@@ -428,7 +458,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
   };
 
   const tooltipContent = (
-    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 95) }}>
+    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 110) }}>
       <Typography sx={{ ...tooltipTitleStyles, fontSize: 'var(--ds-text-body)', marginBottom: ds.space[2] }}>Conversation Metrics</Typography>
 
       {/* Interaction Summary */}
@@ -555,7 +585,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -624,6 +654,19 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
               Output
             </Typography>
             <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
+            </Typography>
+            <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
@@ -665,11 +708,22 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
                   {formatTokens(model.output_tokens)}
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                  {formatCost(model.cost_usd)}
+                  {formatTokens(model.thinking_tokens)}
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-caption)',
+                    color: unpricedCostColor(model.unpriced_requests, model.cost_usd),
+                    paddingTop: ds.space[1],
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatModelCost(model.cost_usd, model.unpriced_requests)}
                 </Typography>
               </React.Fragment>
             ))}
           </Box>
+          <UnpricedModelsNote show={total_unpriced_requests > 0} />
         </Box>
       )}
 
@@ -746,8 +800,14 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false, foll
           </Typography>
         </Box>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-          Input: {formatTokens(total_input_tokens)} • Output: {formatTokens(total_output_tokens)} • Cached: {formatTokens(total_cached_input_tokens)}
+          Input: {formatTokens(total_input_tokens)} • Output: {formatTokens(total_output_tokens)} • Thinking: {formatTokens(total_thinking_tokens)} •
+          Cached: {formatTokens(total_cached_input_tokens)}
         </Typography>
+        {total_unpriced_requests > 0 && (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
+            Excludes {total_unpriced_requests} unpriced {total_unpriced_requests === 1 ? 'call' : 'calls'}.
+          </Typography>
+        )}
       </Box>
 
       {/* Savings Highlight Statement */}
@@ -917,8 +977,10 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
     message_input_tokens = 0,
     message_output_tokens = 0,
     message_cached_input_tokens = 0,
+    message_thinking_tokens = 0,
     message_cache_hit_rate_percentage = null,
     message_cost_usd = 0,
+    message_cache_savings = null,
     agents = [],
   } = messageData;
 
@@ -942,46 +1004,31 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
         input_tokens: 0,
         cached_input_tokens: 0,
         output_tokens: 0,
+        thinking_tokens: 0,
         cost_usd: 0,
+        unpriced_requests: 0,
       };
     }
     acc[modelName].agents += 1;
     acc[modelName].input_tokens += agent.input_tokens || 0;
     acc[modelName].cached_input_tokens += agent.cached_input_tokens || 0;
     acc[modelName].output_tokens += agent.output_tokens || 0;
+    acc[modelName].thinking_tokens += agent.thinking_tokens || 0;
     acc[modelName].cost_usd += agent.cost_usd || 0;
+    acc[modelName].unpriced_requests += agent.unpriced_requests || 0;
     return acc;
   }, {});
 
   const modelUsageArray = Object.values(modelUsage);
+  // From all agents, so a call with no model name still matches the conversation total.
+  const messageUnpricedRequests = agents.reduce((sum, agent) => sum + (agent.unpriced_requests || 0), 0);
 
-  // Calculate cache savings with cost details
-  let cacheSavings = null;
-  if (hasCacheData) {
-    // Estimate cost savings
-    // Cached tokens typically cost 10% of regular tokens, so we save ~90%
-    // Estimate the average cost per input token and calculate savings
-    const totalInputTokens = message_input_tokens;
-
-    // If we have cost data, estimate what cached tokens would have cost at full price
-    // Rough estimation: cached tokens save ~90% of their cost
-    // Average input token cost = total_cost / (input_tokens + output_tokens * output_multiplier)
-    // Using a rough 3:1 ratio for output:input cost
-    const estimatedCostPerInputToken = message_cost_usd / (totalInputTokens + message_output_tokens * 3);
-    const estimatedSavings = message_cached_input_tokens * estimatedCostPerInputToken * 0.9;
-    const estimatedCostWithoutCache = message_cost_usd + estimatedSavings;
-
-    cacheSavings = {
-      tokens_saved: message_cached_input_tokens,
-      cache_hit_rate_percentage: message_cache_hit_rate_percentage,
-      actual_cost_usd: message_cost_usd,
-      estimated_cost_without_cache_usd: estimatedCostWithoutCache,
-      cost_savings_usd: estimatedSavings,
-    };
-  }
+  // Savings come from the backend, priced per call from the same records as the
+  // conversation total; it counts cache writes, which an estimate here could not.
+  const cacheSavings = hasCacheData ? message_cache_savings : null;
 
   const tooltipContent = (
-    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 130) }}>
+    <Box sx={{ padding: ds.space.mul(0, 5), width: ds.space.mul(1, 145) }}>
       <Typography sx={{ ...tooltipTitleStyles, fontSize: 'var(--ds-text-body)', marginBottom: ds.space[2] }}>Message Metrics</Typography>
 
       {/* Model Usage Table */}
@@ -1000,7 +1047,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr',
+              gridTemplateColumns: '2fr 0.7fr 1fr 1fr 1fr 1fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -1069,6 +1116,19 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               Output
             </Typography>
             <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
+            </Typography>
+            <Typography
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-semibold)',
@@ -1107,11 +1167,22 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                   {formatTokens(model.output_tokens)}
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                  {formatCost(model.cost_usd)}
+                  {formatTokens(model.thinking_tokens)}
+                </Typography>
+                <Typography
+                  sx={{
+                    fontSize: 'var(--ds-text-caption)',
+                    color: unpricedCostColor(model.unpriced_requests, model.cost_usd),
+                    paddingTop: ds.space[1],
+                    textAlign: 'right',
+                  }}
+                >
+                  {formatModelCost(model.cost_usd, model.unpriced_requests)}
                 </Typography>
               </React.Fragment>
             ))}
           </Box>
+          <UnpricedModelsNote show={messageUnpricedRequests > 0} />
         </Box>
       )}
 
@@ -1131,7 +1202,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           <Box
             sx={{
               display: 'grid',
-              gridTemplateColumns: '2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr',
+              gridTemplateColumns: '2.6fr 0.9fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr',
               rowGap: ds.space[0],
               columnGap: ds.space[3],
               fontSize: 'var(--ds-text-caption)',
@@ -1198,6 +1269,19 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               }}
             >
               Output
+            </Typography>
+            <Typography
+              title={THINKING_HEADER_TITLE}
+              sx={{
+                fontSize: 'var(--ds-text-caption)',
+                fontWeight: 'var(--ds-font-weight-semibold)',
+                color: 'var(--ds-gray-700)',
+                paddingBottom: ds.space[1],
+                borderBottom: `1px solid ${'var(--ds-gray-200)'}`,
+                textAlign: 'right',
+              }}
+            >
+              Thinking
             </Typography>
             <Typography
               sx={{
@@ -1309,7 +1393,17 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
                     {cell(formatTokens(agent.output_tokens))}
                   </Typography>
                   <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
-                    {cell(formatCost(agent.cost_usd))}
+                    {cell(formatTokens(agent.thinking_tokens))}
+                  </Typography>
+                  <Typography
+                    sx={{
+                      fontSize: 'var(--ds-text-caption)',
+                      color: unpricedCostColor(agent.unpriced_requests, agent.cost_usd),
+                      paddingTop: ds.space[1],
+                      textAlign: 'right',
+                    }}
+                  >
+                    {cell(formatModelCost(agent.cost_usd, agent.unpriced_requests))}
                   </Typography>
                 </React.Fragment>
               );
@@ -1336,7 +1430,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>Tokens Cached:</Typography>
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', fontWeight: 'var(--ds-font-weight-semibold)' }}>
                 {formatTokens(cacheSavings.tokens_saved)} (
-                {cacheSavings.cache_hit_rate_percentage !== null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%)
+                {cacheSavings.cache_hit_rate_percentage != null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%)
               </Typography>
             </Box>
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr auto', columnGap: ds.space[4] }}>
@@ -1391,16 +1485,21 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
           </Typography>
         </Box>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
-          Input: {formatTokens(message_input_tokens)} • Output: {formatTokens(message_output_tokens)} • Cached:{' '}
-          {formatTokens(message_cached_input_tokens)}
+          Input: {formatTokens(message_input_tokens)} • Output: {formatTokens(message_output_tokens)} • Thinking:{' '}
+          {formatTokens(message_thinking_tokens)} • Cached: {formatTokens(message_cached_input_tokens)}
         </Typography>
+        {messageUnpricedRequests > 0 && (
+          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-amber-700)' }}>
+            Excludes {messageUnpricedRequests} unpriced {messageUnpricedRequests === 1 ? 'call' : 'calls'}.
+          </Typography>
+        )}
       </Box>
 
       {/* Cache Savings Highlight */}
       {cacheSavings && cacheSavings.cost_savings_usd > 0 && (
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-green-600)', fontStyle: 'italic', marginTop: ds.space[1] }}>
           💰 Savings Highlight: {formatTokens(cacheSavings.tokens_saved)} (
-          {cacheSavings.cache_hit_rate_percentage !== null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%) of input tokens were served
+          {cacheSavings.cache_hit_rate_percentage != null ? cacheSavings.cache_hit_rate_percentage.toFixed(1) : '0'}%) of input tokens were served
           from the cache, reducing costs.
         </Typography>
       )}
@@ -1431,6 +1530,7 @@ export const AgentTokenUsage = ({ agentData }) => {
     cached_input_tokens = 0,
     cache_hit_rate_percentage = { Valid: false, Float64: 0 },
     cost_usd = 0,
+    unpriced_requests = 0,
     model_name = { Valid: false, String: '' },
     model_provider_name = { Valid: false, String: '' },
     agent_name = '',
@@ -1471,7 +1571,7 @@ export const AgentTokenUsage = ({ agentData }) => {
             )}
           </>
         )}
-        <Typography sx={costTextStyles}>Cost: {formatCost(cost_usd)}</Typography>
+        <Typography sx={costTextStyles}>Cost: {formatModelCost(cost_usd, unpriced_requests)}</Typography>
       </Box>
     </Box>
   );
@@ -1491,6 +1591,7 @@ ConversationTokenUsage.propTypes = {
     total_input_tokens: PropTypes.number.isRequired,
     total_output_tokens: PropTypes.number.isRequired,
     total_cached_input_tokens: PropTypes.number,
+    total_thinking_tokens: PropTypes.number,
     total_cache_hit_rate_percentage: PropTypes.number,
     total_cost_usd: PropTypes.number.isRequired,
     model_usage: PropTypes.arrayOf(
@@ -1498,6 +1599,7 @@ ConversationTokenUsage.propTypes = {
         model_provider: PropTypes.string,
         model_name: PropTypes.string,
         requests: PropTypes.number,
+        thinking_tokens: PropTypes.number,
         cost_usd: PropTypes.number,
         success_rate_percentage: PropTypes.number,
       })
@@ -1526,7 +1628,15 @@ MessageTokenUsage.propTypes = {
     message_input_tokens: PropTypes.number.isRequired,
     message_output_tokens: PropTypes.number.isRequired,
     message_cached_input_tokens: PropTypes.number,
+    message_thinking_tokens: PropTypes.number,
     message_cache_hit_rate_percentage: PropTypes.number,
+    message_cache_savings: PropTypes.shape({
+      tokens_saved: PropTypes.number,
+      cache_hit_rate_percentage: PropTypes.number,
+      actual_cost_usd: PropTypes.number,
+      estimated_cost_without_cache_usd: PropTypes.number,
+      cost_savings_usd: PropTypes.number,
+    }),
     message_cost_usd: PropTypes.number.isRequired,
     agents: PropTypes.arrayOf(
       PropTypes.shape({
@@ -1535,6 +1645,7 @@ MessageTokenUsage.propTypes = {
         input_tokens: PropTypes.number,
         output_tokens: PropTypes.number,
         cached_input_tokens: PropTypes.number,
+        thinking_tokens: PropTypes.number,
         cost_usd: PropTypes.number,
         model_name: PropTypes.object,
         model_provider_name: PropTypes.object,

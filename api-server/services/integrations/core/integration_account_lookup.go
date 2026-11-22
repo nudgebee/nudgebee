@@ -123,3 +123,33 @@ func ListLinkedCloudAccountIDsByIntegrationID(
 	}
 	return ids, nil
 }
+
+// GetIntegrationTypeByID returns the stored type of the caller's tenant's
+// integration with that id, or "" when there is no such integration. Used to
+// authorize a write by what an integration IS rather than by the type the
+// request claims: CreateIntegrationConfig updates by id without comparing the
+// stored type to the one in the request.
+func GetIntegrationTypeByID(ctx *security.RequestContext, integrationId string) (string, error) {
+	if integrationId == "" {
+		return "", nil
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", fmt.Errorf("GetIntegrationTypeByID: failed to get database manager: %w", err)
+	}
+
+	var types []string
+	if err := dbms.Db.Select(&types, `
+		SELECT type
+		FROM integrations
+		WHERE tenant_id = $1
+		  AND id = $2
+	`, ctx.GetSecurityContext().GetTenantId(), integrationId); err != nil {
+		return "", fmt.Errorf("GetIntegrationTypeByID: query failed: %w", err)
+	}
+	if len(types) == 0 {
+		return "", nil
+	}
+	return types[0], nil
+}

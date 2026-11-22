@@ -142,11 +142,15 @@ _MAX_TABLE_COLUMNS = 20
 # _MAX_TABLE_CHARS below - no separate accounting needed, it flows through
 # the normal per-cell char count like any other cell text.
 _BLANK_CELL_PLACEHOLDER = "-"
-# Slack rejects the whole message if a table's cell content exceeds this many
-# characters in aggregate - confirmed empirically (error
+# This is the PER-TABLE cap - confirmed empirically (error
 # table_character_count_must_not_exceed_10000, not documented on the page
-# linked above). Also cap per-cell, both as a safety margin against the
-# aggregate cap and because a huge single cell isn't readable in a table.
+# linked above). Slack separately caps the sum across every table in one
+# message at 20000 (aggregate_table_character_count_must_not_exceed_20000,
+# also undocumented) - that's handled by bisecting the send itself
+# (services/message.py's post_to_slack_with_blocks_fallback), not here,
+# since it spans tables this module renders independently. Also cap
+# per-cell, both as a safety margin against the per-table cap and because a
+# huge single cell isn't readable in a table.
 _MAX_TABLE_CHARS = 10000
 _MAX_CELL_CHARS = 200
 

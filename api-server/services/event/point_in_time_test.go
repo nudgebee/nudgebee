@@ -133,7 +133,7 @@ func runInsertEvent(t *testing.T, e Event, isInsert bool) insertEventOutcome {
 	}
 	args[insertEventArgStatus-1], args[insertEventArgNbStatus-1] = status, nbStatus
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO events")).WithArgs(args...).
-		WillReturnRows(sqlmock.NewRows([]string{"is_insert"}).AddRow(isInsert))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "is_insert"}).AddRow(resolveTestEventID, isInsert))
 
 	id, err := InsertEvent(e, resolveTestEventID, WithDeferredPostProcess(func(string) { out.postProcessed = true }))
 	require.NoError(t, err)

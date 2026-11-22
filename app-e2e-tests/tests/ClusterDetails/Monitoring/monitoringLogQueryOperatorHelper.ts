@@ -153,6 +153,25 @@ async function attemptAddLogFilterChip(locators: MonitoringTabLocator, label: st
   // checked; the click itself is still wrapped, since a value list that keeps
   // re-rendering as results stream in can detach the node between finding it
   // and clicking it.
+  // Multi-word operators (NOT LIKE, not icontains) break when value text is typed, because the builder splits the input on whitespace; the value is clicked from the suggestion chips instead.
+  if (operatorLabel.includes(" ")) {
+    const valueChip = locators.LogQuerySuggestions.filter({ hasText: new RegExp(`^${escapeForRegex(value)}$`) }).first();
+    // A provider may not offer this value, which the caller records as a known limitation.
+    const chipFound = await valueChip
+      .waitFor({ state: "visible", timeout: 10000 })
+      .then(() => true)
+      .catch(() => false);
+    if (!chipFound) {
+      console.log(`[addLogFilterChip] value chip "${value}" not offered after "${operatorLabel}"`);
+      return false;
+    }
+    await valueChip.click();
+    // Add Operation enables only once the chip commits; a timeout means it did not, which the caller reports.
+    return expect(locators.LogQueryAddOperationBtn)
+      .toBeEnabled({ timeout: 5000 })
+      .then(() => true)
+      .catch(() => false);
+  }
   await input.pressSequentially(value, { delay: 30 });
   await input.page().waitForTimeout(1500);
   const valueOption = locators.LogQuerySuggestions.filter({ hasText: new RegExp(`^${escapeForRegex(value)}$`) }).first();

@@ -1,10 +1,11 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { createGetMenuItem, generateMenuItems } from '@shared/layout/UserMenuItems';
 
 // Mock next-auth/react
 jest.mock('next-auth/react', () => ({
   signOut: jest.fn(),
+  getSession: jest.fn(async () => null),
   useSession: () => ({ data: { user: { name: 'Test User' }, roles: [], tenant: 'test' }, status: 'authenticated' }),
 }));
 
@@ -95,12 +96,12 @@ describe('UserMenuItems', () => {
       expect(setOpenSwitchAccount).toHaveBeenCalledWith(true);
     });
 
-    it('renders Logout item and handles click', () => {
+    it('renders Logout item and handles click', async () => {
       render(<>{getMenuItem('Logout')}</>);
       const menuItem = screen.getByText(/Logout/);
       fireEvent.click(menuItem.closest('[role="menuitem"]') || menuItem);
       expect(setAnchorElUser).toHaveBeenCalledWith(null);
-      expect(signOut).toHaveBeenCalledWith({ callbackUrl: '/' });
+      await waitFor(() => expect(signOut).toHaveBeenCalledWith({ callbackUrl: '/' }));
     });
 
     it('renders Version item with appVersion', () => {
@@ -162,6 +163,23 @@ describe('UserMenuItems', () => {
       isTenantAdmin.mockReturnValue(false);
       const menu = generateMenuItems();
       expect(menu).not.toContain('Switch Tenant');
+    });
+
+    it('omits API Tokens while the setup gate is locked', () => {
+      const menu = generateMenuItems(false, true);
+      expect(menu).not.toContain('API Tokens');
+      expect(menu).toContain('Logout');
+      expect(menu).toContain('Version');
+    });
+
+    it('includes API Tokens once unlocked', () => {
+      const menu = generateMenuItems(false, false);
+      expect(menu).toContain('API Tokens');
+    });
+
+    it('defaults locked to false', () => {
+      const menu = generateMenuItems(false);
+      expect(menu).toContain('API Tokens');
     });
   });
 });

@@ -24,7 +24,7 @@
  * here is to stop an author building a panel that can only ever render Access
  * Denied, and to name the grant to ask for instead of a bare 403 later.
  */
-import { hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
+import { hasGrantOnAccount, hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import { findTable, type EntityTable } from './entityQuery';
 
 /**
@@ -50,25 +50,31 @@ const DATASOURCE_PERMISSION: Record<string, string> = {
   // `text` renders authored prose and reads nothing, so it is never gated.
 };
 
-/** Does the viewer hold `<module>:<class>`? Write implies Read, as every backend gate has it. */
-function holds(permission: string): boolean {
-  const [module, cls] = permission.split(':');
-  if (hasPermission(module, cls as 'Read' | 'Write' | 'Execute')) return true;
+/**
+ * Does the viewer hold `<module>:<class>`? Write implies Read, as every backend
+ * gate has it. With `accountIds`, a grant bound to accounts also counts when it
+ * covers every one of them, since the panel reads each.
+ */
+function holds(permission: string, accountIds: string[] = []): boolean {
+  const [module, cls] = permission.split(':') as [string, 'Read' | 'Write' | 'Execute'];
+  if (hasPermission(module, cls)) return true;
   // Read is implied by Write everywhere this is checked server-side
   // (query/service.go, CanReadAccountData). Demanding the literal Read would be
   // stricter than the server and would grey a control out for someone it allows.
-  return cls === 'Read' && hasPermission(module, 'Write');
+  if (cls === 'Read' && hasPermission(module, 'Write')) return true;
+  return Array.isArray(accountIds) && accountIds.length > 0 && accountIds.every((accountId) => hasGrantOnAccount(module, cls, accountId));
 }
 
 /**
  * The permission the viewer is missing for this datasource, ignoring anything
- * table-specific. Undefined when nothing blocks them.
+ * table-specific. Undefined when nothing blocks them. `accountIds` are the
+ * accounts the panel reads, for a grant bound to them.
  */
-export function missingDatasourceGrant(datasource: string): string | undefined {
+export function missingDatasourceGrant(datasource: string, accountIds: string[] = []): string | undefined {
   if (!isGrantsOnlyUser()) return undefined;
   const required = DATASOURCE_PERMISSION[datasource];
   if (!required) return undefined;
-  return holds(required) ? undefined : required;
+  return holds(required, accountIds) ? undefined : required;
 }
 
 /**

@@ -443,6 +443,32 @@ def test_capabilities_in_the_real_catalog_are_kept(monkeypatch):
     classify([[doc]])
 
     assert doc.metadata["capabilities"] == ["k8s.workload_restart"]
+    assert doc.metadata["capabilities_extracted"] is True
+
+
+def test_a_document_classified_against_a_real_catalog_that_names_nothing_is_still_stamped_as_extracted(monkeypatch):
+    # "The model found none" must be distinguishable from "there was no catalog".
+    _patch_catalog(monkeypatch, names=["kubectl_execute"])
+    _patch_llm(monkeypatch, _FakeLLM(text=_response(shape="narrative_reference", capabilities=[])))
+
+    doc = _doc("a description with no commands in it")
+    classify([[doc]])
+
+    assert doc.metadata["capabilities"] == []
+    assert doc.metadata["capabilities_extracted"] is True
+
+
+def test_a_response_without_a_capabilities_list_is_not_stamped_as_extracted(monkeypatch):
+    # A real catalog exists, but the model gave no capabilities list at all. That is not
+    # "it found none", so the document must stay eligible for re-extraction.
+    _patch_catalog(monkeypatch, names=["kubectl_execute"])
+    _patch_llm(monkeypatch, _FakeLLM(text=_response(shape="deterministic_procedure")))
+
+    doc = _doc("kubectl get pods")
+    classify([[doc]])
+
+    assert doc.metadata["capabilities"] == []
+    assert "capabilities_extracted" not in doc.metadata
 
 
 def test_capabilities_not_in_the_real_catalog_are_dropped_not_trusted(monkeypatch):
@@ -515,6 +541,9 @@ def test_empty_catalog_means_no_capabilities_survive_even_if_the_model_names_one
     assert doc.metadata["capabilities"] == []
     # shape is independent of the catalog and must still be stored.
     assert doc.metadata["shape"] == "deterministic_procedure"
+    # No catalog means the extraction did not really run: no stamp, so the backfill
+    # re-extracts once a catalog exists instead of trusting this empty list.
+    assert "capabilities_extracted" not in doc.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -878,7 +907,12 @@ def test_only_the_label_fields_are_read_from_the_nested_metadata_payload(qdrant)
 
     (call,) = qdrant.retrieves
     assert call["collection_name"] == "kb_1"
-    assert call["with_payload"] == ["metadata.kind", "metadata.shape", "metadata.capabilities"]
+    assert call["with_payload"] == [
+        "metadata.kind",
+        "metadata.shape",
+        "metadata.capabilities",
+        "metadata.capabilities_extracted",
+    ]
     assert call["with_vectors"] is False
     assert labels == {_hex_id("a"): _labels()}
 
@@ -1582,3 +1616,48 @@ def test_a_knowledge_base_document_whose_kind_is_not_a_classification_is_not_pub
 
     assert summaries == []
     assert qdrant.set_payloads == []
+
+
+def test_capability_listing_gives_each_name_its_one_line_description_and_tolerates_none():
+    long_description = "x" * 500
+    catalog = [
+        {"name": "b_tool", "description": "Runs   kubectl\ncommands."},
+        {"name": "a_tool", "description": None},
+        {"name": "c_tool", "description": long_description},
+    ]
+
+    lines = processing._capability_listing(catalog).splitlines()
+
+    assert lines[0] == "- a_tool"  # sorted by name; no description, no trailing colon
+    assert lines[1] == "- b_tool: Runs kubectl commands."  # whitespace and newlines collapsed
+    assert lines[2] == "- c_tool: " + "x" * processing._CAPABILITY_DESCRIPTION_MAX_CHARS
+
+
+def test_prompt_carries_capability_descriptions_and_leaves_the_shape_instructions_alone(monkeypatch):
+    seen = []
+
+    class _Capture:
+        def generate(self, prompt):
+            seen.append(prompt)
+            return SimpleNamespace(
+                text=_response("deterministic_procedure", ["k8s.cli"]), input_tokens=1, output_tokens=1
+            )
+
+    _patch_llm(monkeypatch, _Capture())
+    monkeypatch.setattr(
+        "rag.core.utils.db_query.get_capability_catalog",
+        lambda: [
+            {"name": "k8s.cli", "surface": "workflow_task", "scope": "pass_through", "description": "Run kubectl."}
+        ],
+    )
+    _patch_usage(monkeypatch)
+
+    processing._classify_source_documents([[_doc("1. kubectl get pods")]], "acct", "col")
+
+    prompt = seen[0]
+    assert "- k8s.cli: Run kubectl." in prompt
+    # Everything outside the capability section is the shape prompt, byte for byte.
+    head, _, rest = processing._KB_METADATA_EXTRACTION_PROMPT.partition("{capability_section}")
+    tail = rest.split("{content}")[0].replace("{{", "{").replace("}}", "}")
+    assert prompt.startswith(head)
+    assert tail in prompt

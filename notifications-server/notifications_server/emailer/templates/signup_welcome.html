@@ -1,0 +1,67 @@
+{% extends "_base.html" %}
+
+{% block title %}Welcome to {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  {%- set _user_name = user_name | default("", true) -%}
+  {%- set _org_name  = org_name  | default("", true) -%}
+  {%- set _setup_url = setup_url | default(_base_url + "/setup", true) -%}
+
+  <!-- SUBJECT -->
+  <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 28px; letter-spacing:-0.3px; font-weight:400;">
+    Welcome to {{ _brand_name }}, glad you're here
+  </h1>
+
+  <!-- BODY COPY -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    {% if _user_name %}Hey {{ _user_name }}, {% endif -%}
+    <strong style="color:#0D1B2A; font-weight:600;">{{ _org_name }}</strong> is ready. There's just one thing to do to get going:
+  </p>
+
+  <!-- SETUP STEP -->
+  <div style="background-color:{{ _primary_tint }}; border-radius:4px; padding:24px 26px; margin:0 0 22px;">
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:16px; font-weight:600; color:#0D1B2A; margin:0 0 4px; line-height:1.4;">
+      Connect a cluster or cloud account
+    </p>
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14px; color:#5B6472; font-weight:300; margin:0 0 18px; line-height:1.6;">
+      Kubernetes, AWS, GCP, Azure or self-hosted. Takes about 5 minutes.
+    </p>
+    <table style="border-collapse:collapse; border-spacing:0; border:0;">
+      <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+      <tr>
+        <td style="border-radius:6px; background-color:#2A3D5A;">
+          <a href="{{ _setup_url }}" target="_blank" rel="noopener noreferrer"
+            style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; font-weight:600; color:#FFFFFF; text-decoration:none; padding:11px 24px; display:inline-block; border-radius:6px;">
+            Go to setup &rarr;
+          </a>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- FOOTNOTE -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; margin:0 0 22px; line-height:1.65;">
+    Slack or Teams, your monitoring tools and your LLM come later. Setup walks you through them.
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:0 0 22px;"></div>
+
+  <!-- CLOSING -->
+  {% if _support_email %}
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0;">
+    If anything comes up, write to us at
+    <a href="mailto:{{ _support_email }}"
+      style="color:#F5A623; text-decoration:none; font-weight:500; border-bottom:1px solid rgba(245,166,35,0.4);">{{ _support_email }}</a>.
+  </p>
+  {% endif %}
+{% endblock %}
+
+{% block card_footer %}
+  <!-- SIGNATURE -->
+  <div style="border-top:1px solid #F0F0F0; margin-top:28px; padding-top:22px;">
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#262626; font-weight:300; letter-spacing:-0.2px; margin:0;">
+      — The {{ _brand_name }} Team
+    </p>
+  </div>
+{% endblock %}

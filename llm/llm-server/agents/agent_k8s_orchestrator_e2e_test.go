@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/agents/asserts"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"os"
@@ -300,10 +301,10 @@ func runTest(t *testing.T, agent core.NBAgent, tc k8sTestCase) core.NBAgentRespo
 // waitForMemory polls the long-term memory store for entries matching every keyword
 // in `keywords`. Returns the matched memory and true on the first hit, or zero-value
 // and false after `attempts` rounds (`interval` between rounds).
-func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (core.LongTermMemory, bool) {
+func waitForMemory(t *testing.T, accountId string, keywords []string, attempts int, interval time.Duration) (memory.LongTermMemory, bool) {
 	t.Helper()
 	for i := 0; i < attempts; i++ {
-		memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
+		memories, err := memory.GetStore().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 		if err == nil {
 			for _, m := range memories {
 				if containsAll(m.Content, keywords) {
@@ -315,14 +316,14 @@ func waitForMemory(t *testing.T, accountId string, keywords []string, attempts i
 		fmt.Printf("attempt %d: memory not yet present, retrying in %s…\n", i+1, interval)
 		time.Sleep(interval)
 	}
-	return core.LongTermMemory{}, false
+	return memory.LongTermMemory{}, false
 }
 
 // countMemoriesMatching returns the number of long-term memories whose content
 // contains every keyword in `keywords`.
 func countMemoriesMatching(t *testing.T, accountId string, keywords []string) int {
 	t.Helper()
-	memories, err := core.GetConversationDao().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
+	memories, err := memory.GetStore().ListLongTermMemories(accountId, "", nil, "", "", 50, 0)
 	assert.Nil(t, err)
 	count := 0
 	for _, m := range memories {
@@ -440,7 +441,7 @@ func TestK8sAgent_MemoryCreation(t *testing.T) {
 		mem, found := waitForMemory(t, accountId, keywords, 12, 5*time.Second)
 		assert.True(t, found, "memory not found in DB within 60 s")
 		if found {
-			assert.Equal(t, core.MemoryTypeUserPreference, mem.MemoryType)
+			assert.Equal(t, memory.MemoryTypeUserPreference, mem.MemoryType)
 		}
 	}
 
@@ -1523,9 +1524,6 @@ func TestK8sAgent_FunctionExecutionWithApproval(t *testing.T) {
 }
 
 func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
-	prev := config.Config.LlmServerKBPrestepEnabled
-	config.Config.LlmServerKBPrestepEnabled = true
-	t.Cleanup(func() { config.Config.LlmServerKBPrestepEnabled = prev })
 	skipIfNoFixtureEnv(t)
 	agent := newK8sOrchestratorAgent("25f42d26-f179-4acd-9946-271ee0cf1b73")
 
@@ -1535,6 +1533,42 @@ func TestK8sAgent_LoadSkillsForSubagents(t *testing.T) {
 		AccountId:         "25f42d26-f179-4acd-9946-271ee0cf1b73",
 		UserId:            os.Getenv("TEST_USER"),
 		Query:             "can you get me memory usage of llm-server in nudgebee namespace.",
+		ApprovalResponses: []string{},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents2(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:      "ci_failure_investigation",
+		SessionId: "ut-tool-calls-8",
+		AccountId: os.Getenv("TEST_ACCOUNT"),
+		UserId:    os.Getenv("TEST_USER"),
+		Query: `In namespace nudgebee:
+
+1. Report the current replica count and readiness of deployment app-dev.
+2. Apply the deployment’s existing replica count again without changing its desired state.
+3. After approval and execution, verify that deployment readiness remains unchanged.
+
+Do not change the replica count to a different value.`,
+		ApprovalResponses: []string{"yes"},
+	}
+	runTestMinimal(t, agent, tc)
+}
+
+func TestK8sAgent_LoadSkillsForSubagents3(t *testing.T) {
+	skipIfNoFixtureEnv(t)
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
+
+	tc := k8sTestCase{
+		Name:              "ci_failure_investigation",
+		SessionId:         "ut-tool-calls-3",
+		AccountId:         os.Getenv("TEST_ACCOUNT"),
+		UserId:            os.Getenv("TEST_USER"),
+		Query:             "Can you get me max memory usage in last 7 days for each namespace.",
 		ApprovalResponses: []string{},
 	}
 	runTestMinimal(t, agent, tc)

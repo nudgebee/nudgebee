@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -22,40 +21,55 @@ import (
 // Memory-v2 seam. These package-level function pointers default to no-op /
 // disabled implementations so this file compiles clean without importing
 // nudgebee/llm/ee/memory. In prod (which ships the full source tree)
-// agents/core/memory_v2.go's init() reassigns each pointer to a real impl
+// ee/memory/corebridge/memory_v2.go's init() reassigns each pointer to a real impl
 // that reaches into memory.Default(), memory.ComposeEnabledFor, and the
-// typed stores. In OSS builds memory_v2.go is stripped by .oss-exclude and
+// typed stores. In OSS builds ee/ (and so ee/memory/corebridge) is stripped by .oss-exclude and
 // these no-op defaults stay in force — every memory-v2 code path becomes
 // a legacy fall-through.
 //
-// Per-tenant gating is preserved: isMemoryV2ActiveFn calls through to
+// Per-tenant gating is preserved: IsMemoryV2ActiveFn calls through to
 // memory.ComposeEnabledFor(tenantID) in EE, which reads the MEMORY_MODULE
 // feature-flag row for the tenant. Tenants not enrolled in MEMORY_MODULE
 // still take the legacy path even on EE binaries — unchanged from before
 // the seam was introduced.
-var (
-	// isMemoryV2ActiveFn reports whether memory-v2 is enabled for this
-	// tenant. OSS default: always false.
-	isMemoryV2ActiveFn = func(tenantID string) bool { return false }
+// MemoryPromptParts is what ComposeMemoryV2BlockFn hands the executor. The
+// two halves land in different places in the human message: Memory becomes
+// the <user_memory> reference block; Style is the user's <user_style> answer
+// instruction, rendered on its own right before <question>.
+type MemoryPromptParts struct {
+	Memory string
+	Style  string
+}
 
-	// recordExtractedFactViaMemoryV2Fn writes a single extracted fact to
+var (
+	// IsMemoryV2ActiveFn reports whether memory-v2 is enabled for this
+	// tenant. OSS default: always false.
+	IsMemoryV2ActiveFn = func(tenantID string) bool { return false }
+
+	// SaverKeepsMemoriesFn reports whether the memory saver keeps this
+	// conversation's memories, so the extractor has nothing to do. OSS
+	// default: always false.
+	SaverKeepsMemoriesFn = func(tenantID string, request NBAgentRequest) bool { return false }
+
+	// RecordExtractedFactViaMemoryV2Fn writes a single extracted fact to
 	// the memory-v2 typed stores. OSS default: returns an error so the
 	// caller records stats.Errors and moves on.
-	recordExtractedFactViaMemoryV2Fn = func(
+	RecordExtractedFactViaMemoryV2Fn = func(
 		ctx *security.RequestContext,
 		agent NBAgent,
 		request NBAgentRequest,
 		fact MemoryFact,
-		memType MemoryType,
+		memType memory.MemoryType,
 		confidence float64,
+		memoryWriteSucceeded bool,
 	) error {
 		return errors.New("memory-v2 unavailable in this build")
 	}
 
-	// extractSessionWorkingMemoryFn runs the v2 session extractor after
+	// ExtractSessionWorkingMemoryFn runs the v2 session extractor after
 	// each turn (writes a fresh per-session working-memory blob). OSS
 	// default: no-op — session-working-memory feature simply doesn't run.
-	extractSessionWorkingMemoryFn = func(
+	ExtractSessionWorkingMemoryFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		response string,
@@ -63,41 +77,53 @@ var (
 	) {
 	}
 
-	// composeMemoryV2BlockFn returns the rendered <memory> block the
-	// executor injects into the agent prompt when memoryModuleActive is
-	// true. OSS default: empty string — the executor's !memoryModuleActive
-	// branch (legacy retrieveAndBuildMemoryNotebook path) is exclusively
-	// taken in OSS, so this hook is never actually reached in an OSS
-	// binary; the no-op is just what makes the file compile.
-	composeMemoryV2BlockFn = func(
+	// SaveMemoriesFn keeps what a finished turn taught Nubi, after the answer
+	// is sent. OSS default: no-op.
+	SaveMemoriesFn = func(
+		ctx *security.RequestContext,
+		request NBAgentRequest,
+		response string,
+		invocations []ToolInvocation,
+		memoryWriteSucceeded bool,
+	) {
+	}
+
+	// ComposeMemoryV2BlockFn returns the memory block and the user-style
+	// block the executor injects into the human message, when
+	// memoryModuleActive is true. OSS default: empty —
+	// the executor's !memoryModuleActive branch (legacy
+	// retrieveAndBuildMemoryNotebook path) is exclusively taken in OSS, so
+	// this hook is never actually reached in an OSS binary; the no-op is
+	// just what makes the file compile.
+	ComposeMemoryV2BlockFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		agent NBAgent,
-	) string {
-		return ""
+	) MemoryPromptParts {
+		return MemoryPromptParts{}
 	}
 
-	// loadTypedStoreDedupContextFn returns existing collective facts matching
+	// LoadTypedStoreDedupContextFn returns existing collective facts matching
 	// this turn's query, as a bullet list, for the extractor's write-time dedup
 	// hint (Layer 1). EE override (memory_v2.go) reads the collective store via
 	// Postgres full-text search — current + authoritative, NOT the async RAG
 	// index — because in module-active mode the legacy llm_conversation_memory
 	// table is empty, which left the extractor blind and re-emitting known facts.
 	// OSS default: empty (no memory module).
-	loadTypedStoreDedupContextFn = func(
+	LoadTypedStoreDedupContextFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 	) string {
 		return ""
 	}
 
-	// dedupCanonicalSubjectFn is the Layer-2 pre-write dedup check: given a
+	// DedupCanonicalSubjectFn is the Layer-2 pre-write dedup check: given a
 	// freshly extracted fact, it returns the subject of an existing collective
 	// fact that duplicates it under a DIFFERENT subject (Postgres FTS candidate +
 	// body token-overlap over threshold), so the caller rewrites this fact's
 	// subject to collide on the Upsert key instead of inserting a duplicate row.
 	// Empty = no cross-subject duplicate. OSS default: no-op.
-	dedupCanonicalSubjectFn = func(
+	DedupCanonicalSubjectFn = func(
 		ctx *security.RequestContext,
 		request NBAgentRequest,
 		fact MemoryFact,
@@ -250,7 +276,7 @@ func isAcceptableMemoryFact(fact MemoryFact) (bool, string) {
 		}
 	}
 
-	typedPreference := strings.EqualFold(fact.Type, string(MemoryTypeUserPreference)) && fact.Subject != ""
+	typedPreference := strings.EqualFold(fact.Type, string(memory.MemoryTypeUserPreference)) && fact.Subject != ""
 	if !typedPreference {
 		if len([]rune(trimmed)) < minMemoryContentChars {
 			return false, "too_short"
@@ -293,7 +319,7 @@ func isAcceptableMemoryFact(fact MemoryFact) (bool, string) {
 // Filters in place: the input slice is freshly allocated by FindSimilarMemories
 // per call and both call sites reassign to the same variable, so reusing the
 // underlying array is safe and avoids an extra allocation per retrieval.
-func filterAcceptableMemories(memories []LongTermMemory) []LongTermMemory {
+func filterAcceptableMemories(memories []memory.LongTermMemory) []memory.LongTermMemory {
 	out := memories[:0]
 	for _, m := range memories {
 		if ok, _ := isAcceptableMemoryFact(MemoryFact{Content: m.Content, Type: string(m.MemoryType)}); ok {
@@ -303,12 +329,12 @@ func filterAcceptableMemories(memories []LongTermMemory) []LongTermMemory {
 	return out
 }
 
-// errMemoryRecordSkipped marks a memory-v2 Record outcome that the typed-store
+// ErrMemoryRecordSkipped marks a memory-v2 Record outcome that the typed-store
 // grounding gate intentionally refused (e.g. a Decisions fact with no
 // user-agreement quote, or an empty subject). The EE bridge maps the store's
 // sentinels onto this so the caller counts a benign skip as Skipped, not Errors,
 // without this OSS-kept file importing ee/memory.
-var errMemoryRecordSkipped = errors.New("memory-v2: record skipped by grounding gate")
+var ErrMemoryRecordSkipped = errors.New("memory-v2: record skipped by grounding gate")
 
 // MemoryExtractionStats tracks outcomes of a single extraction run for
 // observability and test verification.
@@ -322,7 +348,19 @@ type MemoryExtractionStats struct {
 	Errors       int // save/dedup failures
 }
 
-func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int) MemoryExtractionStats {
+// memoryWriteSucceeded reports whether this turn saved something through the
+// memory_write tool. A refused call (Failed) does not count, so the extractor
+// still acts as the fallback for it.
+func memoryWriteSucceeded(invocations []ToolInvocation) bool {
+	for _, inv := range invocations {
+		if !inv.Failed && inv.Call.FunctionCall != nil && inv.Call.FunctionCall.Name == "memory_write" {
+			return true
+		}
+	}
+	return false
+}
+
+func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, response string, notebook string, toolCallCount int, memoryWriteSucceeded bool) MemoryExtractionStats {
 	var stats MemoryExtractionStats
 	// A request that asked for no memory must not leave any behind either.
 	// Reading and writing are the same switch: a turn run with memory off is an
@@ -335,18 +373,22 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 	// entirely. Extracted facts go to the new typed stores via the bridge; the
 	// legacy llm_conversation_memory table and its RAG index are not written.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
+	if SaverKeepsMemoriesFn(tenantID, request) {
+		ctx.GetLogger().Info("agentexecutor: skipping long-term memory extraction, the saver keeps this conversation's memories")
+		return stats
+	}
+	memoryModuleActive := IsMemoryV2ActiveFn(tenantID)
 
 	// Layer-1 dedup: show the extractor the existing knowledge so it does not
 	// re-emit facts already stored. This MUST read from where facts actually
 	// live. In module-active mode facts are in the typed stores (collective) and
 	// the legacy llm_conversation_memory table stays empty — reading it left the
 	// extractor blind (the Q15 accumulation), so module-active reads the typed
-	// store via Postgres full-text search (loadTypedStoreDedupContextFn), while
+	// store via Postgres full-text search (LoadTypedStoreDedupContextFn), while
 	// legacy mode keeps the llm_conversation_memory similarity read.
 	existingMemoriesStr := "None"
 	if memoryModuleActive {
-		if dedup := strings.TrimSpace(loadTypedStoreDedupContextFn(ctx, request)); dedup != "" {
+		if dedup := strings.TrimSpace(LoadTypedStoreDedupContextFn(ctx, request)); dedup != "" {
 			existingMemoriesStr = dedup
 		}
 	} else {
@@ -354,7 +396,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 		if response != "" && len(response) < 500 {
 			dedupQuery = request.Query + " " + response
 		}
-		if existingMemories, err := GetConversationDao().LoadLongTermMemories(request.AccountId, dedupQuery, 10); err == nil && len(existingMemories) > 0 {
+		if existingMemories, err := memory.GetStore().LoadLongTermMemories(request.AccountId, dedupQuery, 10); err == nil && len(existingMemories) > 0 {
 			existingMemoriesStr = "- " + strings.Join(existingMemories, "\n- ")
 		}
 	}
@@ -383,14 +425,14 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 	}
 
 	memoryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	result, err := GenerateAndTrackLLMContent(memoryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "memory_extractor", false, messages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	result, err := llmruntime.GenerateAndTrackLLMContent(memoryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "memory_extractor", false, messages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to extract long-term memory", "error", err)
 		return stats
@@ -421,16 +463,16 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 			preferenceOnly := notebook == "" || toolCallCount == 0
 
 			for _, fact := range parsedFacts {
-				memType := MemoryTypeInvestigationResult
+				memType := memory.MemoryTypeInvestigationResult
 				if fact.Type != "" {
-					memType = MemoryType(fact.Type).Validate()
+					memType = memory.MemoryType(fact.Type).Validate()
 				} else if fact.IsPattern {
-					memType = MemoryTypePattern
+					memType = memory.MemoryTypePattern
 				} else if fact.IsWorkflow {
-					memType = MemoryTypeWorkflow
+					memType = memory.MemoryTypeWorkflow
 				}
 
-				if preferenceOnly && memType != MemoryTypeUserPreference {
+				if preferenceOnly && memType != memory.MemoryTypeUserPreference {
 					ctx.GetLogger().Debug("agentexecutor: skipping non-preference fact (no notebook context)", "type", memType)
 					stats.Skipped++
 					continue
@@ -458,7 +500,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// the canonical one so the Upsert refreshes that row instead of
 					// inserting a duplicate (the Q15 case: same metric, 3 subjects).
 					// Same-subject re-assertions already collide on the Upsert key.
-					if canon := dedupCanonicalSubjectFn(ctx, request, fact); canon != "" && !strings.EqualFold(canon, fact.Subject) {
+					if canon := DedupCanonicalSubjectFn(ctx, request, fact); canon != "" && !strings.EqualFold(canon, fact.Subject) {
 						ctx.GetLogger().Info("agentexecutor: dedup merged fact onto existing subject",
 							"extracted_subject", fact.Subject, "canonical_subject", canon)
 						fact.Subject = canon
@@ -474,8 +516,8 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// shape-conversion, super-admin user-id rescue, and agent-module
 					// resolution live in memory_v2.go so this OSS-kept file never
 					// references memory.ExtractedFact.
-					if berr := recordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount)); berr != nil {
-						if errors.Is(berr, errMemoryRecordSkipped) {
+					if berr := RecordExtractedFactViaMemoryV2Fn(ctx, agent, request, fact, memType, groundedConfidence(memType, toolCallCount), memoryWriteSucceeded); berr != nil {
+						if errors.Is(berr, ErrMemoryRecordSkipped) {
 							// Intended grounding-gate skip (e.g. a Decisions fact
 							// without a user-agreement quote), not a save failure.
 							ctx.GetLogger().Debug("agentexecutor: memory-v2 record skipped", "reason", berr, "subject", fact.Subject, "type", memType)
@@ -497,7 +539,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 					// Legacy path: similarity dedup + save to llm_conversation_memory
 					// + AddMemoryToRAG. Runs only when the memory module is off
 					// for this tenant.
-					similar, serr := GetConversationDao().FindSimilarMemories(request.AccountId, fact.Content, 3)
+					similar, serr := memory.GetStore().FindSimilarMemories(request.AccountId, fact.Content, 3)
 					if serr != nil {
 						ctx.GetLogger().Warn("agentexecutor: content-based dedup probe failed, proceeding with save", "error", serr)
 					} else if len(similar) > 0 && similar[0].SimilarityScore >= memoryDedupSimilarityThreshold {
@@ -510,7 +552,7 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 						continue
 					}
 
-					_, err := GetConversationDao().SaveLongTermMemory(
+					_, err := memory.GetStore().SaveLongTermMemory(
 						request.AccountId,
 						request.ConversationId,
 						request.MessageId,
@@ -547,13 +589,13 @@ func extractLongTermMemory(ctx *security.RequestContext, agent NBAgent, request 
 // extractSessionWorkingMemory runs after each turn to refresh the typed
 // per-session working-memory blob the next turn's Compose will inject
 // under <session_working_memory>. The real body lives in
-// agents/core/memory_v2.go (EE-only) and is wired in via
-// extractSessionWorkingMemoryFn's init override. In OSS builds the hook
+// ee/memory/corebridge/memory_v2.go (EE-only) and is wired in via
+// ExtractSessionWorkingMemoryFn's init override. In OSS builds the hook
 // stays at the no-op default and this function returns without doing
 // anything — the legacy path does not have an equivalent session-scoped
 // working-memory feature, so there is nothing to fall back to.
 func extractSessionWorkingMemory(ctx *security.RequestContext, request NBAgentRequest, response string, notebook string) {
-	extractSessionWorkingMemoryFn(ctx, request, response, notebook)
+	ExtractSessionWorkingMemoryFn(ctx, request, response, notebook)
 }
 
 func parseMemoryFacts(ctx *security.RequestContext, content string) []MemoryFact {
@@ -575,7 +617,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	// FindSimilarMemories (not RetrieveRelevantMemories) so this maintenance lookup does
 	// not increment use_count as a side effect, and returns SimilarityScore for the guard
 	// below. Also avoids a race between the async pool increment and CarryOverMemoryUseCount.
-	existingMemories, err := GetConversationDao().FindSimilarMemories(request.AccountId, fact.OldContent, 5)
+	existingMemories, err := memory.GetStore().FindSimilarMemories(request.AccountId, fact.OldContent, 5)
 	if err != nil {
 		ctx.GetLogger().Warn("agentexecutor: failed to load memories for update via semantic search", "error", err)
 		return
@@ -584,7 +626,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	// Only accept the top result when it is genuinely similar to OldContent.
 	// Without a threshold RAG always returns the closest match even when unrelated,
 	// which would silently update the wrong memory.
-	var matchedMemory *LongTermMemory
+	var matchedMemory *memory.LongTermMemory
 	if len(existingMemories) > 0 && existingMemories[0].SimilarityScore >= memoryDedupSimilarityThreshold {
 		matchedMemory = &existingMemories[0]
 	}
@@ -592,13 +634,13 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	if matchedMemory != nil {
 		memType := matchedMemory.MemoryType
 		if memType == "" {
-			memType = MemoryTypeInvestigationResult
+			memType = memory.MemoryTypeInvestigationResult
 		}
 
 		// Insert the new version FIRST. Only delete the old one when the insert
 		// succeeds, which closes the data-loss window of the previous delete-then-insert
 		// ordering (where a transient DB error on insert would leave neither version).
-		newID, saveErr := GetConversationDao().SaveLongTermMemory(
+		newID, saveErr := memory.GetStore().SaveLongTermMemory(
 			request.AccountId,
 			request.ConversationId,
 			request.MessageId,
@@ -612,9 +654,9 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 
 		// Carry over the old memory's use_count so frequently-referenced memories don't
 		// lose their access history when their content is merely clarified or extended.
-		GetConversationDao().CarryOverMemoryUseCount(matchedMemory.ID.String(), newID, request.AccountId)
+		memory.GetStore().CarryOverMemoryUseCount(matchedMemory.ID.String(), newID, request.AccountId)
 
-		deleteErr := GetConversationDao().DeleteLongTermMemory(matchedMemory.ID.String(), request.AccountId)
+		deleteErr := memory.GetStore().DeleteLongTermMemory(matchedMemory.ID.String(), request.AccountId)
 		if deleteErr != nil {
 			// New version is already saved; old version is a now-duplicate but not lost.
 			ctx.GetLogger().Warn("agentexecutor: saved new memory but failed to delete old version (duplicate exists)", "error", deleteErr, "old_id", matchedMemory.ID)
@@ -623,12 +665,12 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 	}
 
 	// If old fact not found, save as new
-	_, err = GetConversationDao().SaveLongTermMemory(
+	_, err = memory.GetStore().SaveLongTermMemory(
 		request.AccountId,
 		request.ConversationId,
 		request.MessageId,
 		fact.Content,
-		MemoryTypeInvestigationResult,
+		memory.MemoryTypeInvestigationResult,
 	)
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to save new memory", "error", err)
@@ -653,7 +695,7 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 		// Use FindSimilarMemories (not RetrieveRelevantMemories) so use_count is only
 		// incremented for memories that actually make it into the final notebook —
 		// buildStructuredMemoryNotebook may filter some as redundant with convFacts.
-		allMemories, memErr := GetConversationDao().FindSimilarMemories(request.AccountId, request.Query, 10)
+		allMemories, memErr := memory.GetStore().FindSimilarMemories(request.AccountId, request.Query, 10)
 		if memErr != nil {
 			ctx.GetLogger().Warn("agentexecutor: failed to load long-term memories", "error", memErr)
 			return ""
@@ -663,14 +705,14 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 			return ""
 		}
 
-		patterns := []LongTermMemory{}
-		workflows := []LongTermMemory{}
-		facts := []LongTermMemory{}
+		patterns := []memory.LongTermMemory{}
+		workflows := []memory.LongTermMemory{}
+		facts := []memory.LongTermMemory{}
 		for _, m := range allMemories {
 			switch m.MemoryType {
-			case MemoryTypePattern:
+			case memory.MemoryTypePattern:
 				patterns = append(patterns, m)
-			case MemoryTypeWorkflow:
+			case memory.MemoryTypeWorkflow:
 				workflows = append(workflows, m)
 			default:
 				facts = append(facts, m)
@@ -681,13 +723,13 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 		if notebook != "" {
 			// Determine which memories survived the convFacts redundancy filter and
 			// increment use_count only for those — they are what the agent actually sees.
-			var surfaced []LongTermMemory
+			var surfaced []memory.LongTermMemory
 			for _, m := range allMemories {
 				if !isRedundantWithConversationContext(m.Content, convFacts) {
 					surfaced = append(surfaced, m)
 				}
 			}
-			GetConversationDao().IncrementMemoryUsage(request.AccountId, surfaced)
+			memory.GetStore().IncrementMemoryUsage(request.AccountId, surfaced)
 			saveMemoryReferences(ctx, request, surfaced)
 		}
 		return notebook
@@ -705,16 +747,16 @@ func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgen
 // so that non-preference memories returned by the RAG search don't get their use_count
 // inflated — only the preferences actually surfaced to the agent are counted.
 func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgentRequest, convFacts []string) string {
-	allMemories, err := GetConversationDao().FindSimilarMemories(request.AccountId, request.Query, 10)
+	allMemories, err := memory.GetStore().FindSimilarMemories(request.AccountId, request.Query, 10)
 	if err != nil {
 		ctx.GetLogger().Warn("agentexecutor: failed to load user preference memories", "error", err)
 		return ""
 	}
 	allMemories = filterAcceptableMemories(allMemories)
 
-	var prefs []LongTermMemory
+	var prefs []memory.LongTermMemory
 	for _, m := range allMemories {
-		if m.MemoryType == MemoryTypeUserPreference && !isRedundantWithConversationContext(m.Content, convFacts) {
+		if m.MemoryType == memory.MemoryTypeUserPreference && !isRedundantWithConversationContext(m.Content, convFacts) {
 			prefs = append(prefs, m)
 		}
 	}
@@ -723,7 +765,7 @@ func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgen
 	}
 
 	// Increment use_count only for the preferences that will actually be shown.
-	GetConversationDao().IncrementMemoryUsage(request.AccountId, prefs)
+	memory.GetStore().IncrementMemoryUsage(request.AccountId, prefs)
 
 	var sb strings.Builder
 	sb.WriteString("**User Preferences (apply these to your response):**\n")
@@ -735,7 +777,7 @@ func retrieveUserPreferenceNotebook(ctx *security.RequestContext, request NBAgen
 }
 
 // saveMemoryReferences asynchronously records which memories were surfaced for this agent call.
-func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, memories []LongTermMemory) {
+func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, memories []memory.LongTermMemory) {
 	if len(memories) == 0 {
 		return
 	}
@@ -751,7 +793,7 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 			ctx.GetLogger().Warn("agentexecutor: failed to save memory references", "error", err)
 		}
 	}
-	if metricsPool := GetMetricsWorkerPool(); metricsPool != nil {
+	if metricsPool := llmruntime.GetMetricsWorkerPool(); metricsPool != nil {
 		if err := metricsPool.Submit(context.Background(), trackFn); err != nil {
 			ctx.GetLogger().Error("agentexecutor: failed to submit memory reference task to pool, falling back to goroutine", "error", err)
 			go trackFn()
@@ -761,7 +803,7 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 	}
 }
 
-// memoryConfidence returns a quality score for a MemoryType that reflects how
+// memoryConfidence returns a quality score for a memory.MemoryType that reflects how
 // reliable and reusable the fact is expected to be. Used to sort memories within
 // each section so the most trustworthy facts appear first.
 //
@@ -769,13 +811,13 @@ func saveMemoryReferences(ctx *security.RequestContext, request NBAgentRequest, 
 //	0.8 — pattern, workflow: validated by recurrence or multi-step procedure
 //	0.7 — architectural_fact, configuration_insight, dependency_mapping, troubleshooting_guide
 //	0.5 — investigation_result (default one-time finding)
-func memoryConfidence(mt MemoryType) float64 {
+func memoryConfidence(mt memory.MemoryType) float64 {
 	switch mt {
-	case MemoryTypeUserPreference:
+	case memory.MemoryTypeUserPreference:
 		return 0.9
-	case MemoryTypePattern, MemoryTypeWorkflow:
+	case memory.MemoryTypePattern, memory.MemoryTypeWorkflow:
 		return 0.8
-	case MemoryTypeArchitecturalFact, MemoryTypeConfigInsight, MemoryTypeDependencyMapping, MemoryTypeTroubleshooting:
+	case memory.MemoryTypeArchitecturalFact, memory.MemoryTypeConfigInsight, memory.MemoryTypeDependencyMapping, memory.MemoryTypeTroubleshooting:
 		return 0.7
 	default:
 		return 0.5
@@ -793,9 +835,9 @@ func memoryConfidence(mt MemoryType) float64 {
 // does not apply. Every other type is scaled by the number of tool calls the
 // turn executed: 0 → heavy penalty (belt-and-suspenders with the extraction
 // grounding gate), 1 → light penalty, ≥2 → full type confidence.
-func groundedConfidence(mt MemoryType, toolCallCount int) float64 {
+func groundedConfidence(mt memory.MemoryType, toolCallCount int) float64 {
 	base := memoryConfidence(mt)
-	if mt == MemoryTypeUserPreference {
+	if mt == memory.MemoryTypeUserPreference {
 		return base
 	}
 	switch toolCallCount {
@@ -834,7 +876,7 @@ func isRedundantWithConversationContext(content string, convFacts []string) bool
 // convFacts contains the fact contents already present in the per-conversation
 // context; any LTM entry that duplicates one of these is suppressed to keep
 // the injected context concise.
-func buildStructuredMemoryNotebook(patterns, workflows, facts []LongTermMemory, convFacts []string) string {
+func buildStructuredMemoryNotebook(patterns, workflows, facts []memory.LongTermMemory, convFacts []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("**Knowledge Base (from previous investigations):**\n\n")
@@ -922,50 +964,4 @@ func buildStructuredMemoryNotebook(patterns, workflows, facts []LongTermMemory, 
 	sb.WriteString("• If a pattern matches current symptoms, mention it in your reasoning\n")
 
 	return sb.String()
-}
-
-// StartMemoryTTLCleanup runs a periodic job that deletes stale long-term memories.
-// Two independent criteria are applied:
-//   - Never-used memories older than MemoryTTLNeverUsedDays (default 90d)
-//   - Memories not accessed in MemoryTTLStaleDays (default 180d)
-//
-// Set MemoryTTLCleanupIntervalHours = 0 to disable. Respects context cancellation for
-// clean shutdown.
-func StartMemoryTTLCleanup(ctx context.Context) {
-	intervalHours := config.Config.MemoryTTLCleanupIntervalHours
-	if intervalHours <= 0 {
-		slog.Info("memory-ttl: cleanup disabled (llm_memory_ttl_cleanup_interval_hours=0)")
-		return
-	}
-
-	// purgeStaleMemories is on the concrete *ConversationDao, not the interface.
-	// The underlying type is always *ConversationDao in production; fail fast if not.
-	dao, ok := GetConversationDao().(*ConversationDao)
-	if !ok {
-		slog.Error("memory-ttl: DAO is not *ConversationDao, cleanup disabled")
-		return
-	}
-
-	interval := time.Duration(intervalHours) * time.Hour
-	slog.Info("memory-ttl: starting cleanup job",
-		"interval_hours", intervalHours,
-		"never_used_days", config.Config.MemoryTTLNeverUsedDays,
-		"stale_days", config.Config.MemoryTTLStaleDays,
-	)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Run once at startup, then on each tick.
-	dao.purgeStaleMemories()
-
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("memory-ttl: cleanup job stopped")
-			return
-		case <-ticker.C:
-			dao.purgeStaleMemories()
-		}
-	}
 }

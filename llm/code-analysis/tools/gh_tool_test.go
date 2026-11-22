@@ -115,3 +115,103 @@ func TestExtractPRNumber(t *testing.T) {
 		}
 	}
 }
+
+func TestRewritePRView(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   []string
+		want   []string
+		wantOK bool
+	}{
+		{
+			name:   "bare pr view with number",
+			args:   []string{"pr", "view", "40303"},
+			want:   []string{"pr", "view", "40303", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with explicit repo",
+			args:   []string{"pr", "view", "40303", "--repo", "example-org/example-repo"},
+			want:   []string{"pr", "view", "40303", "--repo", "example-org/example-repo", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with URL ref",
+			args:   []string{"pr", "view", "https://github.com/owner/repo/pull/99"},
+			want:   []string{"pr", "view", "https://github.com/owner/repo/pull/99", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with -c flag strips comments flag",
+			args:   []string{"pr", "view", "40303", "-c"},
+			want:   []string{"pr", "view", "40303", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with --comments flag strips comments flag",
+			args:   []string{"pr", "view", "40303", "--comments"},
+			want:   []string{"pr", "view", "40303", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with --comments=true strips comments flag",
+			args:   []string{"pr", "view", "40303", "--comments=true"},
+			want:   []string{"pr", "view", "40303", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		{
+			name:   "pr view with current branch (no ref)",
+			args:   []string{"pr", "view"},
+			want:   []string{"pr", "view", "--json", defaultPRViewJSONFields},
+			wantOK: true,
+		},
+		// --- pass-through cases (must NOT rewrite) ---
+		{
+			name:   "already has --json space separated",
+			args:   []string{"pr", "view", "40303", "--json", "title,body"},
+			wantOK: false,
+		},
+		{
+			name:   "already has --json= syntax",
+			args:   []string{"pr", "view", "40303", "--json=title,body"},
+			wantOK: false,
+		},
+		{
+			name:   "web flag is left untouched",
+			args:   []string{"pr", "view", "40303", "--web"},
+			wantOK: false,
+		},
+		{
+			name:   "web flag with value is left untouched",
+			args:   []string{"pr", "view", "40303", "--web=true"},
+			wantOK: false,
+		},
+		{
+			name:   "-w flag is left untouched",
+			args:   []string{"pr", "view", "40303", "-w"},
+			wantOK: false,
+		},
+		{
+			name:   "pr list untouched",
+			args:   []string{"pr", "list"},
+			wantOK: false,
+		},
+		{
+			name:   "issue view untouched",
+			args:   []string{"issue", "view", "123"},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := rewritePRView(tt.args)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (got args %v)", ok, tt.wantOK, got)
+			}
+			if tt.wantOK && !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("args mismatch\n got: %v\nwant: %v", got, tt.want)
+			}
+		})
+	}
+}

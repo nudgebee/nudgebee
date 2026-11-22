@@ -1,18 +1,22 @@
 package workspace
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
-	// AudienceWorkspacePod marks the pod's own long-lived token. It authenticates
-	// the pod (file and LLM calls) and must not authorize tool execution.
+	// AudienceWorkspacePod labels a pod's own token when it is presented to
+	// llm-server, which refuses it. Pods created before the token became
+	// random bytes still carry a JWT with this audience.
 	AudienceWorkspacePod = "workspace-pod"
 	// AudienceWorkspaceExecute marks a per-command execution token. The shim
 	// sends it to /api/v1/workspace/execute, which authorizes the call as the
@@ -35,6 +39,12 @@ const (
 // targetAccount binds the token to that account, which the caller must be
 // able to read.
 func ExecutionToken(ctx *security.RequestContext, workspaceAccount, targetAccount string, ttl time.Duration) (string, error) {
+	return executionToken(ctx, workspaceAccount, targetAccount, ttl, nil)
+}
+
+// executionToken is ExecutionToken, optionally bound to a GitHub/GitLab
+// integration for the SCM proxy.
+func executionToken(ctx *security.RequestContext, workspaceAccount, targetAccount string, ttl time.Duration, scm *ScmClaims) (string, error) {
 	tenantId, err := security.GetTenantIdFromAccountId(workspaceAccount)
 	if err != nil {
 		return "", fmt.Errorf("execution token: tenant lookup: %w", err)
@@ -43,19 +53,21 @@ func ExecutionToken(ctx *security.RequestContext, workspaceAccount, targetAccoun
 	if ctx != nil {
 		sc = ctx.GetSecurityContext()
 	}
-	if targetAccount != "" && (sc == nil || !sc.HasAccountAccess(targetAccount, security.SecurityAccessTypeRead)) {
+	if targetAccount != "" && (sc == nil || !security.ToolPathTargetReadable(ctx, targetAccount)) {
 		return "", fmt.Errorf("target cluster access denied")
 	}
 	grants, err := security.WorkspaceGrantsFor(sc, tenantId)
 	if err != nil {
 		return "", fmt.Errorf("execution token: %w", err)
 	}
+	grants.GrantScoped = security.IsGrantScopedRun(ctx)
 	now := time.Now()
 	claims := WorkspaceTokenClaims{
 		AccountId:       workspaceAccount,
 		TenantId:        tenantId,
 		TargetAccountId: targetAccount,
 		Grants:          &grants,
+		Scm:             scm,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Audience:  jwt.ClaimStrings{AudienceWorkspaceExecute},
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
@@ -78,14 +90,53 @@ func (w *workspaceManager) commandEnv(ctx *security.RequestContext, accountId st
 	maps.Copy(out, env)
 	target := out[ENV_NB_TARGET_ACCOUNT_ID]
 	delete(out, ENV_NB_TARGET_ACCOUNT_ID)
+	scm, err := takeScmClaims(out)
+	if err != nil {
+		return nil, err
+	}
 	out["nb_account_id"] = accountId
 	if ctx != nil && ctx.GetSecurityContext() != nil {
 		out["nb_tenant_id"] = ctx.GetSecurityContext().GetTenantId()
 	}
-	token, err := ExecutionToken(ctx, accountId, target, w.httpClient.Timeout+executionTokenGrace)
+	token, err := executionToken(ctx, accountId, target, w.httpClient.Timeout+executionTokenGrace, scm)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: %w", err)
 	}
 	out[ENV_NB_WORKSPACE_TOKEN] = token
+	if scm != nil {
+		addScmEnv(out, scm, token)
+	}
+	if config.Config.LlmServerWorkspaceNbctlEnabled {
+		addNbctlEnv(out, token, accountId, target)
+	}
 	return out, nil
+}
+
+// addNbctlEnv points nbctl at llm-server's workspace proxy for this command,
+// authenticated with the command's execution token, reading the bound target
+// account if there is one, else the workspace account. Only the metrics and
+// logs command groups are shown.
+func addNbctlEnv(env map[string]string, token, accountId, target string) {
+	dataAccount := accountId
+	if target != "" {
+		dataAccount = target
+	}
+	env["NUDGEBEE_ENDPOINT"] = strings.TrimRight(config.Config.LlmServerUrl, "/") + "/api/v1/workspace/nbctl"
+	env["NUDGEBEE_API_KEY"] = token
+	env["NUDGEBEE_ACCOUNT_ID"] = dataAccount
+	env["NUDGEBEE_ENABLED_COMMANDS"] = "metrics,logs"
+	// Wait just past the proxy's 50s request timeout, so a slow query ends in
+	// the proxy's own message rather than nbctl's 30s default, whose error
+	// shows the proxy URL; the command itself is killed at 58s.
+	env["NUDGEBEE_HTTP_TIMEOUT"] = "52s"
+}
+
+// newPodToken returns the secret a workspace pod uses to check that calls
+// come from llm-server: 32 random bytes, hex encoded.
+func newPodToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("pod token: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }

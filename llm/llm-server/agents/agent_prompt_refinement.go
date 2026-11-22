@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -42,7 +43,7 @@ func (l PromptRefinementAgent) GetDescription() string {
 
 func (l PromptRefinementAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	supportedTools := []toolcore.NBTool{}
-	llmTool, ok := toolcore.GetNBTool(l.accountId, core.ToolLlm)
+	llmTool, ok := toolcore.GetNBTool(l.accountId, llmruntime.ToolLlm)
 	if ok {
 		supportedTools = append(supportedTools, llmTool)
 	}
@@ -71,7 +72,7 @@ func (l PromptRefinementAgent) GetSystemPrompt(ctx *security.RequestContext, que
 		"If the original prompt is already strong, make minimal improvements and explain why no major changes were made.",
 	}
 	toolUsage := map[string][]string{
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool to generate the refined prompt and the explanation.",
 			"Use this tool to provide a clear explanation for your final answer, with the summary in markdown format. Ensure the output is complete and readable markdown.",
 		},
@@ -118,9 +119,9 @@ func (l PromptRefinementAgent) GetPlannerType() core.AgentPlannerType {
 }
 
 func (p PromptRefinementAgent) GetSummaryToolName() string {
-	return core.ToolLlm
+	return llmruntime.ToolLlm
 }
 
-func (l PromptRefinementAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l PromptRefinementAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

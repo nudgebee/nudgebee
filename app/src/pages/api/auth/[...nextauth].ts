@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import NextAuth, { type NextAuthOptions, type Account, type Session } from 'next-auth';
 import type { AdapterUser, AdapterSession, VerificationToken, AdapterAccount } from 'next-auth/adapters';
+import type { JWT } from 'next-auth/jwt';
 import GoogleProvider from 'next-auth/providers/google';
 import EmailProvider from 'next-auth/providers/email';
 import OktaProvider from 'next-auth/providers/okta';
@@ -33,12 +34,24 @@ import {
   getUserSuperAdminRole,
   getTenantIdByName,
 } from '@lib/UserService';
+import { isBeeAccount } from '@lib/userKind';
+
+async function isBeeUsername(username: string | null | undefined): Promise<boolean> {
+  if (!username) {
+    return false;
+  }
+  const found = await getUserByUsername({ username });
+  return isBeeAccount(found?.data?.users?.[0]);
+}
 import { adapterUserUpdateDataOnUserRoles, groupBelongsToTenant } from '@lib/userPermissionMapper';
 import { pickDefaultTenant } from '@lib/defaultTenant';
 import { findTenantByDomain } from '@lib/tenantLookup';
+import { shouldRejectUnverifiedOAuthEmail } from '@lib/oauthEmailVerification';
 import { dummyCredsAdminEmail } from '@lib/dummyCredsAdmin';
+import { ldapBindName, ldapSearchFilter } from '@lib/ldapUsername';
 import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } from '@lib/license';
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
+import { isSuperAdminAccessEnabled, restrictSuperAdmin } from '@lib/superAdminAccess';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import type { NextApiRequest, NextApiResponse } from 'next';
@@ -71,12 +84,19 @@ export interface NudgebeeSession extends Session {
   hasMultipleTenantAccess?: boolean;
   isSuperAdmin?: boolean;
   isSuperAdminReadonly?: boolean;
+  // Set when the identity provider must also be told about a logout: the
+  // route that returns its logout URL. Read by logout().
+  idpLogoutPath?: string;
   // Dynamic-RBAC custom-role grants ("<module>:<class>"). Read by hasPermission().
   permissions?: string[];
   // Whether the tenant has the CUSTOM_ROLES feature enabled. False means the
   // whole dynamic-RBAC layer is off and every UI gate must behave exactly as it
   // did before the feature existed. Read by isCustomRolesEnabled().
   customRolesEnabled?: boolean;
+  // Account-bound grants per account ({account id: ["<module>:<class>"]}), for
+  // users holding any `scoped:` key. Served per session fetch, never stored in
+  // the token. Read by hasGrantOnAccount().
+  boundGrants?: Record<string, string[]>;
   // License tier from services-server. Used by EE-bundle components to
   // self-gate at render time — needed when the EE bundle is present in
   // the monorepo build but the deployment is configured as a non-saas tier.
@@ -579,13 +599,18 @@ if (process.env.EMAIL_SERVER_HOST && (process.env.NEXTAUTH_MAGICLINK_CREDS_ENABL
         // to the end user — keep the diagnostic detail in server logs and the
         // outward-facing copy comes from app/src/pages/auth/error.tsx.
         const notificationServiceUrl = process.env.NOTIFICATION_SERVICE_URL ?? 'http://notifications:80';
+        const notificationToken = process.env.NOTIFICATION_SERVER_TOKEN;
         try {
-          await axios.post(`${notificationServiceUrl}/api/emails/send`, {
-            recipients: email,
-            subject: 'Sign in to your account',
-            template: 'magic_link',
-            template_params: { magic_link_url: url },
-          });
+          await axios.post(
+            `${notificationServiceUrl}/api/emails/send`,
+            {
+              recipients: email,
+              subject: "Here's your sign-in link",
+              template: 'magic_link',
+              template_params: { magic_link_url: url, email },
+            },
+            notificationToken ? { headers: { 'X-ACTION-TOKEN': notificationToken } } : undefined
+          );
         } catch (err: any) {
           // axios throws on non-2xx by default. Capture status + body when
           // available, plus the raw error code for network failures
@@ -902,8 +927,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
         }
         try {
           const searchFilter = process.env.NEXTAUTH_LDAP_LOGIN_FILTER ?? '(uid=%s)';
-          const searchDn = searchFilter.replace('%s', credentials.username);
-          console.log('searchDn', searchDn);
+          const searchDn = ldapBindName(searchFilter, credentials.username);
           await client.bind(searchDn, credentials.password);
         } catch (e) {
           console.log('LDAP Auth Error', e);
@@ -928,7 +952,7 @@ if (process.env.NEXTAUTH_LDAP_URI) {
             throw Error('Unable to bind to search user');
           }
           let searchFilter = process.env.NEXTAUTH_LDAP_SEARCH_FILTER ?? '(uid=%s)';
-          searchFilter = searchFilter.replace('%s', credentials.username);
+          searchFilter = ldapSearchFilter(searchFilter, credentials.username);
           const searchOptions = {
             filter: searchFilter,
             attributes: [ldapAttributeEmail, ldapAttributeGroup, ldapAttributeName, ldapAttributeFirstName, ldapAttributeLastName],
@@ -1178,7 +1202,13 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     })
   );
   if (trigger === 'update' && (session.tenantId || session.tenantName)) {
-    const userEmail = session.user?.email ?? '';
+    // `session` is the payload the browser sent to update(); only the signed
+    // token says who is switching.
+    const userEmail = (token.email as string | undefined) ?? '';
+    if (!userEmail) {
+      console.warn('jwtUpdateTokenOnUpdateTrigger: token has no email, aborting switch');
+      return;
+    }
     let tenantId = session.tenantId;
     if (!tenantId && session.tenantName) {
       const isSuperAdmin = !!(token.isSuperAdmin || token.isSuperAdminReadonly);
@@ -1207,10 +1237,12 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
     if (tenantId && tenantId !== currentTenantId) {
       // `updated` counts the tenant_users rows flipped to is_default; the upstream
       // handler refuses (0 rows / error) for a user who is not a member of the
-      // tenant, so this doubles as the membership check for the fallback below.
-      const update = await updateTenantUser(tenantId, session.user.email);
+      // tenant, so this doubles as the membership check below. Role rows alone
+      // are not membership: rows written into a tenant the user never joined
+      // must not switch them into it.
+      const update = await updateTenantUser(tenantId, userEmail);
       const isTenantMember = (update?.data?.data?.users_update_default_tenant?.updated ?? 0) > 0;
-      if (response?.data?.length > 0) {
+      if (isTenantMember && response?.data?.length > 0) {
         token.tenant = { id: tenantId, name: tenantName };
         const roles = [];
         const accountIds = [];
@@ -1327,6 +1359,82 @@ function getSessionUpdateSeconds() {
 // /api/auth/session poll doesn't turn into a per-minute RPC per tab.
 const PERMISSIONS_REFRESH_MS = 5 * 60 * 1000;
 
+// Built-in roles are baked into the token at sign-in and on a tenant switch, and
+// were never read again, so a demoted or removed admin kept the old roles for as
+// long as the session lived — and sessions slide. The gateway admits on them, and
+// so do services that take the forwarded x-user-roles without asking the database
+// (the AI Gateway's settings and request-body reads, ticket-server's integration
+// settings, notifications-server's rules). Re-read them on the grants' cadence,
+// with the lookup and row mapping a tenant switch uses. A failed lookup keeps the
+// current roles: an outage must not strip everyone's access, and a throw here
+// would reach the callback's catch, which ends the session. A super-admin session
+// is left as it is: its tenant roles were synthesized on the switch.
+async function refreshTenantRoles(token: JWT): Promise<void> {
+  const email = token.email as string | undefined;
+  const tenantId = (token.tenant as { id?: string } | undefined)?.id;
+  if (!email || !tenantId || token.isSuperAdmin || token.isSuperAdminReadonly) return;
+  try {
+    const response = await listUserTenantRoles(email, tenantId);
+    if (!response || response.errored) return;
+    const roles: string[] = [];
+    const accountIds: string[] = [];
+    const readOnlyAccountIds: string[] = [];
+    const namespacedAccountIds: string[] = [];
+    const namespacedReadOnlyAccountIds: string[] = [];
+    const k8sNamespaces: Record<string, string[]> = {};
+    // No tenant filter: the lookup already returns only this tenant's rows, and
+    // blanks entity_id on tenant rows, which the filter would then drop.
+    adapterUserUpdateDataOnUserRoles(
+      response.data,
+      roles,
+      accountIds,
+      readOnlyAccountIds,
+      namespacedAccountIds,
+      namespacedReadOnlyAccountIds,
+      k8sNamespaces
+    );
+    token.roles = [...new Set(roles)];
+    token.accountIds = [...new Set(accountIds)];
+    token.readOnlyAccountIds = [...new Set(readOnlyAccountIds)];
+    token.namespacedAccountIds = [...new Set(namespacedAccountIds)];
+    token.namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
+    token.k8sNamespaces = k8sNamespaces;
+  } catch (err) {
+    console.error('refreshTenantRoles: keeping the current roles', err);
+  }
+}
+
+// Account-bound grants per account for users holding any `scoped:` key, for the
+// UI's per-account gates (hasGrantOnAccount in @lib/auth). Served in the session
+// JSON, never stored in the token: a role bound to many accounts would otherwise
+// grow the cookie with every account. Cached per (user, tenant) for
+// PERMISSIONS_REFRESH_MS, the same staleness the token's own keys have. A failed
+// lookup serves an empty map, so per-account gates answer false, and is cached
+// for BOUND_GRANTS_FAILURE_TTL_MS so an outage doesn't add a failing call to
+// every session poll.
+const BOUND_GRANTS_FAILURE_TTL_MS = 30 * 1000;
+const BOUND_GRANTS_CACHE_MAX = 1000;
+const _boundGrantsCache = new Map<string, { expires: number; grants: Record<string, string[]> }>();
+
+async function boundGrantsFor(userId: string, tenantId: string): Promise<Record<string, string[]>> {
+  const key = `${userId}:${tenantId}`;
+  const now = Date.now();
+  const hit = _boundGrantsCache.get(key);
+  if (hit && now < hit.expires) return hit.grants;
+  const resolved = await resolveUserCustomPermissions(userId, tenantId);
+  const grants = resolved.enabled ? resolved.boundGrants : {};
+  if (_boundGrantsCache.size >= BOUND_GRANTS_CACHE_MAX) {
+    for (const [k, v] of _boundGrantsCache) {
+      if (now >= v.expires) _boundGrantsCache.delete(k);
+    }
+    // Still full: drop the oldest insertion so the map stays bounded.
+    if (_boundGrantsCache.size >= BOUND_GRANTS_CACHE_MAX) _boundGrantsCache.delete(_boundGrantsCache.keys().next().value!);
+  }
+  _boundGrantsCache.delete(key);
+  _boundGrantsCache.set(key, { expires: now + (resolved.enabled ? PERMISSIONS_REFRESH_MS : BOUND_GRANTS_FAILURE_TTL_MS), grants });
+  return grants;
+}
+
 export const authOptions: NextAuthOptions = {
   adapter: GQLAdapter(),
   session: {
@@ -1337,6 +1445,14 @@ export const authOptions: NextAuthOptions = {
   providers: providers,
   callbacks: {
     async jwt({ token, user, account: oauthAccount, trigger, session }) {
+      // With super admin off, a session minted as super admin is ended
+      // before anything runs for it. Thrown outside the try below so NextAuth
+      // clears the cookie and answers with no session, which sends the browser to
+      // sign-in; returning {} would leave an empty session the client still
+      // treats as signed in. Sign-in never carries the claim: the enricher is off.
+      if (restrictSuperAdmin(token) === null) {
+        throw new Error('super admin is disabled: ending a super-admin session');
+      }
       try {
         // Server-side revocation gate. NextAuth's stateless JWT strategy
         // means a captured cookie survives logout until natural expiry on
@@ -1353,6 +1469,14 @@ export const authOptions: NextAuthOptions = {
           if (revoked) {
             return {};
           }
+        }
+
+        // A bee account (an AI worker) never gets a session, whichever provider
+        // asserted it. This is the one place every NextAuth sign-in passes before
+        // a token exists; SAML and API keys mint theirs elsewhere and check there.
+        if (user && (await isBeeUsername(user.email))) {
+          console.warn('[auth] refusing a session for a bee account');
+          return {};
         }
 
         //firsttime login flow for email
@@ -1408,10 +1532,12 @@ export const authOptions: NextAuthOptions = {
             const refreshed = await resolveUserCustomPermissions(token.id as string, (token.tenant as any).id);
             token.permissions = refreshed.permissions;
             token.customRolesEnabled = refreshed.enabled;
+            await refreshTenantRoles(token);
             token.permissionsResolvedAt = Date.now();
           }
         }
-        return token;
+        // With super admin off, drop super-admin role strings.
+        return restrictSuperAdmin(token) ?? {};
       } catch (error) {
         console.log('jwt, unable to handle jwt token ', error);
       }
@@ -1447,6 +1573,10 @@ export const authOptions: NextAuthOptions = {
           nudgeBeeSession.hasMultipleTenantAccess = !!token.hasMultipleTenantAccess;
           nudgeBeeSession.permissions = (token.permissions as string[]) ?? [];
           nudgeBeeSession.customRolesEnabled = !!token.customRolesEnabled;
+          nudgeBeeSession.boundGrants = {};
+          if (token.id && (token.tenant as any)?.id && nudgeBeeSession.permissions.some((p) => p.startsWith('scoped:'))) {
+            nudgeBeeSession.boundGrants = await boundGrantsFor(token.id as string, (token.tenant as any).id);
+          }
         }
         const licenseDetails = await getLicenseDetails();
         nudgeBeeSession.tier = licenseDetails.tier;
@@ -1462,6 +1592,9 @@ export const authOptions: NextAuthOptions = {
         };
         nudgeBeeSession.isSuperAdmin = !!token.isSuperAdmin;
         nudgeBeeSession.isSuperAdminReadonly = !!token.isSuperAdminReadonly;
+        if (typeof token.idpLogoutPath === 'string') {
+          nudgeBeeSession.idpLogoutPath = token.idpLogoutPath;
+        }
 
         // EE bundles attach their session-only fields via this hook.
         // No-op in OSS extractions where the EE init-server is stripped.
@@ -1534,10 +1667,16 @@ export const authOptions: NextAuthOptions = {
       }
       return baseUrl;
     },
-    async signIn({ user, account, email }) {
+    async signIn({ user, account, email, profile }) {
       console.log('signIn called', user, account, email);
       if (user?.email) {
         user.email = user.email.toLowerCase();
+      }
+      if (shouldRejectUnverifiedOAuthEmail({ user, account, profile })) {
+        console.warn('Refusing OAuth sign-in: IdP reports the email as unverified and the IdP account is not linked yet', {
+          provider: account?.provider,
+        });
+        return false;
       }
       if (
         (account?.provider === 'email' || account?.provider === 'credentials' || account?.provider === 'ldap' || account?.provider === 'teleport') &&
@@ -1642,8 +1781,8 @@ export const authOptions: NextAuthOptions = {
     signIn: async (message) => {
       if (message.user) {
         const nudgeBeeUser = message.user as NudgebeeUser;
-        // Skip login tracking for super admin (no trace)
-        const superAdminRole = nudgeBeeUser.id ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
+        // Skip login tracking for super admin (no trace), only while super admin is on
+        const superAdminRole = nudgeBeeUser.id && isSuperAdminAccessEnabled() ? await getUserSuperAdminRole(nudgeBeeUser.id) : null;
         if (!superAdminRole && nudgeBeeUser.userAccountId) {
           await updateUserAccountAccessed(nudgeBeeUser.userAccountId, nudgeBeeUser.tenant?.id);
         }

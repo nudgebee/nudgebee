@@ -35,7 +35,14 @@ interface Props {
   onOpen: (accountId: string) => void;
 }
 
+// Text renders a numeric 0 as its "-" default, so counts are passed as strings:
+// "0" is a real answer, "-" means the summary never arrived.
+const formatCount = (value?: number | null) => (value == null ? '-' : value.toLocaleString());
+
 const VmAccountOverviewCard = ({ accountId, accountName, summary, loading = false, onOpen }: Props) => {
+  // No summary after loading means the rollup query failed; say so instead of
+  // claiming the fleet has no vulnerabilities.
+  const unavailable = !loading && !summary;
   const severities = summary?.severities || {};
   // Fixed order, and only the severities actually present — an all-zero row of
   // six badges reads as "six problems" at a glance.
@@ -116,7 +123,10 @@ const VmAccountOverviewCard = ({ accountId, accountName, summary, loading = fals
                 {loading ? (
                   <Skeleton shape='rect' width='60%' height='24px' />
                 ) : (
-                  <Text value={summary?.vmCount || 0} sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }} />
+                  <Text
+                    value={formatCount(summary?.vmCount)}
+                    sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }}
+                  />
                 )}
               </Box>
             </Box>
@@ -150,7 +160,7 @@ const VmAccountOverviewCard = ({ accountId, accountName, summary, loading = fals
                 <Skeleton shape='rect' width={ds.space.mul(0, 20)} height='20px' />
               ) : (
                 <Text
-                  value={summary?.vulnerabilityCount || 0}
+                  value={formatCount(summary?.vulnerabilityCount)}
                   sx={{ fontSize: 'var(--ds-text-heading)', fontWeight: 'var(--ds-font-weight-semibold)' }}
                 />
               )}
@@ -165,7 +175,7 @@ const VmAccountOverviewCard = ({ accountId, accountName, summary, loading = fals
               </Box>
             ) : (
               <Typography sx={{ color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)' }}>
-                No open package vulnerabilities on this fleet.
+                {unavailable ? 'Vulnerability summary could not be loaded.' : 'No open package vulnerabilities on this fleet.'}
               </Typography>
             )}
           </Box>

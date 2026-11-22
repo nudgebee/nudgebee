@@ -464,3 +464,49 @@ func TestDo_PostsBodyAndSignsIt(t *testing.T) {
 	assert.Equal(t, emptyPayloadHash, payloadHash(nil))
 	assert.NotEqual(t, emptyPayloadHash, payloadHash([]byte("name: x")))
 }
+
+// A datasource the forager registered from its own config has no URL on the server side;
+// the transport addresses it by key, so the missing URL must not stop the request.
+func TestDo_ForagerTransportNeedsNoURL(t *testing.T) {
+	var gotPath string
+	cfg, err := NewPrometheusUserConfig(map[string]string{PrometheusConnectionModeKey: PrometheusConnectionModeVMAgent})
+	require.NoError(t, err)
+	cfg.ProxyTransport = func(_ context.Context, method, relPath string, _ http.Header, _ []byte) (int, http.Header, []byte, error) {
+		gotPath = relPath
+		return http.StatusOK, http.Header{}, []byte(`{"status":"success"}`), nil
+	}
+
+	resp, err := cfg.DoGet(context.Background(), "/api/v1/query", nil)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, "/api/v1/query", gotPath)
+
+	// Without a transport and without a URL there is still nothing to call.
+	direct, err := NewPrometheusUserConfig(map[string]string{})
+	require.NoError(t, err)
+	failed, err := direct.DoGet(context.Background(), "/api/v1/query", nil)
+	if failed != nil {
+		_ = failed.Body.Close()
+	}
+	require.Error(t, err)
+}
+
+func TestDo_VMAgentWithoutTransportRefusesToDial(t *testing.T) {
+	var hit bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit = true }))
+	defer server.Close()
+
+	cfg, err := NewPrometheusUserConfig(map[string]string{
+		PrometheusURLKey:            server.URL,
+		PrometheusConnectionModeKey: PrometheusConnectionModeVMAgent,
+	})
+	require.NoError(t, err)
+	assert.True(t, cfg.ViaForager)
+
+	resp, err := cfg.DoGet(context.Background(), "/api/v1/rules", nil)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	require.Error(t, err)
+	assert.False(t, hit, "a vm_agent config without a transport must not reach the URL")
+}

@@ -38,8 +38,6 @@ func NewExecutor(execConfig ExecutionConfig) (ScriptExecutor, error) {
 		return NewKubernetesExecutor()
 	case "agent":
 		return NewAgentExecutor(), nil
-	case "local":
-		return NewLocalExecutor(), nil
 	case "aws_ssm":
 		return NewAwsSsmExecutor(), nil
 	case "azure_run_command":
@@ -57,7 +55,7 @@ func NewExecutor(execConfig ExecutionConfig) (ScriptExecutor, error) {
 // script for. The Kubernetes executor runs on Nudgebee's cluster with
 // credentials minted for the account, so it needs a cloud account; each cloud
 // run-command executor needs an account of its own cloud. Executors missing
-// from the map (agent, ssh, local) are not restricted here.
+// from the map (agent, ssh) are not restricted here.
 var accountProvidersFor = map[string][]string{
 	"kubernetes":        {"aws", "azure", "gcp"},
 	"aws_ssm":           {"aws"},

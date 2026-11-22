@@ -1,0 +1,14 @@
+# Loki label -> SQL expression over otel_logs (the runner's schema, k8s-agent #40144).
+# A label not listed here is refused: unknown label "<name>"; supported labels: <sorted keys>.
+# Why each mapping, and its known gaps, is in the #40145 spike memo (posted on #40143).
+aliases:
+  namespace: namespace
+  pod: pod
+  container: container
+  node_name: node
+  stream: stream
+  level: level
+  app: workload
+  job: concat(namespace, '/', workload)
+  filename: LogAttributes['log.file.path']
+  service_name: ServiceName

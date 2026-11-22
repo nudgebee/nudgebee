@@ -972,3 +972,56 @@ func TestAnthropicLLM_GenerateContent_CacheTTL(t *testing.T) {
 	assert.Equal(t, 700, resp.Choices[0].GenerationInfo["CacheCreationInputTokens"])
 	assert.Equal(t, 600, resp.Choices[0].GenerationInfo["CacheCreation1hInputTokens"])
 }
+
+// Anthropic reports thinking under usage.output_tokens_details, as a share of
+// output_tokens. The usage row must carry it as ThinkingTokens and drop it from
+// output_tokens, because cost adds the two (else thinking is billed twice).
+func TestAnthropicLLM_GenerateContent_ThinkingFromOutputTokensDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg-1","type":"message","role":"assistant",
+			"content":[{"type":"text","text":"done"}],"model":"claude-sonnet-5","stop_reason":"end_turn",
+			"usage":{"input_tokens":25,"output_tokens":348,"output_tokens_details":{"thinking_tokens":312}}}`))
+	}))
+	defer server.Close()
+
+	llm, err := New(WithToken("test-token"), WithModel("claude-sonnet-5"), WithBaseURL(server.URL))
+	require.NoError(t, err)
+
+	resp, err := llm.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hi"),
+	})
+	require.NoError(t, err)
+	info := resp.Choices[0].GenerationInfo
+	assert.Equal(t, 312, info["ThinkingTokens"])
+	assert.Equal(t, 36, info["output_tokens"])
+}
+
+func TestAnthropicLLM_GenerateContent_StreamingThinkingFromFinalDelta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, ev := range []string{
+			`data: {"type":"message_start","message":{"id":"msg-2","type":"message","role":"assistant","model":"claude-haiku-5-5","usage":{"input_tokens":40,"output_tokens":1}}}` + "\n\n",
+			`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n",
+			`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}` + "\n\n",
+			`data: {"type":"content_block_stop","index":0}` + "\n\n",
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":120,"output_tokens_details":{"thinking_tokens":100}}}` + "\n\n",
+			`data: {"type":"message_stop"}` + "\n\n",
+		} {
+			_, _ = w.Write([]byte(ev))
+		}
+	}))
+	defer server.Close()
+
+	llm, err := New(WithToken("test-token"), WithModel("claude-haiku-5-5"), WithBaseURL(server.URL), WithHTTPClient(server.Client()))
+	require.NoError(t, err)
+
+	resp, err := llm.GenerateContent(context.Background(), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hi"),
+	}, llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error { return nil }))
+	require.NoError(t, err)
+	info := resp.Choices[0].GenerationInfo
+	assert.Equal(t, 100, info["ThinkingTokens"])
+	assert.Equal(t, 20, info["output_tokens"])
+}

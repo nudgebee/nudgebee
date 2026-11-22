@@ -102,3 +102,36 @@ def test_http_failure_is_caught_not_raised(monkeypatch):
     monkeypatch.setattr(httpx, "post", MagicMock(side_effect=httpx.ConnectError("refused")))
     sync.sync_platform_capability_catalog()  # must not raise
     assert not any("INSERT" in sql for sql, _ in conn.executed)
+
+
+def test_service_token_sent_when_configured(monkeypatch):
+    # llm-server's authHandlerMiddleware 401s every route without this header
+    # when LLM_SERVER_TOKEN is set server-side (live-verified against dev).
+    monkeypatch.setattr(Config, "llm_server_token", "secret-token")
+    monkeypatch.setattr(Config, "llm_server_token_header", "X-ACTION-TOKEN")
+    conn = _FakeConnection()
+    monkeypatch.setattr(sync, "engine", _fake_engine(conn))
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"capabilities": []}
+    post_mock = MagicMock(return_value=fake_resp)
+    monkeypatch.setattr(httpx, "post", post_mock)
+
+    sync.sync_platform_capability_catalog()
+
+    assert post_mock.call_args.kwargs["headers"] == {"X-ACTION-TOKEN": "secret-token"}
+
+
+def test_no_auth_header_when_token_unset(monkeypatch):
+    monkeypatch.setattr(Config, "llm_server_token", "")
+    conn = _FakeConnection()
+    monkeypatch.setattr(sync, "engine", _fake_engine(conn))
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status.return_value = None
+    fake_resp.json.return_value = {"capabilities": []}
+    post_mock = MagicMock(return_value=fake_resp)
+    monkeypatch.setattr(httpx, "post", post_mock)
+
+    sync.sync_platform_capability_catalog()
+
+    assert post_mock.call_args.kwargs["headers"] == {}

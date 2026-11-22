@@ -83,10 +83,6 @@ def vertical_rightsizing() -> Response:
                 batch_by_namespace=data.get("batch_by_namespace", True),
                 max_recommendations=data.get("max_recommendations"),
                 metrics_provider=data.get("metrics_provider"),
-                datadog_api_key=data.get("datadog_api_key"),
-                datadog_app_key=data.get("datadog_app_key"),
-                datadog_site=data.get("datadog_site"),
-                elasticsearch=data.get("elasticsearch"),
             )
             message.publish()
             logger.info(f"Published vertical rightsizing request for account {data['account_id']}")
@@ -132,10 +128,6 @@ def volume_rightsizing() -> Response:
                 persist_recommendation=data.get("persist_recommendation", False),
                 max_recommendations=data.get("max_recommendations"),
                 metrics_provider=data.get("metrics_provider"),
-                datadog_api_key=data.get("datadog_api_key"),
-                datadog_app_key=data.get("datadog_app_key"),
-                datadog_site=data.get("datadog_site"),
-                elasticsearch=data.get("elasticsearch"),
             )
             message.publish()
             logger.info(f"Published volume rightsizing request for account {data['account']}")

@@ -7,6 +7,8 @@ import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 export interface PendingApproval {
   taskId: string;
   options: string[];
+  message?: string;
+  respondHint?: string;
 }
 
 interface ExecutionStatusBarProps {
@@ -17,6 +19,7 @@ interface ExecutionStatusBarProps {
   onApprove?: (taskId: string, status: string, comments?: string) => Promise<void> | void;
   approvalLoading?: string | null; // value: `${taskId}:${status}`
   top?: number | string;
+  label?: string;
 }
 
 const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
@@ -27,6 +30,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
   onApprove,
   approvalLoading = null,
   top = 80,
+  label = 'Manual run in progress...',
 }) => {
   const [commentsByTask, setCommentsByTask] = useState<Record<string, string>>({});
 
@@ -70,7 +74,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
           variant='body2'
           sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)' }}
         >
-          Manual run in progress...
+          {label}
         </Typography>
         {totalTasks > 0 && (
           <Typography variant='caption' sx={{ color: 'var(--ds-gray-600)', fontSize: 'var(--ds-text-caption)' }}>
@@ -125,8 +129,24 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
             }}
           >
             <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}>
-              {pa.taskId}: respond below or via Slack/MS Teams
+              {`${pa.taskId}: ${pa.respondHint ?? 'Respond below'}`}
             </Typography>
+            {pa.message && (
+              <Typography
+                data-testid={`workflow-approval-message-${pa.taskId}`}
+                title={pa.message}
+                sx={{
+                  fontSize: 'var(--ds-text-body)',
+                  color: 'var(--ds-gray-700)',
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'anywhere',
+                  maxHeight: '120px',
+                  overflowY: 'auto',
+                }}
+              >
+                {pa.message}
+              </Typography>
+            )}
             <Input
               size='sm'
               type='textarea'

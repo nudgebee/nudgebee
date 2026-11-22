@@ -13,6 +13,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 )
 
 // enforcedUsageCacheNS holds the cost totals CheckBudgetLimits enforces against.
@@ -254,48 +255,35 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 		return 0, fmt.Errorf("invalid module: %s", module)
 	}
 
-	var whereClause string
+	var rollupEntity, rawEntity, storageEntity string
 	switch entityType {
 	case "tenant":
-		whereClause = "c.tenant_id = $1"
+		rollupEntity, rawEntity, storageEntity = "r.tenant_id = $1", "u.tenant_id = $1", "cl.tenant_id = $1"
 	case "account":
-		whereClause = "c.account_id = $1"
+		rollupEntity, rawEntity, storageEntity = "r.account_id = $1", "u.account_id = $1", "cl.account_id = $1"
 	default:
 		return 0.0, fmt.Errorf("invalid entity type: %s", entityType)
 	}
 
-	// Per-call cost: compute on read using the redesigned formula. Tier
-	// (long_ctx) check is applied per row using the call's own prompt size,
-	// then aggregated. Storage cost lives in llm_cache_lifecycle, queried
-	// separately and summed below.
+	// Spend is counted on the day each call ran. It comes from the daily rollup
+	// when every day of the period is built and fresh, and otherwise from the
+	// usage rows directly (same attribution, same prices, slower).
+	callCost := rawCallCostSQL(rawEntity, period, strings.ReplaceAll(filter, "c.session_id", "u.session_id"))
+	if config.Config.BudgetUsageRollupEnabled {
+		complete, err := rollupPeriodComplete(ctx, dbManager, period)
+		switch {
+		case err != nil:
+			slog.Warn("getEntityTokenUsage: unable to read rollup state; using the raw query", "error", err, "period", period)
+		case !complete:
+			slog.Warn("getEntityTokenUsage: usage rollup not complete for the period; using the raw query", "period", period)
+		default:
+			callCost = rollupCallCostSQL(rollupEntity, period, module)
+		}
+	}
+
+	// Storage cost lives in llm_cache_lifecycle, queried separately and summed.
 	query := fmt.Sprintf(`
-		WITH per_call_cost AS (
-			SELECT SUM(
-				CASE
-					WHEN p.context_threshold_tokens IS NOT NULL
-						 AND (t.input_tokens + COALESCE(t.cache_creation_tokens, 0)) > p.context_threshold_tokens
-						 AND p.cost_per_million_input_tokens_long_ctx IS NOT NULL
-					THEN
-						GREATEST(t.input_tokens - COALESCE(t.cached_input_tokens, 0), 0) * p.cost_per_million_input_tokens_long_ctx
-						+ COALESCE(t.cached_input_tokens, 0) * COALESCE(p.cost_per_million_cached_input_tokens_long_ctx, p.cost_per_million_input_tokens_long_ctx)
-						+ COALESCE(t.cache_creation_tokens, 0) * COALESCE(p.cost_per_million_cache_creation_tokens_long_ctx, p.cost_per_million_input_tokens_long_ctx)
-						+ (t.output_tokens + COALESCE(t.thinking_tokens, 0)) * p.cost_per_million_output_tokens_long_ctx
-					ELSE
-						GREATEST(t.input_tokens - COALESCE(t.cached_input_tokens, 0), 0) * p.cost_per_million_input_tokens
-						+ COALESCE(t.cached_input_tokens, 0) * COALESCE(p.cost_per_million_cached_input_tokens, p.cost_per_million_input_tokens)
-						+ COALESCE(t.cache_creation_tokens, 0) * COALESCE(p.cost_per_million_cache_creation_tokens, p.cost_per_million_input_tokens)
-						+ (t.output_tokens + COALESCE(t.thinking_tokens, 0)) * p.cost_per_million_output_tokens
-				END / 1000000.0
-			) AS cost
-			FROM llm_conversation_token_usage t
-			INNER JOIN llm_conversations c ON c.id = t.conversation_id
-			LEFT JOIN llm_model_pricing p
-			    ON p.model_name = t.llm_model AND p.provider_name = t.llm_provider AND p.tenant_id IS NULL
-			WHERE %s
-			AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
-			AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
-			%s
-		),
+		WITH per_call_cost AS (%s),
 		lifecycle_storage AS (
 			SELECT SUM(
 				(cl.cached_tokens / 1000000.0)
@@ -315,10 +303,7 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 			COALESCE((SELECT cost FROM per_call_cost), 0)
 		  + COALESCE((SELECT cost FROM lifecycle_storage), 0)
 		  AS total_cost
-	`,
-		whereClause, period, period, period, filter,
-		strings.ReplaceAll(whereClause, "c.", "cl."), period, period, period,
-	)
+	`, callCost, storageEntity, period, period, period)
 
 	var totalCost sql.NullFloat64
 	err := dbManager.Db.GetContext(ctx, &totalCost, query, entityId)
@@ -333,4 +318,61 @@ func getEntityTokenUsageContext(ctx context.Context, dbManager *common.DatabaseM
 	}
 
 	return totalCost.Float64, nil
+}
+
+// callCostExpr prices one usage row, or one rollup row of summed tokens, with
+// the built-in model prices; long-context rows use the long-context rates.
+// Every term is linear in the token counts, and the non-cached input is
+// clamped per row before it is summed, so pricing a rollup of sums gives the
+// same total as pricing the rows one by one.
+func callCostExpr(longCtx, nonCached, cached, cacheCreation, output string) string {
+	return fmt.Sprintf(`CASE WHEN %[1]s THEN
+			%[2]s * p.cost_per_million_input_tokens_long_ctx
+			+ %[3]s * COALESCE(p.cost_per_million_cached_input_tokens_long_ctx, p.cost_per_million_input_tokens_long_ctx)
+			+ %[4]s * COALESCE(p.cost_per_million_cache_creation_tokens_long_ctx, p.cost_per_million_input_tokens_long_ctx)
+			+ %[5]s * p.cost_per_million_output_tokens_long_ctx
+		ELSE
+			%[2]s * p.cost_per_million_input_tokens
+			+ %[3]s * COALESCE(p.cost_per_million_cached_input_tokens, p.cost_per_million_input_tokens)
+			+ %[4]s * COALESCE(p.cost_per_million_cache_creation_tokens, p.cost_per_million_input_tokens)
+			+ %[5]s * p.cost_per_million_output_tokens
+		END / 1000000.0`, longCtx, nonCached, cached, cacheCreation, output)
+}
+
+// rawCallCostSQL sums the period's call cost from the usage rows, attributed
+// as in usageRowAttributionSQL and bucketed by when each call ran.
+func rawCallCostSQL(entity, period, moduleFilter string) string {
+	cost := callCostExpr(
+		`p.context_threshold_tokens IS NOT NULL
+			AND (u.input_tokens + COALESCE(u.cache_creation_tokens, 0)) > p.context_threshold_tokens
+			AND p.cost_per_million_input_tokens_long_ctx IS NOT NULL`,
+		`GREATEST(u.input_tokens - COALESCE(u.cached_input_tokens, 0), 0)`,
+		`COALESCE(u.cached_input_tokens, 0)`,
+		`COALESCE(u.cache_creation_tokens, 0)`,
+		`(u.output_tokens + COALESCE(u.thinking_tokens, 0))`)
+	return fmt.Sprintf(`
+			SELECT SUM(%s) AS cost
+			FROM (%s
+				WHERE t.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
+				AND t.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
+			) u
+			LEFT JOIN llm_model_pricing p
+			    ON p.model_name = u.llm_model AND p.provider_name = u.llm_provider AND p.tenant_id IS NULL
+			WHERE u.tenant_id IS NOT NULL AND %s %s`,
+		cost, usageRowAttributionSQL, period, period, period, entity, moduleFilter)
+}
+
+// rollupCallCostSQL sums the period's call cost from llm_usage_daily.
+func rollupCallCostSQL(entity, period, module string) string {
+	cost := callCostExpr("r.long_ctx", "r.non_cached_input_tokens", "r.cached_input_tokens",
+		"r.cache_creation_tokens", "r.output_tokens")
+	return fmt.Sprintf(`
+			SELECT SUM(%s) AS cost
+			FROM llm_usage_daily r
+			LEFT JOIN llm_model_pricing p
+			    ON p.model_name = r.llm_model AND p.provider_name = r.llm_provider AND p.tenant_id IS NULL
+			WHERE %s AND r.module = '%s'
+			AND r.day >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)::date
+			AND r.day <= CURRENT_DATE`,
+		cost, entity, module, period)
 }

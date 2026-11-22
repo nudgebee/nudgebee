@@ -74,7 +74,7 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"    - Pod CPU: `sum(rate(container_cpu_usage_seconds_total{pod=~\"POD_NAME.*\", namespace=\"NS\"}[5m])) by (pod)`",
 		"    - Pod Memory: `container_memory_usage_bytes{pod=~\"POD_NAME.*\", namespace=\"NS\"}`",
 		"    - Namespace Memory (Usage): `sum(container_memory_usage_bytes{namespace=\"NS\", container!=\"\"})`",
-		"    - Node CPU: `100 - (avg by (instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)`",
+		"    - Node CPU: `100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)`",
 		"    **CPU Utilization % (container usage divided by node allocatable — NOT cores):**",
 		"    - Container CPU % per pod: `(sum by(pod,namespace)(rate(container_cpu_usage_seconds_total{namespace=\"NS\"}[5m])) / on(pod,namespace) group_left() kube_pod_container_resource_limits{resource=\"cpu\",namespace=\"NS\"}) * 100`",
 		"    - Node CPU % (sum across all pods on node): `sum by(node)(rate(container_cpu_usage_seconds_total[5m])) / on(node) group_left() max by(node)(kube_node_status_allocatable{resource=\"cpu\"}) * 100`",
@@ -93,8 +93,8 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"2.5 **Custom Metric Discovery:** If the user asks about metrics NOT in the standard templates (e.g., Redis, Kafka, Postgres, JVM, custom app metrics), use `metrics_list` ONCE with a single technology keyword (e.g., 'redis', 'kafka', 'pg', 'jvm'). From the returned metric names, identify the best match using your domain knowledge and construct the PromQL directly. Do NOT use `search_metrics` — it is slow. Only use `promql_query` if `metrics_list` returns no results.",
 		"3.  **Complex Query Generation:** ONLY use `promql_query` tool if the request involves custom metrics, complex aggregations, or if you are unsure of the metric name.",
 		"4.  **Execute Query:** Use the `prometheus_execute` tool to execute prometheus query and get the results.",
-		"5.  **Visualize:** ONLY if the user explicitly asks for a chart, graph, or plot, use the `visualizer` tool. For standard queries, provide a text summary. Do NOT generate any Mermaid/chart syntax yourself.",
-		"    **Chart type:** Default to a line chart for a trend over time and a bar chart for a comparison across categories. If the user explicitly asks for a pie or doughnut chart, it must show a share-of-total breakdown at a single point in time, NOT a time series — omitting `range`/`start_time`/`end_time` does NOT give you a snapshot, it defaults to a 24-HOUR range query. Instead, pass a short explicit `range` (e.g. `{\"command\": \"...\", \"range\": \"5m\"}`) so `prometheus_execute` returns a small number of recent values you can chart as a snapshot. If they name a concrete metric that already fits that shape (e.g. 'pie chart of CPU usage by pod'), query it that way and chart it directly. If they ask for a pie chart without naming a metric (e.g. 'give me any pie chart'), pick a metric that is naturally a snapshot breakdown — e.g. current CPU or memory usage by pod in the active namespace, or pod count by phase — rather than an arbitrary time-series metric, which cannot be shown as a pie.",
+		"5.  **Chart:** ONLY if the user explicitly asks for a chart, graph, or plot, copy the ```nb-chart block with the `chart_ref` that `prometheus_execute` returned into your answer. For standard queries, provide a text summary. Never type chart numbers or Mermaid/chart syntax yourself.",
+		"    **Chart type:** The chart is a line chart of the top series over time. Add `\"type\":\"bar\"` (comparison across series) or `\"type\":\"pie\"` (share of total) to plot each series' latest value instead. For a pie, scope the query to the breakdown you want (e.g. `sum(rate(container_cpu_usage_seconds_total{namespace=\"x\"}[5m])) by (pod)`); if no metric was named (e.g. 'give me any pie chart'), pick a metric that is naturally a breakdown, such as current CPU or memory usage by pod in the active namespace.",
 		"**Time Handling:**",
 		" - If the user request specifies a specific time (e.g., 'at 01:00', 'around 01:00'), you MUST calculate specific `start_time` and `end_time` (e.g. 00:45 to 01:15 for a 30m window) and pass them to `prometheus_execute`.",
 		" - Do NOT use `range` for specific past time points; `range` is only for 'last X minutes/hours' relative to NOW.",
@@ -162,12 +162,6 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 			"Output: groups of {namespace_label, workload_label, match_type, families[]}. Build the query from a family + that group's labels; match_type 'prefix' => =~\"<workload>.*\". Don't mix labels across groups.",
 		},
 		tools.ToolResourceSearch: resourceSearchToolUsage,
-		VisualizationAgentName: {
-			"Use this tool to generate visualizations (charts, graphs) for metrics, Without using this tool you can't generate correct charts or graphs.",
-			"Input: A natural language request that INCLUDES the FULL metric data. For trend charts (time-series), you MUST pass the arrays of values and timestamps (e.g., 'Series A: [1,2,3], Time: [t1,t2,t3]'). For bar charts, pass the categorical values. Do NOT summarize time-series data into a single number unless explicitly asked.",
-			"For pie or doughnut charts, pass a snapshot breakdown as labeled values (e.g., 'CPU usage by pod: web-server-1: 45%, web-server-2: 30%, web-server-3: 25%') — never a time series; a pie chart has no time axis.",
-			"Output: A Mermaid.js visualization block.",
-		},
 	}
 
 	constraints := []string{
@@ -176,9 +170,9 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"You MAY execute PromQL queries directly using `prometheus_execute` if you are confident in the query syntax and metric names (e.g. standard K8s metrics). Otherwise, use `promql_query` first.",
 		"Do NOT use `resource_search_execute` if the resource name and namespace are already provided in the user request.",
 		"If `prometheus_execute` returns no data after trying correct label schemas, use `promql_query` ONCE. If still empty, inform the user no data exists.",
-		"You MUST use `visualizer` tool to generate visualizations (charts) for metrics — without it you can't generate correct charts or graphs. Choose the chart type from what the user asked for and the data's shape (see the Visualize step): line/bar for a trend or category comparison, pie/doughnut only for a share-of-total snapshot.",
+		"Charts come only from the `chart_ref` a `prometheus_execute` result carries (see the Chart step); never draw one yourself.",
 		"For specific time queries (e.g. 'around 10am'), ALWAYS use `start_time` and `end_time` calculated from the request. NEVER use `range` for absolute time targets.",
-		"The final answer must be a summary or chart of the data from `prometheus_execute` tool; if the user requests a chart or graph, generate it using the `visualizer` tool with the chart type they asked for (or, if unspecified, whichever type fits the data).",
+		"The final answer must be a summary or chart of the data from `prometheus_execute` tool; if the user requests a chart or graph, include its ```nb-chart chart_ref block with the chart type they asked for (or, if unspecified, the default line chart).",
 	}
 
 	return core.NBAgentPrompt{
@@ -270,13 +264,8 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 						Input:       `{"command": "container_memory_usage_bytes{pod=~\"web-server.*\"}", "start_time": "2024-01-01T10:00:00Z", "end_time": "2024-01-01T12:00:00Z"}`,
 						Explanation: "Request is for standard Memory metrics. Using Fast Path to execute query directly.",
 					},
-					{
-						Tool:        VisualizationAgentName,
-						Input:       "Generate a time-series line chart for memory usage. Data: Timestamps: [10:00, 10:05, 10:10], web-server-1: [50MB, 55MB, 60MB], web-server-2: [60MB, 58MB, 55MB]",
-						Explanation: "I will generate a visualization using the full time-series data I retrieved.",
-					},
 				},
-				Explanation: `The user wants memory usage chart for web-server pod. I will generate visualization (line chart) for memory usage of the web-server pod.`,
+				Explanation: `The user wants a memory usage chart for the web-server pod. The result carries a chart_ref, so the answer includes ` + "```nb-chart\n{\"chart_ref\":\"<chart_ref from the result>\"}\n```" + ` (a line chart) with a short summary.`,
 			},
 			{
 				Question: "Give me any pie chart",
@@ -284,15 +273,10 @@ func (l PrometheusAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 					{
 						Tool:        tools.ToolQueryPrometheus,
 						Input:       `{"command": "sum(rate(container_cpu_usage_seconds_total{namespace=\"nudgebee\"}[5m])) by (pod)", "range": "5m"}`,
-						Explanation: "No metric was named. A pie chart needs a share-of-total snapshot, not a trend, so I query current CPU usage per pod in the active namespace with a short 5m range (omitting range/start_time/end_time would default to a 24-hour query) instead of a time-series metric.",
-					},
-					{
-						Tool:        VisualizationAgentName,
-						Input:       "Generate a pie chart showing CPU usage by pod. Data: web-server-1: 45%, web-server-2: 30%, web-server-3: 25%",
-						Explanation: "The per-pod breakdown at a single point in time is a share-of-total snapshot, which is what a pie chart shows.",
+						Explanation: "No metric was named. A pie chart needs a share-of-total breakdown, so I query current CPU usage per pod in the active namespace with a short 5m range (omitting range/start_time/end_time would default to a 24-hour query).",
 					},
 				},
-				Explanation: `The request named no concrete metric, so I picked a snapshot metric (current per-pod CPU usage) that is naturally a share-of-total breakdown, instead of a time-series metric that can't be shown as a pie.`,
+				Explanation: `The request named no concrete metric, so I picked a breakdown metric (current per-pod CPU usage) and answer with ` + "```nb-chart\n{\"chart_ref\":\"<chart_ref from the result>\",\"type\":\"pie\"}\n```" + `, which plots each pod's latest value as a share of the total.`,
 			},
 			{
 				Question: "What is the CPU utilization percentage per pod in namespace nudgebee?",
@@ -351,9 +335,6 @@ func (p PrometheusAgent) GetSupportedTools(ctx *security.RequestContext) []toolc
 	if searchTool, ok := toolcore.GetNBTool(p.accountId, tools.ToolResourceSearch); ok {
 		toolList = append(toolList, searchTool)
 	}
-	if visualizationTool, ok := toolcore.GetNBTool(p.accountId, VisualizationAgentName); ok {
-		toolList = append(toolList, visualizationTool)
-	}
 
 	return toolList
 }
@@ -410,10 +391,22 @@ func (l PrometheusAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPl
 		var allStats []seriesStat
 
 		data := ""
-		dataResponse := ""
+		// The data and chart notes are guidance, not query results: keep them verbatim,
+		// after any truncation. Formatted as queries they read as "No data found".
+		dataNote, _ := resultsMap["__data_note"].(string)
+		chartNote, _ := resultsMap["__chart_note"].(string)
+		delete(resultsMap, "__data_note")
+		delete(resultsMap, "__chart_note")
 		for k, v := range resultsMap {
+			// Per query: shared across queries, each Response repeated every earlier query's series.
+			dataResponse := ""
+			raw, _ := v.(string)
 			dataArray := []any{}
-			err := common.UnmarshalJson([]byte(v.(string)), &dataArray)
+			err := common.UnmarshalJson([]byte(raw), &dataArray)
+			if err != nil && strings.TrimSpace(raw) != "" {
+				// A note in place of series, e.g. "12 series, not shown inline …; see the saved file".
+				dataResponse = raw
+			}
 			if err == nil && len(dataArray) > 0 {
 				for _, dataMapAny := range dataArray {
 					if dataMap, ok := dataMapAny.(map[string]any); ok {
@@ -521,6 +514,11 @@ func (l PrometheusAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPl
 				"\n\n(response truncated: showing %d of %d chars)%s",
 				maxToolResponseChars, len(data), statsSummary,
 			)
+		}
+		for _, note := range []string{dataNote, chartNote} {
+			if note != "" {
+				data += "\n\n" + note
+			}
 		}
 
 		return data

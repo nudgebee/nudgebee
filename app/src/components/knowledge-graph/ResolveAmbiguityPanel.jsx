@@ -217,8 +217,8 @@ const TooManyBanner = ({ side, matchCount }) => (
       {matchCount} {side} candidates — too many to pick from
     </Typography>
     <Typography sx={{ fontSize: ds.text.small, color: ds.amber[700] }}>
-      Add a <strong>namespace</strong>, <strong>cluster</strong>, or <strong>ARN</strong> qualifier to narrow the match — re-upload via CSV, or call{' '}
-      <code>kg_update_manual_dependency</code> directly.
+      Add a <strong>namespace</strong>, <strong>cluster</strong>, or <strong>ARN</strong> qualifier to narrow the match — edit the declaration, or
+      call <code>kg_update_manual_dependency</code> directly.
     </Typography>
   </Box>
 );

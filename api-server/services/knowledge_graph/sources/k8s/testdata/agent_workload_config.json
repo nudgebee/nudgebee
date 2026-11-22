@@ -1,0 +1,47 @@
+{
+  "Rollout": {
+    "affinity": {},
+    "annotations": {},
+    "conditions": [],
+    "containers": [
+      {
+        "image": "nginx:1.27",
+        "name": "web"
+      }
+    ],
+    "ip": null,
+    "labels": {},
+    "owner": [],
+    "qos_class": null,
+    "service_account": "",
+    "template_labels": {
+      "app": "checkout"
+    },
+    "toleration": [],
+    "volumes": []
+  },
+  "StatefulSet": {
+    "affinity": {},
+    "annotations": {},
+    "conditions": [],
+    "containers": [
+      {
+        "image": "postgres:16",
+        "name": "postgresql"
+      }
+    ],
+    "ip": null,
+    "labels": {
+      "app.kubernetes.io/name": "postgresql"
+    },
+    "owner": [],
+    "qos_class": null,
+    "service_account": "",
+    "template_labels": {
+      "app.kubernetes.io/name": "postgresql",
+      "role": "primary"
+    },
+    "toleration": [],
+    "volumes": []
+  }
+}

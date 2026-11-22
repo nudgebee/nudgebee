@@ -50,7 +50,7 @@ func vmAccount(ctx core.NbToolContext) (string, error) {
 		return "", errors.New("vm: account context is required")
 	}
 	tenantID := ctx.Ctx.GetSecurityContext().GetTenantId()
-	if tenantID == "" || !ctx.Ctx.GetSecurityContext().HasAccountAccess(ctx.AccountId, "read") || !security.IsAccountInTenant(ctx.AccountId, tenantID) {
+	if tenantID == "" || !security.ToolPathAccountAccess(ctx.Ctx, ctx.AccountId, "cloud", security.SecurityAccessTypeRead) || !security.IsAccountInTenant(ctx.AccountId, tenantID) {
 		return "", errors.New("vm: account is not accessible")
 	}
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -93,7 +93,7 @@ func VMAccountTargetByName(ctx *security.RequestContext, accountID, requested st
 	}
 	names := make([]string, 0, len(accounts))
 	for _, a := range accounts {
-		if !sc.HasAccountAccess(a.ID, security.SecurityAccessTypeRead) {
+		if !security.ToolPathAccountAccess(ctx, a.ID, "cloud", security.SecurityAccessTypeRead) {
 			continue
 		}
 		if strings.EqualFold(a.Name, requested) {

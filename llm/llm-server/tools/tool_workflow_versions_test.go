@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -28,13 +29,14 @@ func TestWorkflowVersionTools_InferToolRequestType(t *testing.T) {
 	}
 }
 
-// Read-only version tools must NOT implement the inference interface (so they
-// default to read and skip confirmation).
+// Read-only version tools are always reads, so they run without confirmation.
 func TestWorkflowVersionReadTools_AreNotClassified(t *testing.T) {
-	_, isInfer := any(WorkflowListVersionsTool{}).(core.ToolRequestInference)
-	assert.False(t, isInfer, "list_versions must default to read")
-	_, isInfer = any(WorkflowGetVersionTool{}).(core.ToolRequestInference)
-	assert.False(t, isInfer, "get_version must default to read")
+	ctx := security.NewRequestContextForSuperAdmin()
+	for _, tool := range []core.ToolRequestInference{WorkflowListVersionsTool{}, WorkflowGetVersionTool{}} {
+		got, err := tool.InferToolRequestType(ctx, "", `{"id":"wf-1"}`)
+		require.NoError(t, err)
+		assert.Equal(t, core.ToolRequestTypeRead, got, "%T must be a read", tool)
+	}
 }
 
 func TestWorkflowVersionTools_MethodAndPath(t *testing.T) {

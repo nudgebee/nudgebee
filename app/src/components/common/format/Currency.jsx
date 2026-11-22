@@ -12,6 +12,21 @@ export function formatCurrency(value) {
   }
   return '-';
 }
+// Resolve an ISO currency code (USD/INR/EUR/GBP/…) to its narrow symbol via Intl,
+// so any billing currency a cloud provider reports renders correctly rather than
+// falling back to '$' for everything outside a hardcoded USD/INR map.
+export function getCurrencySymbol(currency) {
+  try {
+    return (
+      new Intl.NumberFormat('en-US', { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
+        .formatToParts(0)
+        .find((p) => p.type === 'currency')?.value || '$'
+    );
+  } catch {
+    return '$';
+  }
+}
+
 export default function Currency({
   value,
   defaultVal = '-',

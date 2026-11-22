@@ -21,8 +21,10 @@ jest.mock('next-auth/react', () => ({
 
 const mockHasReadAccess = jest.fn().mockReturnValue(true);
 const mockIsUiFeatureEnabled = jest.fn().mockReturnValue(false);
+const mockHasFeatureAccess = jest.fn().mockResolvedValue(false);
 jest.mock('@lib/auth', () => ({
   hasReadAccess: (...args) => mockHasReadAccess(...args),
+  hasFeatureAccess: (...args) => mockHasFeatureAccess(...args),
   isUiFeatureEnabled: (...args) => mockIsUiFeatureEnabled(...args),
 }));
 
@@ -92,6 +94,7 @@ describe('GlobalPageSearch', () => {
     mockDataContextValue = { selectedCluster: null, allCluster: [], setSelectedCluster: mockSetSelectedCluster };
     mockHasReadAccess.mockReturnValue(true);
     mockIsUiFeatureEnabled.mockReturnValue(false);
+    mockHasFeatureAccess.mockResolvedValue(false);
     mockWindowOpen = jest.spyOn(window, 'open').mockImplementation(() => {});
   });
 
@@ -376,13 +379,60 @@ describe('GlobalPageSearch', () => {
     expect(mockSetLastAccountIdForProvider).toHaveBeenCalledWith('AWS', 'aws-1', 'tenant-1');
   });
 
+  it('scopes results to a mentioned CloudFoundry account and navigates into its detail page', () => {
+    mockDataContextValue = {
+      selectedCluster: null,
+      allCluster: [{ value: 'cf-1', label: 'CF Prod', cloud_provider: 'CloudFoundry' }],
+      setSelectedCluster: mockSetSelectedCluster,
+    };
+    render(<GlobalPageSearch />);
+    openSearch();
+    [
+      ['CloudFoundry Summary', '/cloudfoundry/summary'],
+      ['CloudFoundry Events', '/cloudfoundry/troubleshoot/events'],
+      ['CloudFoundry Triage Rules', '/cloudfoundry/troubleshoot/triage-rules'],
+      ['CloudFoundry Alert Tuning', '/cloudfoundry/troubleshoot/alert-tuning'],
+      ['CloudFoundry Applications', '/cloudfoundry/cf-apps/instances'],
+      ['CloudFoundry App Events', '/cloudfoundry/cf-apps/events'],
+      ['CloudFoundry Organizations', '/cloudfoundry/cf-organizations/instances'],
+      ['CloudFoundry Organization Events', '/cloudfoundry/cf-organizations/events'],
+      ['CloudFoundry Spaces', '/cloudfoundry/cf-spaces/instances'],
+      ['CloudFoundry Space Events', '/cloudfoundry/cf-spaces/events'],
+      ['CloudFoundry Routes', '/cloudfoundry/cf-routes/instances'],
+    ].forEach(([query, path]) => {
+      fireEvent.change(getSearchInput(), { target: { value: query } });
+      expect(screen.getByText(path)).toBeInTheDocument();
+    });
+    fireEvent.change(getSearchInput(), { target: { value: '@' } });
+    expect(screen.getByText('CF Prod')).toBeInTheDocument();
+    expect(screen.queryByText('Troubleshoot All Events')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('CF Prod'));
+    const scopedSearchInput = screen.getByPlaceholderText(/search for cf prod/i);
+    expect(scopedSearchInput).toBeInTheDocument();
+    [
+      ['Organizations', '/cloudfoundry/cf-organizations/instances'],
+      ['Spaces', '/cloudfoundry/cf-spaces/instances'],
+      ['Routes', '/cloudfoundry/cf-routes/instances'],
+    ].forEach(([query, path]) => {
+      fireEvent.change(scopedSearchInput, { target: { value: query } });
+      expect(screen.getByText(path)).toBeInTheDocument();
+    });
+    fireEvent.change(scopedSearchInput, { target: { value: 'Applications' } });
+    const instancesPathChip = screen.getByText('/cloudfoundry/cf-apps/instances');
+    fireEvent.click(instancesPathChip.closest('[role="option"]'));
+    expect(mockPush).toHaveBeenCalledWith('/cloud-account/details/cf-1#cf-apps/instances');
+    expect(mockSetSelectedCluster).toHaveBeenCalledWith({ value: 'cf-1', label: 'CF Prod', cloud_provider: 'CloudFoundry' });
+    expect(mockSetLastAccountIdForProvider).toHaveBeenCalledWith('CloudFoundry', 'cf-1', 'tenant-1');
+  });
+
   describe('Ask AI hand-off', () => {
-    const getPinnedAskAiButton = (container) => container.querySelector('#global-search-ask-ai-top');
+    const getPinnedAskAiButton = () => document.body.querySelector('#global-search-ask-ai-top');
 
     it('shows a persistent Ask AI button beside the search input', () => {
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
-      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
     it('keeps the Ask AI button visible while scoping by @account', () => {
@@ -391,20 +441,18 @@ describe('GlobalPageSearch', () => {
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
         setSelectedCluster: mockSetSelectedCluster,
       };
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: '@' } });
-      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
     it('shows no redundant "No results found" message when the typed query matches no page — the Ask AI button beside the input is the entry point', () => {
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
       expect(screen.queryByText('No results found')).not.toBeInTheDocument();
-      // Stays visible even with zero results — it's the sole Ask AI entry
-      // point now that the empty state has none of its own.
-      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
     it('falls back to a plain "No results found" message when @-mentioning matches no account', () => {
@@ -417,6 +465,7 @@ describe('GlobalPageSearch', () => {
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: '@zzzznotarealaccount' } });
       expect(screen.getByText('No results found')).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
     it('submits the query, then navigates to the seeded conversation, when the Ask AI button is clicked', async () => {
@@ -426,10 +475,10 @@ describe('GlobalPageSearch', () => {
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
         setSelectedCluster: mockSetSelectedCluster,
       };
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
-      fireEvent.click(getPinnedAskAiButton(container));
+      fireEvent.click(getPinnedAskAiButton());
       expect(mockAiGenerateInvestigate).toHaveBeenCalledWith({
         account_id: 'aws-1',
         query: 'zzzznotarealpage',
@@ -439,9 +488,9 @@ describe('GlobalPageSearch', () => {
     });
 
     it('opens a blank chat from the pinned button when no account is resolvable', () => {
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
-      fireEvent.click(getPinnedAskAiButton(container));
+      fireEvent.click(getPinnedAskAiButton());
       expect(mockPush).toHaveBeenCalledWith('/ask-nudgebee');
       expect(mockAiGenerateInvestigate).not.toHaveBeenCalled();
     });

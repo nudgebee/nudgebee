@@ -25,6 +25,7 @@ const (
 
 type fakeStore struct {
 	locked           bool  // true while ExcludeBuilds runs its callback
+	lockTaken        int   // how many times ExcludeBuilds ran its callback
 	lockErr          error // makes ExcludeBuilds fail before running anything
 	savedOutsideLock bool
 	nodes            []*core.StoredNode // active graph nodes
@@ -112,6 +113,7 @@ func (f *fakeStore) ExcludeBuilds(_ string, fn func(func(string) (bool, error)) 
 		return f.lockErr
 	}
 	f.locked = true
+	f.lockTaken++
 	defer func() { f.locked = false }()
 	return fn(func(string) (bool, error) { return f.running, nil })
 }
@@ -542,6 +544,19 @@ func TestApplyAll_Rules(t *testing.T) {
 		}
 		if st.savedOutsideLock {
 			t.Error("a patch wrote outside ExcludeBuilds, where a build could be claimed underneath it")
+		}
+	})
+
+	// The lock is a transaction: held around every ref, it sat idle in transaction
+	// while they were applied, and a migration queued behind it (#41195).
+	t.Run("the build lock is taken per ref, not held across them", func(t *testing.T) {
+		st := awsFixture(t)
+		st.rows[2].IsActive = false // the instance is gone
+		queue := newQueueRow()
+		st.rows = append(st.rows, queue)
+		newTestApplier(t, st, nil).ApplyAll(context.Background(), testTenant, []Ref{upsert(queue.ID), del("i-0aaa")})
+		if st.lockTaken != 2 {
+			t.Errorf("lock taken %d times for 2 refs, want once per ref", st.lockTaken)
 		}
 	})
 

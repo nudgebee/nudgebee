@@ -123,15 +123,21 @@ func (e *AgentExecutor) Execute(taskCtx types.TaskContext, config ExecutionConfi
 		return "", fmt.Errorf("agent execution failed: unexpected response type %T", resp)
 	}
 
-	if strings.Contains(respStr, "stdout") {
-		respMap := map[string]any{}
-		err := json.Unmarshal([]byte(respStr), &respMap)
-		if err == nil {
-			if stdout, ok := respMap["stdout"].(string); ok {
-				return strings.TrimSpace(stdout), nil
+	return agentScriptResult(respStr)
+}
+
+// agentScriptResult reads the agent's {stdout, exit_code} reply; a non-zero exit
+// fails the script with its output (#41249).
+func agentScriptResult(respStr string) (string, error) {
+	respMap := map[string]any{}
+	if err := json.Unmarshal([]byte(respStr), &respMap); err == nil {
+		if stdout, ok := respMap["stdout"].(string); ok {
+			out := strings.TrimSpace(stdout)
+			if code, ok := relay.ExitCode(respMap["exit_code"]); ok && code != 0 {
+				return out, fmt.Errorf("script exited %d: %s", code, out)
 			}
+			return out, nil
 		}
 	}
-
 	return "", fmt.Errorf("agent execution failed: %s", respStr)
 }

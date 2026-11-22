@@ -746,12 +746,63 @@ func TestExtractNodeLocation(t *testing.T) {
 		{"No location fields", map[string]interface{}{"name": "default"}, ""},
 		{"Nil properties", nil, ""},
 		{"Empty string zone falls through to region", map[string]interface{}{"zone": "", "region": "us-west2"}, "us-west2"},
+		// An ALB/NLB stores its AvailabilityZones as a list of records. Printing that where a
+		// location belongs put raw `map[...]` text on the node's card, so it falls through to
+		// the region instead.
+		{"Load balancer AZ records fall through to region", map[string]interface{}{
+			"availability_zone": []interface{}{
+				map[string]interface{}{"ZoneName": "us-east-1c", "SubnetId": "subnet-03128a2051", "LoadBalancerAddresses": []interface{}{}, "OutpostId": nil},
+				map[string]interface{}{"ZoneName": "us-east-1b", "SubnetId": "subnet-0a7712ff41", "LoadBalancerAddresses": []interface{}{}, "OutpostId": nil},
+			},
+			"region": "us-east-1",
+		}, "us-east-1"},
+		// A Classic ELB and an Aurora cluster report AvailabilityZones as a plain list of
+		// names, which would have rendered as a bracketed Go slice.
+		{"AZ name list falls through to region", map[string]interface{}{
+			"availability_zone": []interface{}{"us-east-1a", "us-east-1b"},
+			"region":            "us-east-1",
+		}, "us-east-1"},
+		{"Typed string slice falls through to region", map[string]interface{}{
+			"availability_zone": []string{"us-east-1a"},
+			"region":            "us-east-1",
+		}, "us-east-1"},
+		// With nothing scalar to fall back on, no location beats an unreadable one.
+		{"Composite with no region yields no location", map[string]interface{}{
+			"availability_zone": []interface{}{map[string]interface{}{"ZoneName": "us-east-1c"}},
+		}, ""},
+		{"Object zone yields no location", map[string]interface{}{
+			"zone": map[string]interface{}{"ZoneName": "us-east-1c"},
+		}, ""},
+		// EC2 and RDS keep scalar values and must be unaffected.
+		{"EC2 keeps its scalar availability zone", map[string]interface{}{"availability_zone": "us-east-1d", "region": "us-east-1"}, "us-east-1d"},
+		{"RDS keeps its region", map[string]interface{}{"region": "us-east-1"}, "us-east-1"},
+		// A pointer is judged by what it points at, so none of these reach the card as a
+		// "<nil>", a brace-printed struct or a memory address.
+		{"Typed nil pointer falls through to region", map[string]interface{}{
+			"availability_zone": (*string)(nil), "region": "us-east-1",
+		}, "us-east-1"},
+		{"Struct falls through to region", map[string]interface{}{
+			"availability_zone": struct{ ZoneName string }{"us-east-1c"}, "region": "us-east-1",
+		}, "us-east-1"},
+		{"Pointer to a list falls through to region", map[string]interface{}{
+			"availability_zone": &[]string{"us-east-1a"}, "region": "us-east-1",
+		}, "us-east-1"},
+		{"Pointer to a scalar reads through", map[string]interface{}{
+			"zone": func() *string { z := "us-central1-a"; return &z }(),
+		}, "us-central1-a"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := extractNodeLocation(tt.properties); got != tt.want {
+			got := extractNodeLocation(tt.properties)
+			if got != tt.want {
 				t.Errorf("extractNodeLocation() = %q, want %q", got, tt.want)
+			}
+			// Whatever the shape of the input, the location is something a card can show.
+			for _, leaked := range []string{"map[", "<nil>", "["} {
+				if strings.Contains(got, leaked) {
+					t.Errorf("extractNodeLocation() = %q leaks internal detail (%q)", got, leaked)
+				}
 			}
 		})
 	}

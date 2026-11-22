@@ -7,7 +7,7 @@ import { ProgressBar } from '@ui/ProgressBar';
 import { Skeleton } from '@ui/Skeleton';
 import Tooltip from '@ui/Tooltip';
 import type { FailedAutomationCount } from '@api1/workflow/types';
-import { TOP_FAILED_LIMIT, executionAutomationLabel } from './constants';
+import { TOP_FAILED_LIMIT, executionAutomationLabel, nonPersistedAutomationLabel } from './constants';
 
 interface MostFailedAutomationsProps {
   entries: FailedAutomationCount[];
@@ -135,6 +135,50 @@ const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, 
       </Typography>
     );
 
+    const cells = (
+      <>
+        <Box sx={{ width: '38%', minWidth: 0 }}>
+          {/* Only tooltip what was actually shortened — a tooltip repeating the
+              visible label is noise. */}
+          {truncated ? <Tooltip title={name}>{nameNode}</Tooltip> : nameNode}
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {/* Explicit tone: a failure count is a status read-out, not a
+              utilisation level with thresholds to resolve against. */}
+          <ProgressBar value={entry.failure_count} max={worstCount} tone='critical' size='md' />
+        </Box>
+        <Typography
+          sx={{
+            fontFamily: 'var(--ds-font-mono)',
+            fontSize: 'var(--ds-text-small)',
+            fontVariantNumeric: 'tabular-nums',
+            color: 'var(--ds-gray-700)',
+            textAlign: 'right',
+            minWidth: '48px',
+          }}
+        >
+          {entry.failure_count.toLocaleString()}
+        </Typography>
+        <Box sx={{ minWidth: '58px', display: 'flex', justifyContent: 'flex-end' }}>
+          <Label tone={shareTone(pct)}>{pct > 0 && pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`}</Label>
+        </Box>
+      </>
+    );
+
+    // Dry runs (ranked together as one row) and inline runs have no automation
+    // the table's Automation filter can select, so their rows are read-only.
+    if (nonPersistedAutomationLabel(entry.workflow_id)) {
+      return (
+        <Box
+          id={`execution-dashboard-most-failed-${entry.workflow_id}`}
+          data-testid={`execution-dashboard-most-failed-${entry.workflow_id}`}
+          sx={ROW_SX}
+        >
+          {cells}
+        </Box>
+      );
+    }
+
     return (
       // The row is the click target rather than the name alone — a 4px-tall bar
       // and a badge are not things to aim at. No DS primitive models a
@@ -161,31 +205,7 @@ const MostFailedAutomations: React.FC<MostFailedAutomationsProps> = ({ entries, 
           '&:focus-visible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '2px' },
         }}
       >
-        <Box sx={{ width: '38%', minWidth: 0 }}>
-          {/* Only tooltip what was actually shortened — a tooltip repeating the
-              visible label is noise. */}
-          {truncated ? <Tooltip title={name}>{nameNode}</Tooltip> : nameNode}
-        </Box>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          {/* Explicit tone: a failure count is a status read-out, not a
-              utilisation level with thresholds to resolve against. */}
-          <ProgressBar value={entry.failure_count} max={worstCount} tone='critical' size='md' />
-        </Box>
-        <Typography
-          sx={{
-            fontFamily: 'var(--ds-font-mono)',
-            fontSize: 'var(--ds-text-small)',
-            fontVariantNumeric: 'tabular-nums',
-            color: 'var(--ds-gray-700)',
-            textAlign: 'right',
-            minWidth: '48px',
-          }}
-        >
-          {entry.failure_count.toLocaleString()}
-        </Typography>
-        <Box sx={{ minWidth: '58px', display: 'flex', justifyContent: 'flex-end' }}>
-          <Label tone={shareTone(pct)}>{pct > 0 && pct < 0.1 ? '<0.1%' : `${pct.toFixed(1)}%`}</Label>
-        </Box>
+        {cells}
       </Box>
     );
   };

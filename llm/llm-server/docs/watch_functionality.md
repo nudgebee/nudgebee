@@ -301,7 +301,7 @@ default per status is used.
 ## Isolation: polls do not pollute conversations
 
 Polls run under a fresh `*security.RequestContext` constructed by
-`buildWatchSecurityContext` in `agents/core/watch_bootstrap.go`. The
+`buildWatchSecurityContext` in `watch/bootstrap/watch_bootstrap.go`. The
 `conversation_id` on the watch row is the **notification destination**
 only — polls themselves don't carry a conversation ID into the source
 context, so the user's chat history is not appended on every tick.

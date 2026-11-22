@@ -123,6 +123,37 @@ describe('FilterDropdown', () => {
     expect(screen.getByLabelText('k8s')).toBeInTheDocument();
   });
 
+  it('shows a long type chip in full instead of cutting it at a character count', () => {
+    // #40702: same-named k8s rows differ only by namespace, which sits after the
+    // cluster in the chip. A fixed 15-char cut rendered every row as
+    // "iteration-test ...", so the rows looked identical without hovering.
+    const rowOptions = [
+      { label: 'benchmark-server', value: 'a', badge: 'Service', type: 'iteration-test \u00b7 nudgebee', typeTextTransform: 'none' },
+      { label: 'benchmark-server', value: 'b', badge: 'Service', type: 'iteration-test \u00b7 benchmark', typeTextTransform: 'none' },
+    ];
+    render(<FilterDropdown options={rowOptions} value={[]} onSelect={jest.fn()} label='Node' multiple />);
+    fireEvent.click(screen.getByText('Node'));
+    expect(screen.getByText('iteration-test \u00b7 nudgebee')).toBeInTheDocument();
+    expect(screen.getByText('iteration-test \u00b7 benchmark')).toBeInTheDocument();
+    expect(screen.queryByText(/\.\.\.$/)).not.toBeInTheDocument();
+  });
+
+  it('puts the full type chip text in a tooltip when the chip is clipped', async () => {
+    // jsdom has no layout, so fake an element that overflows its box.
+    const scroll = jest.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(300);
+    const client = jest.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(100);
+    try {
+      const longType = 'a-very-long-cluster-name-for-testing \u00b7 a-very-long-namespace';
+      render(<FilterDropdown options={[{ label: 'svc', value: 'a', type: longType }]} value={[]} onSelect={jest.fn()} label='Node' multiple />);
+      fireEvent.click(screen.getByText('Node'));
+      fireEvent.mouseOver(screen.getByText(longType));
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(longType);
+    } finally {
+      scroll.mockRestore();
+      client.mockRestore();
+    }
+  });
+
   it('matches search against opt.searchText, not just the visible label', () => {
     // Short labels, but the full key lives in searchText (KG node-row shape).
     const nodeOptions = Array.from({ length: 9 }, (_, i) => ({
@@ -159,5 +190,41 @@ describe('FilterDropdown', () => {
     render(<FilterDropdown multiple options={['Apple']} value={['Ghost']} onSelect={jest.fn()} label='Fruit' />);
     fireEvent.click(screen.getByText('Fruit'));
     expect(screen.getAllByText('Ghost')).toHaveLength(1);
+  });
+
+  // #40704: the Knowledge Graph highlights matching nodes from the search text itself,
+  // so the text must reach the caller while typing — not only when an option is picked.
+  it('reports search text as the user types and keeps a controlled search across close', () => {
+    const Harness = ({ onSearchChange }: { onSearchChange: (q: string) => void }) => {
+      const [q, setQ] = React.useState('');
+      return (
+        <FilterDropdown
+          options={options}
+          onSelect={jest.fn()}
+          label='Fruit'
+          searchValue={q}
+          onSearchChange={(next) => {
+            setQ(next);
+            onSearchChange(next);
+          }}
+        />
+      );
+    };
+    const onSearchChange = jest.fn();
+    render(<Harness onSearchChange={onSearchChange} />);
+    fireEvent.click(screen.getByText('Fruit'));
+    // Shown even with fewer than 8 options, since the caller acts on the text.
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: 'an' } });
+    expect(onSearchChange).toHaveBeenLastCalledWith('an');
+    expect(screen.getByText('Banana')).toBeInTheDocument();
+    expect(screen.queryByText('Cherry')).not.toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByPlaceholderText(/search/i), { key: 'Escape' });
+    fireEvent.click(screen.getByText('Fruit'));
+    expect(screen.getByPlaceholderText(/search/i)).toHaveValue('an');
+    expect(onSearchChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByPlaceholderText(/search/i), { target: { value: '' } });
+    expect(onSearchChange).toHaveBeenLastCalledWith('');
   });
 });

@@ -838,154 +838,35 @@ type signozLogsParams struct {
 	LabelExtractors []LabelExtractor      `json:"label_extractors,omitempty"`
 }
 
-func (a *signozLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	securityCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+// signozDefaultLogProvider resolves the account's default log provider; a seam
+// so CanAutoExecute can be tested without a database.
+var signozDefaultLogProvider = GetDefaultProvider
 
-	provider, err := GetDefaultProvider(securityCtx, ctx.GetAccountId(), "logs", "", "")
+// CanAutoExecute runs this action only for an event that carries the alert's own
+// SigNoz log query (relatedLogsParams, forwarded with SigNoz alerts), which only
+// this action can run. Every other SigNoz log lookup — pod, workload, service,
+// trace — is the generic logs action's: it maps the canonical labels onto SigNoz's
+// attributes and covers every workload kind, so running this action as well only
+// repeated (or failed) the same lookup.
+func (a *signozLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
+	if ctx.GetEvent().Labels["relatedLogsParams"] == "" {
+		return false
+	}
+	securityCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	provider, err := signozDefaultLogProvider(securityCtx, ctx.GetAccountId(), "logs", "", "")
 	if err != nil {
 		securityCtx.GetLogger().Error("signozLogsEnricherAction: unable to get default log provider", "error", err)
 		return false
 	}
-	if provider.Provider != "signoz" {
-		return false
-	}
-
-	if ctx.GetEvent().Labels == nil {
-		return false
-	}
-
-	if ctx.GetEvent().Labels["pod"] != "" && getEventNamespace(ctx.GetEvent()) != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["trace_id"] != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["relatedLogsParams"] != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["service_name"] != "" || ctx.GetEvent().Labels["service"] != "" {
-		return true
-	}
-
-	// Fallback: query by workload name + namespace
-	if ctx.GetEvent().SubjectName != "" && getEventNamespace(ctx.GetEvent()) != "" {
-		return true
-	}
-
-	return false
+	return provider.Provider == "signoz"
 }
 
 func (a *signozLogsAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
-	params := map[string]any{}
-	namespace := getEventNamespace(ctx.GetEvent())
-	if ctx.GetEvent().Labels["pod"] != "" && namespace != "" {
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": ctx.GetEvent().Labels["pod"],
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.pod.name",
-						},
-					},
-					{
-						"value": namespace,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.namespace.name",
-						},
-					},
-				},
-			},
-			"title": "Pod Logs For - " + ctx.GetEvent().Labels["pod"],
-		}
-	} else if ctx.GetEvent().Labels["trace_id"] != "" {
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": ctx.GetEvent().Labels["trace_id"],
-						"op":    "=",
-						"key": map[string]any{
-							"key": "trace_id",
-						},
-					},
-				},
-			},
-			"title": "Trace Logs For - " + ctx.GetEvent().Labels["trace_id"],
-		}
-	} else if ctx.GetEvent().Labels["relatedLogsParams"] != "" {
-		parsedQuery, err := a.parseRelatedLogsParams(ctx.GetEvent().Labels["relatedLogsParams"])
-		if err != nil {
-			return nil, err
-		}
-		params["title"] = "Related Logs"
-		params["raw_query"] = parsedQuery
-	} else if ctx.GetEvent().Labels["service_name"] != "" || ctx.GetEvent().Labels["service"] != "" {
-		service_name := ctx.GetEvent().Labels["service_name"]
-		if service_name == "" {
-			service_name = ctx.GetEvent().Labels["service"]
-		}
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": service_name,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "service.name",
-						},
-					},
-				},
-			},
-			"title": "Service Logs For - " + ctx.GetEvent().Labels["service_name"],
-		}
-	} else if ctx.GetEvent().SubjectName != "" && namespace != "" {
-		workloadName := getEventWorkload(ctx.GetEvent())
-		nameItem := map[string]any{
-			"value": workloadName,
-			"op":    "contains",
-			"key": map[string]any{
-				"key": "k8s.deployment.name",
-			},
-		}
-		title := "Workload Logs For - " + workloadName
-		// A pod event reads that pod's logs, not its owner's: see eventPodSubject.
-		if pod := eventPodSubject(ctx.GetEvent()); pod != "" {
-			nameItem = map[string]any{
-				"value": pod,
-				"op":    "=",
-				"key": map[string]any{
-					"key": "k8s.pod.name",
-				},
-			}
-			title = "Pod Logs For - " + pod
-		}
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					nameItem,
-					{
-						"value": namespace,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.namespace.name",
-						},
-					},
-				},
-			},
-			"title": title,
-		}
+	parsedQuery, err := a.parseRelatedLogsParams(ctx.GetEvent().Labels["relatedLogsParams"])
+	if err != nil {
+		return nil, err
 	}
-	return a.Execute(ctx, params)
+	return a.Execute(ctx, map[string]any{"title": "Related Logs", "raw_query": parsedQuery})
 }
 
 // parseRelatedLogsParams extracts and transforms related logs parameters
@@ -1444,8 +1325,13 @@ func signozFilterItemsToWhereClause(q any) (query.QueryWhereClause, error) {
 	var items []any
 	switch v := q.(type) {
 	case map[string]any:
-		if raw, ok := v["items"].([]any); ok {
+		switch raw := v["items"].(type) {
+		case []any:
 			items = raw
+		case []map[string]any:
+			for _, it := range raw {
+				items = append(items, it)
+			}
 		}
 	case []any:
 		items = v
@@ -2024,22 +1910,13 @@ func isK8sLogTarget(workloadName, namespace string) bool {
 	return workloadName != "" && len(workloadName) <= 253 && k8sObjectNamePattern.MatchString(workloadName)
 }
 
-// noWorkloadLogAggKeys are event classes where a workload-scoped log query
-// cannot return the subject's logs, so whatever it does return is another pod's.
-//
-// An ImagePullBackOff pod never started a container and has no logs by
-// definition, but `logs` queries by workload, so it answered with the healthy
-// replicas still serving the old image. On dev, 130 of 133 such payloads
-// contained no reference to the failing pod at all, and 48 carried error lines
-// from unrelated work — rendered under the failing pod's finding. The image
-// name, the pull error and the pod events are the evidence here, and
-// pod_enricher plus resource_events_enricher already collect them.
-var noWorkloadLogAggKeys = map[string]bool{
-	"image_pull_backoff_reporter": true,
-}
-
 func (a *observabilityLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	if noWorkloadLogAggKeys[ctx.GetEvent().AggregationKey] {
+	// A workload-scoped log query cannot return the logs of a container that never
+	// started, so whatever it does return is another pod's. An ImagePullBackOff pod
+	// has no logs by definition, but `logs` queries by workload, so it answered
+	// with the healthy replicas still serving the old image — error lines from
+	// unrelated work, rendered under the failing pod's finding.
+	if playbooks.IsNeverStartedContainerAggKey(ctx.GetEvent().AggregationKey) {
 		return false
 	}
 	requestCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
@@ -2101,9 +1978,18 @@ func (a *observabilityLogAction) AutoExecute(ctx playbooks.PlaybookActionContext
 				}
 				result, execErr := a.Execute(ctx, params)
 				if execErr == nil && result != nil {
+					// Same line the workload path writes, so one count covers every
+					// event the configured source answered. This path used to be
+					// silent, which made the source look almost unused in the logs.
+					ctx.GetLogger().Info("observability: logs auto action found results via configured source",
+						"query", query)
 					return result, nil
 				}
-				ctx.GetLogger().Info("observability: PlaybookQueryGenerator Execute failed, falling back to workload query", "error", execErr)
+				if execErr != nil {
+					ctx.GetLogger().Info("observability: PlaybookQueryGenerator Execute failed, falling back to workload query", "error", execErr)
+				} else {
+					ctx.GetLogger().Info("observability: generated log query returned no logs, trying workload query", "query", query)
+				}
 			} else {
 				ctx.GetLogger().Info("observability: PlaybookQueryGenerator failed, trying workload query", "error", genErr)
 			}
@@ -2264,6 +2150,9 @@ func (a *observabilityLogAction) autoExecuteByWorkload(ctx playbooks.PlaybookAct
 	return a.fetchLogsViaRelay(ctx, workloadName, namespace)
 }
 
+// executeAgentLogActionFn is an indirection so tests can script the agent's answers.
+var executeAgentLogActionFn = relay.ExecuteAndExtractResponse
+
 // fetchLogsViaRelay fetches logs via relay. For workload kinds (Deployment, DaemonSet,
 // StatefulSet, ReplicaSet) it uses kubectl logs since logs_enricher expects a pod name.
 func (a *observabilityLogAction) fetchLogsViaRelay(ctx playbooks.PlaybookActionContext, workloadName, namespace string) (playbooks.PlaybookActionResponse, error) {
@@ -2320,8 +2209,15 @@ func (a *observabilityLogAction) fetchLogsViaLogsEnricher(ctx playbooks.Playbook
 		NoSinks: true,
 		Cache:   false,
 	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	relayResponse, additionalInfo, err := executeAgentLogActionFn(relayRequest)
 	if err != nil {
+		// The agent reports "no pods found for workload" and the kubelet's own
+		// no-logs answers as a failed action. They are the answer, not a failure.
+		if playbooks.ClusterHasNoLogs(err.Error()) {
+			ctx.GetLogger().Info("observability: the cluster has no logs for this subject",
+				"workload", workloadName, "namespace", namespace, "reason", err.Error())
+			return nil, nil
+		}
 		return nil, err
 	}
 	raw, ok := relayResponse["data"].(string)
@@ -2427,7 +2323,7 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 		NoSinks: true,
 		Cache:   false,
 	}
-	relayResponse, additionalInfo, err := relay.ExecuteAndExtractResponse(relayRequest)
+	relayResponse, additionalInfo, err := executeAgentLogActionFn(relayRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -2436,6 +2332,16 @@ func (a *observabilityLogAction) fetchLogsViaKubectl(ctx playbooks.PlaybookActio
 	// relayResponse["data"] (a JSON-encoded string), not at the top level.
 	stdout, stderr, exitCode, haveExitCode := extractKubectlOutput(relayResponse)
 	if kubectlLogsFailed(stdout, stderr, exitCode, haveExitCode) {
+		// A container that is waiting to start, or has exited and taken its logs with
+		// it, makes kubectl exit non-zero — but it is the cluster answering, and
+		// logs_enricher would only put the same question to the same kubelet. Only
+		// when kubectl printed nothing: with --all-containers a waiting sidecar fails
+		// the command after the other containers have written theirs.
+		if stdout == "" && playbooks.ClusterHasNoLogs(stderr) {
+			ctx.GetLogger().Info("observability: the cluster has no logs for this subject",
+				"workload", workloadName, "namespace", namespace, "reason", strings.TrimSpace(stderr))
+			return nil, nil
+		}
 		ctx.GetLogger().Error("relay: kubectl logs failed",
 			"exit_code", exitCode, "have_exit_code", haveExitCode, "stderr", stderr, "response", slog.AnyValue(relayResponse))
 		return nil, fmt.Errorf("relay: kubectl logs failed (exit %d): %s", exitCode, stderr)

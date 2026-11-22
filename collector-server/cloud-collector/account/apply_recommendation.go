@@ -15,6 +15,9 @@ type ApplyRecommendationResponse struct {
 	ReferenceId     string `json:"reference_id,omitempty"` // ARN or identifier of created resource
 	ResourceCreated bool   `json:"resource_created"`       // True if new resource was created
 	Error           string `json:"error,omitempty"`        // Error message if failed
+	// InProgress is true when the apply was only initiated and completes in the
+	// background; poll GetApplyStatus for the outcome.
+	InProgress bool `json:"in_progress"`
 }
 
 // ApplyRecommendation applies a recommendation by calling the appropriate cloud provider's ApplyRecommendation method
@@ -58,6 +61,7 @@ func ApplyRecommendation(ctx *security.RequestContext, accountId string, recomme
 				Success:         true,
 				Message:         asyncErr.Message,
 				ResourceCreated: false,
+				InProgress:      true,
 			}, nil
 		}
 
@@ -117,4 +121,24 @@ func ApplyRecommendation(ctx *security.RequestContext, accountId string, recomme
 		ReferenceId:     referenceId,
 		ResourceCreated: true,
 	}, nil
+}
+
+// GetApplyStatus reports the outcome of an apply that ApplyRecommendation returned as
+// InProgress. errors.ErrUnsupported means the provider has no asynchronous applies to
+// report on for this recommendation.
+func GetApplyStatus(ctx *security.RequestContext, accountId string, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	account, providerName, err := getAccount(ctx, accountId)
+	if err != nil {
+		return providers.ApplyStatusResult{}, fmt.Errorf("failed to get account: %w", err)
+	}
+	cloudProvider, ok := providers.GetProvider(providerName)
+	if !ok {
+		return providers.ApplyStatusResult{}, fmt.Errorf("provider not found: %s", providerName)
+	}
+	checker, ok := cloudProvider.(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	cloudCtx := providers.NewCloudProviderContextWithLogger(ctx.GetContext(), ctx.GetLogger())
+	return checker.GetApplyStatus(cloudCtx, account, recommendation)
 }

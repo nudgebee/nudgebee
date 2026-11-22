@@ -3,12 +3,11 @@ import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/Text
 import { useForkRef } from '@mui/material/utils';
 import { Avatar, Box, ButtonBase as MuiButtonBase, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowRightWhiteIcon, CustomAgentBlueIcon } from '@assets';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowRightWhiteIcon, CustomAgentBlueIcon, MenuArrowDownIcon } from '@assets';
 import { ds } from 'src/utils/colors';
 import { getIcon } from '@components/llm/common/AgentIcon';
 import StopIcon from '@mui/icons-material/Stop';
-import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import CloseIcon from '@mui/icons-material/Close';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -18,6 +17,9 @@ import { Input } from '@ui/Input';
 import Tooltip from '@ui/Tooltip';
 import CheckIcon from '@mui/icons-material/Check';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import MemoryOutlinedIcon from '@mui/icons-material/MemoryOutlined';
+import { renderSlot } from '@lib/slots';
 import { baseConfigSourceFor, configKeyForSource, wholeConfigSourceFor } from '@utils/llmConfigSource';
 
 // Define custom props interface
@@ -222,7 +224,7 @@ const pickerButtonLabel = (
     return name ? `${selectedModel.model} · ${name}` : selectedModel.model;
   }
   if (selectedTierModels && Object.keys(selectedTierModels).length > 0) return 'By task';
-  return 'Model';
+  return 'Auto';
 };
 
 // Wire format expected by the ai_execute_investigation `images` field.
@@ -247,7 +249,7 @@ interface AttachedImage extends OutgoingImage {
 interface AutoSuggestTextareaProps {
   value: string;
   suggestionsAt: { name: string; display_name: string }[];
-  functionSuggestions?: { name: string; description: string; variables?: any; variable_defaults?: any }[];
+  skillSuggestions?: { name: string; description: string }[];
   placeholder: string;
   maxRows: number;
   maxLength: number;
@@ -290,6 +292,12 @@ interface AutoSuggestTextareaProps {
   // Rendered first in the footer row, before the agent and model pickers
   // (the Ask page puts its account chip here).
   leadingControls?: React.ReactNode;
+  // Extra request config contributed by the ChatComposerToolbarExtra slot; the
+  // slot renders only when a change handler is given.
+  composerConfig?: Record<string, unknown>;
+  onComposerConfigChange?: (config: Record<string, unknown>) => void;
+  // Models + image capability not fetched yet: show their controls disabled instead of hidden.
+  modelsLoading?: boolean;
 }
 
 // A whole-config selection: the config decides the model, per task, using its
@@ -326,6 +334,11 @@ interface ModelPickerPopoverProps {
   disabled?: boolean;
 }
 
+// Gap kept between the surface and the viewport edge, and the height below
+// which the surface's own chrome stops fitting.
+const EDGE_PADDING = 8;
+const MIN_SURFACE_HEIGHT = 320;
+
 export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   // Defaulted because this component is exported: callers inside this file
   // guard on a non-empty list, but an external consumer needn't.
@@ -341,6 +354,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   disabled = false,
 }) => {
   const [open, setOpen] = useState(false);
+  const [surface, setSurface] = useState<{ placement: 'left' | 'top-end' | 'bottom-end'; maxHeight: number } | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   // 'blanket' stages one model for every call, 'tier' one per task, and
   // 'config' hands the whole config over so its own per-task models apply. The
@@ -357,8 +371,28 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   const [activeConfigKey, setActiveConfigKey] = useState<string>('');
   const [search, setSearch] = useState('');
 
+  const measureSurface = useCallback(() => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const above = rect.top - EDGE_PADDING;
+    const below = window.innerHeight - rect.bottom - EDGE_PADDING;
+    const centred = 2 * Math.min(above, below);
+    if (centred >= MIN_SURFACE_HEIGHT) setSurface({ placement: 'left', maxHeight: centred });
+    else if (above >= below) setSurface({ placement: 'top-end', maxHeight: Math.max(above, MIN_SURFACE_HEIGHT) });
+    else setSurface({ placement: 'bottom-end', maxHeight: Math.max(below, MIN_SURFACE_HEIGHT) });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    window.addEventListener('resize', measureSurface);
+    return () => window.removeEventListener('resize', measureSurface);
+  }, [open, measureSurface]);
+
   const openPopover = () => {
     if (disabled) return;
+    // Measured before the surface renders, so its first paint is already placed
+    // and bounded.
+    measureSurface();
     const tierPicks = selectedTierModels ?? {};
     // Reopen in the mode the conversation is actually in, rather than always
     // in All-calls — landing in another mode reads as the selection vanishing.
@@ -558,51 +592,47 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
 
   return (
     <>
-      <Box
-        ref={anchorRef}
-        data-testid='model-picker-trigger'
-        onClick={openPopover}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 'var(--ds-space-1)',
-          cursor: disabled ? 'default' : 'pointer',
-          color: 'var(--ds-gray-600)',
-          border: '0.5px solid var(--ds-gray-300)',
-          borderRadius: 'var(--ds-radius-sm)',
-          padding: 'var(--ds-space-1) var(--ds-space-2)',
-          whiteSpace: 'nowrap',
-          flexShrink: 0,
-          '&:hover': disabled ? {} : { backgroundColor: 'var(--ds-gray-100)' },
-        }}
-      >
-        <Typography
+      <Tooltip placement='top' title={open || disabled ? '' : 'Model this chat uses'}>
+        <Box
+          ref={anchorRef}
+          data-testid='model-picker-trigger'
+          onClick={openPopover}
           sx={{
-            fontSize: 'var(--ds-text-caption)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-1)',
+            cursor: disabled ? 'default' : 'pointer',
+            color: disabled ? 'var(--ds-gray-400)' : 'var(--ds-gray-600)',
+            borderRadius: 'var(--ds-radius-md)',
+            padding: 'var(--ds-space-1) var(--ds-space-2)',
             whiteSpace: 'nowrap',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            maxWidth: ds.space.mul(0, 40),
+            flexShrink: 0,
+            '&:hover': disabled ? {} : { backgroundColor: 'var(--ds-gray-100)' },
           }}
         >
-          {pickerButtonLabel(selectedModel, selectedTierModels, credentials, selectedConfig, configEntries)}
-        </Typography>
-        <ArrowDropDownIcon sx={{ fontSize: 'var(--ds-text-title)' }} />
-      </Box>
+          <MemoryOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'inherit' }} />
+          <Typography
+            sx={{
+              fontSize: 'var(--ds-text-caption)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              maxWidth: ds.space.mul(0, 40),
+            }}
+          >
+            {pickerButtonLabel(selectedModel, selectedTierModels, credentials, selectedConfig, configEntries)}
+          </Typography>
+          <SafeIcon src={MenuArrowDownIcon} alt='' style={{ height: ds.space.mul(0, 9), width: ds.space.mul(0, 9), opacity: '80%' }} />
+        </Box>
+      </Tooltip>
       {open && (
         <Popper
           open={open}
           anchorEl={anchorRef.current}
-          placement='top-start'
+          placement={surface?.placement ?? 'top-end'}
           modifiers={[
-            // Prefer opening upward, but fall back around the anchor rather than
-            // running off the top — this surface is tall enough that the space
-            // above the composer often isn't enough for it.
-            { name: 'flip', enabled: true, options: { fallbackPlacements: ['bottom-start', 'top-end', 'bottom-end'], padding: 8 } },
-            // altAxis lets it slide vertically to stay on screen; tether:false
-            // allows it to detach from the anchor edge when that's the only way
-            // to keep the whole surface visible.
-            { name: 'preventOverflow', enabled: true, options: { padding: 8, altAxis: true, tether: false } },
+            { name: 'flip', enabled: false },
+            { name: 'preventOverflow', enabled: true, options: { padding: EDGE_PADDING, altAxis: true, tether: false } },
           ]}
           sx={{ zIndex: 9999 }}
         >
@@ -621,10 +651,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                 // ~560px: the two-pane list needs room for an endpoint column
                 // plus model names without either side truncating.
                 width: ds.space.mul(0, 280),
-                // Never taller than the viewport. The list below is the only
-                // flexible part, so it absorbs the shrink and keeps the mode
-                // toggle, search box and Apply/Clear row always reachable.
-                maxHeight: 'calc(100vh - 16px)',
+                maxHeight: surface ? `min(${surface.maxHeight}px, calc(100vh - 16px))` : 'calc(100vh - 16px)',
                 maxWidth: 'calc(100vw - 16px)',
               }}
             >
@@ -947,20 +974,14 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
   );
 };
 
-// `variables` arrives as a name list, a {name}-object list, or a name-keyed object
-// depending on the function — normalise before any .map/.length assumes an array.
-const variableNamesOf = (fn?: { variables?: any }): string[] => {
-  const raw = fn?.variables;
-  if (Array.isArray(raw)) return raw.map((v) => (typeof v === 'string' ? v : v?.name)).filter(Boolean);
-  if (raw && typeof raw === 'object') return Object.keys(raw);
-  return [];
-};
+// The slash-command name the backend resolves a skill by: lowercase, spaces typed as hyphens.
+const skillCommandName = (name: string) => name.trim().toLowerCase().replace(/ /g, '-');
 
 const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTextareaProps>(function AutoSuggestTextarea(
   {
     value,
     suggestionsAt,
-    functionSuggestions = [],
+    skillSuggestions = [],
     placeholder,
     maxLength,
     maxRows,
@@ -990,6 +1011,9 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     externalAgentsLoading = false,
     submitOnModEnter = false,
     leadingControls,
+    composerConfig,
+    onComposerConfigChange,
+    modelsLoading = false,
   },
   forwardedRef
 ) {
@@ -997,15 +1021,19 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [filteredSuggestions, setFilteredSuggestions] = useState<{ name: string; display_name: string }[]>([]);
-  const [filteredFunctions, setFilteredFunctions] = useState<{ name: string; description: string; variables?: any; variable_defaults?: any }[]>([]);
+  const [filteredSkills, setFilteredSkills] = useState<{ name: string; description: string }[]>([]);
+  // Where the "/..." word being typed sits in the text, so picking a skill replaces just that word.
+  const slashWordRef = useRef<{ start: number; end: number } | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Point both the internal ref (used for focus/anchor positioning below) and any
   // ref forwarded by the parent (which calls `.focus()`) at the same DOM textarea.
   const mergedTextareaRef = useForkRef(textareaRef, forwardedRef);
-  const [suggestionsTrigger, setSuggestionsTrigger] = useState<'at' | 'button' | 'call'>('at');
+  const [suggestionsTrigger, setSuggestionsTrigger] = useState<'at' | 'button' | 'skill'>('at');
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const agentButtonRef = useRef<HTMLDivElement | null>(null);
+  // Opened by a footer button (placed above it) rather than by typing (placed under the text).
+  const [openedFromButton, setOpenedFromButton] = useState(false);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const previousImageDraftRef = useRef(imageDraft);
@@ -1080,6 +1108,10 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     }
   };
 
+  const composerExtra = onComposerConfigChange
+    ? renderSlot('ChatComposerToolbarExtra', { config: composerConfig ?? {}, onChange: onComposerConfigChange, disabled })
+    : null;
+
   // Single send path used by every submit affordance so text + image clearing
   // and the outgoing payload stay consistent.
   const sendingRef = useRef(false);
@@ -1112,22 +1144,10 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     }
   };
 
-  const buildFunctionCall = (selectedFunction: { name: string; variables?: any; variable_defaults?: any }) => {
-    let functionCall = `/call ${selectedFunction.name}`;
-    const varNames = variableNamesOf(selectedFunction);
-    if (varNames.length > 0) {
-      const paramPairs = varNames.map((variable) => {
-        const defaultValue = selectedFunction.variable_defaults?.[variable] || '';
-        return `${variable}="${defaultValue}"`;
-      });
-      functionCall += ` ${paramPairs.join(' ')}`;
-    }
-    return functionCall;
-  };
-
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setText(value);
+    setOpenedFromButton(false);
 
     // Handle @agent suggestions
     const atMatch = /^@(\w+)/.exec(value);
@@ -1136,15 +1156,31 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
       (suggest) => suggest.name.toLowerCase().startsWith(typedAgent) || suggest.display_name.toLowerCase().startsWith(typedAgent)
     );
 
-    // Handle /call function suggestions
-    const callMatch = /^\/call(?:\s+(\w*))?/.exec(value);
-    const typedFunction = callMatch && callMatch[1] ? callMatch[1].trim().toLowerCase() : '';
-    const matchedFunctions = functionSuggestions.filter((func) => func.name.toLowerCase().startsWith(typedFunction));
+    // Handle /skill-name suggestions for the word at the cursor, anywhere in the message:
+    // a word that starts with "/" and holds no other "/" (so a path like /var/log pops nothing).
+    const caret = e.target.selectionStart ?? value.length;
+    const wordStart = value.slice(0, caret).search(/\S*$/);
+    const wordEnd = caret + (/^\S*/.exec(value.slice(caret))?.[0].length ?? 0);
+    const word = value.slice(wordStart, wordEnd);
+    const isSkillWord = /^\/[^\s/]*$/.test(word);
+    const typedSkill = isSkillWord ? value.slice(wordStart + 1, caret).toLowerCase() : '';
+    const matchedSkills = isSkillWord
+      ? skillSuggestions.filter((skill) => skillCommandName(skill.name).startsWith(typedSkill) || skill.name.toLowerCase().startsWith(typedSkill))
+      : [];
+    slashWordRef.current = isSkillWord ? { start: wordStart, end: wordEnd } : null;
 
-    if (value.startsWith('@') && suggestionsAt.length > 0 && matchedAgents.length > 0) {
+    // The skill word at the cursor wins, so "@agent /dis" still suggests skills.
+    if (matchedSkills.length > 0) {
+      setSuggestionsTrigger('skill');
+      setFilteredSuggestions([]);
+      setFilteredSkills(matchedSkills);
+      setShowSuggestions(true);
+      setSelectedIndex(-1);
+      setAnchorEl(textareaRef.current);
+    } else if (value.startsWith('@') && suggestionsAt.length > 0 && matchedAgents.length > 0) {
       setSuggestionsTrigger('at');
       setFilteredSuggestions(matchedAgents);
-      setFilteredFunctions([]);
+      setFilteredSkills([]);
       setShowSuggestions(true);
       setSelectedIndex(-1);
       const isSuggestionPresent = matchedAgents.some(
@@ -1154,23 +1190,6 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
         setShowSuggestions(false);
       }
       setAnchorEl(textareaRef.current);
-    } else if (value.startsWith('/call') && functionSuggestions.length > 0) {
-      setSuggestionsTrigger('call');
-      setFilteredSuggestions([]);
-
-      // Hide once the name is fully typed AND followed by a space (params/free-text
-      // follow); until then keep offering matches so a prefix like "get" still shows "get_user".
-      const isFunctionFullyTyped = /^\/call\s+\w+\s+/.test(value);
-      const functionsToShow = typedFunction === '' ? functionSuggestions : matchedFunctions;
-
-      if (!isFunctionFullyTyped && functionsToShow.length > 0) {
-        setFilteredFunctions(functionsToShow);
-        setShowSuggestions(true);
-        setSelectedIndex(-1);
-        setAnchorEl(textareaRef.current);
-      } else {
-        setShowSuggestions(false);
-      }
     } else {
       setShowSuggestions(false);
     }
@@ -1200,21 +1219,18 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
     }, 0);
   };
 
-  const handleSelectFunction = (selectedFunc: { name: string; variables?: any; variable_defaults?: any }) => {
-    if (!selectedFunc) return;
-    const callIndex = text.indexOf('/call');
-    if (callIndex !== -1) {
-      const beforeCall = text.substring(0, callIndex);
-      const afterCallPattern = text.substring(callIndex).match(/^\/call\s*\w*/);
-      const afterCallEnd = afterCallPattern ? callIndex + afterCallPattern[0].length : callIndex + 5;
-      setText(beforeCall + buildFunctionCall(selectedFunc) + text.substring(afterCallEnd));
-    } else {
-      setText(buildFunctionCall(selectedFunc) + ' ');
-    }
+  const handleSelectSkill = (selectedSkill: { name: string }) => {
+    if (!selectedSkill) return;
+    const command = `/${skillCommandName(selectedSkill.name)} `;
+    // Replace the "/..." word being typed; without one, put the command first.
+    const { start, end } = slashWordRef.current ?? { start: 0, end: 0 };
+    setText(text.slice(0, start) + command + text.slice(end).replace(/^[ \t]+/, ''));
+    slashWordRef.current = null;
     setShowSuggestions(false);
     setSelectedIndex(-1);
     setTimeout(() => {
       textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(start + command.length, start + command.length);
     }, 0);
   };
 
@@ -1232,7 +1248,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
       return;
     }
     if (showSuggestions) {
-      const currentList = suggestionsTrigger === 'call' ? filteredFunctions : filteredSuggestions;
+      const currentList = suggestionsTrigger === 'skill' ? filteredSkills : filteredSuggestions;
       switch (e.key) {
         case 'ArrowDown':
           e.preventDefault();
@@ -1245,8 +1261,8 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
         case 'Enter':
           e.preventDefault();
           if (selectedIndex >= 0) {
-            if (suggestionsTrigger === 'call') {
-              handleSelectFunction(filteredFunctions[selectedIndex]);
+            if (suggestionsTrigger === 'skill') {
+              handleSelectSkill(filteredSkills[selectedIndex]);
             } else {
               handleSelectSuggestion(filteredSuggestions[selectedIndex].name);
             }
@@ -1272,7 +1288,9 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
   const handleButtonClick = () => {
     setSuggestionsTrigger('button');
     setFilteredSuggestions(suggestionsAt);
-    setShowSuggestions(!showSuggestions);
+    setOpenedFromButton(true);
+    // Toggle only this list: a click while the skills list is open switches to agents.
+    setShowSuggestions(!(showSuggestions && suggestionsTrigger === 'button'));
     setAnchorEl(agentButtonRef.current || textareaRef.current);
     setSelectedIndex(-1);
     setTimeout(() => {
@@ -1326,13 +1344,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
           <Popper
             open={showSuggestions}
             anchorEl={anchorEl}
-            placement={suggestionsTrigger === 'button' ? 'top-start' : isFollowUp ? 'top-start' : 'bottom-start'}
+            placement={openedFromButton ? 'top-start' : isFollowUp ? 'top-start' : 'bottom-start'}
             sx={{ zIndex: 9999 }}
             modifiers={[
               {
                 name: 'offset',
                 options: {
-                  offset: [0, suggestionsTrigger === 'button' ? 8 : isFollowUp ? 8 : 80],
+                  offset: [0, openedFromButton ? 8 : isFollowUp ? 8 : 80],
                 },
               },
               {
@@ -1359,17 +1377,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
               <Box
                 sx={{
                   display: 'grid',
-                  gridTemplateColumns:
-                    (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3 ? '1fr' : 'repeat(3, 1fr)',
+                  // Skills are one per row: their names and descriptions are too long for the agent grid.
+                  gridTemplateColumns: suggestionsTrigger === 'skill' || filteredSuggestions.length <= 3 ? '1fr' : 'repeat(3, 1fr)',
                   gap: 'var(--ds-space-1)',
                   padding: 'var(--ds-space-2)',
                   border: '1px solid var(--ds-blue-300)',
                   borderRadius: 'var(--ds-radius-sm)',
                   backgroundColor: 'var(--ds-background-100)',
-                  width:
-                    (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3
-                      ? ds.space.mul(0, 100)
-                      : ds.space.mul(0, 280),
+                  width: suggestionsTrigger === 'skill' || filteredSuggestions.length > 3 ? ds.space.mul(0, 280) : ds.space.mul(0, 100),
                   maxHeight: ds.space.mul(0, 119),
                   overflowY: 'auto',
                   '&::-webkit-scrollbar': {
@@ -1377,17 +1392,14 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                     borderRadius: 'var(--ds-radius-lg)',
                   },
                   '@media (max-width: 1100px)': {
-                    width:
-                      (suggestionsTrigger === 'call' ? filteredFunctions.length : filteredSuggestions.length) <= 3
-                        ? ds.space.mul(0, 90)
-                        : ds.space.mul(0, 245),
+                    width: suggestionsTrigger === 'skill' || filteredSuggestions.length > 3 ? ds.space.mul(0, 245) : ds.space.mul(0, 90),
                   },
                 }}
               >
-                {suggestionsTrigger === 'call'
-                  ? filteredFunctions.map((func, index) => (
+                {suggestionsTrigger === 'skill'
+                  ? filteredSkills.map((skill, index) => (
                       <Box
-                        key={func.name}
+                        key={skill.name}
                         sx={{
                           display: 'flex',
                           flexDirection: 'column',
@@ -1405,17 +1417,24 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                             fontSize: 'var(--ds-text-caption)',
                           },
                         }}
-                        onClick={() => handleSelectFunction(func)}
+                        onClick={() => handleSelectSkill(skill)}
                       >
                         <Typography sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: ds.blue[500], fontSize: 'var(--ds-text-small)' }}>
-                          {func.name}
+                          {skill.name}
                         </Typography>
-                        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[600], lineHeight: 1.2 }}>{func.description}</Typography>
-                        {variableNamesOf(func).length > 0 && (
-                          <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[700], fontStyle: 'italic' }}>
-                            {variableNamesOf(func).length} parameter{variableNamesOf(func).length !== 1 ? 's' : ''}
-                          </Typography>
-                        )}
+                        <Typography
+                          sx={{
+                            fontSize: 'var(--ds-text-caption)',
+                            color: ds.gray[600],
+                            lineHeight: 1.2,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {skill.description}
+                        </Typography>
                       </Box>
                     ))
                   : filteredSuggestions.map((suggest, index) => (
@@ -1492,6 +1511,7 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
               />
             </>
           )}
+          {composerExtra}
           <Box sx={{ width: '1px', height: ds.space[5], backgroundColor: 'var(--ds-brand-200)', mx: 'var(--ds-space-3)' }} />
           {isFollowUp && allowStop && text.trim() && (
             <Button size='md' onClick={() => buttonProperties.onClickStop?.()} icon={<StopIcon sx={{ color: 'white' }} />} aria-label='Stop' />
@@ -1577,160 +1597,153 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
             pt: 'var(--ds-space-1)',
           }}
         >
-          {leadingControls}
           {imagesEnabled && (
-            <>
-              <input
-                ref={fileInputRef}
-                type='file'
-                accept={allowedMimeTypes.length > 0 ? allowedMimeTypes.join(',') : 'image/*'}
-                multiple
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  addFiles(Array.from(e.target.files ?? []));
-                  e.target.value = '';
-                }}
-                data-testid='chat-image-file-input'
-              />
+            <input
+              ref={fileInputRef}
+              type='file'
+              accept={allowedMimeTypes.length > 0 ? allowedMimeTypes.join(',') : 'image/*'}
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                addFiles(Array.from(e.target.files ?? []));
+                e.target.value = '';
+              }}
+              data-testid='chat-image-file-input'
+            />
+          )}
+          {(imagesEnabled || modelsLoading) && (
+            <Tooltip placement='top' title={imagesEnabled ? 'Attach image' : 'Checking attachment support…'}>
               <Box
                 role='button'
                 aria-label='Attach image'
+                aria-disabled={!imagesEnabled}
                 data-testid='chat-attach-image-btn'
-                onClick={() => fileInputRef.current?.click()}
+                onClick={imagesEnabled ? () => fileInputRef.current?.click() : undefined}
                 sx={{
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  cursor: 'pointer',
+                  cursor: imagesEnabled ? 'pointer' : 'default',
                   p: 'var(--ds-space-1)',
                   borderRadius: 'var(--ds-radius-sm)',
-                  '&:hover': { backgroundColor: 'var(--ds-gray-100)' },
+                  '&:hover': imagesEnabled ? { backgroundColor: 'var(--ds-gray-100)' } : {},
                 }}
               >
-                <AttachFileIcon sx={{ fontSize: 'var(--ds-text-title)', color: ds.gray[600] }} />
+                <AttachFileIcon sx={{ fontSize: 'var(--ds-text-title)', color: imagesEnabled ? ds.gray[600] : ds.gray[400] }} />
               </Box>
-            </>
+            </Tooltip>
+          )}
+          {leadingControls}
+          {(imagesEnabled || modelsLoading || leadingControls) && (
+            <Box sx={{ width: '1px', height: ds.space.mul(0, 9), backgroundColor: ds.gray[200], flexShrink: 0 }} />
           )}
           {/* Agent Selector */}
-          <Box
-            ref={agentButtonRef}
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              color: suggestionsAt.length === 0 ? ds.gray[400] : ds.gray[600],
-              border: `0.5px solid ${ds.gray[300]}`,
-              borderRadius: 'var(--ds-radius-sm)',
-              padding: 'var(--ds-space-1) var(--ds-space-2)',
-              gap: 'var(--ds-space-1)',
-              cursor: suggestionsAt.length === 0 ? 'default' : 'pointer',
-              whiteSpace: 'nowrap',
-              flexShrink: 0,
-            }}
-            onClick={suggestionsAt.length === 0 ? undefined : handleButtonClick}
+          <Tooltip
+            placement='top'
+            title={
+              suggestionsAt.length > 0
+                ? 'Agents — mention one with @'
+                : externalAgentsLoading
+                ? 'Loading agents…'
+                : 'No agent connected. You can add an agent in Settings.'
+            }
           >
-            {selectedAgent ? (
-              <>
-                {getIcon(selectedAgent) ? (
-                  <SafeIcon src={getIcon(selectedAgent)?.default} alt='agent icon' width={14} height={14} />
-                ) : (
-                  <Avatar
-                    style={{
-                      width: ds.space[4],
-                      height: ds.space[4],
-                      border: `1px solid ${ds.blue[400]}`,
-                      color: `${ds.blue[400]}`,
-                      backgroundColor: ds.background[100],
+            <Box
+              ref={agentButtonRef}
+              role='button'
+              aria-label='Select agent'
+              data-testid='chat-agent-selector-btn'
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                color: suggestionsAt.length === 0 ? ds.gray[400] : ds.gray[600],
+                borderRadius: 'var(--ds-radius-sm)',
+                padding: 'var(--ds-space-1)',
+                gap: 'var(--ds-space-1)',
+                cursor: suggestionsAt.length === 0 ? 'default' : 'pointer',
+                whiteSpace: 'nowrap',
+                flexShrink: 0,
+                '&:hover': suggestionsAt.length === 0 ? {} : { backgroundColor: 'var(--ds-gray-100)' },
+              }}
+              onClick={suggestionsAt.length === 0 ? undefined : handleButtonClick}
+            >
+              {selectedAgent ? (
+                <>
+                  {getIcon(selectedAgent) ? (
+                    <SafeIcon src={getIcon(selectedAgent)?.default} alt='agent icon' width={14} height={14} />
+                  ) : (
+                    <Avatar
+                      style={{
+                        width: ds.space[4],
+                        height: ds.space[4],
+                        border: `1px solid ${ds.blue[400]}`,
+                        color: `${ds.blue[400]}`,
+                        backgroundColor: ds.background[100],
+                        fontSize: 'var(--ds-text-caption)',
+                        fontWeight: 'var(--ds-font-weight-medium)',
+                        borderRadius: 'var(--ds-radius-sm)',
+                      }}
+                    >
+                      {selectedAgent[0].toUpperCase()}
+                    </Avatar>
+                  )}
+                  <Typography
+                    sx={{
                       fontSize: 'var(--ds-text-caption)',
-                      fontWeight: 'var(--ds-font-weight-medium)',
-                      borderRadius: 'var(--ds-radius-sm)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      maxWidth: ds.space.mul(0, 30),
                     }}
                   >
-                    {selectedAgent[0].toUpperCase()}
-                  </Avatar>
-                )}
-                <Typography
-                  sx={{
-                    fontSize: 'var(--ds-text-caption)',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    maxWidth: ds.space.mul(0, 30),
-                  }}
-                >
-                  {selectedAgent}
-                </Typography>
-                <Box
-                  component='span'
-                  sx={{
-                    color: ds.gray[700],
-                    fontSize: 'var(--ds-text-small)',
-                    fontWeight: 'bold',
-                    flexShrink: 0,
-                    lineHeight: 1,
-                    '&:hover': { color: ds.blue[500] },
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    clearSelectedAgent();
-                  }}
-                >
-                  ✕
-                </Box>
-              </>
-            ) : suggestionsAt.length === 0 ? (
-              externalAgentsLoading ? (
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400], fontStyle: 'italic' }}>Loading agents...</Typography>
+                    {selectedAgent}
+                  </Typography>
+                  <Box
+                    component='span'
+                    sx={{
+                      color: ds.gray[700],
+                      fontSize: 'var(--ds-text-small)',
+                      fontWeight: 'bold',
+                      flexShrink: 0,
+                      lineHeight: 1,
+                      '&:hover': { color: ds.blue[500] },
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      clearSelectedAgent();
+                    }}
+                  >
+                    ✕
+                  </Box>
+                </>
               ) : (
-                <Tooltip title='You can add an agent in Settings' variant='default' placement='top'>
-                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>No agent connected</Typography>
-                </Tooltip>
-              )
-            ) : (
-              <>
-                <Typography sx={{ fontSize: 'var(--ds-text-caption)' }}>Agent</Typography>
-                <ArrowDropDownIcon sx={{ fontSize: 'var(--ds-text-title)' }} />
-              </>
-            )}
-          </Box>
-          <Box sx={{ width: '1px', height: ds.space.mul(0, 9), backgroundColor: 'var(--ds-gray-200)', flexShrink: 0 }} />
+                <SmartToyOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'inherit' }} />
+              )}
+            </Box>
+          </Tooltip>
+          <Box sx={{ flex: 1 }} />
+          {composerExtra}
           {/* Model Selector — popover variant for non-chat (popup) flow.
               Same component as the chat-screen path; renders the same two
               modes (Blanket / Per category) with mutual exclusivity. */}
-          {(models.length > 0 || credentials.length > 0) && (
-            <ModelPickerPopover
-              credentials={credentials}
-              models={models}
-              selectedModel={selectedModel}
-              onModelSelect={onModelSelect}
-              selectedTierModels={selectedTierModels}
-              onTierModelsSelect={onTierModelsSelect}
-              selectedConfig={selectedConfig}
-              onConfigSelect={onConfigSelect}
-              onConfigClear={onConfigClear}
-              disabled={disabled}
-            />
+          {(models.length > 0 || credentials.length > 0 || modelsLoading) && (
+            <Tooltip placement='top' title={modelsLoading ? 'Loading models…' : ''}>
+              <Box sx={{ display: 'flex', flexShrink: 0 }}>
+                <ModelPickerPopover
+                  credentials={credentials}
+                  models={models}
+                  selectedModel={selectedModel}
+                  onModelSelect={onModelSelect}
+                  selectedTierModels={selectedTierModels}
+                  onTierModelsSelect={onTierModelsSelect}
+                  selectedConfig={selectedConfig}
+                  onConfigSelect={onConfigSelect}
+                  onConfigClear={onConfigClear}
+                  disabled={disabled || modelsLoading}
+                />
+              </Box>
+            </Tooltip>
           )}
-          <Typography
-            sx={{
-              flex: 1,
-              ml: 'var(--ds-space-2)',
-              fontSize: 'var(--ds-text-caption)',
-              color: ds.gray[500],
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            Type{' '}
-            <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
-              @
-            </Box>{' '}
-            to mention an agent,{' '}
-            <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
-              /call
-            </Box>{' '}
-            to run a function.
-          </Typography>
           {text.length >= maxLength * 0.8 && (
             <Typography
               sx={{
@@ -1761,7 +1774,13 @@ const AutoSuggestTextarea = React.forwardRef<HTMLTextAreaElement, AutoSuggestTex
                     handleSend();
                   }
                 }}
-                icon={isStop ? <StopIcon sx={{ color: 'white' }} /> : <SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />}
+                icon={
+                  isStop ? (
+                    <StopIcon sx={{ color: 'white' }} />
+                  ) : (
+                    <SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} style={{ transform: 'rotate(-90deg)' }} />
+                  )
+                }
                 aria-label={isStop ? 'Stop' : isSending ? 'Sending' : 'Send'}
                 loading={!isStop && isSending}
                 disabled={!isStop && (isSending || !text || !buttonProperties.enable)}

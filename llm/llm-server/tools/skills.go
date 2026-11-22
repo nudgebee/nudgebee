@@ -2,15 +2,21 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/tools/core"
+	"nudgebee/llm/security"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/tools/core"
 
 	"github.com/lib/pq"
 )
@@ -20,18 +26,29 @@ const SearchSkillsToolName = "search_skills"
 
 // skillData holds bounded content for one resolved skill.
 type skillData struct {
-	Purpose       core.KnowledgeContentPurpose `json:"purpose,omitempty"`
-	ExcerptOnly   bool                         `json:"excerpt_only,omitempty"`
-	ID            string                       `json:"id"`
-	Data          string                       `json:"data"`
-	Description   string                       `json:"description"`
-	KBType        string                       `json:"kb_type"`
-	KBSource      *string                      `json:"kb_source"`
-	IntegrationID *string                      `json:"integration_id,omitempty"`
-	ReferenceType string                       `json:"reference_type,omitempty"`
+	Purpose       knowledge.KnowledgeContentPurpose `json:"purpose,omitempty"`
+	ExcerptOnly   bool                              `json:"excerpt_only,omitempty"`
+	ID            string                            `json:"id"`
+	Data          string                            `json:"data"`
+	Description   string                            `json:"description"`
+	KBType        string                            `json:"kb_type"`
+	KBSource      *string                           `json:"kb_source"`
+	IntegrationID *string                           `json:"integration_id,omitempty"`
+	ReferenceType string                            `json:"reference_type,omitempty"`
 }
 
 const ragSkillTopK = 5
+
+// ragSkillFetchSize is how many RAG hits search_skills asks for. The LLM judge
+// picks one result from whatever it is given, so it gets a wider pool; without
+// it, extra hits would only be read and dropped, so the default stays at five.
+func ragSkillFetchSize() int {
+	if config.Config.KBRerankEnabled {
+		return 3 * ragSkillTopK
+	}
+	return ragSkillTopK
+}
+
 const ragSkillTimeout = 10 * time.Second
 
 func init() {
@@ -44,7 +61,7 @@ func init() {
 	// Cache namespace is initialized in tools/core so knowledgebase_service.go can invalidate it.
 }
 
-type LoadSkillsTool struct{}
+type LoadSkillsTool struct{ core.ReadOnlyTool }
 
 var _ core.SchemaValidationInputNormalizer = LoadSkillsTool{}
 
@@ -53,7 +70,8 @@ func (m LoadSkillsTool) Name() string {
 }
 
 func (m LoadSkillsTool) Description() string {
-	const procedureReadGuidance = " For a potentially relevant SOP/procedure, finish reading its applicability, scope and prerequisites before dependent investigation or delegation; do not launch those actions in parallel with this load. If it does not apply, proceed without following it; a title match alone does not establish applicability."
+	const skillFileGuidance = " To read a file a loaded skill refers to (for example references/api.md), use skill_name '<skill name>/<file path>'. To run a skill's scripts, first use skill_name '<skill name>/' (trailing slash) to copy its folder into the workspace."
+	const procedureReadGuidance = skillFileGuidance + " For a potentially relevant SOP/procedure, finish reading its applicability, scope and prerequisites before dependent investigation or delegation; do not launch those actions in parallel with this load. If it does not apply, proceed without following it; a title match alone does not establish applicability."
 	if config.Config.LlmServerKnowledgeWorkspaceEnabled {
 		return `Loads one exact account skill or discovered candidate ID. Large indexed documents are saved to the workspace. Use keyword or start_line to read bounded sections through this tool. Integration names return document candidates for selection. Unknown names are never substituted.` + procedureReadGuidance + " Continue truncated reads using the returned start_byte cursor when present, or refine keyword/start_line."
 	}
@@ -153,7 +171,16 @@ func extractSkillName(val any) string {
 }
 
 func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	skillName := m.ParseSkillName(input)
+	if withheld, ok := knowledgeWithheld(ctx); ok {
+		return withheld, nil
+	}
+	skillName := resolveSkillCandidatePath(ctx, m.ParseSkillName(input))
+	if skill, ok := splitSkillFolderName(skillName); ok {
+		return m.callSkillFolder(ctx, skill)
+	}
+	if skill, file, ok := splitSkillFileName(skillName); ok {
+		return m.callSkillFile(ctx, input, skill, file)
+	}
 	if config.Config.LlmServerKnowledgeWorkspaceEnabled {
 		return m.callWorkspaceKnowledge(ctx, input, skillName)
 	}
@@ -185,7 +212,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	var dbNames []string
 	for _, name := range requestedNames {
 		if strings.HasPrefix(strings.ToLower(name), "knowledge:") {
-			if candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name); ok {
+			if candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name); ok {
 				if candidate.KBID != "" {
 					manualCandidates[strings.ToLower(name)] = candidate.KBID
 					continue
@@ -216,17 +243,17 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 	}
 
 	if len(manualCandidates) > 0 {
-		docs := make(core.RAGSearchResults, 0, len(manualCandidates))
+		docs := make(knowledge.RAGSearchResults, 0, len(manualCandidates))
 		for _, id := range manualCandidates {
-			docs = append(docs, core.RAGSearchResult{Metadata: map[string]any{"collection": "kb_" + id}})
+			docs = append(docs, knowledge.RAGSearchResult{Metadata: map[string]any{"collection": "kb_" + id}})
 		}
-		resolved := core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		resolved := knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
 		for _, doc := range resolved {
 			id, _ := doc.Metadata["kb_id"].(string)
 			title, _ := doc.Metadata["kb_name"].(string)
 			for alias, kbID := range manualCandidates {
 				if kbID == id {
-					results[alias] = skillData{Purpose: core.KnowledgeDocumentPurpose(doc), ID: id, ExcerptOnly: len(doc.Document) > core.KnowledgeExcerptBytes, Data: common.TruncateHead(doc.Document, core.KnowledgeExcerptBytes), Description: title, KBType: "manual", ReferenceType: "skill"}
+					results[alias] = skillData{Purpose: knowledge.KnowledgeDocumentPurpose(doc), ID: id, ExcerptOnly: len(doc.Document) > knowledge.KnowledgeExcerptBytes, Data: common.TruncateHead(doc.Document, knowledge.KnowledgeExcerptBytes), Description: title, KBType: "manual", ReferenceType: "skill"}
 				}
 			}
 		}
@@ -289,7 +316,7 @@ func (m LoadSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallReques
 			"<skill>\n<name>%s</name>\n<description>%s</description>\n<guidance>%s</guidance>\n<content>\n%s\n</content>",
 			html.EscapeString(name),
 			html.EscapeString(skill.Description),
-			html.EscapeString(core.KnowledgePurposeGuidance(skill.Purpose)),
+			html.EscapeString(knowledge.KnowledgePurposeGuidance(skill.Purpose)),
 			html.EscapeString(data))
 		if skill.ExcerptOnly {
 			aggregatedOutput.WriteString("\n<note>Only a bounded excerpt is loaded. The full document is not available through this legacy read path; refine search_skills or enable workspace knowledge reads.</note>")
@@ -371,18 +398,20 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 		return results, nil
 	}
 
-	// Resolve the requested names in one account-scoped batch query.
+	// Resolve the requested names in one batch query over the KBs this account
+	// may read (its own and the visible organisation ones).
+	scope, scopeArgs := knowledge.KBAccountScope("kb", 1, 3, knowledge.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
 	query := `
 		SELECT kb.id, kb.name, CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 4097) END, COALESCE(kb.description, ''),
 		       COALESCE(kb.kb_type, 'manual'), kb.kb_source, kb.integration_id, COALESCE(kb.note_category, ''),
 		       COALESCE(kb.data_format, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE ` + scope + `
 		  AND LOWER(BTRIM(kb.name)) = ANY($2::text[])
 		  AND kb.status = 'active'
 		  AND kb.enabled`
 
-	rows, err := dbms.Db.Query(query, ctx.AccountId, pq.Array(queryLower))
+	rows, err := dbms.Db.Query(query, append([]any{ctx.AccountId, pq.Array(queryLower)}, scopeArgs...)...)
 	if err != nil {
 		ctx.Ctx.GetLogger().Error("tool: load_skills batch query error", "error", err)
 		return results, queryNames
@@ -400,13 +429,13 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 		if err := rows.Scan(&id, &name, &data, &description, &kbType, &kbSource, &integrationID, &category, &format); err != nil {
 			continue
 		}
-		if format == string(core.KBFormatPDF) {
+		if format == string(knowledge.KBFormatPDF) {
 			// A PDF's data column is base64 of the document; its content is only
 			// reachable through the indexed page and figure chunks.
-			data = core.PDFKnowledgePointer
+			data = knowledge.PDFKnowledgePointer
 		}
 		lower := strings.ToLower(strings.TrimSpace(name))
-		sd := skillData{Purpose: core.KnowledgePurpose(kbType, category), ID: id, ExcerptOnly: len(data) > core.KnowledgeExcerptBytes, Data: common.TruncateHead(data, core.KnowledgeExcerptBytes), Description: description, KBType: kbType, KBSource: kbSource, IntegrationID: integrationID}
+		sd := skillData{Purpose: knowledge.KnowledgePurpose(kbType, category), ID: id, ExcerptOnly: len(data) > knowledge.KnowledgeExcerptBytes, Data: common.TruncateHead(data, knowledge.KnowledgeExcerptBytes), Description: description, KBType: kbType, KBSource: kbSource, IntegrationID: integrationID}
 		results[lower] = sd
 		foundInDB[lower] = true
 
@@ -431,7 +460,7 @@ func (m LoadSkillsTool) fetchSkillsBatch(ctx core.NbToolContext, dbms *common.Da
 // ---------------------------------------------------------------------------
 
 // resolveDocumentCategoriesFn is swapped out in tests.
-var resolveDocumentCategoriesFn = core.ResolveDocumentCategories
+var resolveDocumentCategoriesFn = knowledge.ResolveDocumentCategories
 
 // cacheSearchKnowledgeCandidates exposes exact, turn-scoped identities instead
 // of asking the loader to search again using a guessed article title.
@@ -440,7 +469,7 @@ var resolveDocumentCategoriesFn = core.ResolveDocumentCategories
 // (search_skills, and load_skills naming an integration knowledge base), so
 // the per-document Fact/SOP marks are applied here rather than by each caller:
 // a candidate's purpose is fixed when it is cached.
-func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchResults) []string {
+func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs knowledge.RAGSearchResults) []string {
 	docs = resolveDocumentCategoriesFn(ctx.Ctx, ctx.AccountId, docs)
 	var results []string
 	for _, doc := range docs {
@@ -459,29 +488,29 @@ func cacheSearchKnowledgeCandidates(ctx core.NbToolContext, docs core.RAGSearchR
 		}
 		// Include content so separate chunks from one article cannot overwrite
 		// each other or a candidate created by automatic discovery.
-		identity := core.KnowledgeDocumentIdentity(doc)
+		identity := knowledge.KnowledgeDocumentIdentity(doc)
 		if identity == "" {
 			identity = url + "\x00" + content
 		}
-		id := core.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, "search:"+identity)
-		candidate := core.KnowledgeCandidate{
+		id := knowledge.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, "search:"+identity)
+		candidate := knowledge.KnowledgeCandidate{
 			ID: id, ReferenceID: url, Title: truncateRunesExact(title, 240),
 			Source: source, URL: url,
 			Content: content,
-			Snippet: truncateRunesExact(content, 240),
+			Snippet: truncateRunesExact(knowledge.KnowledgeSnippetText(doc, content), 240),
 		}
-		core.SetKnowledgeDocumentHandle(&candidate, doc)
-		candidate.KBID = core.ManualKnowledgeID(doc)
+		knowledge.SetKnowledgeDocumentHandle(&candidate, doc)
+		candidate.KBID = knowledge.ManualKnowledgeID(doc)
 		if candidate.KBID != "" {
 			candidate.Content = ""
 			candidate.ReferenceID = candidate.KBID
 		}
-		if err := core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate); err != nil {
+		if err := knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate); err != nil {
 			ctx.Ctx.GetLogger().Warn("search_skills: unable to cache candidate", "error", err)
 			continue
 		}
-		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
-			html.EscapeString(source), id, html.EscapeString(candidate.Title), html.EscapeString(core.KnowledgePurposeGuidance(candidate.Purpose)+"\n"+candidate.Snippet), id))
+		results = append(results, fmt.Sprintf("<result system=\"rag\" source=\"%s\" id=\"%s\" title=\"%s\" purpose=\"%s\">\n%s\nUse load_skills with skill_name=%s to read this candidate.\n</result>",
+			html.EscapeString(source), id, html.EscapeString(candidate.Title), resultPurpose(candidate.Purpose), html.EscapeString(candidate.Snippet), id))
 	}
 	return results
 }
@@ -518,7 +547,7 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 	keyword, _ := input.Arguments["keyword"].(string)
 	// Loop-invariant: the query depends on the turn, not on which skill is
 	// being enriched. Only the per-skill fallback below varies.
-	baseQuery := core.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
+	baseQuery := knowledge.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
 	if baseQuery == "" {
 		baseQuery = strings.TrimSpace(ctx.Query)
 	}
@@ -526,14 +555,14 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 		if skill.KBType != "integration" || strings.TrimSpace(skill.Data) != "" {
 			continue
 		}
-		collection := core.KnowledgebaseCollectionName(core.Knowledgebase{Id: skill.ID, KBType: skill.KBType, IntegrationId: skill.IntegrationID})
+		collection := knowledge.KnowledgebaseCollectionName(knowledge.Knowledgebase{Id: skill.ID, KBType: skill.KBType, IntegrationId: skill.IntegrationID})
 		query := baseQuery
 		if query == "" {
 			query = key
 		}
-		searchCtx, traceID := core.WithRetrievalTraceID(retrievalCtx)
-		docs := core.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, query, ragKBModule, collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
-		docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
+		searchCtx, traceID := knowledge.WithRetrievalTraceID(retrievalCtx)
+		docs := knowledge.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, query, ragKBModule, collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
+		docs = knowledge.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		var content strings.Builder
 		for _, doc := range docs {
 			// Defend against a mis-scoped response from an incompatible server.
@@ -555,8 +584,8 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 			delete(results, key)
 			continue
 		}
-		skill.ExcerptOnly = content.Len() > core.KnowledgeExcerptBytes
-		skill.Data = common.TruncateHead(content.String(), core.KnowledgeExcerptBytes)
+		skill.ExcerptOnly = content.Len() > knowledge.KnowledgeExcerptBytes
+		skill.Data = common.TruncateHead(content.String(), knowledge.KnowledgeExcerptBytes)
 		results[key] = skill
 	}
 }
@@ -566,12 +595,12 @@ func enrichIntegrationSkillsFromRAG(ctx core.NbToolContext, input core.NBToolCal
 // ---------------------------------------------------------------------------
 
 // SearchSkillsTool searches across manual and integration knowledge bases by query.
-type SearchSkillsTool struct{}
+type SearchSkillsTool struct{ core.ReadOnlyTool }
 
 func (s SearchSkillsTool) Name() string { return SearchSkillsToolName }
 
 func (s SearchSkillsTool) Description() string {
-	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
+	return `Searches knowledge bases and skills by a natural language query. Returns candidate snippets from manual (DB-stored) and external (Confluence, ServiceNow) knowledge bases. If the user gives an article ID, such as a ServiceNow KB number or a Confluence page ID, pass it as id. Use load_skills with the returned candidate id or exact manual KB name to read a selected result. Candidate ids are valid only in the current turn. Search matches may be weak; select only results relevant to the task. When searching for investigation guidance, finish this search before launching dependent investigation or delegation; do not run those actions in parallel with discovery. If a potentially relevant SOP/procedure is returned, load it and assess its applicability, scope and prerequisites before dependent work. If no applicable procedure is found, continue the investigation normally; do not force a weak match or repeatedly search for a mandatory SOP.`
 }
 
 func (s SearchSkillsTool) GetType() core.NBToolType { return core.NBToolTypeTool }
@@ -584,12 +613,19 @@ func (s SearchSkillsTool) InputSchema() core.ToolSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "The search query describing what information you need.",
 			},
+			"id": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "The exact ID of a knowledge-base article when the user names one, e.g. a ServiceNow KB number (KB0010001) or a Confluence page ID. It is looked up exactly before the query is searched.",
+			},
 		},
 		Required: []string{"query"},
 	}
 }
 
 func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if withheld, ok := knowledgeWithheld(ctx); ok {
+		return withheld, nil
+	}
 	query := ""
 	if val, ok := input.Arguments["query"]; ok {
 		if q, ok := val.(string); ok {
@@ -599,6 +635,11 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	if query == "" && input.Command != "" {
 		query = strings.TrimSpace(input.Command)
 	}
+	id, _ := input.Arguments["id"].(string)
+	id = strings.TrimSpace(id)
+	if query == "" {
+		query = id
+	}
 	if query == "" {
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "error", ctx.AccountId)
 		return core.NBToolResponse{
@@ -607,7 +648,28 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 		}, nil
 	}
 
-	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query)
+	ctx.Ctx.GetLogger().Info("tool: search_skills called", "query", query, "id", id)
+
+	// Similarity search and the judge can't match an ID, which is never in the embedded text.
+	var idNotFound string
+	if id != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx.Ctx.GetContext(), ragSkillTimeout)
+		docs, err := knowledge.QueryRAGByDocumentID(lookupCtx, ctx.UserId, ctx.AccountId, id, query, ragKBModule, ragSkillTopK, ctx.ConversationId, ctx.MessageId)
+		cancel()
+		if err != nil {
+			ctx.Ctx.GetLogger().Warn("tool: search_skills id lookup failed", "id", id, "error", err)
+		}
+		docs = knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, docs)
+		if results := cacheSearchKnowledgeCandidates(ctx, docs); len(results) > 0 {
+			common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
+			return core.NBToolResponse{
+				Status: core.NBToolResponseStatusSuccess,
+				Data:   strings.Join(results, "\n\n---\n\n"),
+				Type:   core.NBToolResponseTypeText,
+			}, nil
+		}
+		idNotFound = fmt.Sprintf("Could not find an indexed knowledge-base article with the ID %q. Any results below come from searching the query and are not that article.", id)
+	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -620,7 +682,7 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	type searchOutput struct {
 		results []string
 		refs    []core.NBToolResponseReference
-		docs    core.RAGSearchResults
+		docs    knowledge.RAGSearchResults
 	}
 	manualCh := make(chan searchOutput, 1)
 	ragCh := make(chan searchOutput, 1)
@@ -629,8 +691,8 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	go func() {
 		var out searchOutput
 		for _, mr := range s.searchManualKBs(ctx, dbms, query) {
-			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\">\n%s\n</result>",
-				html.EscapeString(mr.name), html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurpose("manual", mr.category))+"\n"+mr.snippet)))
+			out.results = append(out.results, fmt.Sprintf("<result system=\"internal\" source=\"manual\" name=\"%s\" purpose=\"%s\">\n%s\n</result>",
+				html.EscapeString(mr.name), resultPurpose(knowledge.KnowledgePurpose("manual", mr.category)), html.EscapeString(mr.snippet)))
 			out.refs = append(out.refs, core.NBToolResponseReference{
 				Text: mr.name, Type: "skill", Url: mr.id, Description: mr.description,
 			})
@@ -641,10 +703,10 @@ func (s SearchSkillsTool) Call(ctx core.NbToolContext, input core.NBToolCallRequ
 	// 2. Integration KBs — single RAG search with module "knowledge_base".
 	go func() {
 		var out searchOutput
-		searchCtx, traceID := core.WithRetrievalTraceID(ctx.Ctx.GetContext())
-		docs := core.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
-			ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
-		out.docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
+		searchCtx, traceID := knowledge.WithRetrievalTraceID(ctx.Ctx.GetContext())
+		docs := knowledge.QueryRAGCollection(searchCtx, ctx.UserId, ctx.AccountId, "", query, ragKBModule, "",
+			ragSkillFetchSize(), ctx.ConversationId, ctx.MessageId, "", false)
+		out.docs = knowledge.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, query, docs, traceID)
 		ragCh <- out
 	}()
 
@@ -669,12 +731,12 @@ collect:
 
 	// Resolve manual vector hits by ID before formatting, so lexical and vector
 	// search cannot offer the same KB twice under unrelated identities.
-	docs := core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, ragOut.docs)
+	docs := knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, ragOut.docs)
 	seenManual := make(map[string]bool)
 	for _, ref := range manualOut.refs {
 		seenManual[ref.Url] = true
 	}
-	filtered := make(core.RAGSearchResults, 0, len(docs))
+	filtered := make(knowledge.RAGSearchResults, 0, len(docs))
 	for _, doc := range docs {
 		id, _ := doc.Metadata["kb_id"].(string)
 		if id != "" && seenManual[id] {
@@ -689,9 +751,12 @@ collect:
 		common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "not_found", ctx.AccountId)
 		return core.NBToolResponse{
 			Status: core.NBToolResponseStatusSuccess,
-			Data:   "No matching skills or knowledge base entries found for the given query.",
+			Data:   strings.TrimSpace(idNotFound + "\nNo matching skills or knowledge base entries found for the given query."),
 			Type:   core.NBToolResponseTypeText,
 		}, nil
+	}
+	if idNotFound != "" {
+		finalResults = append([]string{idNotFound}, finalResults...)
 	}
 
 	ctx.Ctx.GetLogger().Info("tool: search_skills success",
@@ -699,10 +764,36 @@ collect:
 	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, s.Name(), "success", ctx.AccountId)
 	return core.NBToolResponse{
 		Status:     core.NBToolResponseStatusSuccess,
-		Data:       strings.Join(finalResults, "\n\n---\n\n"),
+		Data:       withSearchGuidance(finalResults, "\n\n---\n\n"),
 		Type:       core.NBToolResponseTypeText,
 		References: finalRefs,
 	}, nil
+}
+
+// resultPurpose is the purpose a search hit declares: a procedure only when the
+// knowledge was marked as one, otherwise reference.
+func resultPurpose(purpose knowledge.KnowledgeContentPurpose) knowledge.KnowledgeContentPurpose {
+	if purpose == knowledge.KnowledgePurposeProcedure {
+		return purpose
+	}
+	return knowledge.KnowledgePurposeReference
+}
+
+// withSearchGuidance joins search hits behind the guidance for each purpose they
+// declare, once. Every hit used to carry its own copy, so a response with several
+// hits was mostly one paragraph repeated.
+func withSearchGuidance(results []string, separator string) string {
+	var blocks []string
+	for _, purpose := range []knowledge.KnowledgeContentPurpose{knowledge.KnowledgePurposeProcedure, knowledge.KnowledgePurposeReference} {
+		marker := fmt.Sprintf("purpose=\"%s\"", purpose)
+		for _, result := range results {
+			if strings.Contains(result, marker) {
+				blocks = append(blocks, fmt.Sprintf("<guidance purpose=\"%s\">%s</guidance>", purpose, html.EscapeString(knowledge.KnowledgePurposeGuidance(purpose))))
+				break
+			}
+		}
+	}
+	return strings.Join(append(blocks, strings.Join(results, separator)), separator)
 }
 
 type manualSearchResult struct {
@@ -717,7 +808,7 @@ type manualSearchResult struct {
 // The query is tokenized (lowercased, stop words removed) and each token must
 // appear in the name, description or tags.
 func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.DatabaseManager, query string) []manualSearchResult {
-	words := core.TokenizeForSkillSelection(query)
+	words := knowledge.TokenizeForSkillSelection(query)
 	if len(words) == 0 {
 		return nil
 	}
@@ -734,16 +825,18 @@ func (s SearchSkillsTool) searchManualKBs(ctx core.NbToolContext, dbms *common.D
 		args = append(args, "%"+word+"%")
 	}
 
+	scope, scopeArgs := knowledge.KBAccountScope("kb", 1, len(args)+1, knowledge.VisibleOrgKnowledgebaseIDs(ctx.Ctx.GetContext(), ctx.AccountId))
+	args = append(args, scopeArgs...)
 	sqlQuery := fmt.Sprintf(`
 		SELECT kb.id, kb.name, COALESCE(kb.description, ''),
 		       CASE WHEN kb.data_format = 'pdf' THEN '' ELSE LEFT(kb.data, 500) END, COALESCE(kb.note_category, '')
 		FROM llm_knowledgebases kb
-		WHERE kb.account_id = $1
+		WHERE %s
 		  AND kb.status = 'active'
 		  AND kb.enabled
 		  AND COALESCE(kb.kb_type, 'manual') = 'manual'
 		  AND %s
-		LIMIT 5`, strings.Join(conditions, " AND "))
+		LIMIT 5`, scope, strings.Join(conditions, " AND "))
 
 	rows, err := dbms.Db.Query(sqlQuery, args...)
 	if err != nil {
@@ -851,4 +944,87 @@ func (m LoadSkillsTool) ParseSkillName(input core.NBToolCallRequest) string {
 	}
 
 	return strings.TrimSpace(skillName)
+}
+
+// splitSkillFileName splits "<skill>/<path>" (a file of a multi-file skill).
+// Skill names never contain "/", so the first one separates them.
+func splitSkillFileName(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	if strings.Contains(name, ",") || strings.HasPrefix(strings.ToLower(name), "knowledge:") {
+		return "", "", false
+	}
+	skill, file, ok := strings.Cut(name, "/")
+	if !ok || strings.TrimSpace(skill) == "" || strings.TrimSpace(file) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(skill), strings.TrimSpace(file), true
+}
+
+var getSkillFileFn = knowledge.GetSkillFile
+
+// resolveSkillCandidatePath turns "knowledge:<id>/<path>" (or "knowledge:<id>/")
+// into "<skill name>/<path>": a skill found through search is known to the
+// agent by its candidate id, so it addresses the skill's files and folder by
+// that id too. Anything else is returned unchanged.
+func resolveSkillCandidatePath(ctx core.NbToolContext, name string) string {
+	trimmed := strings.TrimSpace(name)
+	if !strings.HasPrefix(strings.ToLower(trimmed), "knowledge:") || strings.Contains(trimmed, ",") {
+		return name
+	}
+	id, rest, ok := strings.Cut(trimmed, "/")
+	if !ok {
+		return name
+	}
+	c, found := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, strings.TrimSpace(id))
+	if !found || c.KBID == "" || strings.TrimSpace(c.Title) == "" {
+		return name
+	}
+	return strings.TrimSpace(c.Title) + "/" + rest
+}
+
+// callSkillFile reads one file of a skill the account can see, with the same
+// keyword / start_line / start_byte paging as a document.
+func (m LoadSkillsTool) callSkillFile(ctx core.NbToolContext, input core.NBToolCallRequest, skill, file string) (core.NBToolResponse, error) {
+	keyword, start, startByte, err := parseKnowledgeReadArgs(input)
+	if err != nil {
+		return knowledgeFailure(err)
+	}
+	f, err := getSkillFileFn(ctx.Ctx, ctx.AccountId, skill, file)
+	switch {
+	case errors.Is(err, knowledge.ErrSkillFileNotFound):
+		return knowledgeFailure(fmt.Errorf("skill %q has no file %q", skill, file))
+	case err != nil:
+		return knowledgeFailure(err)
+	case f == nil:
+		return knowledgeFailure(fmt.Errorf("no skill named %q", skill))
+	}
+	sum := sha256.Sum256([]byte(f.Content))
+	text, err := readKnowledgeLinesFromByte(strings.NewReader(f.Content), hex.EncodeToString(sum[:]), keyword, start, startByte, knowledge.KnowledgePurpose(knowledge.KBTypeManual, ""))
+	if err != nil {
+		return knowledgeFailure(err)
+	}
+	common.MetricsToolOperationsTotal(core.ToolImplTypeBuiltin, m.Name(), "success", ctx.AccountId)
+	return core.NBToolResponse{
+		Status:     core.NBToolResponseStatusSuccess,
+		Type:       core.NBToolResponseTypeText,
+		Data:       fmt.Sprintf("File %s of skill %s (%d bytes). Use keyword or start_line for selective reads.\n%s", f.Path, f.SkillName, len(f.Content), text),
+		References: []core.NBToolResponseReference{{Text: f.SkillName + "/" + f.Path, Url: f.SkillID, Type: "skill"}},
+	}, nil
+}
+
+// knowledgeWithheld is the response a knowledge tool gives a person whose access
+// to the account comes from custom roles without ai_kbs:Read: the tool stays
+// callable (planning relies on it) but returns none of the tenant's knowledge.
+// ok is false when the caller may read knowledge (a built-in role, a bee's run,
+// or the grant).
+func knowledgeWithheld(ctx core.NbToolContext) (core.NBToolResponse, bool) {
+	if ctx.Ctx == nil || security.IsGrantScopedRun(ctx.Ctx) || !security.IsGrantCheckedRun(ctx.Ctx, ctx.AccountId) ||
+		security.ToolPathAccountAccess(ctx.Ctx, ctx.AccountId, "ai_kbs", security.SecurityAccessTypeRead) {
+		return core.NBToolResponse{}, false
+	}
+	return core.NBToolResponse{
+		Data:   "No knowledge base content is available to you on this account: it needs the ai_kbs:Read grant.",
+		Type:   core.NBToolResponseTypeText,
+		Status: core.NBToolResponseStatusSuccess,
+	}, true
 }

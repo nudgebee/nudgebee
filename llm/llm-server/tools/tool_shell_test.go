@@ -72,7 +72,7 @@ func TestIsNoMatchExit(t *testing.T) {
 		{name: "kubectl | grep no-match IS reclassified (dominant production pattern)", err: exitOne, command: "kubectl get pods | grep ready", want: true},
 		{name: "three-segment pipeline ending in grep IS reclassified", err: exitOne, command: "cat f | sort | grep foo", want: true},
 		{name: "pipeline ending in wc is NOT reclassified", err: exitOne, command: "grep foo file | wc -l", want: false},
-		{name: "logical OR (||) is not a pipe — first segment governs", err: exitOne, command: "grep foo file || true", want: true},
+		{name: "logical OR (||) is a chain — exit 1 may come from any command", err: exitOne, command: "grep foo file || true", want: false},
 		{name: "kubectl || grep — first segment governs", err: exitOne, command: "kubectl get pods || grep foo file", want: false},
 		{name: "pipe inside double-quotes is not a real pipe", err: exitOne, command: `grep "a|b" file`, want: true},
 		{name: "pipe inside single-quotes is not a real pipe", err: exitOne, command: "grep 'a|b' file", want: true},

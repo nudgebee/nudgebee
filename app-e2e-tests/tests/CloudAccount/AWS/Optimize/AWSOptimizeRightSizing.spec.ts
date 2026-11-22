@@ -1,9 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../../pages/LoginPage";
 import { AWSLocators } from "../AWSLocators";
 import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cloud Account -> AWS -> Optimize -> Right Sizing", { tag: ["@dev", "@test", "@smoke", "@functional"] }, async ({
+test("API testing Cloud Account -> AWS -> Optimize -> Right Sizing", { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] }, async ({
   page,
 }, testInfo) => {
   test.setTimeout(120000);

@@ -448,7 +448,7 @@ func TestFlattenLogsToTabSeparated(t *testing.T) {
 	t.Run("entry without timestamp still emits message", func(t *testing.T) {
 		input := `{"logs":[{"message":"just a message"}]}`
 		got := flattenLogsToTabSeparated(input)
-		assert.Equal(t, "\tjust a message\n", got)
+		assert.Equal(t, "\t-\tjust a message\n", got)
 	})
 
 	t.Run("line breaks inside a message stay on one line", func(t *testing.T) {
@@ -460,12 +460,43 @@ func TestFlattenLogsToTabSeparated(t *testing.T) {
 		got := flattenLogsToTabSeparated(input)
 		lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
 		require.Len(t, lines, 3, "one line per record: %q", got)
-		assert.Equal(t, "2026-05-06T03:00:10Z\tpanic: boom\\ngoroutine 1 [running]:\\n\tmain.go:12", lines[0])
-		assert.Equal(t, "2026-05-06T03:00:11Z\tprogress 10%\\rprogress 100%", lines[1])
+		assert.Equal(t, "2026-05-06T03:00:10Z\t-\tpanic: boom\\ngoroutine 1 [running]:\\n\tmain.go:12", lines[0])
+		assert.Equal(t, "2026-05-06T03:00:11Z\t-\tprogress 10%\\rprogress 100%", lines[1])
 		// JSON messages keep their own escapes, so the message still decodes.
 		var msg map[string]string
-		require.NoError(t, json.Unmarshal([]byte(strings.SplitN(lines[2], "\t", 2)[1]), &msg))
+		require.NoError(t, json.Unmarshal([]byte(strings.SplitN(lines[2], "\t", 3)[2]), &msg))
 		assert.Equal(t, `C:\tmp`, msg["path"])
+	})
+
+	// Without the source column, "which pods logged errors" could only be answered
+	// from pod names that happen to appear inside messages.
+	t.Run("source column names the pod, namespace and container", func(t *testing.T) {
+		input := `{"logs":[` +
+			`{"labels":{"pod":"api-7d9f-x2k","namespace":"shop","container":"api"},"timestamp":"2026-05-06T03:00:10Z","message":"boom"},` +
+			`{"labels":{"hostname":"worker-0","program":"worker"},"timestamp":"2026-05-06T03:00:11Z","message":"a\tb"},` +
+			`{"labels":{"k8s.pod.name":"web,1","k8s.namespace.name":"edge"},"timestamp":"2026-05-06T03:00:12Z","message":"c"},` +
+			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:13Z","message":"d"}` +
+			`]}`
+		lines := strings.Split(strings.TrimRight(flattenLogsToTabSeparated(input), "\n"), "\n")
+		require.Len(t, lines, 4)
+		assert.Equal(t, "2026-05-06T03:00:10Z\tpod=api-7d9f-x2k,ns=shop,container=api\tboom", lines[0])
+		assert.Equal(t, []string{"2026-05-06T03:00:11Z", "host=worker-0,container=worker", "a\tb"}, strings.SplitN(lines[1], "\t", 3),
+			"a hostname with no pod label is reported as host (it is the node on some providers), and a tab inside the message stays in the message")
+		assert.Equal(t, "2026-05-06T03:00:12Z\tpod=web 1,ns=edge\tc", lines[2], "a separator inside a value cannot split the column")
+		assert.Equal(t, "2026-05-06T03:00:13Z\t-\td", lines[3])
+	})
+
+	t.Run("a pod label wins over hostname, and values render as names", func(t *testing.T) {
+		input := `{"logs":[` +
+			`{"labels":{"pod":"api-0","hostname":"api-0","program":"api"},"timestamp":"t1","message":"m"},` +
+			`{"labels":{"hostname":"ip-10-0-1-5"},"timestamp":"t2","message":"m"},` +
+			`{"labels":{"pod":12345678,"namespace":{"nested":"x"}},"timestamp":"t3","message":"m"}` +
+			`]}`
+		lines := strings.Split(strings.TrimRight(flattenLogsToTabSeparated(input), "\n"), "\n")
+		require.Len(t, lines, 3)
+		assert.Equal(t, "t1\tpod=api-0,container=api\tm", lines[0], "no host= next to a real pod")
+		assert.Equal(t, "t2\thost=ip-10-0-1-5\tm", lines[1], "a node-level line is never reported as a pod")
+		assert.Equal(t, "t3\tpod=12345678\tm", lines[2], "a number prints as digits; a nested value is not a name")
 	})
 
 	t.Run("grep shape — head -N means N entries", func(t *testing.T) {
@@ -658,7 +689,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit reached: stated in the envelope and in-band, not marked complete", func(t *testing.T) {
 		logs := logsWith(coverage)
-		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_1.txt", nil))
 		assert.Equal(t, wantNote, env["read_coverage"])
 		inline, _ := env["logs"].(string)
 		assert.True(t, strings.HasSuffix(inline, "[... "+wantNote+" ...]"), "the marker closes the inline logs: %q", inline)
@@ -669,7 +700,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit reached with a long preview: both markers", func(t *testing.T) {
 		long := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"` + strings.Repeat("x", logInlinePreviewBytes*2) + `"}],"metadata":{"limit":1}` + strings.Replace(coverage, `"limit":2,"returned":2`, `"limit":1,"returned":1`, 1) + `}`
-		env := decode(makeFetchResponse("fetch_logs", "q", long, flattenLogsToTabSeparated(long), "logs_loki_2.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", long, flattenLogsToTabSeparated(long), "logs_loki_2.txt", nil))
 		inline, _ := env["logs"].(string)
 		assert.Contains(t, inline, "more bytes truncated")
 		assert.Contains(t, inline, "partial read: the read stopped at its limit of 1 lines")
@@ -678,7 +709,7 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 
 	t.Run("limit not reached: no coverage field, and the marker claims only what was fetched", func(t *testing.T) {
 		logs := logsWith("")
-		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_3.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_3.txt", nil))
 		_, has := env["read_coverage"]
 		assert.False(t, has)
 		inline, _ := env["logs"].(string)
@@ -691,11 +722,42 @@ func TestMakeFetchResponse_ReadCoverage(t *testing.T) {
 		assert.Empty(t, logReadCoverageNote(`{"stdout":"line"}`))
 	})
 
+	t.Run("a backend that stopped before the window's end: counts are a lower bound", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":2000,"returned":85,"partial":true}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend stopped before reading the whole window, "+
+			`so the 85 lines returned are a lower bound — report counts as "at least 85", not as the total`), note)
+	})
+
+	t.Run("the backend's own count is named", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":72612,"total_relation":"eq"}}`)
+		assert.Contains(t, note, "partial read: the read stopped at its limit of 1000 lines")
+		assert.Contains(t, note, "the backend counts 72612 matching lines in the window")
+
+		note = logReadCoverageNote(`{"logs":[],"coverage":{"limit":1000,"returned":1000,"total":10000,"total_relation":"gte"}}`)
+		assert.Contains(t, note, "the backend counts at least 10000 matching lines in the window")
+	})
+
+	t.Run("fewer lines than the limit although more matched", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":50,"returned":2,"total":10000,"total_relation":"gte"}}`)
+		assert.True(t, strings.HasPrefix(note, "partial read: the log backend returned 2 lines, fewer than the limit of 50, although more lines matched"), note)
+	})
+
 	t.Run("a span that could not be read is left out of the note", func(t *testing.T) {
 		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":5000,"returned":5000}}`)
 		assert.Equal(t, "partial read: the read stopped at its limit of 5000 lines, so the window may hold more lines than were read; "+
 			"lines in the window outside the returned span were not read, and nothing can be concluded about them; "+
 			"reading them takes a narrower window or filter", note)
+	})
+
+	t.Run("a widened read names the window asked for and the window read", func(t *testing.T) {
+		note := logReadCoverageNote(`{"logs":[],"coverage":{"limit":500,"returned":500,` +
+			`"oldest":"2026-10-08T10:20:00Z","newest":"2026-10-08T10:45:59Z",` +
+			`"requested_start":"2026-10-08T10:30:00Z","requested_end":"2026-10-08T10:32:00Z",` +
+			`"read_start":"2026-10-08T10:16:00Z","read_end":"2026-10-08T10:46:00Z"}}`)
+		assert.True(t, strings.HasSuffix(note, "; the window asked for was 2026-10-08T10:30:00Z to 2026-10-08T10:32:00Z; "+
+			"the read ran over the wider window 2026-10-08T10:16:00Z to 2026-10-08T10:46:00Z, and every line of the window asked for was read; "+
+			"only lines of the wider window outside the returned span were not read"), note)
+		assert.NotContains(t, note, "nothing can be concluded")
 	})
 }
 
@@ -731,7 +793,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	}
 
 	t.Run("file_ref present: logs previewed, not inlined in full", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToTabSeparated(bigLogs), "logs_loki_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, flattenLogsToTabSeparated(bigLogs), "logs_loki_1.txt", nil))
 		assert.Equal(t, "logs_loki_1.txt", str(env, "file_ref"))
 		assert.Less(t, len(str(env, "logs")), len(bigLogs),
 			"full logs must not be inlined when a file_ref exists")
@@ -742,7 +804,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("no file_ref: full logs inlined", func(t *testing.T) {
-		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", bigLogs, "", "", nil))
 		assert.Equal(t, "", str(env, "file_ref"))
 		assert.Equal(t, bigLogs, str(env, "logs"),
 			"with no file_ref the full logs must remain available inline")
@@ -751,7 +813,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 
 	t.Run("file_ref present but logs already small: inlined unchanged and complete", func(t *testing.T) {
 		const small = "tiny log line"
-		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToTabSeparated(small), "logs_loki_2.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", small, flattenLogsToTabSeparated(small), "logs_loki_2.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), small),
 			"the log content itself must be inlined unchanged")
 		assert.Contains(t, str(env, "logs"), "complete —",
@@ -761,34 +823,27 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 	})
 
 	t.Run("preview format matches the file format, not the raw backend payload", func(t *testing.T) {
-		// The saved file is flattenLogsToTabSeparated(logs): "<timestamp>\t<message>"
+		// The saved file is flattenLogsToTabSeparated(logs): "<timestamp>\t<source>\t<message>"
 		// per entry. Previewing the raw Loki envelope instead made it impossible
 		// to write a working grep from the preview, which is what forced the
 		// extra `head` turn. Both must now be byte-identical for a payload that
 		// fits inline.
 		raw := `{"logs":[{"timestamp":"2026-08-12T10:00:00Z","message":"{\"level\":\"ERROR\",\"msg\":\"boom\"}"}]}`
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
 			"the inline preview must be the same representation that was written to file_ref")
 		assert.NotContains(t, str(env, "logs"), `{"logs":[`,
 			"the raw backend envelope must not leak into the preview")
-		assert.Equal(t, "timestamp_tab_message", str(env, "logs_format"))
-		assert.Contains(t, str(env, "logs_format_hint"), "split once on TAB")
+		assert.Equal(t, "timestamp_tab_source_tab_message", str(env, "logs_format"))
+		assert.Contains(t, str(env, "logs_format_hint"), "split on the first two TABs")
 		assert.Contains(t, str(env, "logs_format_hint"), "never JSON-decode the whole file")
 	})
 
 	t.Run("passthrough format avoids claiming a structured schema", func(t *testing.T) {
 		const raw = "plain kubectl log line\nsecond line"
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_kubectl_1.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_kubectl_1.txt", nil))
 		assert.Equal(t, "passthrough", str(env, "logs_format"))
 		assert.Contains(t, str(env, "logs_format_hint"), "preview demonstrates that format")
-	})
-
-	t.Run("bundle_signal present: threaded through envelope verbatim", func(t *testing.T) {
-		const sig = "=== CRASH BUNDLE ===\n[error] 3 hits\n[oom] 1 hit"
-		env := decode(makeFetchResponse("fetch_logs", "q", "tiny", flattenLogsToTabSeparated("tiny"), "logs_loki_3.txt", sig, nil))
-		assert.Equal(t, sig, str(env, "bundle_signal"),
-			"bundle_signal must appear verbatim in the envelope so the LLM can read it without a follow-up tool call")
 	})
 
 	t.Run("loki envelope: inline preview is flattened tab-separated records, not raw escaped JSON", func(t *testing.T) {
@@ -796,7 +851,7 @@ func TestMakeFetchResponse_PreviewsLogsWhenFileRefPresent(t *testing.T) {
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:10Z","message":"{\"level\":\"ERROR\",\"error\":\"ConnectionError\"}"},` +
 			`{"labels":{"app":"x"},"timestamp":"2026-05-06T03:00:20Z","message":"{\"level\":\"INFO\",\"message\":\"Job ok\"}"}` +
 			`]}`
-		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", "", nil))
+		env := decode(makeFetchResponse("fetch_logs", "q", raw, flattenLogsToTabSeparated(raw), "logs_loki_4.txt", nil))
 		assert.True(t, strings.HasPrefix(str(env, "logs"), flattenLogsToTabSeparated(raw)),
 			"inline preview must match the same one-entry-per-line form saved to file_ref")
 		assert.NotContains(t, env["logs"], `"logs":[`,
@@ -1115,19 +1170,64 @@ func TestBuildKubectlLogCommandHonorsRequestedWindow(t *testing.T) {
 	assert.Contains(t, relative, "--since=168h0m0s")
 }
 
-func TestStripKubectlPodBannerAndDisclosure(t *testing.T) {
-	raw := `{"stdout":"Found 4 pods, using pod/checkout-74fb7f54d5-kpl75\nreal log line\n","stderr":"warn"}`
-	cleaned, podCount, usedPod := stripKubectlPodBanner(raw)
-	assert.Equal(t, 4, podCount)
-	assert.Equal(t, "checkout-74fb7f54d5-kpl75", usedPod)
-	assert.NotContains(t, cleaned, "Found 4 pods")
-	assert.Contains(t, cleaned, "real log line")
+// TestKubectlDisclosureNote covers issue #36237's disclosure requirement: the
+// response must say when it narrowed coverage (fewer pods than the workload
+// has, a filter, a line cap) instead of leaving it silently implicit.
+func TestKubectlDisclosureNote(t *testing.T) {
+	// Was "discloses nothing" until #40196: a single-pod, unfiltered read is
+	// still capped by line and still unbounded in time, which is precisely
+	// what the agent was treating as the pod's whole log.
+	t.Run("no pod banner and no filter still discloses the line cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 0, "")
+		assert.Contains(t, got, "last 100 lines")
+	})
 
-	note := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "error"}, podCount, usedPod)
-	assert.Contains(t, note, "3 other pod(s)")
-	assert.Contains(t, note, "error")
-	resp := withKubectlDisclosure(core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}, note)
-	assert.Contains(t, resp.Response[0], "kubectl_disclosure")
+	t.Run("multi-pod target discloses which pod was read and how many were skipped", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 4, "ehq-api-preprod-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "ehq-api-preprod-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "3 other pod(s)")
+	})
+
+	t.Run("filter_pattern discloses the pattern and the cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "(error|fatal)"}, 0, "")
+		assert.Contains(t, got, "(error|fatal)")
+		assert.Contains(t, got, "200")
+	})
+
+	t.Run("both conditions disclose both facts", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "error"}, 2, "pod-a")
+		assert.Contains(t, got, "pod-a")
+		assert.Contains(t, got, "error")
+	})
+}
+
+// TestWithKubectlDisclosure covers the envelope-injection mechanics: it must
+// be a no-op when there's nothing to disclose or the response isn't the
+// expected JSON shape, and otherwise add the field without disturbing the
+// rest of the envelope.
+func TestWithKubectlDisclosure(t *testing.T) {
+	t.Run("empty note is a no-op", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}
+		got := withKubectlDisclosure(resp, "")
+		assert.Equal(t, resp, got)
+	})
+
+	t.Run("non-JSON response body is left unchanged", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{"not json"}}
+		got := withKubectlDisclosure(resp, "some note")
+		assert.Equal(t, resp, got)
+	})
+
+	t.Run("injects kubectl_disclosure alongside existing fields", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x","query":"kubectl logs pod/y"}`}}
+		got := withKubectlDisclosure(resp, "read pod y only")
+
+		var env map[string]any
+		require.NoError(t, json.Unmarshal([]byte(got.Response[0]), &env))
+		assert.Equal(t, "read pod y only", env["kubectl_disclosure"])
+		assert.Equal(t, "x\n\n[... read pod y only ...]", env["logs"], "the note also goes where the model reads")
+		assert.Equal(t, "kubectl logs pod/y", env["query"])
+	})
 }
 
 func TestParseKubectlDiscoveryCandidates(t *testing.T) {
@@ -1283,166 +1383,302 @@ func TestFetchLogsAgent_Registered(t *testing.T) {
 	assert.Equal(t, FetchLogsAgentName, agent.GetName())
 }
 
-// TestClassifyLogMode pins the deterministic intent classifier fetch_logs
-// uses (via runAutoDiagnosticBundle) to decide whether to auto-fire the
-// diagnostic bundle. The classifier prefers OriginalQuery over Query so that
-// a parent planner's paraphrase ("Get logs for X") doesn't downgrade an
-// investigation ("Were there issues with X?") to routine.
-func TestClassifyLogMode(t *testing.T) {
-	cases := []struct {
-		name     string
-		query    string
-		original string
-		want     logMode
-	}{
-		// Routine
-		{"tail logs", "show me last logs for api-server", "", logModeRoutine},
-		{"recent logs", "get recent logs of llm-server in nudgebee namespace", "", logModeRoutine},
-		{"time range only", "logs between 10:00 and 11:00", "", logModeRoutine},
-
-		// Investigation
-		{"why is X broken", "why is api-service in app-108 failing", "", logModeInvestigation},
-		{"diagnose", "diagnose checkout-api connection refused errors", "", logModeInvestigation},
-		{"what caused", "what caused the outage in payment-api", "", logModeInvestigation},
-		{"were there issues", "were there issues with cron-scheduler in ns-73b", "", logModeInvestigation},
-		{"root cause", "find the root cause of the crash in worker-7", "", logModeInvestigation},
-
-		// Enumeration
-		{"list errors", "list all errors in payment-api last 1h", "", logModeEnumeration},
-		{"show errors", "show me the errors in my-app-51", "", logModeEnumeration},
-		{"distinct errors", "what distinct errors appear in checkout-api", "", logModeEnumeration},
-		{"summarise errors", "summarize errors in cron-scheduler", "", logModeEnumeration},
-
-		// OriginalQuery wins over per-step paraphrase — this is the case that
-		// regressed in production today: parent emitted "Get logs for pod X"
-		// and the LLM treated it as routine, skipping the investigation flow.
-		{
-			name:     "parent paraphrase loses intent without classifier",
-			query:    "Get logs for pod cron-scheduler-xtcwd in namespace-73b",
-			original: "Were there issues with the cron-scheduler pod in namespace-73b?",
-			want:     logModeInvestigation,
-		},
-		{
-			name:     "empty original falls back to query",
-			query:    "why is api-server failing",
-			original: "",
-			want:     logModeInvestigation,
-		},
-
-		// Enumeration's noun list must cover symptom words, not just the
-		// "error" family — otherwise a plain listing request that happens to
-		// describe pods as "failing"/"broken"/"crashed" (rather than saying
-		// "errors") falls through to the weak-symptom investigation tier and
-		// gets routed into the heavier mandatory-shell_execute workflow for
-		// what the user framed as "just list them".
-		{"list failing pods", "list the pods that are failing in namespace nudgebee", "", logModeEnumeration},
-		{"show broken services", "show me the broken services in prod", "", logModeEnumeration},
-		{"list crashed pods", "list crashed pods in nudgebee", "", logModeEnumeration},
-
-		// Stem/wildcard forms (fail\w*, crash\w*) and optional plurals catch
-		// variants a literal enumeration would miss: past tense ("failed", not
-		// just "failures"/"failing"), compound crash states that don't end at
-		// a word boundary after "crash" ("crashloopbackoff"), and singular
-		// nouns ("exception"/"issue", not just their plurals). Without these,
-		// "list the pods that failed" fell all the way through to ROUTINE —
-		// worse than the investigation-mode misroute this file's earlier
-		// cases fix, since ROUTINE doesn't even get the weak-symptom fallback.
-		{"list failed pods", "list the pods that failed in namespace nudgebee", "", logModeEnumeration},
-		{"list crashloopbackoff pods", "list crashloopbackoff pods in nudgebee", "", logModeEnumeration},
-		{"list exception singular", "list exception in api-server", "", logModeEnumeration},
-		{"show issue singular", "show issue with pod", "", logModeEnumeration},
-
-		// A strong causal ask must win even when an enumeration verb also
-		// appears in the same query — enumeration checking first (as it did
-		// before this fix) would discard the causal ask entirely.
-		{"causal ask co-occurring with enumeration verb", "show me the errors and explain why it broke", "", logModeInvestigation},
-		{"why are pods failing", "why are the pods failing in cron-scheduler", "", logModeInvestigation},
+// The file's shape is measured once at save time into the reference's
+// description; the envelope carries the same text so the logs agent can filter
+// the file without first reading its head.
+func TestMakeFetchResponse_CarriesLogsShapeFromFileRef(t *testing.T) {
+	logs := `{"logs":[{"timestamp":"2026-01-15T05:30:48Z","message":"a"}]}`
+	refs := []toolcore.NBToolResponseReference{
+		{Type: "link", Url: "https://example.com", Description: "not the file"},
+		{Type: "file", Url: "logs_loki_9.txt", Description: "Raw log data from loki: 1 lines"},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := classifyLogMode(tc.query, tc.original)
-			assert.Equalf(t, tc.want, got,
-				"classifyLogMode(%q, %q) = %s; want %s",
-				tc.query, tc.original, logModeName(got), logModeName(tc.want))
-		})
+	resp := makeFetchResponse("fetch_logs", "q", logs, flattenLogsToTabSeparated(logs), "logs_loki_9.txt", refs)
+	var env map[string]any
+	if err := json.Unmarshal([]byte(resp.Response[0]), &env); err != nil {
+		t.Fatalf("envelope is not JSON: %v", err)
+	}
+	assert.Equal(t, "Raw log data from loki: 1 lines", env["logs_shape"])
+
+	noFile := makeFetchResponse("fetch_logs", "q", logs, "", "", refs)
+	var env2 map[string]any
+	if err := json.Unmarshal([]byte(noFile.Response[0]), &env2); err != nil {
+		t.Fatalf("envelope is not JSON: %v", err)
+	}
+	assert.NotContains(t, env2, "logs_shape")
+}
+
+// Shaped like a flattened Loki file from a real investigation: an init
+// container's plain-text line first, then the app's JSON lines newest first.
+// The <source> column must be skipped, or no message would start with "{".
+const lokiFlattened = "2026-10-10T04:23:29.697273824Z\tpod=wf-0,ns=wf,container=wait-db\tdb.example.com:5432 - accepting connections\n" +
+	"2026-10-10T05:04:35.907815126Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T05:04:35Z\",\"level\":\"INFO\",\"msg\":\"refreshed event triggers\",\"count\":8}\n" +
+	"2026-10-10T05:04:05.903927097Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T05:04:05Z\",\"level\":\"INFO\",\"msg\":\"Workflow execution completed\"}\n" +
+	"2026-10-10T04:24:09.214670387Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T04:24:09Z\",\"level\":\"ERROR\",\"msg\":\"Workflow failed\",\"error\":\"status 400\"}\n" +
+	"2026-10-10T04:23:35.899211649Z\tpod=wf-0,ns=wf,container=wf\t{\"time\":\"2026-10-10T04:23:35Z\",\"level\":\"WARN\",\"msg\":\"connection closed\"}\n"
+
+func TestDescribeLogLines_FlattenedLoki(t *testing.T) {
+	s := DescribeLogLines(lokiFlattened, true)
+
+	assert.Equal(t, 5, s.Lines)
+	assert.Equal(t, 5, s.Timestamped)
+	assert.Equal(t, "2026-10-10T04:23:29.697273824Z", s.First)
+	assert.Equal(t, "2026-10-10T05:04:35.907815126Z", s.Last)
+	assert.Equal(t, "not in time order", s.Order)
+	assert.Equal(t, 4, s.JSONMessages)
+	assert.Equal(t, 1, s.TextMessages)
+	assert.Equal(t, []string{"level", "msg", "time", "count", "error"}, s.TopKeys)
+	assert.Equal(t, map[string]int{"INFO": 2, "ERROR": 1, "WARN": 1}, s.Levels)
+
+	assert.Equal(t,
+		"5 lines, each <RFC 3339 timestamp><TAB><source><TAB><message>; "+
+			"timestamps 2026-10-10T04:23:29.697273824Z to 2026-10-10T05:04:35.907815126Z, not in time order (filter by comparing timestamps, not by line position); "+
+			"4 JSON messages with keys level, msg, time, count, error (INFO 2, ERROR 1, WARN 1); "+
+			"1 plain-text messages; <source> is pod=<pod>,ns=<namespace>,container=<container> with absent parts left out (host=<node> when the line names no pod), or - when unknown.",
+		s.Describe())
+}
+
+func TestDescribeLogLines_Order(t *testing.T) {
+	line := func(ts string) string { return ts + "\tmsg\n" }
+	newest := line("2026-10-10T05:00:00Z") + line("2026-10-10T04:00:00Z") + line("2026-10-10T03:00:00Z")
+	assert.Equal(t, "newest first", DescribeLogLines(newest, false).Order)
+	assert.NotContains(t, DescribeLogLines(newest, false).Describe(), "not by line position")
+
+	oldest := line("2026-10-10T03:00:00Z") + line("2026-10-10T04:00:00Z")
+	assert.Equal(t, "oldest first", DescribeLogLines(oldest, false).Order)
+
+	var mostly strings.Builder
+	for h := 23; h >= 0; h-- {
+		mostly.WriteString(line("2026-10-10T" + twoDigits(h) + ":00:00Z"))
+	}
+	mostly.WriteString(line("2026-10-10T12:30:00Z"))
+	assert.Equal(t, "mostly newest first", DescribeLogLines(mostly.String(), false).Order)
+}
+
+func twoDigits(n int) string {
+	return string(rune('0'+n/10)) + string(rune('0'+n%10))
+}
+
+// kubectl output passes through unchanged: no timestamps, no labels claim.
+func TestDescribeLogLines_PlainText(t *testing.T) {
+	s := DescribeLogLines("starting server\nlistening on :8080\n\n", false)
+	assert.Equal(t, 2, s.Lines)
+	assert.Equal(t, 0, s.Timestamped)
+	assert.Equal(t, "", s.Order)
+	assert.Equal(t, "2 lines (0 start with <RFC 3339 timestamp><TAB>); 2 plain-text messages.", s.Describe())
+	assert.Equal(t, "empty", DescribeLogLines("", false).Describe())
+}
+
+// Fractional seconds of different lengths must order by time, not by string:
+// "…:35Z" sorts after "…:35.1Z" lexically but is earlier.
+func TestDescribeLogLines_MixedFractionalSeconds(t *testing.T) {
+	body := "2026-10-10T05:04:35.1Z\tb\n2026-10-10T05:04:35Z\ta\n2026-10-10T05:04:34.999999999Z\tz\n"
+	s := DescribeLogLines(body, false)
+	assert.Equal(t, "2026-10-10T05:04:34.999999999Z", s.First)
+	assert.Equal(t, "2026-10-10T05:04:35.1Z", s.Last)
+	assert.Equal(t, "newest first", s.Order)
+}
+
+func TestDescribeLogLines_NumericLevels(t *testing.T) {
+	body := "2026-10-10T05:00:00Z\t{\"level\":30,\"msg\":\"ok\"}\n2026-10-10T04:59:00Z\t{\"level\":50,\"msg\":\"boom\"}\n"
+	assert.Equal(t, map[string]int{"30": 1, "50": 1}, DescribeLogLines(body, false).Levels)
+}
+
+// A source part every line has (the namespace the query named, the one pod it
+// read) says nothing per line, so it is named once instead of on every line.
+func TestFlattenLogsSharingSource(t *testing.T) {
+	rec := func(pod, ns, container, msg string) string {
+		return `{"labels":{"pod":"` + pod + `","namespace":"` + ns + `","container":"` + container + `"},"timestamp":"t","message":"` + msg + `"}`
+	}
+	envelope := func(recs ...string) string { return `{"logs":[` + strings.Join(recs, ",") + `]}` }
+
+	t.Run("a namespace query leaves ns out of every line", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), rec("web-0", "shop", "web", "b")))
+		assert.Equal(t, "ns=shop", shared)
+		assert.Equal(t, "t\tpod=api-0,container=api\ta\nt\tpod=web-0,container=web\tb\n", body)
+	})
+
+	t.Run("a single-pod read leaves the source column empty", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), rec("api-0", "shop", "api", "b")))
+		assert.Equal(t, "pod=api-0,ns=shop,container=api", shared)
+		assert.Equal(t, "t\t\ta\nt\t\tb\n", body)
+	})
+
+	t.Run("one record shares nothing", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a")))
+		assert.Empty(t, shared)
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\n", body)
+	})
+
+	t.Run("a part missing from one line is not shared", func(t *testing.T) {
+		body, shared := flattenLogsSharingSource(envelope(rec("api-0", "shop", "api", "a"), `{"timestamp":"t","message":"b"}`))
+		assert.Empty(t, shared)
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\nt\t-\tb\n", body)
+	})
+
+	t.Run("flattenLogsToTabSeparated keeps the full source", func(t *testing.T) {
+		raw := envelope(rec("api-0", "shop", "api", "a"), rec("web-0", "shop", "web", "b"))
+		assert.Equal(t, "t\tpod=api-0,ns=shop,container=api\ta\nt\tpod=web-0,ns=shop,container=web\tb\n", flattenLogsToTabSeparated(raw))
+	})
+
+	t.Run("the description names the shared source", func(t *testing.T) {
+		s := DescribeLogLines("2026-10-10T05:00:00Z\tpod=api-0\tm\n", true)
+		s.SharedSource = "ns=shop"
+		assert.Contains(t, s.Describe(), "every line is from ns=shop, so that is left out of <source>")
+		assert.NotContains(t, DescribeLogLines("2026-10-10T05:00:00Z\tpod=api-0\tm\n", true).Describe(), "every line is from")
+	})
+}
+
+// TestKubectlDisclosureNoteCoversTheCap covers issue #40196. Before this, a
+// kubectl read disclosed only unread pods and a filter: the line cap and the
+// absent time bound — the two things that decide whether the lines relate to
+// the window asked about at all — were silent, so a read of the newest 100
+// lines of one pod read as "the pod's logs".
+func TestKubectlDisclosureNoteCoversTheCap(t *testing.T) {
+	t.Run("a plain read still discloses its cap and its missing time bound", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{}, 0, "")
+
+		require.NotEmpty(t, got, "a kubectl read is never unnarrowed — it always caps by line")
+		assert.Contains(t, got, "last 100 lines")
+		assert.Contains(t, got, "no time bound")
+	})
+
+	t.Run("an explicit tail is disclosed as the cap that ran", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{Tail: 2000}, 0, "")
+		assert.Contains(t, got, "last 2000 lines")
+	})
+
+	t.Run("a relative window is named, and the cap still applies within it", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{TimeRange: "6h"}, 0, "")
+
+		assert.Contains(t, got, "6h0m0s ago")
+		assert.NotContains(t, got, "no time bound")
+		assert.Contains(t, got, "the earlier ones were not read")
+	})
+
+	t.Run("an absolute window wins over a relative one, matching the command", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{StartTime: "2026-10-19T04:00:00Z", TimeRange: "6h"}, 0, "")
+		assert.Contains(t, got, "2026-10-19T04:00:00Z")
+	})
+
+	t.Run("an unparseable window is not claimed, because the command would not set it", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{StartTime: "last tuesday"}, 0, "")
+		assert.Contains(t, got, "no time bound")
+	})
+
+	// An absolute anchor the command cannot parse stops it applying any
+	// window, including the relative one beside it. Two copies of that rule
+	// disagreed: the note promised "since 6h0m0s ago" over a command with no
+	// --since at all.
+	t.Run("an unparseable absolute window does not fall through to the relative one", func(t *testing.T) {
+		intent := kubectlLogQuery{StartTime: "yesterday", TimeRange: "6h"}
+		assert.NotContains(t, buildKubectlLogCommand(intent), "--since")
+		assert.Contains(t, kubectlDisclosureNote(intent, 0, ""), "no time bound")
+	})
+
+	t.Run("pods and filter are still disclosed alongside the cap", func(t *testing.T) {
+		got := kubectlDisclosureNote(kubectlLogQuery{FilterPattern: "(error|fatal)"}, 4, "api-74fb7f54d5-kpl75")
+
+		assert.Contains(t, got, "api-74fb7f54d5-kpl75")
+		assert.Contains(t, got, "3 other pod(s)")
+		assert.Contains(t, got, "(error|fatal)")
+		assert.Contains(t, got, "last 100 lines")
+	})
+}
+
+// TestKubectlDisclosureNoteMatchesCommand pins the note to the command that
+// actually ran. A note naming a window the command never set is worse than
+// no note at all.
+
+// TestKubectlDisclosureNoteMatchesCommand pins the note to the command that
+// actually ran. A note naming a window the command never set is worse than
+// no note at all.
+func TestKubectlDisclosureNoteMatchesCommand(t *testing.T) {
+	cases := []kubectlLogQuery{
+		{ResourceName: "api", Namespace: "shop"},
+		{ResourceName: "api", Namespace: "shop", Tail: 2000},
+		{ResourceName: "api", Namespace: "shop", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "2026-10-19T04:00:00Z"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "not a time"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "not a time", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", StartTime: "2026-10-19T04:00:00Z", TimeRange: "6h"},
+		{ResourceName: "api", Namespace: "shop", TimeRange: "not a window"},
+	}
+	for _, intent := range cases {
+		cmd := buildKubectlLogCommand(intent)
+		note := kubectlDisclosureNote(intent, 0, "")
+
+		assert.Contains(t, cmd, "--tail=", "every kubectl read is capped")
+		assert.Contains(t, note, strings.TrimPrefix(cmdTail(cmd), "--tail="), "the note states the cap the command ran with")
+		assert.Equal(t, strings.Contains(cmd, "--since"), !strings.Contains(note, "no time bound"),
+			"the note claims a window exactly when the command sets one: %s", cmd)
 	}
 }
 
-// TestAutoBundleGate_ModeAwareness locks the gating rule that runAuto
-// DiagnosticBundle uses to decide whether to fire. The rule is:
-//
-//   - Investigation intent ("were there issues", "why", "broken",
-//     "diagnose", …) → ALWAYS fire. The logs prompt actively tells the
-//     LLM to strip error keywords from the fetch question, so keying only
-//     on the fetch query text would miss the exact investigations the
-//     bundle was built for.
-//   - Enumeration intent ("list errors", "show me distinct errors") →
-//     ALWAYS fire. That IS the enumeration answer.
-//   - Routine intent → fire only when the wording explicitly names error
-//     content (get error logs, any failures, …). Plain "tail last 100
-//     lines" stays a one-shot fetch.
-//
-// This mirrors the same decision runAutoDiagnosticBundle makes inline; the
-// test asserts the composed behaviour so a regression to a keyword-only gate
-// would fail here.
-func TestAutoBundleGate_ModeAwareness(t *testing.T) {
-	cases := []struct {
-		name     string
-		query    string // per-step query the parent passed to fetch_logs
-		original string // OriginalQuery — the user's verbatim question
-		want     bool
-	}{
-		{"investigation via 'were there issues' fires (fetch query itself has no keyword)",
-			"all logs for pod task-scheduler-abc in ns", "Were there issues with the task-scheduler pod", true},
-		{"investigation via 'why is X broken' fires",
-			"all logs for pod x", "why is service-y broken", true},
-		{"enumeration via 'list errors' fires",
-			"all logs last 1h", "list errors in service-z", true},
-		{"routine plain tail does NOT fire",
-			"tail last 100 lines", "", false},
-		{"routine with error keyword fires (fallback)",
-			"get error logs for pod x", "", true},
-		{"routine with no error content stays cold",
-			"give me the last 5 mins of logs", "recent logs for cron-scheduler", false},
+func cmdTail(cmd string) string {
+	for _, field := range strings.Fields(cmd) {
+		if strings.HasPrefix(field, "--tail=") {
+			return field
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			mode := classifyLogMode(tc.query, tc.original)
-			q := strings.TrimSpace(tc.original)
-			if q == "" {
-				q = strings.TrimSpace(tc.query)
-			}
-			got := mode != logModeRoutine || autoBundleQueryRE.MatchString(q)
-			assert.Equal(t, tc.want, got,
-				"mode=%v q=%q — bundle gate mismatch", mode, q)
-		})
-	}
+	return ""
 }
 
-func TestAutoBundleQueryRE(t *testing.T) {
-	// Guards the trigger-word list that gates the auto-diagnostic-bundle
-	// inside fetch_logs. The list is deliberately narrow — a plain "tail
-	// last 100 lines" must NOT trigger the bundle, or we regress fetch's
-	// "one-shot, no extra work" semantic for routine viewing. Any
-	// addition/removal here should be conscious.
-	cases := []struct {
-		q    string
-		want bool
-	}{
-		{"get error logs for pod x", true},
-		{"any failures in namespace y", true},
-		{"show me warnings from last hour", true},
-		{"was there a crash on this pod", true},
-		{"any exceptions in api-server", true},
-		{"timeout occurred?", true},
-		{"OOMKilled events for job", true},
-		{"tail last 100 lines", false},
-		{"recent logs for cron-scheduler", false},
-		{"give me the last 5 mins of logs", false},
-		{"show pod restart count", false},
-	}
-	for _, tc := range cases {
-		assert.Equalf(t, tc.want, autoBundleQueryRE.MatchString(tc.q),
-			"autoBundleQueryRE.MatchString(%q)", tc.q)
-	}
+// TestWithKubectlDisclosureReachesTheLogs covers the delivery half: the note
+// must land where the model reads, not only in a field beside it, and must
+// not sit next to a marker calling the same logs complete.
+
+// TestWithKubectlDisclosureReachesTheLogs covers the delivery half: the note
+// must land where the model reads, not only in a field beside it, and must
+// not sit next to a marker calling the same logs complete.
+func TestWithKubectlDisclosureReachesTheLogs(t *testing.T) {
+	t.Run("the note is appended to logs as a bracketed marker", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"line one\nline two","logs_complete":true}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "read the last 100 lines only"))
+
+		assert.Equal(t, "read the last 100 lines only", env["kubectl_disclosure"])
+		assert.Equal(t, "line one\nline two\n\n[... read the last 100 lines only ...]", env["logs"])
+	})
+
+	t.Run("the complete marker comes off, so nothing calls a capped read whole", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":` + mustJSON(t, "line one"+logsCompleteMarker) + `}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "read the last 100 lines only"))
+
+		logs, _ := env["logs"].(string)
+		assert.NotContains(t, logs, "complete — all fetched lines are shown above")
+		assert.Contains(t, logs, "[... read the last 100 lines only ...]")
+	})
+
+	t.Run("logs_complete is left alone: it is about file_ref, not the window", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x","logs_complete":true}`}}
+		env := decodeEnvelope(t, withKubectlDisclosure(resp, "note"))
+		assert.Equal(t, true, env["logs_complete"], "flipping it would buy a pointless shell_execute")
+	})
+
+	t.Run("an empty note and a non-JSON body are both no-ops", func(t *testing.T) {
+		resp := core.NBAgentResponse{Response: []string{`{"logs":"x"}`}}
+		assert.Equal(t, resp, withKubectlDisclosure(resp, ""))
+
+		raw := core.NBAgentResponse{Response: []string{"not json"}}
+		assert.Equal(t, raw, withKubectlDisclosure(raw, "note"))
+	})
+}
+
+// TestFilterKubectlLogResponseDisclosesWhatItDropped covers the k8s
+// orchestrator path, where the condenser replaces the whole observation with
+// joined text — taking the tool's own coverage field with it — and the
+// planner saw error lines with no sign that anything else had been read.
+
+func decodeEnvelope(t *testing.T, resp core.NBAgentResponse) map[string]any {
+	t.Helper()
+	require.NotEmpty(t, resp.Response)
+	var env map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Response[0]), &env))
+	return env
+}
+
+func mustJSON(t *testing.T, v string) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
 }

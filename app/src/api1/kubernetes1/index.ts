@@ -1,8 +1,9 @@
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
 import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
 import { safeJSONParse, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
+import { memoryLimitedContainers } from '@components/k8s/common/cpuForecast';
 
 // Event rule names are read for pickers and re-read often; five minutes keeps a
 // newly created or renamed rule from being invisible for long without making the
@@ -259,11 +260,38 @@ query AccountAgentHealth {
 }
 `;
 
+// A cloud account's agent row is written by cloud-collector, not by an installed
+// agent. connection_status is needed to tell whether the cost sync has reported
+// yet — see listCloudAccountFirstSync.
+export const LIST_CLOUD_ACC_FIRST_SYNC = `
+query CloudAccountFirstSync {
+  agent: agents_list_health(where: __WHERE__) {
+    rows {
+      cloud_account_id
+      status
+      status_message
+      connection_status
+    }
+  }
+}
+`;
+
 export const SLO_CREATE = `
 mutation SLOCreate($data: SLOCreateRequest!) {
   slo_config_create(request: $data) {
     data {
       success
+    }
+  }
+}
+`;
+
+export const WORKLOAD_SPEC = `
+query WorkloadSpec {
+  k8s_workloads_v2(where: __WHERE__, limit: 1) {
+    rows {
+      name
+      meta
     }
   }
 }
@@ -282,6 +310,7 @@ mutation SLOConfigList($data: SLOListRequest!) {
         id
         name
         threshold
+        container
       }
     }
   }
@@ -303,6 +332,36 @@ mutation SLODelete($data: SLODeleteRequest!) {
   slo_config_delete(request: $data) {
     data {
       success
+    }
+  }
+}
+`;
+
+export const FORECAST = `
+mutation Forecast($data: ForecastGenerateRequest!) {
+  forecast_generate(request: $data) {
+    data {
+      status
+      reason
+      condition
+      threshold_pct
+      current_pct
+      slope_pct_per_day
+      eta_hours
+      level
+      per_pod_limit
+      suggested_limit
+      limit_unit
+      container
+      oom_restarts_6h
+      evaluated_at
+      daily {
+        date
+        value_pct
+        per_pod_usage
+        per_pod_limit
+        projected
+      }
     }
   }
 }
@@ -387,6 +446,8 @@ query GetSLOConfigs {
       threshold
       created_at
       updated_at
+      last_forecast
+      container
     }
   }
 }
@@ -582,6 +643,31 @@ const apiKubernetes1 = {
     });
     return response;
   },
+  /** The workload's containers that set a memory limit, read from the workload inventory's spec. */
+  async getMemoryLimitedContainers(accountId: string, namespace: string, name: string): Promise<string[]> {
+    const where = gqlStringify({
+      _and: [{ account_id: { _eq: accountId } }, { namespace: { _eq: namespace } }, { name: { _eq: name } }, { is_active: { _eq: true } }],
+    });
+    const response = await queryGraphQL(WORKLOAD_SPEC.replaceAll('__WHERE__', where), 'WorkloadSpec', {});
+    const rows = response?.data?.data?.k8s_workloads_v2?.rows ?? [];
+    return rows.length > 0 ? memoryLimitedContainers(rows[0].meta) : [];
+  },
+  /** Check now: the forecast of one workload metric preset against a threshold. Creates no event. */
+  async generateForecast(data: {
+    account_id: string;
+    workload_namespace: string;
+    workload_name: string;
+    metric: string;
+    threshold: number;
+    container?: string;
+  }) {
+    const response = await queryGraphQL(FORECAST, 'Forecast', { data });
+    const result = response?.data?.data?.forecast_generate?.data;
+    if (!result) {
+      throw new Error(response?.data?.errors?.[0]?.message || 'Could not run the forecast');
+    }
+    return result;
+  },
   async getEventRules(query: any, limit: number, offset: number) {
     if (query.accountId === 'demo') {
       const demoData = await getMockData('event-rules');
@@ -605,7 +691,9 @@ const apiKubernetes1 = {
         filterParams['enabled'] = { _eq: query.status == 'Enabled' };
       }
       if (query?.searchByName) {
-        filterParams['alert'] = { _ilike: '%' + query.searchByName + '%' };
+        // Match the typed name literally — escape %, _ and \ so a search like "%" does
+        // not become the ILIKE wildcard that matches every alert (#40558).
+        filterParams['alert'] = { _ilike: '%' + escapeLikePattern(query.searchByName) + '%' };
       }
       const response = await queryGraphQL(GET_EVENT_RULES.replaceAll('__WHERE__', gqlStringify(filterParams)), 'GetEventRules', {
         limit: limit,
@@ -835,6 +923,25 @@ const apiKubernetes1 = {
       return response;
     } catch (error) {
       return error;
+    }
+  },
+  /**
+   * The cloud-collector's view of freshly created cloud accounts. `provider` is
+   * the agent type it writes: 'AWS', 'Azure' or 'GCP'. Returns [] on any failure
+   * so a poller simply tries again.
+   */
+  async listCloudAccountFirstSync(cloudAccountIds: string[], provider: string) {
+    try {
+      const where = { type: { _eq: provider }, cloud_account_id: { _in: cloudAccountIds } };
+      const queryStr = LIST_CLOUD_ACC_FIRST_SYNC.replace('__WHERE__', gqlStringify(where));
+      const response = await queryGraphQL(queryStr, 'CloudAccountFirstSync');
+      if (response?.data?.errors?.length) {
+        console.error('listCloudAccountFirstSync failed', { cloudAccountIds, errors: response.data.errors });
+      }
+      return response?.data?.data?.agent?.rows || [];
+    } catch (error) {
+      console.error('listCloudAccountFirstSync failed', { cloudAccountIds, error });
+      return [];
     }
   },
   async getAWSCloudFormationURL(query: any) {
@@ -1953,9 +2060,16 @@ const apiKubernetes1 = {
     }
   },
   knowledgeGraph: async function (data: any, signal?: AbortSignal) {
+    // Pass `request` as a GraphQL variable rather than inlining it. Label/
+    // attribute keys like `app.kubernetes.io/name` are not valid GraphQL Name
+    // tokens, so gqlStringify-ing them into an inline object literal makes the
+    // gateway's parser reject the whole query (#40696). Variable values are
+    // carried as JSON and never tokenized as query text, so arbitrary keys
+    // survive. `request` is always an object (possibly empty), so the non-null
+    // `!` never trips the gateway's missing-required-variable guard.
     const KNOWLEDGE_GRAPH = `
-    mutation KnowledgeGraph {
-      kg_get_complete_graph(request: __WHERE__) {
+    mutation KnowledgeGraph($request: kg_get_complete_graph_input!) {
+      kg_get_complete_graph(request: $request) {
         data {
           edges
           generated_at
@@ -1987,11 +2101,7 @@ const apiKubernetes1 = {
     if (data?.levels) {
       request['levels'] = data.levels;
     }
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH.replace('__WHERE__', gqlStringify(request)), 'KnowledgeGraph', {}, undefined, signal);
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
   knowledgeGraphFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[]; specificTypes?: string[] }) {
     const KNOWLEDGE_GRAPH_FILTER_OPTIONS = `
@@ -2011,6 +2121,8 @@ const apiKubernetes1 = {
           node_bucket_idx
           specific_type_dict
           cluster_dict
+          display_name_node_idx
+          display_names
           filter_buckets
           label_key_buckets
           attribute_key_buckets
@@ -2032,8 +2144,14 @@ const apiKubernetes1 = {
   knowledgeGraphGetNode: async function (nodeId: string) {
     return await queryGraphQL(KG_GET_NODE.replace('__WHERE__', gqlStringify({ node_id: nodeId })), 'KgGetNode', {});
   },
-  knowledgeGraphGetEdge: async function (edgeId: string) {
-    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify({ edge_id: edgeId })), 'KgGetEdge', {});
+  // The endpoints are sent alongside the id because Pod edges are synthesized at
+  // read time and stored nowhere: their uuid5 id can't be reversed to the pod it
+  // was built from, so the server needs the endpoints to resolve one (#41504).
+  knowledgeGraphGetEdge: async function (edgeId: string, sourceNodeId?: string, destNodeId?: string) {
+    const request: Record<string, string> = { edge_id: edgeId };
+    if (sourceNodeId) request.source_node_id = sourceNodeId;
+    if (destNodeId) request.dest_node_id = destNodeId;
+    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify(request)), 'KgGetEdge', {});
   },
   knowledgeGraphCloudAccounts: async function () {
     const QUERY = `
@@ -2093,9 +2211,14 @@ const apiKubernetes1 = {
     labelKeys?: string[];
     attributeKeys?: string[];
   }) {
+    // Request goes through a GraphQL variable so arbitrary-keyed scope filters
+    // (e.g. a `labels` map keyed by `app.kubernetes.io/name`) are not inlined
+    // as object-literal keys the parser rejects — same fix as knowledgeGraph
+    // above (#40696). `request` always carries filter_type/filter_key, so it
+    // is never empty and the non-null `!` is safe.
     const KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES = `
-    query KgFilterOptionLabelValues {
-      kg_get_filter_values(request: __WHERE__) {
+    query KgFilterOptionLabelValues($request: kg_get_filter_values_input!) {
+      kg_get_filter_values(request: $request) {
         data {
           filter_key
           filter_type
@@ -2116,11 +2239,7 @@ const apiKubernetes1 = {
     if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
     if (data.labelKeys?.length) request.label_keys = data.labelKeys;
     if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES, 'KgFilterOptionLabelValues', { request });
   },
   // Single round-trip powering the always-on columns (A/B/C) of the Nubi briefing
   // strip. Every block reads event_groupings_v2 over the same display window so
@@ -2152,20 +2271,13 @@ const apiKubernetes1 = {
         }
       }
 
-      by_rank: event_groupings_v2(
-        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
-      ) {
-        rows {
-          computed_priority
-          event_count
-        }
-      }
-
       # P0-only on purpose. The briefing reads exactly one number off this block
       # (the P0 trailing count); grouping the whole 30-day band by rank made the
       # engine sort every issue in the band to disk to produce four rows we throw
       # away, and it was the slowest query in the briefing by an order of
-      # magnitude. Keeping group_by means the shape still matches by_rank.
+      # magnitude. It counts issues that had a P0 event in the band, whatever
+      # they are ranked now: a history figure, deliberately not the newest-event
+      # rank the tiles use.
       by_rank_30d: event_groupings_v2(
         where: __WHERE_BAND__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
       ) {
@@ -2175,12 +2287,19 @@ const apiKubernetes1 = {
         }
       }
 
+      # Issues by the source severity and the rank of their NEWEST event. Triage
+      # re-scores an issue while it keeps firing, so its events carry several
+      # ranks (and severities); grouping by the events' own values counted the
+      # issue once under each, and the ranks added up to more issues than exist.
+      # Grouping by the latest_* aggregates puts every issue in exactly one row.
+      # The rank tiles are the per-rank sums of these same rows (see
+      # useBriefingData), so the tiles and the comparison count the same issues.
       disagreement: event_groupings_v2(
-        where: __WHERE__, group_by: ["priority", "computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["priority", "computed_priority", "event_count"]
+        where: __WHERE__, group_by: ["latest_priority", "latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_priority", "latest_computed_priority", "event_count"]
       ) {
         rows {
-          priority
-          computed_priority
+          latest_priority
+          latest_computed_priority
           event_count
         }
       }
@@ -2272,6 +2391,10 @@ const apiKubernetes1 = {
     // different labels. Priority comes from latest_computed_priority (the most
     // recent verdict) and the workload count from count_subject_name.
     //
+    // by_rank and prev_by_rank follow the same rule: an issue is counted under
+    // the rank of its newest event in the window, once, not under every rank its
+    // events carried.
+    //
     // chains is capped: it feeds the "what keeps coming back" list, which only
     // ever shows the worst offenders, and an uncapped per-fingerprint scan on a
     // large tenant is a very different query. The cap is deliberately larger
@@ -2306,19 +2429,19 @@ const apiKubernetes1 = {
       }
 
       by_rank: event_groupings_v2(
-        where: __WHERE__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+        where: __WHERE__, group_by: ["latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_computed_priority", "event_count"]
       ) {
         rows {
-          computed_priority
+          latest_computed_priority
           event_count
         }
       }
 
       prev_by_rank: event_groupings_v2(
-        where: __WHERE_PREV__, group_by: ["computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["computed_priority", "event_count"]
+        where: __WHERE_PREV__, group_by: ["latest_computed_priority"], column_transformations: ${DISTINCT_ISSUES}, columns: ["latest_computed_priority", "event_count"]
       ) {
         rows {
-          computed_priority
+          latest_computed_priority
           event_count
         }
       }

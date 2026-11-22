@@ -60,7 +60,11 @@ type AgentStore interface {
 	IsWSEnabled(ctx context.Context, accountID, agentType string) (bool, string, error)
 	IsAgentConnected(ctx context.Context, accountID, agentType string) (bool, error)
 	GetAgentStatus(ctx context.Context, accountID, agentType string) (connected bool, wsEnabled bool, fallbackURL string, prometheusAdditionalLabel string, err error)
-	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error)
+	// AccountTenant returns the tenant that owns accountID ("" when the
+	// account does not exist). It reads the same cached row as GetAgentStatus,
+	// so calling both costs one DB query at most.
+	AccountTenant(ctx context.Context, accountID, agentType string) (string, error)
+	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionMark time.Time) (transitioned bool, tenantID string, connectedAt time.Time, err error)
 	TouchRelaySession(ctx context.Context, accountID, agentType string) error
 	UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error
 	UpdateDatasourceHealth(ctx context.Context, accountID, agentType string, datasources map[string]any) error
@@ -113,10 +117,16 @@ type wsCacheEntry struct {
 	Fallback         string         `json:"fallback"`
 	Status           string         `json:"status"`
 	ConnectionStatus map[string]any `json:"connection_status"`
+	// TenantID is the tenant owning the account ("" when the account does not
+	// exist). Nil means the entry was cached by a relay version that did not
+	// record the tenant; such entries are treated as a cache miss.
+	TenantID *string `json:"tenant_id,omitempty"`
 }
 
 const (
-	agentCacheTTL          = 30 * time.Minute
+	// agentCacheTTL is short so a key deleted or rotated in api-server stops
+	// working on every relay pod within a minute (#40807).
+	agentCacheTTL          = 1 * time.Minute
 	wsCacheTTL             = 30 * time.Minute
 	wsNotConnectedCacheTTL = 2 * time.Minute
 	// ownerCacheTTL bounds how long a datasource → agent routing answer is
@@ -213,21 +223,25 @@ func (p *pgStore) getWSEntry(ctx context.Context, accountID, agentType string) (
 	// 1) Try cache
 	if data, ok := p.wsCache.Get(ctx, cacheKey); ok {
 		var wce wsCacheEntry
-		if err := json.Unmarshal(data, &wce); err == nil {
+		if err := json.Unmarshal(data, &wce); err == nil && wce.TenantID != nil {
 			return &wce, nil
 		}
 	}
 
-	// 2) Query both fields in one go
+	// 2) Query the agent row and the account's tenant in one go. Driving from
+	// cloud_accounts keeps the tenant even when the account has no agent row.
 	var row struct {
 		ConnStatus sql.NullString `db:"connection_status"`
 		Status     sql.NullString `db:"status"`
+		Tenant     sql.NullString `db:"tenant"`
 	}
 	err := p.db.GetContext(ctx, &row, `
-        SELECT connection_status, status
-          FROM agent
-         WHERE cloud_account_id = $1
-           AND "type" = $2
+        SELECT a.connection_status, a.status, ca.tenant::text AS tenant
+          FROM cloud_accounts ca
+          LEFT JOIN agent a
+            ON a.cloud_account_id = ca.id
+           AND a."type" = $2
+         WHERE ca.id = $1
     `, accountID, agentType)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -239,6 +253,7 @@ func (p *pgStore) getWSEntry(ctx context.Context, accountID, agentType string) (
 		Fallback:         "",   // default
 		Status:           "NOT_CONNECTED",
 		ConnectionStatus: map[string]any{},
+		TenantID:         &row.Tenant.String,
 	}
 
 	if row.Status.Valid {
@@ -330,16 +345,30 @@ func (p *pgStore) GetAgentStatus(ctx context.Context, accountID, agentType strin
 	return entry.Status == "CONNECTED", entry.Allowed, entry.Fallback, prometheusAdditionalLabel, nil
 }
 
+// AccountTenant returns the tenant owning accountID, "" when the account does not exist.
+func (p *pgStore) AccountTenant(ctx context.Context, accountID, agentType string) (string, error) {
+	entry, err := p.getWSEntry(ctx, accountID, agentType)
+	if err != nil {
+		return "", err
+	}
+	return *entry.TenantID, nil
+}
+
 // UpdateRelayConnectionStatus updates the relayConnection field in the agent's connection_status JSON.
-// sessionStart is the time this session began. When disconnecting, the update is skipped if a newer
-// session has already connected (i.e. last_connected_at > sessionStart), preventing stale sessions
-// from clobbering the status of active ones.
+// sessionMark identifies this session on a disconnect: it is the last_connected_at value the session's
+// own connect write returned (connectedAt). The disconnect is skipped if a newer session has connected
+// since (i.e. last_connected_at > sessionMark), preventing stale sessions from clobbering the status of
+// active ones. It must come from the row, not the relay's clock: the connect write stamps NOW() after
+// any locally taken time, so a local timestamp would make the session look stale against itself. When
+// the connect write failed, callers pass the session's local start, which any older row still satisfies.
+// sessionMark is ignored on connect.
 //
 // It returns whether the agent's status actually transitioned (old status != new status) and the
-// agent's tenant id. transitioned is true only when a row was updated AND its status changed, so
+// agent's tenant id. connectedAt is the last_connected_at this call wrote (zero when no row was updated or
+// on disconnect). transitioned is true only when a row was updated AND its status changed, so
 // callers can audit genuine connect/disconnect transitions without emitting on every reconnect,
 // pod restart, or guarded stale-session cleanup.
-func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error) {
+func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionMark time.Time) (transitioned bool, tenantID string, connectedAt time.Time, err error) {
 	// Update the connection_status JSON, agent status, and last_connected_at
 	status := "NOT_CONNECTED"
 	if relayConnected {
@@ -365,7 +394,7 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 			    last_connected_at = NOW()
 			FROM prev
 			WHERE agent.id = prev.id
-			RETURNING prev.status AS old_status, agent.tenant AS tenant
+			RETURNING prev.status AS old_status, agent.tenant AS tenant, agent.last_connected_at AS connected_at
 		`
 		args = []any{accountID, relayConnected, agentType, status}
 	} else {
@@ -384,20 +413,21 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 			FROM prev
 			WHERE agent.id = prev.id
 			  AND (prev.last_connected_at IS NULL OR prev.last_connected_at <= $5)
-			RETURNING prev.status AS old_status, agent.tenant AS tenant
+			RETURNING prev.status AS old_status, agent.tenant AS tenant, agent.last_connected_at AS connected_at
 		`
-		args = []any{accountID, relayConnected, agentType, status, sessionStart}
+		args = []any{accountID, relayConnected, agentType, status, sessionMark}
 	}
 
 	var oldStatus, tenant sql.NullString
-	scanErr := p.db.QueryRowxContext(ctx, query, args...).Scan(&oldStatus, &tenant)
+	var connectedAtCol sql.NullTime
+	scanErr := p.db.QueryRowxContext(ctx, query, args...).Scan(&oldStatus, &tenant, &connectedAtCol)
 	if scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			// No row updated: either no matching agent, or the disconnect guard
 			// skipped a stale session. Neither an error nor a transition.
-			return false, "", nil
+			return false, "", time.Time{}, nil
 		}
-		return false, "", fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, scanErr)
+		return false, "", time.Time{}, fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, scanErr)
 	}
 
 	// Invalidate cache after successful DB write to prevent a concurrent read
@@ -406,7 +436,11 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 		slog.Warn("failed to invalidate wsCache after status update", "account_id", accountID, "agent_type", agentType, "error", cerr)
 	}
 
-	return oldStatus.String != status, tenant.String, nil
+	connectedAt = time.Time{}
+	if relayConnected {
+		connectedAt = connectedAtCol.Time
+	}
+	return oldStatus.String != status, tenant.String, connectedAt, nil
 }
 
 // TouchRelaySession records that this agent's websocket session was still
@@ -414,7 +448,7 @@ func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, ag
 //
 // It writes connection_status.relayLastSeenAt rather than last_connected_at
 // on purpose. last_connected_at identifies the *session* — the disconnect
-// branch of UpdateRelayConnectionStatus compares it against sessionStart to
+// branch of UpdateRelayConnectionStatus compares it against the session's own connect stamp to
 // tell a stale session's cleanup from a live one's — so moving it forward
 // mid-session would make every session look newer than itself and silently
 // skip its own disconnect write.

@@ -20,10 +20,10 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import { Modal } from '@ui/Modal';
 import Tabs from '@shared/navigation/Tabs';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import { missingPermissionMessage, isUiFeatureEnabled } from '@lib/auth';
+import { isUiFeatureEnabled } from '@lib/auth';
 import { useBCortexEnabled, isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { ds } from '@utils/colors';
-import { AI_TOOLS_SUB_TABS } from './aiToolsConfig';
+import { AI_TOOLS_SUB_TABS, subTabAccess } from './aiToolsConfig';
 
 const AIToolsModal = ({ open, onClose }) => {
   const { data: session } = useSession();
@@ -71,14 +71,14 @@ const AIToolsModal = ({ open, onClose }) => {
     const isAdmin = roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly') || !!session?.isSuperAdmin;
     const perms = session?.permissions ?? [];
     return visibleSubTabs.map((t) => {
-      const lacksPermission = !isAdmin && !!t.module && !perms.includes(`${t.module}:Read`);
+      const access = subTabAccess(t, { isAdmin, permissions: perms, hasBuiltInRole: roles.length > 0 });
       return {
         value: t.id,
         text: t.text,
         icon: t.icon,
         iconSize: 16,
-        disabled: lacksPermission,
-        disabledTooltip: t.module && lacksPermission ? missingPermissionMessage(`${t.module}:Read`) : undefined,
+        disabled: access.disabled,
+        disabledTooltip: access.tooltip,
       };
     });
   }, [session, visibleSubTabs]);

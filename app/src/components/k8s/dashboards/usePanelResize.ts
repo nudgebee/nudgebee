@@ -10,6 +10,22 @@ interface Options {
   onResize: (panelId: number, width: number) => void;
 }
 
+/**
+ * Drops the click the browser makes out of the mouseup that ends a drag.
+ *
+ * That click goes to whatever the press and the release have in common. The press is on the handle;
+ * the release is wherever the pointer ended up — on the panel body once the panel has snapped wider
+ * under it — so the click lands on the panel, which in edit mode opens the editor. It is the tail of
+ * the resize, not a request. Capture on the document runs before React's own listener sees it.
+ */
+function swallowClickAfterDrag() {
+  const swallow = (e: MouseEvent) => e.stopPropagation();
+  document.addEventListener('click', swallow, { capture: true, once: true });
+  // The click, when there is one, is dispatched with the mouseup. A release that makes none (outside
+  // the window) must not leave this waiting for the next real click.
+  setTimeout(() => document.removeEventListener('click', swallow, { capture: true }), 0);
+}
+
 /** Drag-to-resize for dashboard panels, snapping to the legal 12ths. */
 export function usePanelResize({ gridRef, gap, onResize }: Options) {
   const [resizingId, setResizingId] = React.useState<number | null>(null);
@@ -63,7 +79,8 @@ export function usePanelResize({ gridRef, gap, onResize }: Options) {
         onResizeRef.current(drag.id, width);
       };
 
-      const stop = () => {
+      // `released` is the mouseup that ended the drag; unmount tears down without one.
+      const stop = (released?: MouseEvent) => {
         document.removeEventListener('mousemove', move);
         document.removeEventListener('mouseup', stop);
         document.body.style.cursor = previousCursor;
@@ -71,6 +88,7 @@ export function usePanelResize({ gridRef, gap, onResize }: Options) {
         dragRef.current = null;
         stopRef.current = null;
         setResizingId(null);
+        if (released) swallowClickAfterDrag();
       };
 
       stopRef.current = stop;

@@ -970,13 +970,13 @@ func TestSQLGen_RealTable_EventGroupings_NoAnalysisJoinWhenUnreferenced(t *testi
 	assert.NotContains(t, sql, "event_log_analysis")
 }
 
-func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *testing.T) {
+func TestSQLGen_RealTable_EventGroupings_IncidentGroupReadsNewestFiring(t *testing.T) {
 	td, ok := GetTableMetadata("event_groupings_v2")
 	require.True(t, ok)
 
 	req := QueryRequest{
 		Table:   "event_groupings_v2",
-		Columns: cols("account_id", "latest_event_id", "incident_group_size", "incident_group_leader_id"),
+		Columns: cols("account_id", "latest_event_id", "incident_group_size", "is_incident_child", "incident_group_leader_id"),
 		Where: QueryWhereClause{
 			Binary: BinaryWhereClause{
 				"tenant_id": {Eq: "t1"},
@@ -987,21 +987,23 @@ func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *tes
 	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
 	require.NoError(t, err)
 
-	// The Triage Inbox reads the GROUPED badge from incident_group_size and
-	// opens the Grouped Alerts panel on incident_group_leader_id. Those two
-	// must describe the SAME group, so the leader id has to be a group ANCHOR,
-	// not the row's newest event: a recurring fingerprint leads its group from
-	// its OLDEST event, so latest_event_id is usually neither leader nor
-	// member and the panel renders "no related alerts" under a GROUPED badge.
-	assert.Contains(t, sql, "AS incident_group_leader_id")
-	// A row that LEADS resolves to its own biggest leader event...
-	assert.Contains(t, sql, "array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) FILTER (WHERE ecc.incident_member_count > 0)")
-	// ...and only a row that merely BELONGS to one falls back to the link.
-	assert.Contains(t, sql, "array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) FILTER (WHERE ecl.related_event_id IS NOT NULL)")
-	// max() over the link alone cannot resolve a leading row at all, and picks
-	// arbitrarily between leaders when a row holds more than one.
-	assert.NotContains(t, sql, "max(ecl.related_event_id::text)")
-	// Both joins are required: the anchor reads member counts (ecc) as well as
+	// The Triage Inbox shows one row per fingerprint, timed and investigated
+	// from latest_event_id. Each firing has its own group (the alerts that
+	// fired with it), so the GROUPED badge, the child marker and the Grouped
+	// Alerts panel must read that same newest firing. Taking the row's biggest
+	// group instead showed members of a burst from hours earlier under the
+	// newest firing's time.
+	assert.Contains(t, sql, "(array_agg(events.id ORDER BY events.created_at DESC))[1] as TEXT) AS latest_event_id")
+	assert.Contains(t, sql, "(array_agg(coalesce(ecc.incident_member_count, 0) ORDER BY events.created_at DESC))[1] AS incident_group_size")
+	assert.Contains(t, sql, "(array_agg(ecl.related_event_id IS NOT NULL ORDER BY events.created_at DESC))[1] AS is_incident_child")
+	// The panel opens on the newest firing when it leads, else on its leader.
+	assert.Contains(t, sql, "(array_agg(CASE WHEN ecc.incident_member_count > 0 THEN events.id::text "+
+		"ELSE ecl.related_event_id::text END ORDER BY events.created_at DESC))[1] as TEXT) AS incident_group_leader_id")
+	// No aggregate over every firing of the row.
+	assert.NotContains(t, sql, "max(coalesce(ecc.incident_member_count, 0))")
+	assert.NotContains(t, sql, "bool_or(ecl.related_event_id IS NOT NULL)")
+	assert.NotContains(t, sql, "ORDER BY ecc.incident_member_count DESC")
+	// Both joins are required: the columns read member counts (ecc) as well as
 	// the child link (ecl).
 	assert.Contains(t, sql, ") ecl")
 	assert.Contains(t, sql, ") ecc")
@@ -1030,6 +1032,138 @@ func eventsListSQL(t *testing.T, where QueryWhereClause, orderBy string) string 
 	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
 	require.NoError(t, err)
 	return strings.Join(strings.Fields(sql), " ")
+}
+
+// issuesByLatestRank is the request the Troubleshoot briefing sends for its rank
+// tiles: distinct issues (account + fingerprint), grouped by the rank of each
+// issue's newest event.
+func issuesByLatestRank() QueryRequest {
+	return QueryRequest{
+		Table: "event_groupings_v2",
+		Columns: []QueryColumn{
+			{Name: "latest_computed_priority"},
+			{Name: "event_count", Expr: "distinct", Args: []string{"account_id", "fingerprint"}},
+		},
+		Where:   QueryWhereClause{Binary: BinaryWhereClause{"tenant_id": {Eq: "t1"}}},
+		GroupBy: []string{"latest_computed_priority"},
+	}
+}
+
+func eventGroupingsSQL(t *testing.T, req QueryRequest, accountScope string) string {
+	t.Helper()
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+	sql, err := generateSqlQuery(superAdminCtx(), "", req, td, accountScope)
+	require.NoError(t, err)
+	return strings.Join(strings.Fields(sql), " ")
+}
+
+// Grouping the events by their own rank and counting distinct issues counts an
+// issue once under every rank its events carry, so the ranks add up to more
+// issues than exist. Grouping by the aggregate has to make one row per issue
+// first and count those rows.
+func TestSQLGen_GroupCount_CountsEachGroupOnceByItsAggregate(t *testing.T) {
+	sql := eventGroupingsSQL(t, issuesByLatestRank(), "")
+
+	assert.Equal(t,
+		"SELECT latest_computed_priority,count(*) AS event_count FROM ("+
+			"SELECT cast((array_agg(computed_priority ORDER BY events.created_at DESC))[1] as TEXT) AS latest_computed_priority "+
+			"FROM events WHERE (events.tenant = 't1') "+
+			"GROUP BY cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT)"+
+			") AS grouped GROUP BY latest_computed_priority LIMIT 1000",
+		sql)
+}
+
+// The inner statement feeds the count, so it must return every group. A LIMIT
+// there (the engine's default is 1000) would silently cap the totals.
+func TestSQLGen_GroupCount_OnlyTheOuterStatementIsLimited(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Limit = 5
+	req.Offset = 10
+	req.OrderBy = []QueryOrderBy{{Column: "event_count", Order: Desc}}
+	sql := eventGroupingsSQL(t, req, "")
+
+	assert.Equal(t, 1, strings.Count(sql, "LIMIT"))
+	assert.True(t, strings.HasSuffix(sql, ") AS grouped GROUP BY latest_computed_priority ORDER BY event_count DESC LIMIT 5 OFFSET 10"), sql)
+}
+
+// The server's account scope and the request's HAVING both belong to the
+// statement that reads the events: the scope so a scoped reader counts only
+// their accounts, the HAVING so it is decided once per group.
+func TestSQLGen_GroupCount_ScopeAndHavingStayInsideTheInnerStatement(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Columns[1].Args = []string{"tenant_id", "account_id", "fingerprint"}
+	req.Having = QueryWhereClause{Binary: BinaryWhereClause{"latest_computed_priority": {Eq: "P2"}}}
+	sql := eventGroupingsSQL(t, req, "cloud_account_id IN ('acctA')")
+
+	inner, outer, found := strings.Cut(sql, ") AS grouped ")
+	require.True(t, found, sql)
+	assert.Contains(t, inner, "WHERE ((events.tenant = 't1')) AND (cloud_account_id IN ('acctA'))")
+	assert.Contains(t, inner, "GROUP BY cast(events.tenant as TEXT),cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT)")
+	assert.True(t, strings.HasSuffix(inner, "HAVING ((array_agg(computed_priority ORDER BY events.created_at DESC))[1] = 'P2')"), inner)
+	assert.Equal(t, "GROUP BY latest_computed_priority LIMIT 1000", outer)
+}
+
+// A column the request also groups by without aggregating splits the groups
+// further, and keeps the transformation the request gave it.
+func TestSQLGen_GroupCount_KeepsADateUnitOnAPlainGroupByColumn(t *testing.T) {
+	req := issuesByLatestRank()
+	req.Columns = append([]QueryColumn{{Name: "created_at", Expr: "date_unit", Args: []string{"hour"}}}, req.Columns...)
+	req.GroupBy = []string{"created_at", "latest_computed_priority"}
+	sql := eventGroupingsSQL(t, req, "")
+
+	inner, outer, found := strings.Cut(sql, ") AS grouped ")
+	require.True(t, found, sql)
+	assert.Contains(t, inner, "DATE_TRUNC('hour', events.created_at) AS created_at")
+	assert.Contains(t, inner, "GROUP BY cast(events.cloud_account_id as TEXT),cast(events.fingerprint as TEXT),DATE_TRUNC('hour', events.created_at)")
+	assert.True(t, strings.HasPrefix(sql, "SELECT created_at,latest_computed_priority,count(*) AS event_count FROM ("), sql)
+	assert.Equal(t, "GROUP BY created_at,latest_computed_priority LIMIT 1000", outer)
+}
+
+// Inside the inner statement event_count is events per group; outside it is
+// groups per row. Anything but the group by columns would mean one thing where
+// it is filtered and another where it is returned, so the request is refused
+// with an error that names the shape.
+func TestSQLGen_GroupCount_RefusesWhatItCannotAnswer(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+
+	cases := map[string]func(*QueryRequest){
+		"another aggregate selected": func(req *QueryRequest) {
+			req.Columns = append(req.Columns, QueryColumn{Name: "max_created_at"})
+		},
+		"having on the count": func(req *QueryRequest) {
+			req.Having = QueryWhereClause{Binary: BinaryWhereClause{"event_count": {Gt: 5}}}
+		},
+		"having on a column that is not grouped, nested": func(req *QueryRequest) {
+			req.Having = QueryWhereClause{And: []QueryWhereClause{{Or: []QueryWhereClause{{Binary: BinaryWhereClause{"latest_nb_status": {Eq: "OPEN"}}}}}}}
+		},
+		"order by a column that is not grouped": func(req *QueryRequest) {
+			req.OrderBy = []QueryOrderBy{{Column: "max_created_at", Order: Desc}}
+		},
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			req := issuesByLatestRank()
+			change(&req)
+			_, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "a request that groups by an aggregated column counts distinct groups")
+		})
+	}
+}
+
+// Without a distinct count the request names no unit to evaluate the aggregate
+// over, and stays the error it has always been.
+func TestSQLGen_GroupCount_NeedsADistinctCount(t *testing.T) {
+	td, ok := GetTableMetadata("event_groupings_v2")
+	require.True(t, ok)
+	req := issuesByLatestRank()
+	req.Columns[1] = QueryColumn{Name: "event_count"}
+
+	_, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is aggregated and cannot be used in grouping")
 }
 
 func TestSQLGen_RealTable_Events_ComputedColumnsAreScalarSubqueries(t *testing.T) {
@@ -1382,6 +1516,36 @@ func TestSQLGen_RealTable_SecurityV2_CrossAccountPushdown(t *testing.T) {
 	// Two pushed copies plus the outer WHERE: the _and tenant filter must survive.
 	assert.GreaterOrEqual(t, strings.Count(sql, "tenant_id = 't1'"), 3,
 		"outer tenant filter must still be enforced alongside the pushed-down hints")
+}
+
+// A dashboard panel on this table filters is_active = true ("findings on images
+// that are still deployed"). The column was declared on the table while its SQL
+// never selected it, so every request naming it — as a filter or as a column —
+// died in Postgres with `column "is_active" does not exist`.
+func TestSQLGen_RealTable_SecurityV2_IsActiveIsSelected(t *testing.T) {
+	td, ok := GetTableMetadata("recommendation_security_v2")
+	require.True(t, ok)
+	_, declared := td.Columns["is_active"]
+	require.True(t, declared, "is_active is part of the table's contract")
+
+	where := securityCrossAccountWhere()
+	where.Binary["is_active"] = map[BinaryWhereClauseType]any{Eq: true}
+	req := QueryRequest{
+		Table:   "recommendation_security_v2",
+		Columns: cols("severity", "image", "is_active"),
+		Where:   where,
+		OrderBy: []QueryOrderBy{{Column: "created_at", Order: "desc"}},
+		Limit:   25,
+	}
+	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
+	require.NoError(t, err)
+
+	// Selected by the table itself: true exactly when an active pod runs the image.
+	assert.Regexp(t, `\(cr\.image IS NOT NULL\)\s+AS is_active`, sql)
+	// And only active pods are joined, which is what makes "it joined" the test.
+	assert.Contains(t, sql, "pc.is_active IS NOT FALSE")
+	// The filter reaches the outer query as written.
+	assert.Regexp(t, `is_active\s*=\s*true`, sql)
 }
 
 func TestSQLGen_RealTable_SecurityGroupings_HeavyPath_CrossAccountPushdown(t *testing.T) {

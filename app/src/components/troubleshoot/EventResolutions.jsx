@@ -20,6 +20,7 @@ import { Button as DsButton } from '@ui/Button';
 import { containsLink, snakeToTitleCase, toSeverityLevel } from 'src/utils/common';
 import { ds } from 'src/utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { describeResolution } from '@components/k8s/investigate/resolutionStatus';
 
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
@@ -251,16 +252,13 @@ const EventResolutions = () => {
         {
           component: (
             <Box display='flex' flexDirection='column' gap={ds.space[1]}>
-              <Label
-                margin='0'
-                text={item.status}
-                tone={
-                  item.status === 'Success' ? 'success' : item.status === 'Failed' ? 'critical' : item.status === 'InProgress' ? 'warning' : 'neutral'
-                }
-              />
-              {item.status_message && (item.status === 'Failed' || (item.status === 'Success' && !containsLink(item.type_reference_id))) && (
-                <Text value={item.status_message} secondaryText showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
-              )}
+              {(({ label, tone }) => (
+                <Label margin='0' text={label} tone={tone} />
+              ))(describeResolution(item))}
+              {item.status_message &&
+                (item.status === 'Failed' || item.status === 'Unknown' || (item.status === 'Success' && !containsLink(item.type_reference_id))) && (
+                  <Text value={item.status_message} secondaryText showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
+                )}
             </Box>
           ),
         },
@@ -358,7 +356,7 @@ const EventResolutions = () => {
     },
     {
       type: 'dropdown',
-      options: ['Success', 'Failed', 'InProgress', 'Configuring'].map((s) => ({ label: s, value: s })),
+      options: ['Success', 'Failed', 'InProgress', 'Configuring', 'Unknown', 'Declined'].map((s) => ({ label: s, value: s })),
       onSelect: (e) => {
         setSelectedStatus(e.target.value);
         setCurrentPage(0);

@@ -29,6 +29,13 @@ func TestClusterNetworkIncreaseKeys(t *testing.T) {
 		// The bucket is the caller's step, not the window-derived default: each point
 		// must cover exactly the span it is charted against.
 		assert.Contains(t, query, "[1d]", "%s uses the requested bucket", name)
+		// Node-scoped source, not the per-pod container_network_* counters: these keys
+		// are always cluster-wide, and the container form's series count blows past
+		// vmselect's index limit over a month of pod churn (422 -> empty tile). The
+		// device filter keeps the sum to real NICs.
+		assert.Contains(t, query, "node_network_", "%s must read node_network_*, not container_network_*", name)
+		assert.NotContains(t, query, "container_network_", "%s must not use the high-cardinality per-pod counter", name)
+		assert.Contains(t, query, `device!~"lo|veth`, "%s must exclude virtual/loopback interfaces", name)
 		_, err := promQLParser.ParseExpr(stripClusterPlaceholder(query))
 		require.NoError(t, err, "%s: %s", name, query)
 	}

@@ -264,9 +264,36 @@ func handleQueryAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 	}
 
 	if len(resp.Errors) > 0 {
-		c.JSON(400, common.ErrorActionBadRequest(fmt.Sprintf("query execution errors: %v", resp.Errors)))
+		requestId := c.GetHeader("X-Request-ID")
+		if requestId == "" {
+			requestId = ctx.GetTraceId()
+		}
+		message, internal := queryErrorsMessage(resp.Errors, requestId)
+		if internal {
+			ctx.GetLogger().Error("query failed", "table", queryRequest.Table, "request_id", requestId, "errors", fmt.Sprintf("%v", resp.Errors))
+			c.JSON(500, common.ErrorActionInternal(message))
+			return
+		}
+		c.JSON(400, common.ErrorActionBadRequest(message))
 		return
 	}
 
 	c.JSON(200, resp)
+}
+
+// queryErrorsMessage is the message a client gets for a failed query. Errors the
+// engine raised for the request itself (4xx: unknown table, Access Denied) keep
+// their text. A server-side error (5xx) can carry database or driver text,
+// including values read by the query, so the client gets a generic message and
+// the request id instead; the caller logs the detail. internal reports which.
+func queryErrorsMessage(errs []common.Error, requestId string) (message string, internal bool) {
+	for _, e := range errs {
+		if e.Code >= 500 {
+			if requestId == "" {
+				return "Unable to execute query", true
+			}
+			return fmt.Sprintf("Unable to execute query (request id: %s)", requestId), true
+		}
+	}
+	return fmt.Sprintf("query execution errors: %v", errs), false
 }

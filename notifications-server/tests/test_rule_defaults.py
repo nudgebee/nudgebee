@@ -19,6 +19,7 @@ from notifications_server.models.models import NotificationDefaultPolicy
 from notifications_server.services import rules as rules_module
 from notifications_server.services.message import resolve_outcome
 from notifications_server.services.rules import NotificationRulesService
+from notifications_server.services.cache import AsyncCache
 
 TENANT = "22222222-2222-2222-2222-222222222222"
 DELIVER = {"action": "deliver_defaults", "mappings": []}
@@ -163,6 +164,7 @@ class _Session:
 
 class _Cache:
     redis_client = object()
+    aio = property(AsyncCache)
 
     def __init__(self):
         self.stored = None

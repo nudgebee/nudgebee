@@ -121,7 +121,7 @@ collapsed for the k8s orchestrator via `direct` mode. Everything else earns KEEP
 | Custom-planner agents with their own service logic, **zero declared leaf tools** | `visualizer` (generate→validate→retry), `resource_search` (parallel fan-out + rank + enrich), `code_analyzer` (external RCA engine + git-credential minting) |
 | Rich single-tool domain methodology | `github`, `tickets_v2`, `recommendations`, `aws`, `gcp`, `azure`, `aws_observability`, `server` (weak keep — needs its JSON input schema + RAG binding rehomed first) |
 
-Near-wrapper but retained for v1/v2 coexistence only: `tickets` (v1, thin JQL prompt over `ticket_master`) — governed by `TicketV2Enabled`, leave as-is.
+`tickets` (v1, thin JQL prompt over `ticket_master`) was retired in #41447 step 11; both names are now aliases of `tickets_v2` and `ticket_master_v2`.
 
 > **Caveat — `rabbitmq`:** its KEEP rests on the `rabbitmqadmin`-vs-HTTP-Management-API routing
 > tree, but the HTTP-API path in `rabbit_execute` is currently mis-implemented (wrong endpoints,

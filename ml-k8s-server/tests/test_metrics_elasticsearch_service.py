@@ -11,7 +11,6 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from unittest.mock import MagicMock, patch
 
 from server.recommendation.vertical_rightsizing.models.allocations import (
     ResourceAllocations,
@@ -23,8 +22,10 @@ from server.recommendation.vertical_rightsizing.models.objects import (
 from server.recommendation.vertical_rightsizing.services.metrics_elasticsearch_service import (
     CONTAINER_CPU_NANOCORES,
     CONTAINER_MEMORY_WORKINGSET,
+    NAME_LABEL,
+    POD_LABEL,
+    STATISTIC_LABEL,
     ElasticsearchMetricsService,
-    entries_from_es_aggregations,
 )
 
 
@@ -48,18 +49,8 @@ NUDGEBEE_METRIC_KEYS = [
 ]
 
 
-def _service(**kwargs):
-    defaults = dict(
-        config=None,
-        account_id="acct",
-        executor=None,
-        url="https://es.example:9200/",
-        username="elastic",
-        password="secret",
-        metrics_index="metricbeat-*",
-    )
-    defaults.update(kwargs)
-    return ElasticsearchMetricsService(**defaults)
+def _service():
+    return ElasticsearchMetricsService(config=None, account_id="acct", executor=None)
 
 
 def _object(pods=("app-abc-1", "app-abc-2")):
@@ -75,20 +66,40 @@ def _object(pods=("app-abc-1", "app-abc-2")):
     )
 
 
-def _capture(service, responses):
-    """Record the bodies sent and answer with canned responses, in order.
+def _flatten(reply):
+    """An Elasticsearch reply in the shape api-server returns: one entry per value, its
+    bucket keys in ``metric``."""
+    entries = []
 
-    The fixtures stay written as Elasticsearch replies and are flattened the way the
-    service reads them, which is also the shape api-server returns. One fixture
-    therefore covers both transports; `test_both_transports_agree_on_the_shape` is
-    what holds them to it.
-    """
+    def add(pod, name, value, statistic=None):
+        if value is None:
+            return
+        labels = {POD_LABEL: pod, NAME_LABEL: name}
+        if statistic is not None:
+            labels[STATISTIC_LABEL] = statistic
+        entries.append({"metric": labels, "timestamps": [0], "values": [value]})
+
+    for bucket in reply["aggregations"]["pods"]["buckets"]:
+        pod = bucket["key"]
+        for name in ("max", "count", "last_seen"):
+            add(pod, name, (bucket.get(name) or {}).get("value"))
+        for statistic, value in ((bucket.get("pct") or {}).get("values") or {}).items():
+            add(pod, "pct", value, statistic=statistic)
+        if not any(name in bucket for name in ("max", "count", "last_seen", "pct")):
+            add(pod, "doc_count", bucket.get("doc_count", 0))
+    return entries
+
+
+def _capture(service, responses):
+    """Record the bodies sent and answer with canned responses, in order. The fixtures
+    stay written as Elasticsearch replies because that is what a reader can check them
+    against."""
     sent = []
     pending = list(responses)
 
     def fake_search(body):
         sent.append(body)
-        return entries_from_es_aggregations(pending.pop(0))
+        return _flatten(pending.pop(0))
 
     service._search = fake_search
     return sent
@@ -251,72 +262,3 @@ def test_load_pods_returns_empty_on_failure_so_the_database_fallback_runs():
 
     service._search = boom
     assert asyncio.run(service.load_pods(_object(), timedelta(days=1))) == []
-
-
-def test_cognito_is_refused_explicitly():
-    # SigV4 signing is Go-only. An unsigned request would come back 403, which the
-    # caller reads as "no metrics" — the exact silent failure this work removes.
-    with pytest.raises(ValueError, match="cognito"):
-        _service(auth_type="cognito", via_api_server=False)
-
-
-def test_api_key_and_bearer_auth_set_headers_instead_of_basic_auth():
-    # Auth now lives on the shared transport, which volume rightsizing uses too, so the
-    # assertions follow it there rather than duplicating the logic per service.
-    api_key_service = _service(auth_type="api_key", api_key="abc123", via_api_server=False)
-    assert api_key_service._transport._headers["Authorization"] == "ApiKey abc123"
-    assert api_key_service._transport._auth is None
-
-    bearer_service = _service(auth_type="bearer_token", bearer_token="tok", via_api_server=False)
-    assert bearer_service._transport._headers["Authorization"] == "Bearer tok"
-    assert bearer_service._transport._auth is None
-
-    basic_service = _service(via_api_server=False)
-    assert basic_service._transport._auth == ("elastic", "secret")
-    assert "Authorization" not in basic_service._transport._headers
-
-
-def test_missing_url_is_rejected():
-    with pytest.raises(ValueError, match="url"):
-        _service(url="", via_api_server=False)
-
-
-def test_check_connection_reaches_the_cluster_through_the_transport():
-    """check_connection read self._url/_headers/_auth/_verify directly. When auth moved
-    to the shared transport those attributes went with it, and nothing called this in a
-    test — so it raised AttributeError on every real rightsizing run while the suite
-    stayed green. It delegates now, and this asserts the call actually goes out."""
-    service = _service(via_api_server=False)
-    with patch.object(service._transport, "check_connection") as delegated:
-        service.check_connection()
-    delegated.assert_called_once()
-
-
-def test_check_connection_raises_connection_error_when_the_cluster_refuses():
-    service = _service(via_api_server=False)
-    with patch("server.recommendation.elasticsearch_client.requests.get", side_effect=OSError("refused")):
-        with pytest.raises(ConnectionError, match="Elasticsearch connection failed"):
-            service.check_connection()
-
-
-def test_transport_search_returns_empty_dict_on_404():
-    service = _service(via_api_server=False)
-    mock_resp = MagicMock()
-    mock_resp.status_code = 404
-    with patch("server.recommendation.elasticsearch_client.requests.post", return_value=mock_resp):
-        res = service._transport.search({"query": {"match_all": {}}})
-        assert res == {}
-
-
-def test_transport_search_includes_ignore_unavailable_and_allow_no_indices():
-    service = _service(via_api_server=False)
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {"hits": {"hits": []}}
-    with patch("server.recommendation.elasticsearch_client.requests.post", return_value=mock_resp) as mock_post:
-        res = service._transport.search({"query": {"match_all": {}}})
-        assert res == {"hits": {"hits": []}}
-        mock_post.assert_called_once()
-        url = mock_post.call_args[0][0]
-        assert "ignore_unavailable=true" in url
-        assert "allow_no_indices=true" in url

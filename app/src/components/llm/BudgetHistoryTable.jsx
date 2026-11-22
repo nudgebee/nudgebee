@@ -4,7 +4,7 @@ import { Box, Typography } from '@mui/material';
 import CustomTable from '@shared/tables/CustomTable';
 import apiAudits from '@api1/audits';
 import apiUser from '@api1/user';
-import Datetime from '@shared/format/Datetime';
+import Datetime, { formatClockCompact } from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
 import { ds } from '@utils/colors';
@@ -29,14 +29,27 @@ const ACTION_TONE = {
 
 const COUNT_TYPES = new Set(['monthly_count', 'daily_count']);
 
-const headers = [
-  'User',
-  'Timestamp',
-  'Budget Type',
-  { name: 'Previous Value', width: '15%' },
-  { name: 'Updated Value', width: '15%' },
+// Widths sum to 100%; labels never wrap so a header stays on one line even when
+// its column is narrow (the cell content truncates instead).
+const COLUMNS = [
+  { name: 'User', width: '24%' },
+  { name: 'Timestamp', width: '13%' },
+  { name: 'Module', width: '15%' },
+  { name: 'Budget Type', width: '14%' },
+  { name: 'Previous Value', width: '12%' },
+  { name: 'Updated Value', width: '12%' },
   { name: 'Action', width: '10%' },
 ];
+
+const headers = COLUMNS.map(({ name, width }) => ({
+  name,
+  width,
+  component: (
+    <Box component='span' sx={{ whiteSpace: 'nowrap' }}>
+      {name}
+    </Box>
+  ),
+}));
 
 function parseJson(raw) {
   if (!raw) return null;
@@ -55,14 +68,18 @@ function formatBudgetValue(rawJsonString, budgetType) {
   if (!parsed || parsed.deleted) return '—';
   if (budgetType === 'bypass') return parsed.enabled ? 'Enabled' : 'Disabled';
   if (parsed.limit == null) return '—';
-  return COUNT_TYPES.has(budgetType) ? formatCount(parsed.limit) : formatCurrency(parsed.limit);
+  const formatted = COUNT_TYPES.has(budgetType) ? formatCount(parsed.limit) : formatCurrency(parsed.limit);
+  return parsed.enabled === false ? `${formatted} (disabled)` : formatted;
 }
 
 // BudgetHistoryTable lists budget config change history (create/update/
 // delete/enable-disable), scoped to the tenant or one account. Reuses the
 // existing audits_v2-backed apiAudits.listAudits, filtered to category
 // 'BUDGET' — no dedicated backend endpoint exists or is needed for this.
-const BudgetHistoryTable = ({ accountId, isTenantWide }) => {
+// Stable default: moduleLabels is a fetch-effect dependency, so an inline `{}` would refetch every render.
+const NO_MODULE_LABELS = {};
+
+const BudgetHistoryTable = ({ accountId, isTenantWide, moduleLabels = NO_MODULE_LABELS }) => {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(apiUser.getUserPreferencesTablePageSize());
   const [data, setData] = useState([]);
@@ -96,11 +113,22 @@ const BudgetHistoryTable = ({ accountId, isTenantWide }) => {
         const rows = (res.data?.audits || []).map((item) => {
           const attr = parseJson(item.event_attr) || {};
           const budgetType = attr.budget_type || '';
+          const moduleName = attr.module || '';
           const action = (item.event_type || '').replace('BUDGET_CONFIG_', '');
           const userName = usersMap[item.user_id] || item.user_id || formatAuditActor(item.event_actor);
           return [
             { component: <Text value={userName} showAutoEllipsis /> },
-            { component: <Datetime value={item.event_time} baseDate={new Date()} /> },
+            {
+              component: (
+                <Box>
+                  <Datetime value={item.event_time} baseDate={new Date()} />
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+                    {formatClockCompact(item.event_time)}
+                  </Typography>
+                </Box>
+              ),
+            },
+            { component: <Text value={moduleLabels[moduleName] || moduleName} showAutoEllipsis /> },
             { component: <Text value={BUDGET_TYPE_LABELS[budgetType] || budgetType} showAutoEllipsis /> },
             { component: <Text value={formatBudgetValue(item.event_prev_state, budgetType)} showAutoEllipsis /> },
             { component: <Text value={formatBudgetValue(item.event_state, budgetType)} showAutoEllipsis /> },
@@ -111,7 +139,7 @@ const BudgetHistoryTable = ({ accountId, isTenantWide }) => {
         setTotalRows(res.data?.count || 0);
       })
       .catch(() => setLoading(false));
-  }, [offset, limit, accountId, isTenantWide, usersLoaded, usersMap]);
+  }, [offset, limit, accountId, isTenantWide, usersLoaded, usersMap, moduleLabels]);
 
   return (
     <Box sx={{ mt: ds.space[6] }}>
@@ -148,6 +176,7 @@ const BudgetHistoryTable = ({ accountId, isTenantWide }) => {
 BudgetHistoryTable.propTypes = {
   accountId: PropTypes.string,
   isTenantWide: PropTypes.bool,
+  moduleLabels: PropTypes.objectOf(PropTypes.string),
 };
 
 export default BudgetHistoryTable;

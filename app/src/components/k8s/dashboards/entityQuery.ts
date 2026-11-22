@@ -8,6 +8,7 @@
  */
 
 import { fillBrandTokens } from '@hooks/useTenantBranding';
+import { plainRegexValue, type PickedValues, type VariableFormat, type VariableValues } from './templating';
 
 export type EntityColumnType = 'string' | 'number' | 'datetime' | 'boolean' | 'json';
 
@@ -80,6 +81,19 @@ export interface EntityTable {
   columns: EntityColumn[];
   /** Columns the dashboard's time range may be applied to. */
   timeColumns: string[];
+  /**
+   * Rows are standing state rather than things that happened: a recommendation
+   * raised last month is as open today. A panel on such a table starts with the
+   * time range off — the author can still switch it on.
+   */
+  standing?: boolean;
+  /**
+   * The shortest window, in days, a panel on this table is queried over. For a
+   * table written once a day and a day or two behind, where the hour a
+   * dashboard opens on holds no row at all. A shorter range is widened to this
+   * many days, ending where the range ends — see panelQueryWindow.
+   */
+  minWindowDays?: number;
   defaultColumns: string[];
   defaultSort: string;
 }
@@ -467,6 +481,7 @@ export const ENTITY_TABLES: EntityTable[] = [
       'worth (estimated savings). Filter on Is primary to count a finding once rather than once per revision.',
     columns: RECOMMENDATION_COLUMNS,
     timeColumns: ['created_at', 'updated_at'],
+    standing: true,
     defaultColumns: ['created_at', 'rule_name', 'category', 'resource_name', 'estimated_savings', 'status'],
     defaultSort: 'created_at',
   },
@@ -483,6 +498,7 @@ export const ENTITY_TABLES: EntityTable[] = [
       '"which rule fires most" — the engine cannot group the Recommendations table on the fly, so totals are not possible there.',
     columns: RECOMMENDATION_GROUPING_COLUMNS,
     timeColumns: ['timestamp', 'updated_at'],
+    standing: true,
     defaultColumns: ['rule_name', 'category', 'count', 'sum_estimated_savings', 'account_name'],
     defaultSort: 'sum_estimated_savings',
   },
@@ -498,6 +514,9 @@ export const ENTITY_TABLES: EntityTable[] = [
       'total to false — credits and tax lines are stored alongside real charges and every spend figure in the product leaves them out.',
     columns: SPEND_GROUPING_COLUMNS,
     timeColumns: ['spend_date'],
+    // Billed by the day and landing late: most accounts' newest spend row is a
+    // day or two old, so anything under a week misses whole accounts.
+    minWindowDays: 7,
     defaultColumns: ['resource_service_name', 'spend_amount', 'resource_count', 'currency_type'],
     defaultSort: 'spend_amount',
   },
@@ -872,9 +891,11 @@ export function defaultDraft(tableOrDatasource = ENTITY_TABLES[0].value): Entity
     // Some tables carry no filterable timestamp at all — a current-state
     // snapshot, or a grouping whose only date column is a max() the engine
     // cannot put in a WHERE. Those open with the time range OFF rather than
-    // with a switch that is on and filtering against nothing.
+    // with a switch that is on and filtering against nothing. So does a table
+    // of standing state: on the dashboard's default hour, "open recommendations"
+    // would be the handful raised in that hour.
     timeColumn: table.timeColumns[0] || '',
-    applyTimeRange: table.timeColumns.length > 0,
+    applyTimeRange: table.timeColumns.length > 0 && !table.standing,
     sortColumn: table.defaultSort,
     sortDesc: true,
     limit: 100,
@@ -960,40 +981,81 @@ export function coerceFilterValue(table: EntityTable, filter: EntityFilter): unk
  * shape and can be hand-edited on import, so a column carrying `null` — or a
  * string, or an array — is reachable, and it must not take the render down.
  */
+/** The dropdown a filter value stands for, when the value is that variable and nothing else. */
+function pickedVariable(value: unknown, variables: VariableValues): PickedValues | undefined {
+  if (typeof value !== 'string') return undefined;
+  const name = value.match(/^\$(?:\{(\w+)\}|(\w+))$/);
+  const picked = name ? variables[name[1] || name[2]] : undefined;
+  return typeof picked === 'object' ? picked : undefined;
+}
+
 function asOperators(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
 }
 
-export function renderEntityQuery(stored: unknown, render: (value: string) => string): Record<string, unknown> {
+export function renderEntityQuery(
+  stored: unknown,
+  render: (value: string, format?: VariableFormat) => string,
+  variables: VariableValues = {}
+): Record<string, unknown> {
   const query = (stored || {}) as EntityQuery;
 
-  const renderValue = (value: unknown): unknown => {
-    if (typeof value === 'string') return render(value);
+  const renderValue = (value: unknown, operator: string): unknown => {
+    const format = REGEX_OPERATORS.has(operator) ? 'regex' : 'raw';
+    if (typeof value === 'string') return render(value, format);
     // `_in` / `_not_in` carry a list; a number or the boolean `_is_null` takes
     // no template.
-    if (Array.isArray(value)) return value.map((v) => (typeof v === 'string' ? render(v) : v));
+    if (Array.isArray(value)) return value.map((v) => (typeof v === 'string' ? render(v, format) : v));
     return value;
+  };
+
+  /**
+   * A filter whose value is a dropdown takes the shape its picks need, as the
+   * engine reads a value here and not query text: All is no filter at all, and
+   * several picks on `is` become `is one of`. Empty means drop the filter.
+   */
+  const renderFilter = (operator: string, value: unknown): [string, unknown][] => {
+    const items: unknown[] = Array.isArray(value) ? value : [value];
+    const picks = items.map((item) => pickedVariable(item, variables));
+    if (!picks.some(Boolean)) return [[operator, renderValue(value, operator)]];
+    if (picks.some((p) => p?.all && !p.allValue)) return [];
+    const list = items.flatMap((item, i) => {
+      const picked = picks[i];
+      if (!picked) return [typeof item === 'string' ? render(item, 'raw') : item];
+      return picked.all ? [picked.allValue] : picked.values;
+    });
+    if (REGEX_OPERATORS.has(operator)) {
+      return [[operator, picks[0]?.all ? list[0] : list.map((v) => plainRegexValue(String(v))).join('|')]];
+    }
+    if (LIST_OPERATORS.has(operator)) return [[operator, list]];
+    if (list.length === 1) return [[operator, list[0]]];
+    if (operator === '_eq') return [['_in', list]];
+    if (operator === '_neq') return [['_not_in', list]];
+    return [[operator, renderValue(value, operator)]];
   };
 
   const renderClauses = (clause: Record<string, unknown> | undefined) => {
     const and = (clause as any)?._and;
     if (!Array.isArray(and)) return clause;
-    return {
-      ...clause,
-      _and: and.map((c: any) => ({
-        ...c,
-        _binary: Object.fromEntries(
-          Object.entries((c?._binary || {}) as Record<string, unknown>).map(([column, operators]) => [
-            column,
-            // Guarded one level deeper than the container: a stored query with
-            // `_binary: { column: null }` would otherwise throw out of
-            // Object.entries and take the whole dashboard's render with it.
-            Object.fromEntries(Object.entries(asOperators(operators)).map(([operator, value]) => [operator, renderValue(value)])),
-          ])
-        ),
-      })),
-    };
+    const rendered = and.map((c: any) => ({
+      ...c,
+      _binary: Object.fromEntries(
+        Object.entries((c?._binary || {}) as Record<string, unknown>).flatMap(([column, operators]) => {
+          // Guarded one level deeper than the container: a stored query with
+          // `_binary: { column: null }` would otherwise throw out of
+          // Object.entries and take the whole dashboard's render with it.
+          const filters = Object.entries(asOperators(operators));
+          const kept = filters.flatMap(([operator, value]) => renderFilter(operator, value));
+          return filters.length > 0 && kept.length === 0 ? [] : [[column, Object.fromEntries(kept)]];
+        })
+      ),
+    }));
+    const kept = rendered.filter((c: any, i: number) => Object.keys(c._binary).length > 0 || Object.keys(and[i]?._binary || {}).length === 0);
+    if (kept.length > 0 || and.length === 0) return { ...clause, _and: kept };
+    // Every filter was a dropdown left on All, and an empty `_and` is not a query shape the engine documents.
+    const { _and: _dropped, ...rest } = clause as Record<string, unknown>;
+    return Object.keys(rest).length > 0 ? rest : undefined;
   };
 
   return {
@@ -1006,8 +1068,13 @@ export function renderEntityQuery(stored: unknown, render: (value: string) => st
 /**
  * Reads a stored query back into the editor's draft, so reopening a panel shows
  * the filters that were saved rather than an empty builder.
+ *
+ * `timeColumn` is the target's stored time column, which travels beside the
+ * query rather than in it. Given — even empty — it decides the time-range
+ * switch: on exactly when a column was stored. Left out, the table's default
+ * stands, which is all a caller reading the query's shape needs.
  */
-export function draftFromQuery(stored: unknown): EntityQueryDraft {
+export function draftFromQuery(stored: unknown, timeColumn?: string): EntityQueryDraft {
   const query = (stored || {}) as EntityQuery;
   const table = findTable(query.table || ENTITY_TABLES[0].value);
   const base = defaultDraft(table.value);
@@ -1031,6 +1098,8 @@ export function draftFromQuery(stored: unknown): EntityQueryDraft {
 
   return {
     ...base,
+    // The stored column as it is, so an edit elsewhere in the builder writes back what was there.
+    ...(timeColumn === undefined ? {} : { applyTimeRange: timeColumn !== '', timeColumn: timeColumn || base.timeColumn }),
     table: table.value,
     columns: columns.length > 0 ? columns : base.columns,
     filters,

@@ -4,8 +4,16 @@ from pydantic import BaseModel
 
 from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.message_templates.base import format_burn_rate_window
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    counts_phrase,
+    resolved_text,
+    resolved_when,
+    split_resolved,
+)
 from notifications_server.message_templates.slack.recommendation_nudge_digest import (
     STRIPE_CRITICAL,
+    STRIPE_SAVINGS,
     header_block,
     legacy_attachment,
     link_button,
@@ -84,19 +92,33 @@ def _stats_line(alert: SLOAlertParams) -> str:
     return " · ".join(parts)
 
 
+def resolved_slo_line(alert: SLOAlertParams, bold: str, slack: bool = False) -> str:
+    """One compact line of the Resolved section: the SLO, where it is
+    (namespace/workload, then the account) and when it recovered, if the
+    payload says. `bold` is the platform's marker; Slack gets its <!date> token."""
+    subject = f"{alert.namespace}/{alert.workload}" if alert.namespace else alert.workload
+    places = [subject, alert.account_name or alert.account_id]
+    title = alert.slo_name or alert.workload or "SLO"
+    return resolved_text(title, places, resolved_when(alert.ends_at, slack), bold)
+
+
 def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[str, Any]:
     if isinstance(input_data, SLOAlertSummaryParams):
         alerts: List[SLOAlertParams] = input_data.events
     else:
         alerts = input_data
 
-    count = len(alerts)
-    headline = "1 SLO is burning error budget" if count == 1 else f"{count} SLOs are burning error budget"
+    firing, resolved = split_resolved(alerts)
+    count = len(firing)
+    if (count or len(resolved)) == 1:
+        headline = counts_phrase(count, len(resolved), "SLO", "is burning error budget")
+    else:
+        headline = counts_phrase(count, len(resolved), "SLOs", "are burning error budget")
 
     blocks: List[Dict[str, Any]] = [header_block(headline), {"type": "divider"}]
 
     attachments = []
-    for alert in alerts[:MAX_SLO_ITEMS]:
+    for alert in firing[:MAX_SLO_ITEMS]:
         lines = [
             f"*{alert.slo_name}* `{_slo_badge(alert)}`",
             f"At *{alert.current_value}* against a *{alert.slo_target}* target",
@@ -135,6 +157,13 @@ def get_grouped_slo_alerts_template(input_data: List[SLOAlertParams]) -> Dict[st
         attachments.append(
             neutral_footer_attachment(text=f"_+{remaining} more SLOs breaching_", fallback="SLO summary")
         )
+
+    if resolved:
+        resolved_lines = ["*Resolved*"]
+        resolved_lines += [f"• {resolved_slo_line(alert, '*', slack=True)}" for alert in resolved[:MAX_RESOLVED_ITEMS]]
+        if len(resolved) > MAX_RESOLVED_ITEMS:
+            resolved_lines.append(f"_+{len(resolved) - MAX_RESOLVED_ITEMS} more resolved_")
+        attachments.append(legacy_attachment(STRIPE_SAVINGS, "Resolved SLOs", text="\n".join(resolved_lines)))
 
     return {
         "text": headline,

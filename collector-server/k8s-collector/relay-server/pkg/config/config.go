@@ -11,6 +11,10 @@ import (
 
 const SERVICE_NAME = "relay-server"
 
+// DefaultRabbitMQMaxMessageBytes is the default for RabbitMQ.MaxMessageBytes:
+// RabbitMQ 4's own default max_message_size.
+const DefaultRabbitMQMaxMessageBytes = 16 << 20
+
 // Config holds all configuration for the relay‐server service.
 type Config struct {
 	HTTP struct {
@@ -50,14 +54,11 @@ type Config struct {
 		PrefetchCount int           `mapstructure:"prefetch_count"`
 		RetryDelay    time.Duration `mapstructure:"retry_delay"`
 		MessageTTL    time.Duration `mapstructure:"message_ttl"`
-		// LLMCacheInvalidationExchange is the fanout exchange llm-server
-		// consumes to drop its per-account integration caches. The relay
-		// publishes {"account_ids":[...]} there after registering agent
-		// datasources or changing their labels. Same name and default as
-		// api-server / llm-server (rabbit_mq_llm_cache_invalidation_exchange).
-		// Empty disables publishing.
-		// Env: RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE
-		LLMCacheInvalidationExchange string `mapstructure:"llm_cache_invalidation_exchange"`
+		// MaxMessageBytes is the largest agent reply the relay publishes to
+		// the broker; a bigger one is replaced by a 413 reply. Keep it at or
+		// below the broker's max_message_size, which refuses anything larger.
+		// Env: RABBITMQ_MAX_MESSAGE_BYTES.
+		MaxMessageBytes int64 `mapstructure:"max_message_bytes"`
 	} `mapstructure:"rabbitmq"`
 
 	Security struct {
@@ -173,7 +174,7 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("rabbitmq.password", "RABBIT_MQ_PASSWORD")
 	_ = v.BindEnv("rabbitmq.url", "RABBITMQ_URL")
 	_ = v.BindEnv("rabbitmq.message_ttl", "RABBITMQ_MESSAGE_TTL")
-	_ = v.BindEnv("rabbitmq.llm_cache_invalidation_exchange", "RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE")
+	_ = v.BindEnv("rabbitmq.max_message_bytes", "RABBITMQ_MAX_MESSAGE_BYTES")
 
 	//bind all otel env vars
 	_ = v.BindEnv("otel.exporter_otlp_endpoint", "OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -230,7 +231,7 @@ func Load() (*Config, error) {
 	v.SetDefault("rabbitmq.url", "")
 	v.SetDefault("rabbitmq.exchange_name", "nudgebee-relay")
 	v.SetDefault("rabbitmq.message_ttl", "1m")
-	v.SetDefault("rabbitmq.llm_cache_invalidation_exchange", "llm_cache_invalidation")
+	v.SetDefault("rabbitmq.max_message_bytes", DefaultRabbitMQMaxMessageBytes)
 
 	v.SetDefault("signing.private_key", "")
 	v.SetDefault("signing.key_id", "default")
@@ -252,6 +253,10 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
+	}
+
+	if cfg.RabbitMQ.MaxMessageBytes <= 0 {
+		cfg.RabbitMQ.MaxMessageBytes = DefaultRabbitMQMaxMessageBytes
 	}
 
 	if cfg.Otel.ExporterOtlpEndpoint == "" {

@@ -193,7 +193,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   useEffect(() => {
     if (isPreview && !isTourDemo) {
       resetState();
-      handleClose();
+      handleClose(Boolean(createdAccountId));
     }
     // resetState/handleClose are stable enough for this one-shot cleanup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,7 +332,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     snackbar.success('Agent connected from your cluster. Setup is complete.');
     updateAllClusters(true);
     resetState();
-    handleClose();
+    handleClose(Boolean(createdAccountId));
     // resetState/handleClose are stable enough for this one-shot close.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentInstalled]);
@@ -345,12 +345,12 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
       addPendingAgentInstall(createdAccountId, k8sNameValue);
     }
     resetState();
-    handleClose();
+    handleClose(Boolean(createdAccountId));
   };
 
   const handleFinish = () => {
     resetState();
-    handleClose();
+    handleClose(Boolean(createdAccountId));
   };
 
   // Pod Monitor rides on the Node Agent DaemonSet, so turning Node Agent off
@@ -498,7 +498,7 @@ helm repo update`;
       actionButtons={
         currentStep === 1 ? (
           <>
-            <Button id='cancel-btn' tone='secondary' size='md' onClick={handleClose} disabled={isSubmitting}>
+            <Button id='cancel-btn' tone='secondary' size='md' onClick={() => handleClose(Boolean(createdAccountId))} disabled={isSubmitting}>
               Cancel
             </Button>
             <Button

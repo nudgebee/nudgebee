@@ -9,8 +9,11 @@ import (
 
 	"nudgebee/runbook/internal/model"
 
+	commonpb "go.temporal.io/api/common/v1"
+	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 )
 
 func TestBuildExecutionQueryAlwaysScopesTenantAndAccount(t *testing.T) {
@@ -496,5 +499,137 @@ func TestRankFailedAutomationsAppliesLimit(t *testing.T) {
 func TestRankFailedAutomationsHandlesEmptyTally(t *testing.T) {
 	if ranked := rankFailedAutomations(map[string]int64{}, 5); len(ranked) != 0 {
 		t.Fatalf("expected no entries, got %d", len(ranked))
+	}
+}
+
+// statusCounter answers a status-set count the way the visibility store does:
+// the sum of the listed statuses, or every run when the set is empty (no
+// status clause at all).
+func statusCounter(byStatus map[model.WorkflowExecutionStatus]int64) func([]model.WorkflowExecutionStatus) int64 {
+	return func(statuses []model.WorkflowExecutionStatus) int64 {
+		var count int64
+		if len(statuses) == 0 {
+			for _, n := range byStatus {
+				count += n
+			}
+			return count
+		}
+		for _, status := range statuses {
+			count += byStatus[status]
+		}
+		return count
+	}
+}
+
+// The window from #39874: 17 runs, of which 4 FAILED, 1 TIMED_OUT, 3 CANCELED.
+var issue39874Window = map[model.WorkflowExecutionStatus]int64{
+	model.WorkflowExecutionStatusCompleted: 9,
+	model.WorkflowExecutionStatusFailed:    4,
+	model.WorkflowExecutionStatusTimedOut:  1,
+	model.WorkflowExecutionStatusCanceled:  3,
+}
+
+func TestExecutionStatusCountsPutEveryClosedRunInOneBucket(t *testing.T) {
+	got := executionStatusCounts(nil, statusCounter(issue39874Window))
+
+	if got.Total != 17 || got.Succeeded != 9 || got.TimedOut != 1 || got.Terminated != 0 || got.Canceled != 3 || got.Running != 0 {
+		t.Fatalf("unexpected buckets: %+v", got)
+	}
+	// `failed` keeps meaning "did not succeed", which the leaderboard ranks.
+	if got.Failed != 5 {
+		t.Fatalf("failed = %d, want 5 (FAILED + TIMED_OUT + TERMINATED)", got.Failed)
+	}
+	// The summary card's Failed number must be what Status = Failed lists.
+	if failedStatusOnly := got.Failed - got.TimedOut - got.Terminated; failedStatusOnly != 4 {
+		t.Fatalf("failed - timed_out - terminated = %d, want the 4 FAILED runs", failedStatusOnly)
+	}
+	if sum := got.Succeeded + got.Failed + got.Canceled + got.Running; sum != got.Total {
+		t.Fatalf("buckets sum to %d, total is %d", sum, got.Total)
+	}
+}
+
+func TestExecutionStatusCountsSplitsTerminatedOutOfFailed(t *testing.T) {
+	window := map[model.WorkflowExecutionStatus]int64{
+		model.WorkflowExecutionStatusFailed:     2,
+		model.WorkflowExecutionStatusTerminated: 3,
+		model.WorkflowExecutionStatusTimedOut:   4,
+	}
+	got := executionStatusCounts(nil, statusCounter(window))
+	if got.Failed != 9 || got.Terminated != 3 || got.TimedOut != 4 {
+		t.Fatalf("unexpected buckets: %+v", got)
+	}
+}
+
+// A bucket the user's own status filter excludes is zero. It used to be counted
+// with an empty status set, which drops the status clause and counts every run.
+func TestExecutionStatusCountsZeroesBucketsTheFilterExcludes(t *testing.T) {
+	got := executionStatusCounts(
+		[]model.WorkflowExecutionStatus{model.WorkflowExecutionStatusCompleted},
+		statusCounter(issue39874Window),
+	)
+	if got.Total != 9 || got.Succeeded != 9 {
+		t.Fatalf("total/succeeded = %d/%d, want 9/9", got.Total, got.Succeeded)
+	}
+	if got.Failed != 0 || got.TimedOut != 0 || got.Terminated != 0 || got.Canceled != 0 || got.Running != 0 {
+		t.Fatalf("filtered-out buckets must be zero: %+v", got)
+	}
+}
+
+func TestLeaderboardKeyGroupsDryRuns(t *testing.T) {
+	cases := map[string]string{
+		"dry-run-6f1c9a52-0000-4000-8000-000000000001": model.DryRunWorkflowIDPrefix,
+		"dry-run-6f1c9a52-0000-4000-8000-000000000002": model.DryRunWorkflowIDPrefix,
+		"6f1c9a52-0000-4000-8000-000000000003":         "6f1c9a52-0000-4000-8000-000000000003",
+		"inline-task-1-6f1c9a52":                       "inline-task-1-6f1c9a52",
+	}
+	for in, want := range cases {
+		if got := leaderboardKey(in); got != want {
+			t.Errorf("leaderboardKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// listingClient serves one page of visibility rows carrying only nb_workflow_id.
+type listingClient struct {
+	client.Client
+	rows []*workflowpb.WorkflowExecutionInfo
+}
+
+func (c *listingClient) ListWorkflow(_ context.Context, _ *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error) {
+	return &workflowservice.ListWorkflowExecutionsResponse{Executions: c.rows}, nil
+}
+
+func TestTallyFailuresByScanRanksDryRunsAsOneRow(t *testing.T) {
+	dc := converter.GetDefaultDataConverter()
+	row := func(workflowID string) *workflowpb.WorkflowExecutionInfo {
+		payload, err := dc.ToPayload(workflowID)
+		if err != nil {
+			t.Fatalf("encode search attribute: %v", err)
+		}
+		return &workflowpb.WorkflowExecutionInfo{SearchAttributes: &commonpb.SearchAttributes{
+			IndexedFields: map[string]*commonpb.Payload{model.SearchAttrWorkflowID: payload},
+		}}
+	}
+	s := &Service{dataConverter: dc, temporalClient: &listingClient{rows: []*workflowpb.WorkflowExecutionInfo{
+		row("dry-run-6f1c9a52-0000-4000-8000-000000000001"),
+		row("dry-run-6f1c9a52-0000-4000-8000-000000000002"),
+		row("dry-run-6f1c9a52-0000-4000-8000-000000000003"),
+		row("wf-a"),
+		row("wf-a"),
+	}}}
+
+	tally, err := s.tallyFailuresByScan(context.Background(), "nb_tenant_id='t1'", 1)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	ranked := rankFailedAutomations(tally, model.DefaultTopFailedLimit)
+	if len(ranked) != 2 {
+		t.Fatalf("want one dry-run row and one automation row, got %+v", ranked)
+	}
+	if ranked[0].WorkflowID != model.DryRunWorkflowIDPrefix || ranked[0].FailureCount != 3 {
+		t.Fatalf("first row = %+v, want the three dry runs grouped", ranked[0])
+	}
+	if ranked[1].WorkflowID != "wf-a" || ranked[1].FailureCount != 2 {
+		t.Fatalf("second row = %+v, want wf-a with 2", ranked[1])
 	}
 }

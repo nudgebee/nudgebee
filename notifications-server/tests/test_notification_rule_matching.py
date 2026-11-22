@@ -39,6 +39,11 @@ def test_rule_category_sources_pass_through():
         assert _finding_rule_source(category) == category
 
 
+def test_forecast_source_maps_to_slo_category():
+    # CPU SLO breach forecasts belong with the SLO rules, not troubleshoot.
+    assert _finding_rule_source("forecast") == "slo"
+
+
 # ----------------------------- finding filter tuple -----------------------------
 
 
@@ -72,6 +77,26 @@ def test_optimize_finding_keeps_optimize_category():
         parameters={"finding": {"cloud_account_id": "acc-2"}},
     )
     assert source == "optimize"
+
+
+def test_forecast_finding_reads_finding_fields_not_slo_alert_fields():
+    # Categorised as slo, but still a finding: the slo_alert keys are ignored.
+    source, account_id, namespace, workload, agg = _filters(
+        "finding",
+        source="forecast",
+        parameters={
+            "account_id": "slo-acc",
+            "namespace": "slo-ns",
+            "workload": "slo-wl",
+            "finding": {
+                "cloud_account_id": "acc-6",
+                "subject_namespace": "prod",
+                "subject_owner": "api",
+                "aggregation_key": "CPUThrottlingPredicted",
+            },
+        },
+    )
+    assert (source, account_id, namespace, workload, agg) == ("slo", "acc-6", "prod", "api", "CPUThrottlingPredicted")
 
 
 def test_finding_account_id_falls_back_to_account_id_key():
@@ -121,6 +146,30 @@ def test_cloud_template_account_only():
     assert account_id == "acc-5"
     assert namespace is None
     assert workload is None
+
+
+def test_integration_health_is_account_scoped_troubleshoot():
+    # api-server's provider status check publishes these under troubleshoot; an
+    # account-scoped rule has to see the cluster to route or silence them.
+    source, account_id, namespace, workload, _ = _filters(
+        "integration_health",
+        source="troubleshoot",
+        parameters={"message": "Integration failing", "account_id": "acc-6"},
+    )
+    assert source == "troubleshoot"
+    assert account_id == "acc-6"
+    assert namespace is None
+    assert workload is None
+
+
+def test_integration_health_renders_like_generic_on_every_platform():
+    from notifications_server.message_templates import template_mapping
+
+    mapping = template_mapping["integration_health"]
+    params = mapping["common_params"](message="**Integration failing: prod-es**", account_id="acc-6", state="failing")
+    for platform in ("slack", "ms_teams", "google_chat", "discord"):
+        assert mapping[platform] is not None, platform
+        assert mapping[platform](params), platform
 
 
 # ----------------------------- rule severity parsing -----------------------------

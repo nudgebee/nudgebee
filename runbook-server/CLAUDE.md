@@ -25,7 +25,9 @@ make swag              # regenerate OpenAPI after changing handler annotations
 
 1. **Credentials never reach logs, step inputs, errors or state.** Anything rendered from
    `{{ Secrets.* }}` is tracked and masked (`internal/workflow/redaction.go`); `set_state` refuses
-   secret-derived values. Log task results with `internal/logsafe` (`logsafe.Shape`), never the
+   secret-derived values. A step's logger and returned error mask the account's secret values
+   (`internal/tasks/secret_scrub.go`), but a URL typed in plain is not a secret: log it with
+   `logsafe.RedactURL`. Log task results with `internal/logsafe` (`logsafe.Shape`), never the
    raw value. Run the `redaction_*_test.go` suite when touching templating, executor or outputs.
 2. **Tasks run against real systems.** Dry-run is *not* a sandbox: only a few tasks honour
    `_dry_run` (see README → Glossary). A new task with side effects should honour it or say why
@@ -37,12 +39,17 @@ make swag              # regenerate OpenAPI after changing handler annotations
    result it can prove succeeded — never `COMPLETED` with `data: null`. Keep the
    `map[string]any` output contract (plain strings wrap as `{"data": ...}`).
 5. **Tenant scoping comes from headers.** Every record carries `TenantID` + `AccountID`; the API
-   trusts `x-tenant-id` / `x-user-id` from the in-cluster gateway. Never return data across
-   tenants, and don't add an unauthenticated route without middleware.
+   reads `x-tenant-id` / `x-user-id` from callers that hold the service token. A missing user is
+   refused, never admin. Never return data across tenants, and don't add a route that skips the
+   token without its own credential.
 6. **Bundled templates re-sync on startup** (`internal/templatesource/`). Editing a template YAML
    changes every tenant's copy on the next deploy — test it in `bundled_test.go`.
 7. **Every task needs a real `GetDescription()`** stating purpose, inputs and outputs — it is
    what `GET /tasks`, the builder UI and LLM authoring see.
+8. **Every step runs as the run's principal.** A new task type must declare its
+   `{module, class}` in `internal/tasks/authz.go`, or it is refused at run time (a test fails first).
+   The same entry declares its tier (read / change / unrestricted: how much the step can change,
+   a different question from who may run it); a run with a tier ceiling refuses steps above it.
 
 ## Keep the docs current
 

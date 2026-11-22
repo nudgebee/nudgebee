@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"nudgebee/services/common"
+	"nudgebee/services/integrations/signozclient"
 	"nudgebee/services/security"
 
 	"golang.org/x/sync/errgroup"
@@ -409,11 +410,7 @@ func (s *SignozMetricSource) call(ctx *security.RequestContext, accountId, metho
 	if json.Unmarshal(payload, &env) == nil && env.Status == "error" {
 		return payload, nil
 	}
-	msg := strings.TrimSpace(string(payload))
-	if len(msg) > 200 {
-		msg = msg[:200] + "…"
-	}
-	return nil, fmt.Errorf("SigNoz %s returned HTTP %d: %s", path, resp.StatusCode, msg)
+	return nil, signozclient.StatusError(path, resp.StatusCode, payload)
 }
 
 // autocomplete calls one of SigNoz's metric metadata endpoints.

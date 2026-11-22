@@ -30,6 +30,10 @@ type IntegrationCreateRequest struct {
 	AccountIds              []string                      `json:"account_ids"`
 	SkipValidation          bool                          `json:"skip_validation"`
 	Source                  string                        `json:"source,omitempty"`
+	// LLM only: the two default ticks. Absent, the default_llm_provider config
+	// value is read the old way (both defaults at once).
+	LLMTenantDefault  *bool `json:"llm_tenant_default,omitempty"`
+	LLMAccountDefault *bool `json:"llm_account_default,omitempty"`
 }
 
 type IntegrationDeleteRequest struct {
@@ -107,8 +111,9 @@ func notifyGoogleChatBinding(tenantId, spaceId, event string) {
 }
 
 // notifyMessagingCacheInvalidate drops notifications-server's cached per-tenant
-// messaging installs so a new/deleted webhook target is routable without waiting
-// out the 60-minute cache TTL. Best-effort; a miss only delays visibility.
+// messaging installs so a new/deleted webhook target, or a Slack/Discord setting
+// change, applies without waiting out the 60-minute cache TTL. Best-effort; a
+// miss only delays visibility.
 func notifyMessagingCacheInvalidate(tenantId string) {
 	if tenantId == "" || config.Config.NotificationServiceUrl == "" {
 		return
@@ -161,6 +166,15 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		return
 	}
 
+	if !authorizeIntegrationAction(ctx, actionPayload.Action.Name, actionPayload.Input) {
+		if _, known := integrationActionClass[actionPayload.Action.Name]; !known && !integrationActionsAuthorizedInHandler[actionPayload.Action.Name] {
+			c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
+			return
+		}
+		c.JSON(403, common.ErrorActionForbidden("not allowed to manage integrations"))
+		return
+	}
+
 	switch actionPayload.Action.Name {
 	case "integrations_create_config":
 		var request IntegrationCreateRequest
@@ -183,7 +197,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 
 		if err := core.CheckMsTeamsGenericWrite(ctx.GetSecurityContext().GetTenantId(), request.IntegrationName,
-			request.IntegrationId, request.IntegrationConfigName); err != nil {
+			request.IntegrationId, request.IntegrationConfigName, request.IntegrationConfigValues); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
@@ -208,6 +222,10 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			preSaveAccountIds = ids
 		}
 
+		if request.IntegrationName == "llm" {
+			request.IntegrationConfigValues = core.WithLLMSaveOptions(request.IntegrationConfigValues,
+				core.LLMSaveOptions{TenantDefault: request.LLMTenantDefault, AccountDefault: request.LLMAccountDefault})
+		}
 		resp, err := core.CreateIntegrationConfig(ctx, request.IntegrationId, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigValues, request.Tags, request.AccountIds, request.SkipValidation, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -217,16 +235,44 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, resp)
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		onIntegrationConfigChanged(ctx, mergeAccountIds(request.AccountIds, preSaveAccountIds))
+		onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, mergeAccountIds(request.AccountIds, preSaveAccountIds)))
 		// Only announce on a genuine new binding (create). A config update of an
 		// existing space (e.g. toggling is_default) carries an IntegrationId and
 		// must not re-post the "now connected" card into the space.
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace && request.IntegrationId == "" {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "bound")
 		}
-		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) {
+		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) ||
+			request.IntegrationName == integrations.IntegrationSlack ||
+			request.IntegrationName == integrations.IntegrationDiscord {
 			notifyMessagingCacheInvalidate(ctx.GetSecurityContext().GetTenantId())
 		}
+		return
+	case "integrations_check_llm_defaults":
+		// What an LLM save, delete, disable or enable would do to each account;
+		// the modal builds its popups from this. Read-only.
+		var request core.LLMDefaultsChange
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		if err := common.UnmarshalMapToStruct(requestInput, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		switch request.Op {
+		case "save", "delete", "disable", "enable":
+		default:
+			c.JSON(400, common.ErrorActionBadRequest("op must be save, delete, disable or enable"))
+			return
+		}
+		report, err := core.CheckLLMChange(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, report)
 		return
 	case "integrations_delete_config":
 		var request IntegrationDeleteRequest
@@ -244,6 +290,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 
 		err = common.ValidateStruct(request)
 		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
@@ -277,7 +328,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		c.JSON(200, map[string]string{"status": "success"})
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
-		onIntegrationConfigChanged(ctx, affectedAccountIds)
+		onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, affectedAccountIds))
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
 		}
@@ -365,6 +416,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if err = core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
 		err = core.UpdateIntegrationConfigStatus(ctx, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigStatus, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -404,6 +460,31 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 				"tenant_id", ctx.GetSecurityContext().GetTenantId(),
 				"integration_name", request.IntegrationName,
 				"integration_config_name", request.IntegrationConfigName)
+		} else {
+			onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, ids))
+		}
+		return
+
+	case "integrations_update_mcp_write_tools":
+		// Which of an MCP server's tools ask for approval (#40399), saved on
+		// its own so the MCP Servers view needn't re-submit the integration.
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		integrationID, _ := requestInput["integration_id"].(string)
+		writeTools, _ := requestInput["write_tools"].(string)
+		if err := core.UpdateMCPWriteTools(ctx, integrationID, writeTools); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, map[string]string{"status": "success"})
+		// Each llm-server replica rebuilds the integration's tools, so the
+		// change applies to the next call.
+		if ids, lerr := core.ListLinkedCloudAccountIDsByIntegrationID(ctx, integrationID); lerr != nil {
+			ctx.GetLogger().Error("integrations: failed to list affected accounts after write_tools update (best-effort, cache will stay stale until TTL)",
+				"error", lerr, "integration_id", integrationID)
 		} else {
 			onIntegrationConfigChanged(ctx, ids)
 		}
@@ -610,7 +691,8 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Verify the account belongs to the caller's tenant
 		tenantAccounts, accErr := security.GetAccountIdsByTenantId(ctx.GetSecurityContext().GetTenantId())
 		if accErr != nil {
-			c.JSON(500, common.ErrorActionBadRequest("failed to validate account ownership"))
+			ctx.GetLogger().Error("integrations: failed to list tenant accounts", "error", accErr)
+			c.JSON(500, common.ErrorActionInternal("failed to validate account ownership"))
 			return
 		}
 		accountOwned := false
@@ -727,10 +809,9 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 	if err != nil {
 		return IntegrationDiagnosisResponse{}, err
 	}
-	securityContext := ctx.GetSecurityContext()
 	authorizedAccountID := ""
 	for _, accountID := range accountIDs {
-		if securityContext.HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		if ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 			authorizedAccountID = accountID
 			break
 		}

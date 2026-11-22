@@ -57,6 +57,37 @@ func TestBuildRCAComment(t *testing.T) {
 	})
 }
 
+func TestReplaceChartBlocks(t *testing.T) {
+	spec := `{"type":"line","title":"Memory","labels":["t0","t1"],"series":[{"key":"used","data":[1,2]}]}`
+	chart := "```nb-chart\n" + spec + "\n```"
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no chart", "root cause: OOMKilled", "root cause: OOMKilled"},
+		{"one chart", "Memory climbed.\n\n" + chart + "\n\nPod killed.", "Memory climbed.\n\n" + rcaChartNote + "\n\nPod killed."},
+		{"two charts, text between kept", chart + "\nbetween\n" + chart, rcaChartNote + "\nbetween\n" + rcaChartNote},
+		{"tag with trailing spaces and CRLF", "a\r\n```nb-chart  \r\n" + spec + "\r\n```\r\nb", "a\r\n" + rcaChartNote + "\r\nb"},
+		{"other code blocks untouched", "```json\n{\"a\":1}\n```", "```json\n{\"a\":1}\n```"},
+		{"unclosed chart left as is", "```nb-chart\n" + spec, "```nb-chart\n" + spec},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, replaceChartBlocks(tt.in))
+		})
+	}
+}
+
+func TestBuildRCACommentReplacesChartsBeforeTruncating(t *testing.T) {
+	spec := `{"type":"line","labels":[` + strings.Repeat(`"t",`, rcaWritebackMaxCommentChars) + `"t"]}`
+	out := buildRCAComment("Memory climbed.\n\n```nb-chart\n"+spec+"\n```\n\nPod killed.", "evt-1")
+	assert.NotContains(t, out, `"labels"`)
+	assert.NotContains(t, out, "…(truncated)", "the chart alone would have pushed the note past the limit")
+	assert.Contains(t, out, rcaChartNote)
+	assert.Contains(t, out, "Pod killed.")
+}
+
 func TestRCAContentHashStableAndDistinct(t *testing.T) {
 	a := rcaContentHash("same text")
 	b := rcaContentHash("same text")

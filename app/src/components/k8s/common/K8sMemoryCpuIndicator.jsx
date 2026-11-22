@@ -79,17 +79,17 @@ const K8sMemoryCpuIndicator = ({
           <Box
             sx={{
               position: 'relative',
-              top: ds.space.mul(0, -8),
-              left: ds.space.mul(0, -20),
-              width: clusterSummary ? ds.space.mul(0, 60) : ds.space.mul(0, 42),
+              // Both axes must be definite: the dial sizes itself to this wrapper, and v2
+              // derives its radius from min(width, height) with a 10px floor — a percentage
+              // height against an auto-height parent collapses it to a 20px speck.
+              // Measured: 150x75 draws a 102px dial, matching the pre-v2 render.
+              width: clusterSummary ? '200px' : '150px',
+              height: clusterSummary ? '100px' : '75px',
               '.doughnut .outerSubArc': {
                 display: `none !important`,
               },
               '.doughnut .subArc:last-child path': {
                 fill: `${primaryPointerColor} !important`,
-              },
-              '@media (max-width: 1300px)': {
-                left: ds.space.mul(0, -30),
               },
             }}
           >
@@ -107,7 +107,7 @@ const K8sMemoryCpuIndicator = ({
                   },
                 },
               }}
-              style={{ width: '230px' }}
+              style={{ width: '100%' }}
               value={usage > 0 && total > 0 ? ((usage / total) * 100)?.toFixed() : 0}
               arc={{
                 colorArray: colors,
@@ -149,16 +149,16 @@ const K8sMemoryCpuIndicator = ({
                 padding: 0.03,
                 width: 0.3,
               }}
-              pointer={{
-                elastic: true,
-                animationDelay: 0,
-              }}
+              // v2 paints the needle in the arc's colour at the current value and dropped
+              // v1's white outline, so it reads as a wedge across the value label. The arc
+              // fill already carries the value, so the needle is hidden rather than restyled.
+              pointer={{ hide: true }}
             />
             <Box
               sx={{
                 position: 'absolute',
                 top: '64%',
-                left: '133%',
+                left: '50%',
                 transform: 'translate(-50%, -50%)',
                 width: ds.space.mul(0, 49),
                 height: ds.space.mul(0, 36),
@@ -171,8 +171,10 @@ const K8sMemoryCpuIndicator = ({
             <Typography
               sx={{
                 position: 'absolute',
-                bottom: ds.space[3],
-                left: ds.space.mul(0, 49),
+                bottom: 0,
+                left: 0,
+                right: 0,
+                textAlign: 'center',
                 color: 'var(--ds-brand-300)',
                 fontSize: 'var(--ds-text-small)',
                 fontWeight: 'var(--ds-font-weight-regular)',
@@ -288,9 +290,10 @@ const K8sMemoryCpuIndicator = ({
           <Box
             sx={{
               position: 'relative',
-              top: ds.space.mul(0, -8),
-              left: ds.space.mul(0, -40),
-              width: clusterSummary ? ds.space.mul(0, 60) : ds.space.mul(0, 42),
+              // Same contract and size as the stacked variant above; here the dial shares its
+              // flex row with the Total/Usage/Limit/Request column instead of sitting over it.
+              width: clusterSummary ? '200px' : '150px',
+              height: clusterSummary ? '100px' : '75px',
               '.doughnut .outerSubArc': {
                 display: `none !important`,
               },
@@ -313,7 +316,7 @@ const K8sMemoryCpuIndicator = ({
                   },
                 },
               }}
-              style={{ width: '230px' }}
+              style={{ width: '100%' }}
               value={usage > 0 && total > 0 ? ((usage / total) * 100)?.toFixed() : 0}
               arc={{
                 colorArray: colors,
@@ -355,16 +358,16 @@ const K8sMemoryCpuIndicator = ({
                 padding: 0.03,
                 width: 0.3,
               }}
-              pointer={{
-                elastic: true,
-                animationDelay: 0,
-              }}
+              // v2 paints the needle in the arc's colour at the current value and dropped
+              // v1's white outline, so it reads as a wedge across the value label. The arc
+              // fill already carries the value, so the needle is hidden rather than restyled.
+              pointer={{ hide: true }}
             />
             <Box
               sx={{
                 position: 'absolute',
                 top: '64%',
-                left: '134%',
+                left: '50%',
                 transform: 'translate(-50%, -50%)',
                 width: ds.space.mul(0, 49),
                 height: ds.space.mul(0, 36),
@@ -377,8 +380,10 @@ const K8sMemoryCpuIndicator = ({
             <Typography
               sx={{
                 position: 'absolute',
-                bottom: ds.space[3],
-                left: ds.space.mul(0, 49),
+                bottom: 0,
+                left: 0,
+                right: 0,
+                textAlign: 'center',
                 color: 'var(--ds-brand-300)',
                 fontSize: 'var(--ds-text-small)',
                 fontWeight: 'var(--ds-font-weight-regular)',

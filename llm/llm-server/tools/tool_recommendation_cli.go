@@ -231,7 +231,7 @@ func (m RecommendationCliTool) Call(nbCtx core.NbToolContext, input core.NBToolC
 		"recommendation_id": stringArg(input, "recommendation_id"),
 	}
 
-	resp, err := doApiServerActionRequest(nbCtx, "/rpc/cloud", "cloud_execute_command", payload, "recommendation_execute_cli")
+	resp, err := doApiServerActionRequest(nbCtx, "/rpc/cloud", "cloud_execute_command", cloudExecuteKey, payload, "recommendation_execute_cli")
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("recommendation_execute_cli: execution failed", "error", err)
 		return errNBLLMToolResponse(err), nil

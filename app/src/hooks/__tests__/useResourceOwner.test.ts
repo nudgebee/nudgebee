@@ -51,6 +51,17 @@ describe('useResourceOwner', () => {
     expect(result.current.effective?.via).toBe('namespace');
   });
 
+  it('keeps "no active resource" on the rung it was reported for', async () => {
+    // `own` is null both for a gone resource and for a live one nobody owns; the flag
+    // is the only thing that tells a caller an assignment there would stay hidden.
+    resolveOwners.mockResolvedValue(respond(chain, { ...unowned, no_active_resource: true }, unowned, unowned));
+    const { result } = renderHook(() => useResourceOwner(chain));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.levels.map((l) => l.noActiveResource)).toEqual([true, false, false]);
+    expect(result.current.effective).toBeNull();
+  });
+
   it('calls a rung "self" when the resource itself is owned', async () => {
     resolveOwners.mockResolvedValue(respond(chain, owner(), unowned, unowned));
     const { result } = renderHook(() => useResourceOwner(chain));

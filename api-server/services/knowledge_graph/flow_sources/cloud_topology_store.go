@@ -82,6 +82,16 @@ func CloudTopologyFromDBEnabled() bool {
 	return config.Config.FeatureKGCloudTopologyFromDB
 }
 
+// LBTargetsFromRowsEnabled is the kill switch for reading load-balancer target
+// membership from stored rows, read in exactly one place -- the first line of
+// TargetGroupMemberIDs. A disabled flag makes that lookup a permanent miss, so no
+// call site needs an `if flag` of its own and every caller falls through to its
+// describe-target-health path, the same way a nil store does for the lookups
+// above.
+func LBTargetsFromRowsEnabled() bool {
+	return config.Config.FeatureKGLBTargetsFromRows
+}
+
 // NewCloudTopologyStore loads and indexes one tenant's topology rows. Returns a
 // nil store (and no error) when the feature is disabled, which makes every
 // lookup a miss and every caller fall back to its CLI path.
@@ -332,9 +342,11 @@ func (s *CloudTopologyStore) RecordSetsForZone(accountID, hostedZoneID string) (
 // the collector's nested TargetHealthDescriptions added, so callers unmarshal it
 // with their existing struct.
 //
-// Note for callers: the nested health descriptions are a daily snapshot and must
-// not be used as live health. Target *membership* is topology and is safe; target
-// *health* flips minute to minute and still requires describe-target-health.
+// Note for callers: the nested health descriptions are a daily snapshot. Read
+// their membership with TargetGroupMemberIDs, which serves instance-type target
+// groups and misses ip-type ones, whose pod IPs churn faster than the snapshot.
+// Only those, and a caller that needs live health *state*, still require
+// describe-target-health; no caller in the graph reads health state.
 func (s *CloudTopologyStore) TargetGroupsForLB(loadBalancerARN string) ([]json.RawMessage, bool) {
 	if s == nil {
 		return nil, false

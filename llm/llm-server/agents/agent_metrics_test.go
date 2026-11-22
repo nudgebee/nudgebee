@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	toolcore "nudgebee/llm/tools/core"
+	"strings"
 	"testing"
 
 	"github.com/tmc/langchaingo/llms"
@@ -166,6 +167,7 @@ func TestNormaliseGeneratedMetricsQueryValidatesDatadogQueries(t *testing.T) {
 		"(avg:system.cpu.user{*} + avg:system.cpu.system{*})",
 		"100 * avg:system.cpu.user{*}",
 		"100 - avg:system.cpu.idle{*}",
+		"avg:system.cpu.user{env:prod AND region:us}.rollup(avg, 60)",
 		"1 - avg:system.mem.pct_usable{*}",
 		"(100 - avg:system.cpu.idle{*})",
 	} {
@@ -176,6 +178,9 @@ func TestNormaliseGeneratedMetricsQueryValidatesDatadogQueries(t *testing.T) {
 
 	for _, raw := range []string{
 		"Here is the query: " + valid,
+		"avg:system.cpu.user{*} is the best query",
+		"avg:system.cpu.user is the best query.",
+		"abs(avg:system.cpu.user{*}) is the best query",
 		"Explanation " + valid,
 		"- " + valid,
 		"* " + valid,
@@ -377,4 +382,87 @@ func TestNewestMetricsStepReportsFailedStepAsError(t *testing.T) {
 
 	_, _, ok = newestMetricsStep([]core.ToolInvocation{step("", true)})
 	assert.False(t, ok)
+}
+
+// TestMetricsAnswerReturnsAnswerAndQueriesUsed pins #39201: the metrics tool returns the
+// backend agent's answer plus the data queries it ran, not its newest raw tool step.
+func TestMetricsAnswerReturnsAnswerAndQueriesUsed(t *testing.T) {
+	call := func(name, args, content string, failed bool) core.ToolInvocation {
+		return core.ToolInvocation{
+			Call:     llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: name, Arguments: args}},
+			Response: llms.ToolCallResponse{Content: content},
+			Failed:   failed,
+		}
+	}
+	resp := core.NBAgentResponse{
+		Response: []string{"CPU peaked at 82% on node-a."},
+		AgentStepResponse: []core.ToolInvocation{
+			call("metrics_labels_list", `{"metric":"cpu"}`, `["node"]`, false),
+			call("prometheus_execute", `{"command":"old"}`, `{"old":"[]"}`, false),
+			call("prometheus_execute", `{"command":"wide"}`, `{"__data_note":"saved to file_ref \"metrics_prometheus_1.json\"","__chart_note":"ready as chart_ref \"chart_ab12\""}`, false),
+			call("prometheus_execute", `{"command":"narrow"}`, `{"narrow":"[1]"}`, false),
+		},
+	}
+
+	data, status, lastRaw := metricsAnswer(resp, resp.Response[0])
+	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
+	assert.True(t, strings.HasPrefix(data, "CPU peaked at 82% on node-a."))
+	assert.Contains(t, data, `{"chart_ref":"chart_ab12"}`, "a chart missing from the answer is listed")
+	assert.Contains(t, data, `prometheus_execute (ok) {"command":"narrow"}`)
+	assert.Contains(t, data, `prometheus_execute (ok) {"command":"wide"} — file_ref`)
+	assert.NotContains(t, data, `"old"`, "only the two newest data queries are listed")
+	assert.NotContains(t, data, "metrics_labels_list", "field listings are not data queries")
+	assert.Equal(t, `{"narrow":"[1]"}`, lastRaw, "newest successful output not already in a file")
+
+	// The newest successful query is already in a file: no older output is passed off as "the last query".
+	steps := resp.AgentStepResponse
+	_, _, lastRaw = metricsAnswer(core.NBAgentResponse{Response: resp.Response, AgentStepResponse: steps[:3]}, resp.Response[0])
+	assert.Empty(t, lastRaw)
+
+	// The two newest queries failed: the older success's output is still kept.
+	failed := call("prometheus_execute", `{"command":"bad"}`, "relay error", true)
+	_, status, lastRaw = metricsAnswer(core.NBAgentResponse{Response: resp.Response, AgentStepResponse: []core.ToolInvocation{steps[3], failed, failed}}, resp.Response[0])
+	assert.Equal(t, `{"narrow":"[1]"}`, lastRaw)
+	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
+
+	// The chart is not repeated when the answer already carries it.
+	resp.Response = []string{"CPU peaked at 82% on node-a.\n```nb-chart\n{\"chart_ref\":\"chart_ab12\"}\n```"}
+	data, _, _ = metricsAnswer(resp, resp.Response[0])
+	assert.Equal(t, 1, strings.Count(data, "```nb-chart"))
+}
+
+func TestMetricsAnswerStatus(t *testing.T) {
+	failedQuery := core.ToolInvocation{
+		Call:     llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: "es_metrics_query", Arguments: "{}"}},
+		Response: llms.ToolCallResponse{Content: "relay error: agent not connected"},
+		Failed:   true,
+	}
+	// Every data query failed: the answer is not a metrics success (#36633).
+	_, status, lastRaw := metricsAnswer(core.NBAgentResponse{Response: []string{"No data."}, AgentStepResponse: []core.ToolInvocation{failedQuery}}, "No data.")
+	assert.Equal(t, toolcore.NBToolResponseStatusError, status)
+	assert.Empty(t, lastRaw)
+
+	// The agent itself failed.
+	_, status, _ = metricsAnswer(core.NBAgentResponse{Response: []string{"x"}, Status: core.ConversationStatusFailed}, "x")
+	assert.Equal(t, toolcore.NBToolResponseStatusError, status)
+
+	// No data query ran (e.g. the answer came from a field listing): success, no list.
+	data, status, _ := metricsAnswer(core.NBAgentResponse{Response: []string{"Fields: a, b"}}, "Fields: a, b")
+	assert.Equal(t, toolcore.NBToolResponseStatusSuccess, status)
+	assert.Equal(t, "Fields: a, b", data)
+}
+
+// #39201: a query the user pasted reaches the provider agent verbatim.
+func TestWithUserSuppliedQuery(t *testing.T) {
+	dsl := `{"query":{"term":{"metricset.dimensions.DBClusterIdentifier":"example-auroradb"}}}`
+	got := withUserSuppliedQuery("CPU of example-auroradb", map[string]any{"query": dsl})
+	assert.True(t, strings.HasPrefix(got, "CPU of example-auroradb"))
+	assert.Contains(t, got, "Run the following query exactly as given first")
+	assert.True(t, strings.HasSuffix(got, dsl), "the query is appended unchanged")
+	assert.Equal(t, "q", withUserSuppliedQuery("q", nil))
+	assert.Equal(t, "q", withUserSuppliedQuery("q", map[string]any{"query": "  "}))
+	// A DSL body passed as an object is kept, as JSON.
+	obj := withUserSuppliedQuery("q", map[string]any{"query": map[string]any{"size": 0}})
+	assert.True(t, strings.HasSuffix(obj, `{"size":0}`), obj)
+
 }

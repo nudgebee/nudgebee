@@ -15,7 +15,7 @@ describe('the root redirect', () => {
   // could object and correct it to /setup. Routing belongs in an effect.
   it('routes in an effect, not during render', () => {
     expect(() => render(<RedirectPage />)).not.toThrow();
-    expect(mockReplace).toHaveBeenCalledWith('/home');
+    expect(mockReplace).toHaveBeenCalledWith('/ask-nudgebee');
   });
 
   // `replace`, not `push`: this page should never itself become a Back target.

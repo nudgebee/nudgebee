@@ -127,11 +127,26 @@ func TestParseSignalFlowSSE(t *testing.T) {
 		"event: data\nid: data-123\ndata: {\ndata:   \"data\" : [ {\ndata:     \"tsId\" : \"ts1\",\ndata:     \"value\" : 42.5\ndata:   } ],\ndata:   \"logicalTimestampMs\" : 1700000000000\ndata: }\n\n" +
 		"event: control-message\ndata: {\ndata:   \"event\" : \"END_OF_CHANNEL\"\ndata: }\n\n"
 
-	points, err := parseSignalFlowResponse(strings.NewReader(sseData))
+	points, aborted, err := parseSignalFlowResponse(strings.NewReader(sseData))
 	require.NoError(t, err)
+	assert.False(t, aborted)
 	require.Len(t, points, 1)
 	assert.Equal(t, "http.client.duration_bucket", points[0].MetricName)
 	assert.InDelta(t, 42.5, points[0].Value, 0.001)
+	assert.Equal(t, int64(1700000000000), points[0].TimestampMs)
+}
+
+func TestParseSignalFlowSSE_ChannelAbort(t *testing.T) {
+	// CHANNEL_ABORT ends the stream like END_OF_CHANNEL, but the points are partial.
+	sseData := "event: metadata\ndata: {\"properties\": {\"sf_metric\": \"cpu.utilization\"}, \"tsId\": \"ts1\"}\n\n" +
+		"event: data\ndata: {\"data\": [{\"tsId\": \"ts1\", \"value\": 7}], \"logicalTimestampMs\": 1700000000000}\n\n" +
+		"event: control-message\ndata: {\"event\": \"CHANNEL_ABORT\"}\n\n" +
+		"event: data\ndata: {\"data\": [{\"tsId\": \"ts1\", \"value\": 8}], \"logicalTimestampMs\": 1700000060000}\n\n"
+
+	points, aborted, err := parseSignalFlowResponse(strings.NewReader(sseData))
+	require.NoError(t, err)
+	assert.True(t, aborted)
+	require.Len(t, points, 1, "nothing after CHANNEL_ABORT is read")
 	assert.Equal(t, int64(1700000000000), points[0].TimestampMs)
 }
 
@@ -302,7 +317,7 @@ func TestSplunkO11y_SignalFlow(t *testing.T) {
 	stopMs := time.Now().Add(-1 * time.Hour).UnixMilli()
 	startMs := time.Now().Add(-2 * time.Hour).UnixMilli()
 
-	points, err := ExecuteSignalFlow(cfg, "data('http.client.duration_bucket').mean().publish()", startMs, stopMs, 0)
+	points, _, err := ExecuteSignalFlow(cfg, "data('http.client.duration_bucket').mean().publish()", startMs, stopMs, 0)
 	require.NoError(t, err, "SignalFlow execute should succeed with valid credentials")
 	assert.NotEmpty(t, points, "expected at least one data point")
 	if len(points) > 0 {

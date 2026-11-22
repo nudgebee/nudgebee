@@ -28,7 +28,17 @@ export function ToolDurationBars({ rows, topN = 8, onSelect, id }: ToolDurationB
   if (!shown.length) return null;
 
   return (
-    <Box id={id} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+    // One shared grid: the label column sizes to the widest "p90 · max" text, so every row's
+    // bar starts and ends at the same x instead of shrinking with its own label.
+    <Box
+      id={id}
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: '140px minmax(0, 1fr) max-content',
+        columnGap: 'var(--ds-space-3)',
+        rowGap: 'var(--ds-space-2)',
+      }}
+    >
       {shown.map((r) => {
         const p90Pct = Math.min(100, (r.p90_duration_seconds / scaleMax) * 100);
         const tailPct = Math.min(100 - p90Pct, (Math.max(0, r.max_duration_seconds - r.p90_duration_seconds) / scaleMax) * 100);
@@ -42,10 +52,10 @@ export function ToolDurationBars({ rows, topN = 8, onSelect, id }: ToolDurationB
             title={`${r.tool_name}: avg ${secs(r.avg_duration_seconds)} · p90 ${secs(r.p90_duration_seconds)} · max ${secs(r.max_duration_seconds)}`}
             sx={{
               all: clickable ? 'unset' : undefined,
-              display: 'flex',
+              display: 'grid',
+              gridColumn: '1 / -1',
+              gridTemplateColumns: 'subgrid',
               alignItems: 'center',
-              gap: 'var(--ds-space-3)',
-              width: '100%',
               boxSizing: 'border-box',
               cursor: clickable ? 'pointer' : 'default',
               '&:hover .tool-dur-name': clickable ? { textDecoration: 'underline' } : undefined,
@@ -55,8 +65,6 @@ export function ToolDurationBars({ rows, topN = 8, onSelect, id }: ToolDurationB
             <Box
               className='tool-dur-name'
               sx={{
-                width: 140,
-                flexShrink: 0,
                 fontSize: 'var(--ds-text-small)',
                 color: clickable ? 'var(--ds-blue-600)' : 'var(--ds-gray-700)',
                 textAlign: 'left',
@@ -69,7 +77,6 @@ export function ToolDurationBars({ rows, topN = 8, onSelect, id }: ToolDurationB
             </Box>
             <Box
               sx={{
-                flex: 1,
                 minWidth: 0,
                 display: 'flex',
                 height: 12,
@@ -84,9 +91,8 @@ export function ToolDurationBars({ rows, topN = 8, onSelect, id }: ToolDurationB
             </Box>
             <Box
               sx={{
-                width: 132,
-                flexShrink: 0,
-                textAlign: 'right',
+                whiteSpace: 'nowrap',
+                textAlign: 'left',
                 fontSize: 'var(--ds-text-small)',
                 fontVariantNumeric: 'tabular-nums',
                 color: 'var(--ds-gray-600)',

@@ -74,6 +74,11 @@ func getAlertRuleSource(provider, integrationSource string) (AlertRuleSource, er
 		return &PrometheusSaasAlertRuleSource{}, nil
 	case provider == "aws_cloudwatch" || provider == "azure_app_insights" || provider == "gcp_monitoring":
 		return &CloudAlertRuleSource{}, nil
+	// SolarWinds reads a rule back by id (AlertRuleGetter) but cannot create,
+	// update or delete one yet, and can never be enumerated — its API ships no
+	// list operation at all. See solarwinds_alert_rule.go.
+	case provider == "solarwinds" && integrationSource == "user":
+		return &SolarWindsAlertRuleSource{}, nil
 	default:
 		return nil, fmt.Errorf("alert rule creation not supported for provider %s/%s", provider, integrationSource)
 	}

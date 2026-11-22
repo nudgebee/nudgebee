@@ -678,6 +678,27 @@ def get_kb_article_url(base_url, kb_number):
 _KB_EXTENSION_SKIP_COLUMNS = frozenset({"kb_category", "kb_knowledge_base"})
 
 
+def _kb_extension_content_from_record(record):
+    """Format one extension-table row as body sections.
+
+    Shared by the per-article and bulk fetches so both produce byte-identical
+    bodies.
+    """
+    parts = []
+    for field_name, value in record.items():
+        if not field_name.startswith("kb_") or field_name in _KB_EXTENSION_SKIP_COLUMNS:
+            continue
+        # Reference fields come back as dicts ({"link": ..., "value": ...});
+        # only long-text/string content columns matter for the body.
+        if not isinstance(value, str) or not value.strip():
+            continue
+        # Use a plain-text section header (not <h3>) so an unexpected
+        # field_name can't synthesize HTML that bypasses the script/style
+        # stripper in extract_kb_content.
+        parts.append(f"## {field_name}\n\n{value}")
+    return "\n\n".join(parts)
+
+
 def fetch_servicenow_kb_extension_content(snow_client, sys_class_name, sys_id, kb_number=""):
     """Fetch template-specific body fields from a KB article's extension table.
 
@@ -705,25 +726,78 @@ def fetch_servicenow_kb_extension_content(snow_client, sys_class_name, sys_id, k
         record = resource.get(query={"sys_id": sys_id}).one_or_none()
         if not record:
             return ""
-        parts = []
-        for field_name, value in record.items():
-            if not field_name.startswith("kb_") or field_name in _KB_EXTENSION_SKIP_COLUMNS:
-                continue
-            # Reference fields come back as dicts ({"link": ..., "value": ...});
-            # only long-text/string content columns matter for the body.
-            if not isinstance(value, str) or not value.strip():
-                continue
-            # Use a plain-text section header (not <h3>) so an unexpected
-            # field_name can't synthesize HTML that bypasses the script/style
-            # stripper in extract_kb_content.
-            parts.append(f"## {field_name}\n\n{value}")
-        return "\n\n".join(parts)
+        return _kb_extension_content_from_record(record)
     except Exception as e:
         logger.warning(
             f"Extension-table fallback failed for {kb_number} "
             f"(sys_class_name={sys_class_name}, sys_id={sys_id}): {e}"
         )
         return ""
+
+
+_KB_EXTENSION_BULK_CHUNK = 50  # sys_idIN CSV chunks; keeps the request URL short
+
+
+def prefetch_servicenow_kb_extension_content(snow_client, articles, chunk_size=_KB_EXTENSION_BULK_CHUNK):
+    """Fetch extension-table bodies for a whole batch, one query per template.
+
+    Extended-template articles (Known Error / How-To / FAQ, plus customer
+    templates) carry no ``text``/``wiki`` body on ``kb_knowledge``; their body
+    lives on a child table. Querying once per ``sys_class_name`` with
+    ``sys_idIN`` turns that into O(distinct templates) calls instead of one per
+    article.
+
+    Returns ``{sys_id: content}``. Articles it can't cover (no body on
+    ``kb_knowledge`` but missing from the response, or a template whose bulk
+    query failed) are left out, so the caller falls back to the per-article
+    fetch for those — a failed bulk query degrades to the old behaviour rather
+    than losing articles.
+    """
+    grouped = {}
+    for article in articles:
+        sys_class_name = article.get("sys_class_name") or ""
+        sys_id = article.get("sys_id") or ""
+        if not sys_id or sys_class_name == "kb_knowledge":
+            continue
+        # Same table-name guard as the per-article path: the value is
+        # interpolated into the API path.
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", sys_class_name):
+            continue
+        # shortcut: only articles with *no* kb_knowledge body are batched — the
+        # documented extended-template case. An article whose body is
+        # boilerplate (e.g. `<p><br></p>`) still takes the per-article fallback
+        # in process_servicenow_kb_article; upgrade if those dominate a corpus.
+        if (article.get("text") or "").strip() or (article.get("wiki") or "").strip():
+            continue
+        grouped.setdefault(sys_class_name, []).append(sys_id)
+
+    content = {}
+    for sys_class_name, sys_ids in grouped.items():
+        for start in range(0, len(sys_ids), chunk_size):
+            chunk = sys_ids[start : start + chunk_size]
+            try:
+                query = pysnow.QueryBuilder().field("sys_id").equals(chunk)
+                resource = snow_client.resource(api_path=f"/table/{sys_class_name}")
+                rows = resource.get(query=query, limit=len(chunk)).all()
+            except Exception as e:
+                logger.warning(
+                    f"Bulk extension fetch failed for {sys_class_name} "
+                    f"({len(chunk)} articles), falling back to per-article: {e}"
+                )
+                continue
+            for row in rows:
+                row_sys_id = row.get("sys_id")
+                if row_sys_id:
+                    # Stored even when empty: the row exists, so the caller must
+                    # not re-query it one article at a time.
+                    content[row_sys_id] = _kb_extension_content_from_record(row)
+
+    if content:
+        logger.info(
+            f"Bulk-fetched extension content for {len(content)} of {len(articles)} articles "
+            f"across {len(grouped)} templates"
+        )
+    return content
 
 
 def fetch_servicenow_kb_articles(snow_client, batch_size=50):
@@ -755,7 +829,7 @@ def fetch_servicenow_kb_articles(snow_client, batch_size=50):
         return []
 
 
-def process_servicenow_kb_article(article, base_url, snow_client=None, sources=None):
+def process_servicenow_kb_article(article, base_url, snow_client=None, sources=None, extension_content=None):
     """Process a single ServiceNow KB article into a Document."""
     try:
         sys_id = article.get("sys_id", "")
@@ -783,7 +857,13 @@ def process_servicenow_kb_article(article, base_url, snow_client=None, sources=N
         # that /table/kb_knowledge doesn't project. Fall back when the
         # *extracted* content is empty, not just when html_text is empty — SNOW
         # often returns boilerplate like `<p><br></p>` that strips to nothing.
-        if not text_content and snow_client is not None:
+        # `extension_content` is the batch pre-fetch (prefetch_servicenow_kb_extension_content);
+        # when this article isn't in it (None), fetch just this one as before.
+        if not text_content and extension_content is not None:
+            html_text = extension_content
+            body_field = sys_class_name
+            text_content = extract_kb_content(html_text)
+        elif not text_content and snow_client is not None:
             html_text = fetch_servicenow_kb_extension_content(snow_client, sys_class_name, sys_id, kb_number)
             if html_text:
                 body_field = sys_class_name
@@ -815,13 +895,17 @@ def process_servicenow_kb_article(article, base_url, snow_client=None, sources=N
             "keywords": keywords,
             "last_updated": sys_updated_on,
         }
+        if short_description:
+            # On every chunk of the page, not only the first: the title is the first line of the
+            # text, so a search hit on any later chunk would otherwise have none.
+            metadata["title"] = short_description
 
         if sources is not None:
             # The article body as ServiceNow returned it. What we index is
             # converted and will be chunked; this is the only copy.
             sources.append(
                 {
-                    "source_id": str(sys_id),
+                    "source_id": str(kb_number or sys_id),
                     "title": short_description,
                     "url": article_url,
                     "content": html_text,
@@ -843,9 +927,17 @@ def collect_servicenow_kb_documents(snow_client, base_url, sources=None):
     the load history records one row per sync, not one per article batch.
     """
     articles = fetch_servicenow_kb_articles(snow_client)
+    # One extension-table query per template instead of one per article.
+    extension_content = prefetch_servicenow_kb_extension_content(snow_client, articles)
     documents: List[Document] = []
     for article in articles:
-        doc = process_servicenow_kb_article(article, base_url, snow_client, sources=sources)
+        doc = process_servicenow_kb_article(
+            article,
+            base_url,
+            snow_client,
+            sources=sources,
+            extension_content=extension_content.get(article.get("sys_id") or ""),
+        )
         if doc:
             documents.append(doc)
     logger.info(f"Collected {len(documents)} ServiceNow KB documents from {len(articles)} articles")
@@ -1099,6 +1191,19 @@ def _get_section_from_url(page_url: str, base_url: str) -> str:
     return path
 
 
+def _response_html(resp: requests.Response) -> str:
+    """The page as text, decoded as UTF-8 when the server names no charset.
+
+    The docs site sends ``Content-Type: text/html`` with no charset, and requests
+    then decodes as ISO-8859-1 (its HTTP default for text/*), so every non-ASCII
+    character was indexed garbled: a table's ✓ became ``â\\x9c\\x93``. The pages
+    are UTF-8 (``<meta charset="utf-8">``).
+    """
+    if "charset" not in (resp.headers.get("Content-Type") or "").lower():
+        resp.encoding = "utf-8"
+    return str(resp.text)
+
+
 def _fetch_nudgebee_doc_page(page_url: str, base_url: str) -> Document | None:
     """Fetch a single Nudgebee doc page and return a Document or None."""
     try:
@@ -1108,7 +1213,7 @@ def _fetch_nudgebee_doc_page(page_url: str, base_url: str) -> Document | None:
         logger.warning(f"Failed to fetch Nudgebee doc page {page_url}: {e}")
         return None
 
-    content, title = _extract_nudgebee_doc_content(resp.text)
+    content, title = _extract_nudgebee_doc_content(_response_html(resp))
     if not content:
         logger.info(f"No content extracted from {page_url}, skipping")
         return None

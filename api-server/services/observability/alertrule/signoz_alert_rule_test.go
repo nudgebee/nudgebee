@@ -249,4 +249,5 @@ func TestParseSignozRuleList_EmptyAndBareArray(t *testing.T) {
 
 func TestSignozAlertRuleSourceIsListable(t *testing.T) {
 	assert.True(t, SupportsListing("signoz", "user"))
+	assert.True(t, SupportsGet("signoz", "user"))
 }

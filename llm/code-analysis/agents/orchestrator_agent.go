@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -423,6 +424,12 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 		return sanitizeExploreResponse(specialistResult), nil
 	}
 
+	// In fix mode the only diff a response may carry is the one the fixer
+	// computes from the checkout. Whatever the specialist put in git_diff is
+	// model output that was never applied, so it is dropped here, before any of
+	// the paths below can hand it back.
+	specialistResult = dropModelWrittenDiff(factsData, specialistResult)
+
 	// A fix-mode run that never got the repository on disk cannot have determined
 	// anything about its contents. The specialist abstains in that situation
 	// (requires_fix=false, caveats naming the access failure), and the branch
@@ -509,62 +516,59 @@ func (a *OrchestratorAgent) Execute(ctx context.Context, request NBAgentRequest)
 	// legitimate scaffolding instruction. Skip the gate in that case and
 	// let the fixer's tool-level error handling deal with bad paths
 	// (write_file rejects absolute paths and workspace escapes).
+	//
+	// SECOND EXCEPTION: a request may arrive with the diff it should apply, and
+	// that diff may add the named file. The file is not on disk yet for the same
+	// legitimate reason.
 	workDir := a.currentWorkingDir
 	if workDir == "" {
 		workDir = a.workspaceDir
 	}
-	hasWriteInstruction := instructionsRequireWrite(factsData)
-	if !hasWriteInstruction {
-		if filePath, ok := factsData["file_path"].(string); ok && filePath != "" && workDir != "" {
-			// Normalize a possible leading "<repoName>/" segment (ripgrep-relative
-			// paths the RCA copies into file_path) before the existence check so the
-			// gate doesn't double the segment and false-skip CodeFixer. See
-			// repoRelativeFilePath for the full rationale.
-			checkPath := repoRelativeFilePath(workDir, filePath)
-			fullPath := filepath.Join(workDir, checkPath)
-			if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-				a.logger.Log(common.EventStepComplete, "Skipping CodeFixer - file_path does not exist in repo", map[string]any{
-					"file_path":     filePath,
-					"check_path":    checkPath,
-					"workspace_dir": workDir,
-				})
+	filePath, _ := factsData["file_path"].(string)
+	if namedFileMissing(factsData, sessionCtx.BaseDiff, workDir) {
+		a.logger.Log(common.EventStepComplete, "Skipping CodeFixer - file_path does not exist in repo", map[string]any{
+			"file_path":     filePath,
+			"check_path":    repoRelativeFilePath(workDir, filePath),
+			"workspace_dir": workDir,
+		})
 
-				// Report the skip on EVERY path, not just when a PR was wanted.
-				//
-				// Without this, a propose-mode caller (mode=fix, raise_pr=false —
-				// the eager-fix flow and anything asking for a diff) gets back
-				// requires_fix=true with fixed_code populated from
-				// submit_analysis, an absent git_diff, and nothing saying the
-				// fixer never ran. That reads as "a fix was produced" and is
-				// indistinguishable from one. It took a benchmark and a log dig
-				// to notice; execution_status makes it a field.
-				// The nil check is load-bearing, not defensive noise: unmarshaling
-				// the literal `null` succeeds and yields a nil map, and writing to
-				// a nil map panics. A specialist returning "null" is unlikely but
-				// entirely possible, and this branch now runs on every request
-				// rather than only the raise_pr one, so the exposure is wider than
-				// it was.
-				var resultData map[string]any
-				if err := json.Unmarshal([]byte(specialistResult), &resultData); err == nil && resultData != nil {
-					resultData["execution_status"] = "skipped"
-					resultData["execution_summary"] = fmt.Sprintf(
-						"CodeFixer did not run: file_path %q was not found under the repository root. No changes were written and git_diff is empty; any fixed_code below is the specialist's proposal, not an applied change.",
-						filePath)
-					resultData["mode"] = mode
-					if request.RaisePR {
-						resultData["pr_creation_status"] = "skipped"
-						resultData["pr_creation_reason"] = fmt.Sprintf("file_path does not exist in repository: %s", filePath)
-					}
-					if modifiedJSON, err := json.Marshal(resultData); err == nil {
-						return string(modifiedJSON), nil
-					}
-				}
-
-				return withMode(specialistResult, mode), nil
+		// Report the skip on EVERY path, not just when a PR was wanted.
+		//
+		// Without this, a propose-mode caller (mode=fix, raise_pr=false —
+		// the eager-fix flow and anything asking for a diff) gets back
+		// requires_fix=true with fixed_code populated from
+		// submit_analysis, an absent git_diff, and nothing saying the
+		// fixer never ran. That reads as "a fix was produced" and is
+		// indistinguishable from one. It took a benchmark and a log dig
+		// to notice; execution_status makes it a field.
+		// The nil check is load-bearing, not defensive noise: unmarshaling
+		// the literal `null` succeeds and yields a nil map, and writing to
+		// a nil map panics. A specialist returning "null" is unlikely but
+		// entirely possible, and this branch now runs on every request
+		// rather than only the raise_pr one, so the exposure is wider than
+		// it was.
+		var resultData map[string]any
+		if err := json.Unmarshal([]byte(specialistResult), &resultData); err == nil && resultData != nil {
+			resultData["execution_status"] = "skipped"
+			resultData["execution_summary"] = fmt.Sprintf(
+				"CodeFixer did not run: file_path %q was not found under the repository root. No changes were written and git_diff is empty; any fixed_code below is the specialist's proposal, not an applied change.",
+				filePath)
+			resultData["mode"] = mode
+			if request.RaisePR {
+				resultData["pr_creation_status"] = "skipped"
+				resultData["pr_creation_reason"] = fmt.Sprintf("file_path does not exist in repository: %s", filePath)
+			}
+			if modifiedJSON, err := json.Marshal(resultData); err == nil {
+				return string(modifiedJSON), nil
 			}
 		}
-	} else {
+
+		return withMode(specialistResult, mode), nil
+	}
+	if instructionsRequireWrite(factsData) {
 		a.logger.Log(common.EventStepComplete, "Bypassing file-exists precondition: implementation_instructions contain action=write", nil)
+	} else if diffAddsFile(sessionCtx.BaseDiff, workDir, filePath) {
+		a.logger.Log(common.EventStepComplete, "Bypassing file-exists precondition: the supplied diff creates the file", map[string]any{"file_path": filePath})
 	}
 
 	a.logger.Log(common.EventStepComplete, "Starting iterative fix-review process", map[string]any{"max_attempts": 3})
@@ -3159,26 +3163,39 @@ func looksLikeGitSHA(s string) bool {
 }
 
 // refusePRFromPinnedRevision blocks opening a PR whose changes were written
-// against a revision that is not the tip of the base branch.
+// against a revision a PR must not be cut from.
 //
 // A pinned analysis reads the code as it was — the commit a workload was
 // running when an incident fired. That is the right thing to READ and the wrong
-// thing to BASE A PR ON: the diff is cut from a tree that may be hundreds of
-// commits behind, so the PR either fails to apply or, worse, applies and quietly
-// reverts everything merged since. Failing here is strictly better than opening
-// that PR, because a green PR that reverts history is not visibly wrong.
+// thing to BASE A PR ON: the fix was worked out and verified against code that
+// may be hundreds of commits old, and a deployed commit need not be on the base
+// branch at all, in which case the PR carries every commit of the branch it
+// came from.
 //
-// Two independent checks, because a revision can be pinned two ways and each
-// check covers a hole in the other:
+// Two independent checks:
 //
-//  1. The request pinned it (git_repository.commit). Deterministic, needs no
-//     remote ref, and works on the single-branch clones these runs use.
-//  2. The agent pinned it by passing `commit` to repo_clone off prompt text, so
-//     nothing upstream knows. Caught by comparing the branch point to the base
-//     tip — but only when that ref is actually present locally.
+//  1. The request pinned a commit (git_repository.commit). Deterministic, needs
+//     no remote ref, and refused whatever that commit is: the request asked for
+//     the code as deployed, and a PR is written at the branch tip.
+//  2. The fix branch is cut from a commit that is not on the base branch. Only
+//     meaningful when the base ref resolves locally.
 //
-// When neither can be established the PR proceeds: this guards a known-bad
-// combination, it is not a general "is this diff still applicable" check.
+// A branch point that is on the base branch but behind its tip is NOT refused.
+// A branch cut from an ancestor merges like any other pull request — it cannot
+// undo what was merged after it — and it is the ordinary state of a run on a
+// busy repository: origin/<base> lives in the bare clone that every
+// conversation on the repository shares, so it moves whenever any of them
+// fetches, including while this run was working. Requiring the branch point to
+// equal the tip refused those runs too.
+//
+// How far behind the branch point can be is bounded where the checkout is made,
+// not here: a run that writes a change gets the fetched branch tip from
+// repo_clone (RepoCloneTool.resolveCommit, CloneOrReuseRepositoryAtCommit).
+// Known gap: a model that moves HEAD by hand to an older commit of the base
+// branch (`git checkout <sha>` through the shell tool) passes this check.
+//
+// When neither can be established the PR proceeds: this guards known-bad
+// combinations, it is not a general "is this diff still applicable" check.
 func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sessionCtx *session.SessionContext, repoDir, baseBranch, branchPointSHA string) error {
 	pinned := ""
 	if sessionCtx != nil && sessionCtx.RepoContext != nil {
@@ -3187,15 +3204,13 @@ func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sess
 	if pinned != "" {
 		return fmt.Errorf(
 			"refusing to open a PR from a pinned revision: the analysis ran against commit %s, "+
-				"so a fix branch cut from it would revert everything merged into %s since. "+
+				"not the tip of %s, and a PR is written against the branch tip. "+
 				"Use raise_pr=false to get the diff, or omit the commit to fix at the branch tip",
 			pinned, baseBranch)
 	}
 
-	// The agent may have pinned via repo_clone without the request saying so.
-	// Only meaningful when the base tip is resolvable locally; single-branch
-	// clones often will not have it, and an unresolvable ref is not evidence
-	// of anything.
+	// Only meaningful when the base tip is resolvable locally; an unresolvable
+	// ref is not evidence of anything.
 	if branchPointSHA == "" || baseBranch == "" {
 		return nil
 	}
@@ -3207,11 +3222,16 @@ func (a *OrchestratorAgent) refusePRFromPinnedRevision(ctx context.Context, sess
 	if baseTip == "" || baseTip == branchPointSHA {
 		return nil
 	}
+	// Exit 0 means the branch point is on the base branch. Anything else — not
+	// an ancestor, or git could not tell — refuses.
+	if _, err := a.runGit(ctx, repoDir, "merge-base", "--is-ancestor", branchPointSHA, baseTip); err == nil {
+		return nil
+	}
 	return fmt.Errorf(
-		"refusing to open a PR from a stale revision: the fix was written against %s but "+
-			"origin/%s is now at %s, so the PR would revert intervening commits. "+
-			"Use raise_pr=false to get the diff, or re-run against the branch tip",
-		branchPointSHA, baseBranch, baseTip)
+		"refusing to open a PR from a revision that is not on %s: the fix was written against %s, "+
+			"which git does not find on origin/%s (now at %s), so the PR would carry commits from "+
+			"another branch. Use raise_pr=false to get the diff, or re-run against the branch tip",
+		baseBranch, branchPointSHA, baseBranch, baseTip)
 }
 
 // seedRepoCloneBranch tells the repo_clone tool which branch to check out when an
@@ -3248,6 +3268,22 @@ func seedRepoCloneBranch(tool *tools.RepoCloneTool, sessionCtx *session.SessionC
 		commit = sessionCtx.RepoContext.Commit
 	}
 	tool.SetDefaultCommit(commit)
+
+	// A run that writes a code change works on the revision the request names,
+	// not one the model picks during the run. Set on every request for the same
+	// no-leak reason as the two values above.
+	tool.SetCommitFromRequestOnly(sessionCtx != nil && sessionCtx.Mode == ModeFix)
+
+	// The repository whose setup script may run when it is cloned: the
+	// request's, and only for a run that writes a code change. Such a run already
+	// builds and tests the repository's code; an explore run only reads it, and
+	// cloning for one must not start running that repository's code. Reset to ""
+	// otherwise, for the same no-leak reason as the values above.
+	requestRepo := ""
+	if sessionCtx != nil && sessionCtx.RepoContext != nil && sessionCtx.Mode == ModeFix {
+		requestRepo = sessionCtx.RepoContext.URL
+	}
+	tool.SetRequestRepo(requestRepo)
 }
 
 // instructionsRequireWrite reports whether any entry in
@@ -3272,6 +3308,94 @@ func instructionsRequireWrite(factsData map[string]any) bool {
 		}
 	}
 	return false
+}
+
+// diffAddsFile reports whether a unified diff creates filePath. A fix that
+// arrives with the diff it should apply names files that diff adds; they are
+// not on disk yet, and must not be mistaken for a path the model made up.
+// Paths on both sides go through repoRelativeFilePath, so a file_path carrying
+// the repository name in front still matches.
+func diffAddsFile(diff, workDir, filePath string) bool {
+	if diff == "" || filePath == "" {
+		return false
+	}
+	normalize := func(p string) string {
+		return filepath.ToSlash(filepath.Clean(repoRelativeFilePath(workDir, p)))
+	}
+	want := normalize(filePath)
+	fromNothing := false
+	for _, line := range strings.Split(diff, "\n") {
+		line = strings.TrimRight(line, "\r")
+		switch {
+		case strings.HasPrefix(line, "--- "):
+			fromNothing = strings.HasPrefix(strings.TrimPrefix(line, "--- "), "/dev/null")
+		case strings.HasPrefix(line, "+++ "):
+			if fromNothing {
+				added, _, _ := strings.Cut(strings.TrimPrefix(line, "+++ "), "\t")
+				added = strings.TrimSpace(added)
+				// Git quotes a path that holds special or non-ASCII characters.
+				if strings.HasPrefix(added, `"`) {
+					if unquoted, err := strconv.Unquote(added); err == nil {
+						added = unquoted
+					}
+				}
+				added = strings.TrimPrefix(added, "b/")
+				if added != "" && normalize(added) == want {
+					return true
+				}
+			}
+			fromNothing = false
+		default:
+			// A new file's "+++" line directly follows its "--- /dev/null".
+			fromNothing = false
+		}
+	}
+	return false
+}
+
+// namedFileMissing reports whether the fixer has nothing to work on: the
+// analysis named a file that is not in the checkout, and nothing in the request
+// creates it. A fix creates a file through an instruction with action "write",
+// or through a supplied diff that adds it; in both cases the file is absent for
+// a legitimate reason and the fixer must run.
+func namedFileMissing(factsData map[string]any, baseDiff, workDir string) bool {
+	filePath, _ := factsData["file_path"].(string)
+	if filePath == "" || workDir == "" {
+		return false
+	}
+	if instructionsRequireWrite(factsData) || diffAddsFile(baseDiff, workDir, filePath) {
+		return false
+	}
+	// Normalize a possible leading "<repoName>/" segment (ripgrep-relative paths
+	// the RCA copies into file_path) before the existence check so the gate
+	// doesn't double the segment and false-skip CodeFixer. See
+	// repoRelativeFilePath for the full rationale.
+	_, err := os.Stat(filepath.Join(workDir, repoRelativeFilePath(workDir, filePath)))
+	return os.IsNotExist(err)
+}
+
+// dropModelWrittenDiff removes git_diff from a specialist's submission and
+// returns the submission as plain JSON. That field is model output: nothing
+// computed it from a checkout and nothing applied it, so a caller that applies
+// it gets a patch that may not even parse.
+//
+// The text is rebuilt from the parsed facts rather than edited in place. A
+// specialist may wrap its JSON in a code fence or in prose; the paths that
+// return the submission parse it strictly, fail on such text, and would hand
+// the original back with the diff still in it.
+func dropModelWrittenDiff(factsData map[string]any, specialistResult string) string {
+	// An answer of literally `null` parses without error into a nil map. There
+	// is nothing to remove from it, and marshalling it would turn any such
+	// answer into the text "null".
+	if factsData == nil {
+		return specialistResult
+	}
+	delete(factsData, "git_diff")
+	cleaned, err := json.Marshal(factsData)
+	if err != nil {
+		return specialistResult
+	}
+	return string(cleaned)
 }
 
 // repoRelativeFilePath normalizes an RCA-emitted file_path so it can be joined

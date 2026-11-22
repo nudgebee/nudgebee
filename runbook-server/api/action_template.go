@@ -102,9 +102,10 @@ func (s *Server) handleGetTemplate(c *gin.Context, sc *security.RequestContext, 
 }
 
 // handleSyncTemplates forces an immediate system-template reconcile from the
-// configured source. Tenant-admin only; system templates are tenant-wide.
+// configured source. A tenant admin, or a tenant-wide grant for the action's
+// key (workflows:Execute); system templates are tenant-wide.
 func (s *Server) handleSyncTemplates(c *gin.Context, sc *security.RequestContext, _ map[string]any) {
-	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeUpdate) {
+	if !sc.GetSecurityContext().CanAccessTenant(security.SecurityAccessTypeUpdate) {
 		c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{errors.New("unauthorized: tenant admin required to sync templates")}))
 		return
 	}

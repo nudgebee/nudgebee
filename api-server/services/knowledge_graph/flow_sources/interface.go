@@ -279,6 +279,24 @@ func (e *CentralizedExternalServiceEnricher) prepareMatchingContext(
 		k8sToAwsMap = make(map[string][]string)
 	}
 
+	// A VM account has no entry in k8sToAwsMap (that mapping is K8s-specific —
+	// it reads the AWS account number the EKS cluster itself runs in). Without
+	// this, a VM account's unresolved destinations would fall through to every
+	// AWS account in the tenant below, and a VM's private IP (common ranges
+	// repeat across accounts) could false-match an unrelated account's RDS/
+	// ElastiCache on a reused CIDR. Scope to the same discovery-datasource account set the VM's
+	// hosts themselves can live in instead.
+	if _, mapped := k8sToAwsMap[cloudAccountID]; !mapped {
+		if scoped, err := core.GetDiscoveryLinkedCloudAccounts(tenantID, cloudAccountID, "AWS"); err != nil {
+			e.logger.Warn("Failed to get discovery-linked AWS accounts", "cloud_account_id", cloudAccountID, "error", err)
+		} else if len(scoped) > 0 {
+			e.logger.Debug("Using discovery-linked AWS accounts for VM account",
+				"cloud_account_id", cloudAccountID,
+				"aws_accounts", scoped)
+			awsAccountIDs = scoped
+		}
+	}
+
 	// Use mapped accounts if available
 	if mappedAccounts, exists := k8sToAwsMap[cloudAccountID]; exists && len(mappedAccounts) > 0 {
 		e.logger.Debug("Using mapped AWS accounts for K8s account",

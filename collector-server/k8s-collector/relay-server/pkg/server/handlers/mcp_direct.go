@@ -91,14 +91,17 @@ func handleDirectMCP(c *gin.Context, rawBody []byte, logger *slog.Logger, start 
 
 	// Ensure we have a session for Streamable HTTP servers
 	sessionID, err := ensureMCPSession(c.Request.Context(), key, integrationID, rawBody, logger)
+	// Both failures below log at Debug: llm-server records them as the
+	// integration's health and logs once when that health changes (#40994).
+	// At Warn/Error they repeated on every retry of a server that stays down.
 	if err != nil {
-		logger.Warn("MCP session init failed, proceeding without session", "url", mcpURL, "error", err)
+		logger.Debug("MCP session init failed, proceeding without session", "url", mcpURL, "error", err)
 	}
 
 	// Execute the actual MCP request
 	responseData, statusCode, err := doMCPRequest(c.Request.Context(), key, integrationID, mcpBody, sessionID, rawBody, logger)
 	if err != nil {
-		logger.Error("direct MCP request failed", "url", mcpURL, "error", err)
+		logger.Debug("direct MCP request failed", "url", mcpURL, "error", err)
 		c.JSON(502, gin.H{"error": fmt.Sprintf("MCP server request failed: %v", err)})
 		return true
 	}

@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { expect, Page, Locator } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { IntegrationLocators } from "./IntegrationLocators";
@@ -31,7 +32,7 @@ export function getGcpServiceAccountKey(): string {
 
 async function navigateToAdminIntegrationsPage(page: Page, locators: IntegrationLocators): Promise<void> {
   await locators.adminBtn.waitFor({ state: "visible" });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
 
   const tabVisible = await locators.integrationsTab
     .waitFor({ state: "visible", timeout: 15000 })
@@ -296,12 +297,18 @@ export async function testConnection(
   return succeeded;
 }
 
-/** Returns true if a config row named `configName` is visible in the table. */
-async function isRowVisible(page: Page, configName: string, timeout = 8000): Promise<boolean> {
+// The row with a cell holding exactly `configName`: hasText alone is a case-insensitive substring match, so "MCP-test" also hit an agent-made "pw-mcp-test" row that has no menu.
+function configRow(page: Page, configName: string): Locator {
+  const escaped = configName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return page
     .locator("tbody tr")
-    .filter({ hasText: configName })
-    .first()
+    .filter({ has: page.locator("td").filter({ hasText: new RegExp(`^\\s*${escaped}\\s*$`) }) })
+    .first();
+}
+
+/** Returns true if a config row named `configName` is visible in the table. */
+async function isRowVisible(page: Page, configName: string, timeout = 8000): Promise<boolean> {
+  return configRow(page, configName)
     .waitFor({ state: "visible", timeout })
     .then(() => true)
     .catch(() => false);
@@ -473,7 +480,7 @@ export async function deleteIntegration(
   await showAllStatuses(page, statusFilterId);
   await filterListByName(page, configName);
 
-  const row = page.locator("tbody tr").filter({ hasText: configName }).first();
+  const row = configRow(page, configName);
   await row.waitFor({ state: "visible", timeout: 10000 });
 
   await clickRowMenuItem(page, row, "Delete");
@@ -515,7 +522,7 @@ export async function openEditIntegration(
   await showAllStatuses(page, statusFilterId);
   await filterListByName(page, configName);
 
-  const row = page.locator("tbody tr").filter({ hasText: configName }).first();
+  const row = configRow(page, configName);
   await row.waitFor({ state: "visible", timeout: 10000 });
 
   await clickRowMenuItem(page, row, "Edit");
@@ -539,7 +546,7 @@ async function changeRowStatus(
   }: { configName: string; action: "Disable" | "Enable"; serviceName: string },
 ): Promise<void> {
   await filterListByName(page, configName);
-  const row = page.locator("tbody tr").filter({ hasText: configName }).first();
+  const row = configRow(page, configName);
   await row.waitFor({ state: "visible", timeout: 10000 });
 
   await clickRowMenuItem(page, row, action);

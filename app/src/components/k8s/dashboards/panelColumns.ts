@@ -27,7 +27,7 @@
  *     resource name with a `&` in it would otherwise silently rewrite the query
  *     string.
  */
-import type { Panel, PanelColumn } from '@api1/dashboards';
+import type { Panel, PanelColumn, PanelDataLink } from '@api1/dashboards';
 
 /**
  * `{{column}}`, with optional inner spaces. Distinct from the `$var` dashboard
@@ -188,4 +188,49 @@ export function renderRowUrl(url: string, columns: string[], row: (string | null
     return encodeURIComponent(value);
   });
   return missing ? null : rendered;
+}
+
+/** The values a chart data-link's template can draw on at the clicked point. */
+export interface DataLinkContext {
+  /** The clicked series' PromQL labels, filling `{{pod}}`-style tokens. */
+  metric?: Record<string, string>;
+  /** The clicked series' account id, filling `{{__account_id}}`. Absent on a consolidated series. */
+  accountId?: string;
+  /** The panel's current range, filling `{{__from}}` / `{{__to}}`. */
+  from: string;
+  to: string;
+  /** The clicked point's instant, filling `{{__time}}`. */
+  time?: string;
+}
+
+/** The reserved token names a data-link may use besides the series' own labels. */
+const RESERVED_LINK_TOKENS = ['__account_id', '__from', '__to', '__time'];
+
+/**
+ * Builds the menu a point click offers: each configured link whose template
+ * fully resolved, as `{ title, href }`. A link naming a token the clicked point
+ * has no value for — an `{{__account_id}}` on a consolidated ("All accounts")
+ * series, or a label the series does not carry — resolves to null in
+ * `renderRowUrl` and is dropped rather than offered dead, the same rule a table
+ * cell follows.
+ *
+ * The reserved tokens are passed to `renderRowUrl` as synthetic columns, FIRST
+ * so their meaning always wins: the `{{...}}` grammar is shared with table
+ * columns, so `__from` fills exactly as a query column would, and the single
+ * URL-safety gate (`isSafeLinkUrl`) stays in `renderRowUrl` instead of being
+ * copied here. Reserved names are `__`-prefixed, which Prometheus keeps for its
+ * own internal labels, so a user series label can never collide with one.
+ */
+export function renderDataLinks(links: PanelDataLink[] | undefined, ctx: DataLinkContext): { title: string; href: string }[] {
+  if (!Array.isArray(links)) return [];
+  const metric = ctx.metric || {};
+  const columns = [...RESERVED_LINK_TOKENS, ...Object.keys(metric)];
+  const row = [ctx.accountId ?? '', ctx.from, ctx.to, ctx.time ?? '', ...Object.values(metric)];
+  const out: { title: string; href: string }[] = [];
+  for (const link of links) {
+    if (!link || !isNamed(link.title)) continue;
+    const href = renderRowUrl(link.url, columns, row);
+    if (href) out.push({ title: (link.title as string).trim(), href });
+  }
+  return out;
 }

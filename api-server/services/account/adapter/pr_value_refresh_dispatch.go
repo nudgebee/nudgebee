@@ -76,8 +76,9 @@ func DispatchPRValueRefresh(
 		return
 	}
 
-	gitToken, err := getGitTokenForTenant(dbms, tenantID, meta.Provider)
-	if err != nil {
+	// Only confirms the tenant has a usable git integration (see
+	// buildPRFollowupChatRequest); the token is not forwarded.
+	if _, err := getGitTokenForTenant(dbms, tenantID, meta.Provider); err != nil {
 		onDone(ValueRefreshFailed, "failed to get git token: "+err.Error())
 		return
 	}
@@ -129,7 +130,7 @@ func DispatchPRValueRefresh(
 		return
 	}
 
-	chatRequest := buildPRFollowupChatRequest(meta, gitToken, prompt, prompt, addressedComments)
+	chatRequest := buildPRFollowupChatRequest(meta, prompt, prompt, addressedComments)
 
 	reqCtx := security.NewRequestContext(ctx.GetContext(), ctx.GetSecurityContext(), ctx.GetLogger(), nil, nil)
 

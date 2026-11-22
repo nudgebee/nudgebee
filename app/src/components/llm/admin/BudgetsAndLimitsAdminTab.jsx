@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import { Box } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import LLMConsumptionTab from '@components/llm/LLMConsumptionTab';
@@ -15,7 +16,17 @@ import { ds } from '@utils/colors';
  * rule from there, independent of this outer prop.
  */
 const BudgetsAndLimitsAdminTab = ({ stickyTable = false }) => {
+  const router = useRouter();
   const [activeSubTab, setActiveSubTab] = useState('usage');
+  const budgetsTab = router?.isReady ? router.query?.budgetsTab : undefined;
+
+  // `?budgetsTab=pricing` opens Model Pricing directly (the cost popup's "set a price" link).
+  // The query is empty until the router is ready, so this can't be the initial state.
+  useEffect(() => {
+    if (budgetsTab === 'pricing') {
+      setActiveSubTab('pricing');
+    }
+  }, [budgetsTab]);
 
   return (
     <Box>

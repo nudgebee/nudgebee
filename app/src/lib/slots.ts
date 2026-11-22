@@ -6,7 +6,18 @@
 // code stays neutral whether a slot is filled or empty.
 import React, { type ComponentType, type ReactElement } from 'react';
 
-export type SlotName = 'LayoutHeaderAction' | 'LayoutHeadExtras' | 'LayoutFloatingOverlay' | 'SignInProviderExtra' | 'SignInBelowTitle' | 'Branding';
+export type SlotName =
+  | 'LayoutHeaderAction'
+  | 'LayoutHeadExtras'
+  | 'LayoutFloatingOverlay'
+  | 'SignInProviderExtra'
+  | 'SignInBelowTitle'
+  | 'Branding'
+  // A badge beside an automation's name in the Automations list; props { workflowId }.
+  | 'AutomationRowBadge'
+  // Controls in the chat composer's toolbar that add to each turn's request
+  // config; props { config, onChange(config), disabled }.
+  | 'ChatComposerToolbarExtra';
 
 const slots = new Map<SlotName, ComponentType<any>>();
 

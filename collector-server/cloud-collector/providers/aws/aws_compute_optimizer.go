@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
@@ -535,7 +536,7 @@ func extractLambdaFunctionName(arn string) string {
 }
 
 func (a *awsComputeOptimizer) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return nil
+	return errors.ErrUnsupported
 }
 
 func (a *awsComputeOptimizer) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {

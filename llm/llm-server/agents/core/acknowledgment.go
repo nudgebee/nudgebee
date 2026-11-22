@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"strings"
 
@@ -27,14 +28,14 @@ func generateUserAcknowledgment(ctx *security.RequestContext, userId string, acc
 	// Summary tier + global cache scope, used for both the pre-flight model
 	// check and the generation call so they resolve and validate the same model.
 	ackCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	_, err := GetLlmModel(ackCtx, "acknowledgment_agent", accountId, conversationId)
+	_, err := llmruntime.GetLlmModel(ackCtx, "acknowledgment_agent", accountId, conversationId)
 	if err != nil {
 		ctx.GetLogger().Warn("acknowledgment: unable to get LLM model, using fallback", "error", err)
 		return generateFallbackAcknowledgment(query, agentName)
@@ -76,7 +77,7 @@ INTENT: Analyze event ID 12345 to identify any associated errors or issues`
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("User Query: %s", query)),
 	}
 
-	completion, err := GenerateAndTrackLLMContent(ackCtx, userId, accountId, conversationId, messageId, "acknowledgment_agent", false, messageContent, true, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ackCtx, userId, accountId, conversationId, messageId, "acknowledgment_agent", false, messageContent, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Warn("acknowledgment: LLM call failed, using fallback", "error", err)
 		return generateFallbackAcknowledgment(query, agentName)
@@ -199,11 +200,11 @@ var commonAcks = []string{
 	"I'll help you with that. Just a moment while I gather the data.",
 }
 
-// isUserConversationSource reports whether a conversation source is a live user
+// IsUserConversationSource reports whether a conversation source is a live user
 // chat — i.e. someone is watching for the acknowledgment. System/automated
 // sources (event RCA, automation, workflows, notifications, optimize, single
 // query endpoints) are not, so a tailored LLM acknowledgment is wasted on them.
-func isUserConversationSource(source ConversationSource) bool {
+func IsUserConversationSource(source ConversationSource) bool {
 	switch source {
 	case ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI:
 		return true
@@ -225,7 +226,7 @@ func seedOriginalQuery(request *NBAgentRequest) bool {
 		return false
 	}
 	request.OriginalQuery = request.Query
-	request.OriginalQueryFromUser = isUserConversationSource(request.ConversationSource)
+	request.OriginalQueryFromUser = IsUserConversationSource(request.ConversationSource)
 	return true
 }
 
@@ -240,7 +241,7 @@ func seedOriginalQuery(request *NBAgentRequest) bool {
 // The tailored LLM acknowledgment is reserved for substantial user questions,
 // where the latency/cost is worth it.
 func useStaticAcknowledgment(query string, source ConversationSource) bool {
-	if !isUserConversationSource(source) {
+	if !IsUserConversationSource(source) {
 		return true
 	}
 	// wordCount == 0 (empty / whitespace / punctuation- or emoji-only) also → static:

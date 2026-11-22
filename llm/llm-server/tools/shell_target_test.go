@@ -294,3 +294,16 @@ func TestRequestedShellTarget_VariableContext(t *testing.T) {
 	require.Empty(t, requested)
 	require.ErrorContains(t, ShellTool{}.ValidateWriteTargetInput(`{"command":"aws --profile $p s3 rm s3://bucket/key"}`), "--profile is set through a shell variable")
 }
+
+func TestTargetModule(t *testing.T) {
+	require.Equal(t, "k8s", TargetModule(ToolExecuteKubectlCommand))
+	require.Equal(t, "k8s", TargetModule(ToolExecuteHelmCommand))
+	require.Equal(t, "cloud", TargetModule(ToolExecuteAwsCliCommand))
+	require.Equal(t, "cloud", TargetModule(ToolExecuteGcpCliCommand))
+	require.Equal(t, "cloud", TargetModule(ToolExecuteAzureCliCommand))
+	require.Empty(t, TargetModule("shell_execute"))
+
+	require.Equal(t, "k8s", targetConfigModule(core.ToolConfig{Schema: core.ToolConfigSchema{ConfigType: "k8s"}}))
+	require.Equal(t, "cloud", targetConfigModule(core.ToolConfig{Values: []core.ToolConfigValue{{Name: "cloud_provider", Value: "AWS"}}}))
+	require.Empty(t, targetConfigModule(core.ToolConfig{}))
+}

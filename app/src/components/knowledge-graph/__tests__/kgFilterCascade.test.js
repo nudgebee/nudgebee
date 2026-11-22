@@ -1,4 +1,11 @@
-import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from '../kgFilterCascade';
+import {
+  parseUniqueKey,
+  formatTypeBadge,
+  decodeFilterOptions,
+  computeFilterOptionsClientSide,
+  buildAccountOptions,
+  TENANT_ACCOUNT_LABEL,
+} from '../kgFilterCascade';
 
 // A small v2 (columnar) payload. unique_key = {provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
 // NOTE n4's key segment is "clusterX" (a k8s cluster name) but its account is ACC-A — the account
@@ -73,6 +80,7 @@ describe('formatTypeBadge', () => {
     expect(formatTypeBadge('KubernetesServiceAccount', 'k8s', true)).toBe('Service Account');
     expect(formatTypeBadge('AzureVirtualMachine', 'azure', true)).toBe('Virtual Machine');
     expect(formatTypeBadge('PagerDutyUser', 'pagerduty', true)).toBe('User');
+    expect(formatTypeBadge('SelfHostedVM', 'selfhosted', true)).toBe('VM');
   });
   it('keeps the prefix when no icon names the provider', () => {
     // Nudgebee's own identity nodes (provider "external") get no icon, so the
@@ -168,5 +176,52 @@ describe('computeFilterOptionsClientSide (over a decoded baseline)', () => {
   it('Option B: Workload selection keeps both labels (present on Workload filter buckets)', () => {
     const r = computeFilterOptionsClientSide(baseline, { broadNodeTypes: ['Workload'] });
     expect(labels(r)).toEqual(['app', 'env']);
+  });
+});
+
+// #40701: integration and tenant-owned nodes carry account ids that are not cloud accounts.
+describe('buildAccountOptions', () => {
+  const TENANT = 'tenant-1';
+  const GH = 'gh-integration-id';
+  const GL = 'gl-integration-id';
+  const PD = 'pd-integration-id';
+  const ORPHAN = 'unparseable-account-id';
+  const decoded = decodeFilterOptions({
+    account_ids: [ACC_A, GH, GL, PD, TENANT, ORPHAN],
+    node_keys: [
+      'aws:acctA:loc:ComputeInstance:h:ec2a',
+      'github:Github-Test::Repository::api',
+      'gitlab:GitLab-test::Repository::web',
+      'pagerduty:PagerDuty-test::Service::checkout',
+      `external:${TENANT}::UserAccount::alice`,
+      'legacy:key',
+    ],
+    node_ids: ['n1', 'n2', 'n3', 'n4', 'n5', 'n6'],
+    node_account_idx: [0, 1, 2, 3, 4, 5],
+  });
+  const accounts = [
+    { id: ACC_A, account_name: 'iteration-aws-test-185', cloud_provider: 'AWS' },
+    { id: ACC_B, account_name: 'no-nodes', cloud_provider: 'GCP' },
+  ];
+
+  it('lists every account that owns nodes, integrations grouped under their provider', () => {
+    const options = buildAccountOptions(accounts, decoded.accountIds, decoded.accountSources, TENANT);
+    expect(options.map(({ label, value, group }) => ({ label, value, group }))).toEqual([
+      { label: 'iteration-aws-test-185', value: ACC_A, group: 'AWS' },
+      { label: 'Github-Test', value: GH, group: 'GitHub' },
+      { label: 'GitLab-test', value: GL, group: 'GitLab' },
+      { label: 'PagerDuty-test', value: PD, group: 'PagerDuty' },
+      { label: TENANT_ACCOUNT_LABEL, value: TENANT, group: 'Other' },
+      { label: ORPHAN, value: ORPHAN, group: 'Other' },
+    ]);
+  });
+
+  it('names the tenant-owned entry from its key when the tenant id is unknown', () => {
+    const options = buildAccountOptions(accounts, decoded.accountIds, decoded.accountSources, undefined);
+    expect(options.find((o) => o.value === TENANT)).toMatchObject({ label: TENANT_ACCOUNT_LABEL, searchText: 'users groups' });
+  });
+
+  it('returns nothing before filter options load', () => {
+    expect(buildAccountOptions(accounts, undefined, undefined, TENANT)).toEqual([]);
   });
 });

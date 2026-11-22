@@ -32,6 +32,14 @@ func (m WorkflowWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp states that this webhook produces no labels: it forwards the
+// body to the workflow server instead of building an event.
+func (m WorkflowWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "This webhook starts workflows and produces no labels, so account mapping does not apply.",
+	}
+}
+
 func (m WorkflowWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
@@ -114,7 +122,7 @@ func (m WorkflowWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 		}),
 	)
 	if err != nil {
-		sc.GetLogger().Error("generic_webhook: failed to fan out webhook", "integration", integrationName, "payload", webhookPayloadString, "error", err)
+		sc.GetLogger().Error("generic_webhook: failed to fan out webhook", "integration", integrationName, "payload_bytes", len(webhookPayloadString), "error", err)
 		return nil, errors.New("unable to fan out webhook for integration - " + integrationName)
 	}
 
@@ -126,7 +134,7 @@ func (m WorkflowWebhook) ProcessEventWebook(sc *security.RequestContext, setting
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		sc.GetLogger().Error("generic_webhook: unable to read fan-out resp", "integration", integrationName, "payload", webhookPayloadString, "error", err)
+		sc.GetLogger().Error("generic_webhook: unable to read fan-out resp", "integration", integrationName, "payload_bytes", len(webhookPayloadString), "error", err)
 		return nil, err
 	}
 

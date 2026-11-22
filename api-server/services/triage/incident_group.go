@@ -70,13 +70,15 @@ const (
 	// topologyGroupingEnvFlag kills only the cross-service (stored-map) attach
 	// path; same-subject grouping keeps its own switch above.
 	topologyGroupingEnvFlag = "INCIDENT_TOPOLOGY_GROUPING"
-	// unlocatedGroupingEnvFlag kills the co-timing attach for alerts that have
-	// no position in the graph at all. Defaults on like the other two, so the
-	// narrowness has to come from the rule rather than from the switch: it fires
+	// unlocatedGroupingEnvFlag turns on the co-timing attach for alerts that
+	// have no position in the graph at all. Unlike the other two it defaults
+	// off: with nothing but the clock to go on, alarms that fire on a schedule
+	// (a job failing every ten minutes, an hourly check, a host pinned at high
+	// CPU) start within minutes of each other every hour and were filed under
+	// each other's incidents, whatever resource they were on. When on, it fires
 	// only when nothing else matched, only into an existing incident in the
-	// seed's own scope (namespace, or AWS as a whole) that began with the seed,
-	// and only when exactly one such incident exists. This is the flag to pull
-	// first if grouping ever looks too eager.
+	// seed's own scope (namespace, node, or a cloud account as a whole) that
+	// began with the seed, and only when exactly one such incident exists.
 	unlocatedGroupingEnvFlag = "INCIDENT_UNLOCATED_GROUPING"
 	// timingOnlyReasonPrefix starts the reason on every link written on timing
 	// alone. The path is counted and audited by it, and a firing that was linked
@@ -202,6 +204,9 @@ type activeRow struct {
 	CreatedAt        time.Time  `db:"created_at"`
 	Status           string     `db:"status"`
 	EndsAt           *time.Time `db:"ends_at"`
+	// ResourceTags is set for a cloud resource alarm only: the tags the tag
+	// relations read (resourceTagsSQL).
+	ResourceTags *string `db:"resource_tags"`
 }
 
 // activeRowsWhere selects the rows the seed can be grouped with.
@@ -236,25 +241,28 @@ const activeRowsWhere = `
 func loadActiveRows(ctx context.Context, db sqlx.ExtContext, event *models.Event, start time.Time) ([]activeRow, error) {
 	var rows []activeRow
 	err := sqlx.SelectContext(ctx, db, &rows, `
-		SELECT id, fingerprint, aggregation_key, subject_type, subject_name,
-		       subject_namespace, subject_owner, subject_owner_kind, service_key,
-		       starts_at, created_at, status, ends_at
+		SELECT a.id, a.fingerprint, a.aggregation_key, a.subject_type, a.subject_name,
+		       a.subject_namespace, a.subject_owner, a.subject_owner_kind, a.service_key,
+		       a.starts_at, a.created_at, a.status, a.ends_at,
+		       `+fmt.Sprintf(resourceTagsSQL, "$9")+`::text AS resource_tags
 		FROM (
 			SELECT e.id, e.fingerprint, e.aggregation_key, e.subject_type, e.subject_name,
 			       e.subject_namespace, e.subject_owner, e.subject_owner_kind, e.service_key,
 			       e.starts_at, coalesce(e.created_at, e.starts_at) AS created_at,
-			       coalesce(e.status, '') AS status, e.ends_at,
+			       coalesce(e.status, '') AS status, e.ends_at, e.source, e.cloud_resource_id,
 			       row_number() OVER (PARTITION BY coalesce(nullif(e.fingerprint, ''), e.id::text)
 			                          ORDER BY e.starts_at DESC, e.created_at ASC, e.id ASC) AS rn
 			FROM events e
 			WHERE `+activeRowsWhere+`
 		) a
-		WHERE rn <= `+fmt.Sprint(incidentRowsPerAlert)+`
-		ORDER BY (starts_at < $4) DESC, abs(extract(epoch FROM starts_at - $7)) ASC
+		LEFT JOIN cloud_resourses r ON r.id = a.cloud_resource_id AND a.source = ANY($8)
+		WHERE a.rn <= `+fmt.Sprint(incidentRowsPerAlert)+`
+		ORDER BY (a.starts_at < $4) DESC, abs(extract(epoch FROM a.starts_at - $7)) ASC
 		LIMIT `+fmt.Sprint(incidentActiveRowLimit),
 		*event.Tenant, *event.CloudAccountId, event.Id,
 		start.Add(-IncidentAttachWindow), start.Add(IncidentAttachWindow),
-		start.Add(-incidentStillFiringLookback), start)
+		start.Add(-incidentStillFiringLookback), start,
+		pq.Array(cloudResourceAlarmSources), pq.Array(resourceTagKeys()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to load alerts around the event: %w", err)
 	}
@@ -322,7 +330,11 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 	if len(rows) == 0 {
 		return false, nil
 	}
-	g := prepareGrouping(ctx, event, seedKey, start, rows)
+	seedResource, err := loadSeedResourceTags(ctx, db, event)
+	if err != nil {
+		return false, err
+	}
+	g := prepareGrouping(ctx, event, seedKey, start, rows, seedResource)
 	if len(g.in.Related) == 0 && len(g.own.rows) == 0 && len(g.own.others) == 0 && !g.nodeAxis && !g.timingFallback {
 		return false, nil // nothing to pair it with, and co-timing may not
 	}
@@ -330,6 +342,7 @@ func attachSameSubjectIncident(ctx context.Context, db sqlx.ExtContext, event *m
 		if g.in.Noisy, err = loadNoisyAlerts(ctx, db, event, g.in, start); err != nil {
 			return false, err
 		}
+		g.in.Related = dropNoisyResourceMembers(g.in.Related, g.in.Noisy, g.in.Seed)
 	}
 
 	// The decision reads what other alerts' triage has written and writes what
@@ -445,7 +458,7 @@ type grouping struct {
 
 // prepareGrouping turns the rows around the seed into the alert-level picture
 // the decision needs, short of the links. No I/O.
-func prepareGrouping(ctx context.Context, event *models.Event, seedKey string, start time.Time, rows []activeRow) grouping {
+func prepareGrouping(ctx context.Context, event *models.Event, seedKey string, start time.Time, rows []activeRow, seedResource resourceTags) grouping {
 	ns, roughSubj := chronicSubjectIdentity(event)
 	seed := alertMember{
 		Fingerprint:    alertKey(deref(event.Fingerprint), event.Id),
@@ -459,6 +472,7 @@ func prepareGrouping(ctx context.Context, event *models.Event, seedKey string, s
 		StartsAt:       start,
 		Recent:         true,
 		Open:           true,
+		Resource:       seedResource,
 	}
 	g := grouping{
 		seedKey: seedKey, seedCreated: start,
@@ -794,6 +808,7 @@ func collapseActiveRows(rows []activeRow, start time.Time, seedFingerprint strin
 				Namespace: strings.ToLower(strings.TrimSpace(deref(r.SubjectNamespace))),
 				StartsAt:  r.StartsAt,
 				Recent:    inWindow,
+				Resource:  parseResourceTags(r.ResourceTags),
 			}
 			byKey[key] = m
 			members = append(members, m)
@@ -835,10 +850,13 @@ func collapseActiveRows(rows []activeRow, start time.Time, seedFingerprint strin
 //     an alert on that object is still firing belongs to that incident (it is
 //     usually the fix). A change is a point event, never a standing one, and it
 //     carries no service map, so no other rule can place it.
+//   - Failing all of those, a cloud alarm that started inside the attach window
+//     on a resource of the seed's application, or a restart on a resource of the
+//     seed's patch group (resourceRelation, incident_group_app.go).
 //
 // graph is nil when the seed has no stored service map or topology grouping is
-// off; only the same-subject rule applies then. Reports whether the subject cap
-// stopped it adding more.
+// off; only the same-subject and tag rules apply then. Reports whether the
+// subject cap stopped it adding more.
 func relateMembers(graph *DependencyGraph, seed alertMember, seedIsChange bool, members []*alertMember) ([]relatedMember, bool) {
 	related := make([]relatedMember, 0, len(members))
 	subjects := map[string]bool{}
@@ -850,19 +868,24 @@ func relateMembers(graph *DependencyGraph, seed alertMember, seedIsChange bool, 
 			}
 			continue
 		}
-		if graph == nil || seed.ServiceKey == "" || m.ServiceKey == "" || strings.HasSuffix(m.SubjectKey, "|") {
+		if strings.HasSuffix(m.SubjectKey, "|") {
 			continue
 		}
 		rel, hops := relation(0), 0
-		switch {
-		case m.Recent:
-			if h := graph.getDependencyDistance(seed.ServiceKey, m.ServiceKey); h > 0 && h <= maxIncidentHops {
-				rel, hops = relConnected, h
+		if graph != nil && seed.ServiceKey != "" && m.ServiceKey != "" {
+			switch {
+			case m.Recent:
+				if h := graph.getDependencyDistance(seed.ServiceKey, m.ServiceKey); h > 0 && h <= maxIncidentHops {
+					rel, hops = relConnected, h
+				}
+			case m.Open:
+				if h := graph.dependsOnDistance(seed.ServiceKey, m.ServiceKey, maxIncidentHops); h > 0 {
+					rel, hops = relDependency, h
+				}
 			}
-		case m.Open:
-			if h := graph.dependsOnDistance(seed.ServiceKey, m.ServiceKey, maxIncidentHops); h > 0 {
-				rel, hops = relDependency, h
-			}
+		}
+		if rel == 0 && m.Recent {
+			rel = resourceRelation(seed, *m)
 		}
 		if rel == 0 {
 			continue
@@ -1400,12 +1423,12 @@ func topologyGroupingEnabled() bool {
 	return !strings.EqualFold(v, "false") && v != "0"
 }
 
-// unlocatedGroupingEnabled defaults to true; only an explicit "false"/"0"
-// disables, matching the other two grouping switches — a default-off flag
-// nobody flips leaves the path dead in config.
+// unlocatedGroupingEnabled defaults to false; only an explicit "true"/"1"
+// enables. See unlocatedGroupingEnvFlag for why this switch, unlike the other
+// two, is an opt-in.
 func unlocatedGroupingEnabled() bool {
 	v := strings.TrimSpace(os.Getenv(unlocatedGroupingEnvFlag))
-	return !strings.EqualFold(v, "false") && v != "0"
+	return strings.EqualFold(v, "true") || v == "1"
 }
 
 // attachUnlocatedIncident is the last resort for an alert that the graph cannot
@@ -1416,9 +1439,9 @@ func unlocatedGroupingEnabled() bool {
 // that prompted this ran on a host whose load balancer and target groups were
 // alarming in the same two minutes — it is that we have no edge to prove it.
 //
-// So this groups on co-timing. That is the weakest claim this file makes, and it
-// runs by default, so the narrowness lives in the rule: it refuses every case
-// where co-timing is not decisive.
+// So this groups on co-timing. That is the weakest claim this file makes, so it
+// is opt-in (unlocatedGroupingEnabled), and when on the narrowness lives in the
+// rule: it refuses every case where co-timing is not decisive.
 //
 //   - It runs only when the seed reached this point with no members of its own,
 //     and only for an alert the graph could not place (timingFallbackAllowed).

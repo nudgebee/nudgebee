@@ -1,9 +1,11 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -78,10 +80,9 @@ func (c *customAgentToolsCache) delete(accountId, agentName string) {
 // InvalidateCustomAgentToolsCache evicts cached tool lists for a custom agent.
 // Must be called after any Create / Update / Delete that changes the agent's tool list.
 func InvalidateCustomAgentToolsCache(accountId, agentName string) {
-	customAgentToolsCacheInst.delete(accountId, agentName)
-	if err := common.CachePublish(CacheChannelAgentConfigInvalidation, accountId+":"+agentName); err != nil {
-		slog.Error("custom_agent: failed to broadcast agent invalidation", "error", err, "account_id", accountId, "agent", agentName)
-	}
+	// The agent cache invalidators (customAgentToolsCacheInst among them) run
+	// here and on every other replica.
+	common.ReplicaBroadcast(context.Background(), common.ChangeAgentConfig, agentConfigKey(accountId, agentName))
 }
 
 type nbCustomAgent struct {
@@ -145,10 +146,10 @@ func (a *nbCustomAgent) GetThinkingLevel() string {
 	level, _ := a.agent.Config["thinking_level"].(string)
 	level = strings.ToLower(strings.TrimSpace(level))
 	switch level {
-	case ThinkingLevelMinimal, ThinkingLevelLow, ThinkingLevelMedium, ThinkingLevelHigh:
+	case llmruntime.ThinkingLevelMinimal, llmruntime.ThinkingLevelLow, llmruntime.ThinkingLevelMedium, llmruntime.ThinkingLevelHigh:
 		return level
 	}
-	return ThinkingLevelLow
+	return llmruntime.ThinkingLevelLow
 }
 
 func (a *nbCustomAgent) GetName() string {
@@ -171,8 +172,8 @@ func (a *nbCustomAgent) GetPlannerType() AgentPlannerType {
 	return a.agent.ExecutorType
 }
 
-func (a *nbCustomAgent) GetModelCategory() ModelTier {
-	return ModelTierReasoning
+func (a *nbCustomAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
 func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
@@ -181,15 +182,30 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 	if len(a.tools) > 0 {
 		return a.tools
 	}
+	// The run policy may shape the set, so only the stored list goes in the
+	// 30-minute cache.
+	a.tools = policyFor(ctx).AgentTools(ctx, a, a.configuredTools(ctx))
+	return a.tools
+}
+
+// configuredTools resolves the tools on the agent's stored list.
+func (a *nbCustomAgent) configuredTools(ctx *security.RequestContext) []toolcore.NBTool {
+	// A governed run resolves its agent's list fresh, never from or into the
+	// cross-request cache, so a change to the agent's record reaches its next
+	// run.
+	governed := RunProfileOf(ctx) != nil
 	// Module-level TTL cache shared across requests for this account+agent.
-	if cached, ok := customAgentToolsCacheInst.get(a.accountId, a.agent.Name); ok {
-		a.tools = cached
-		return a.tools
+	if !governed {
+		if cached, ok := customAgentToolsCacheInst.get(a.accountId, a.agent.Name); ok {
+			return cached
+		}
 	}
 
 	nbTools := make([]toolcore.NBTool, 0, len(a.agent.Tools))
 	if len(a.agent.Tools) == 0 {
-		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+		if !governed {
+			customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
+		}
 		return nbTools
 	}
 	allResolved := true
@@ -218,11 +234,10 @@ func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolco
 	}
 	// Only cache across requests if all configured tools were successfully resolved.
 	// If any tool failed to resolve, avoid poisoning the 30-minute cache with an incomplete list.
-	if allResolved {
+	if allResolved && !governed {
 		customAgentToolsCacheInst.set(a.accountId, a.agent.Name, nbTools)
 	}
-	a.tools = nbTools
-	return a.tools
+	return nbTools
 }
 
 func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAgentRequest) NBAgentPrompt {
@@ -404,6 +419,12 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 				prompt.Instructions = append(prompt.Instructions, u)
 			}
 		}
+	}
+
+	// Answer instructions from the run policy. Added before the escaping
+	// below, which also covers them.
+	if format := policyFor(ctx).AnswerInstructions(ctx, a); format != "" {
+		prompt.Instructions = append(prompt.Instructions, format)
 	}
 
 	// The prompt is later rendered as a Go template (GetPromptTemplate), and a

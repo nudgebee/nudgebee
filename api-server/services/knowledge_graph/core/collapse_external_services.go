@@ -100,7 +100,7 @@ func buildCollapseRedirectMap(
 			continue
 		}
 		src, ok := nodeByID[e.SourceNodeID]
-		if !ok || src == nil || src.NodeType != NodeTypeExternalService {
+		if !ok || src == nil || src.NodeType != NodeTypeExternalService || src.Source == ManualNodeSource {
 			continue
 		}
 		if _, exists := redirect[e.SourceNodeID]; exists {

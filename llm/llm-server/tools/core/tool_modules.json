@@ -1,0 +1,404 @@
+{
+  "_about": "Custom-role module each AI tool needs, for a person without a built-in role on the account (and Bee runs). Reads need <module>:Read, changes need <module>:Execute; all listed modules are required. integration_only tools are checked where the call resolves its integration (integrations.<type>, CheckIntegrationUse). unscoped tools read no account data. Agent wrappers, automation tools and client tools declare their own scope (toolcore.GrantScoped). A registered tool missing from all three lists is refused for such callers; TestEveryRegisteredToolHasAGrantScope keeps the map complete. builtin_only tools read the account's shared workspace (files saved by other people's conversations), or make a change no custom-role module covers yet (im_message_send posts to the tenant's chat channels), so a person without a built-in role may not use them.",
+  "modules": {
+    "aggregate_events": [
+      "events"
+    ],
+    "anomaly_execute": [
+      "anomalies"
+    ],
+    "aws_execute": [
+      "cloud"
+    ],
+    "azure_execute": [
+      "cloud"
+    ],
+    "cloud_resource_search_execute": [
+      "cloud"
+    ],
+    "datadog_events_execute": [
+      "events"
+    ],
+    "datadog_incident_execute": [
+      "events"
+    ],
+    "datadog_log_execute": [
+      "logs"
+    ],
+    "datadog_metrics_execute": [
+      "metrics"
+    ],
+    "datadog_traces_execute": [
+      "traces"
+    ],
+    "dryrun_triage_rule": [
+      "events"
+    ],
+    "es_metrics_query": [
+      "metrics"
+    ],
+    "events_execute": [
+      "events"
+    ],
+    "evidenceinsightstool": [
+      "events"
+    ],
+    "fetch_logs_direct": [
+      "logs"
+    ],
+    "gcloud_execute": [
+      "cloud"
+    ],
+    "get_event_by_id": [
+      "events"
+    ],
+    "get_event_classification": [
+      "events"
+    ],
+    "get_event_evidence": [
+      "events"
+    ],
+    "get_event_incident_assembly": [
+      "events"
+    ],
+    "get_event_rules": [
+      "events"
+    ],
+    "get_event_triage_explanation": [
+      "events"
+    ],
+    "get_remediation_plan": [
+      "events"
+    ],
+    "get_triage_rule_events": [
+      "events"
+    ],
+    "get_triage_rules": [
+      "events"
+    ],
+    "helm_execute": [
+      "k8s"
+    ],
+    "kg_get_node": [
+      "kg"
+    ],
+    "kg_search_nodes": [
+      "kg"
+    ],
+    "kg_traverse": [
+      "kg"
+    ],
+    "kubectl_execute": [
+      "k8s"
+    ],
+    "list_events": [
+      "events"
+    ],
+    "list_threshold_suggestions": [
+      "events"
+    ],
+    "logs_execute_v2": [
+      "logs"
+    ],
+    "memory_read": [
+      "ai_memory"
+    ],
+    "memory_write": [
+      "ai_memory"
+    ],
+    "metric_forecast": [
+      "metrics"
+    ],
+    "metrics": [
+      "metrics"
+    ],
+    "metrics_label_values": [
+      "metrics"
+    ],
+    "metrics_labels_list": [
+      "metrics"
+    ],
+    "metrics_list": [
+      "metrics"
+    ],
+    "metrics_series_match": [
+      "metrics"
+    ],
+    "nudgebee_account_get": [
+      "accounts"
+    ],
+    "nudgebee_accounts_count": [
+      "accounts"
+    ],
+    "nudgebee_accounts_list": [
+      "accounts"
+    ],
+    "nudgebee_agent_health_get": [
+      "accounts"
+    ],
+    "nudgebee_integration_diagnose": [
+      "integrations"
+    ],
+    "nudgebee_integration_get_status": [
+      "integrations"
+    ],
+    "nudgebee_integrations_count": [
+      "integrations"
+    ],
+    "nudgebee_integrations_list": [
+      "integrations"
+    ],
+    "prometheus_execute": [
+      "metrics"
+    ],
+    "propose_fix": [
+      "events"
+    ],
+    "propose_recommendation_apply": [
+      "recommendations"
+    ],
+    "recommendation_apply": [
+      "recommendations"
+    ],
+    "recommendation_execute": [
+      "recommendations"
+    ],
+    "recommendation_execute_cli": [
+      "recommendations",
+      "cloud"
+    ],
+    "recommendation_record_ticket_resolution": [
+      "recommendations"
+    ],
+    "recommendation_resolution_execute": [
+      "recommendations"
+    ],
+    "recommendation_set_dismissal": [
+      "recommendations"
+    ],
+    "remediation_execute": [
+      "k8s"
+    ],
+    "resource_search_execute": [
+      "k8s"
+    ],
+    "run_step": [
+      "events"
+    ],
+    "schedule_recheck": [
+      "events"
+    ],
+    "search_metrics": [
+      "metrics"
+    ],
+    "security_execute": [
+      "security"
+    ],
+    "service_dependency_graph_execute": [
+      "k8s"
+    ],
+    "spend_allocation": [
+      "spend"
+    ],
+    "spend_forecast": [
+      "spend"
+    ],
+    "spend_summary": [
+      "spend"
+    ],
+    "splunk_metrics_query": [
+      "metrics"
+    ],
+    "ticket_master_v2": [
+      "tickets"
+    ],
+    "traces": [
+      "traces"
+    ],
+    "traces_execute": [
+      "traces"
+    ],
+    "traces_execute_chronosphere": [
+      "traces"
+    ],
+    "traces_execute_default": [
+      "traces"
+    ],
+    "traces_execute_jaeger": [
+      "traces"
+    ],
+    "traces_execute_v2": [
+      "traces"
+    ],
+    "trigger_cis_scan": [
+      "security"
+    ],
+    "trigger_image_scan": [
+      "security"
+    ],
+    "vm_execute": [
+      "cloud",
+      "integrations.ssh"
+    ],
+    "vm_list_execute": [
+      "cloud"
+    ],
+    "watch_cancel": [
+      "ai_misc"
+    ],
+    "watch_list": [
+      "ai_misc"
+    ],
+    "watch_resource": [
+      "ai_misc"
+    ],
+    "watch_status": [
+      "ai_misc"
+    ],
+    "workflow_config_delete": [
+      "workflows"
+    ],
+    "workflow_config_get": [
+      "workflows"
+    ],
+    "workflow_config_list": [
+      "workflows"
+    ],
+    "workflow_config_save": [
+      "workflows"
+    ],
+    "workflow_create": [
+      "workflows"
+    ],
+    "workflow_delete": [
+      "workflows"
+    ],
+    "workflow_delete_version": [
+      "workflows"
+    ],
+    "workflow_dry_run": [
+      "workflows"
+    ],
+    "workflow_examples": [
+      "workflows"
+    ],
+    "workflow_execution_cancel": [
+      "workflows"
+    ],
+    "workflow_execution_get": [
+      "workflows"
+    ],
+    "workflow_execution_retrigger": [
+      "workflows"
+    ],
+    "workflow_executions": [
+      "workflows"
+    ],
+    "workflow_get": [
+      "workflows"
+    ],
+    "workflow_get_version": [
+      "workflows"
+    ],
+    "workflow_list": [
+      "workflows"
+    ],
+    "workflow_list_versions": [
+      "workflows"
+    ],
+    "workflow_make_version_live": [
+      "workflows"
+    ],
+    "workflow_pause": [
+      "workflows"
+    ],
+    "workflow_publish": [
+      "workflows"
+    ],
+    "workflow_restore_version": [
+      "workflows"
+    ],
+    "workflow_resume": [
+      "workflows"
+    ],
+    "workflow_search": [
+      "workflows"
+    ],
+    "workflow_state": [
+      "workflows"
+    ],
+    "workflow_task_execute": [
+      "workflows"
+    ],
+    "workflow_task_list": [
+      "workflows"
+    ],
+    "workflow_task_schema": [
+      "workflows"
+    ],
+    "workflow_trigger": [
+      "workflows"
+    ],
+    "workflow_update": [
+      "workflows"
+    ],
+    "workflow_update_version_metadata": [
+      "workflows"
+    ],
+    "workflow_validate": [
+      "workflows"
+    ]
+  },
+  "integration_only": [
+    "argocd_execute",
+    "clickhouse_query_execute",
+    "datadog_apm_entities_execute",
+    "datadog_containers_execute",
+    "datadog_hosts_execute",
+    "datadog_resource_search_execute",
+    "datadog_services_execute",
+    "datadog_software_catalog_execute",
+    "github_execute",
+    "gitlab_execute",
+    "mongodb_current_op_get",
+    "mongodb_replset_status_get",
+    "mongodb_server_status_get",
+    "mssql_query_execute",
+    "mysql_query_execute",
+    "newrelic_apm_services_execute",
+    "newrelic_infrastructure_containers_execute",
+    "newrelic_infrastructure_hosts_execute",
+    "newrelic_resource_search_execute",
+    "oracle_query_execute",
+    "postgres_query_execute",
+    "rabbit_execute",
+    "redis_command_executer",
+    "server_command_executor"
+  ],
+  "unscoped": [
+    "ask_clarification",
+    "clarification",
+    "crawl_execute",
+    "delegate_agent",
+    "llm",
+    "load_skills",
+    "loganalysis",
+    "mermaid_validation",
+    "nudgebee_docs_search",
+    "prompt_refinement",
+    "remediation_generate",
+    "search_docs",
+    "search_execute",
+    "search_skills",
+    "search_tools",
+    "think",
+    "update_notebook",
+    "update_notebook_v2",
+    "visualizer"
+  ],
+  "builtin_only": [
+    "analyze_metric_series",
+    "im_message_send",
+    "shell_execute"
+  ]
+}

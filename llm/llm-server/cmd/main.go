@@ -13,22 +13,25 @@ import (
 	"syscall"
 	"time"
 
+	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/tools"
+
 	"github.com/gin-gonic/gin"
 
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/api"
+	"nudgebee/llm/budget"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
+	"nudgebee/llm/watch/bootstrap"
 	"nudgebee/llm/workspace"
-
-	// Enterprise-Edition packages register their hooks in init(). Blank-import
-	// triggers registration; absent these imports the corresponding OSS hooks
-	// stay nil and behavior matches the OSS edition.
 
 	"github.com/Cyprinus12138/otelgin"
 	"github.com/gin-contrib/pprof"
@@ -59,9 +62,9 @@ func getLogLevel() slog.Level {
 }
 
 var logger = slog.New(
-	slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	common.NewDedupeHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: getLogLevel(),
-	}),
+	})),
 )
 
 func authHandlerMiddleware() gin.HandlerFunc {
@@ -91,7 +94,9 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		// Workspace endpoints handle their own internal authentication (JWT or RPC)
+		// Workspace endpoints authenticate themselves: an RPC action must carry
+		// the service token (checked in extractWorkspacePayloadAndContext, which
+		// fails closed when none is set), anything else a workspace execution JWT.
 		if strings.HasPrefix(c.Request.URL.Path, "/api/v1/workspace/") {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
@@ -106,7 +111,7 @@ func authHandlerMiddleware() gin.HandlerFunc {
 		// chose to enforce it.
 		if config.Config.LlmServerToken != "" {
 			authHeader := c.Request.Header.Get(config.Config.LlmServerTokenHeader)
-			if authHeader != config.Config.LlmServerToken {
+			if !api.ServiceTokenMatches(authHeader) {
 				logger.Error("main: invalid service token", "path", c.Request.URL.Path, "method", c.Request.Method)
 				c.AbortWithStatusJSON(401, gin.H{"message": "invalid " + config.Config.LlmServerTokenHeader})
 				return
@@ -197,7 +202,11 @@ func main() {
 	}()
 
 	slog.SetDefault(logger)
-	config.LogSecurityWarnings()
+	if err := config.CheckSecuritySecrets(); err != nil {
+		logger.Error("main: refusing to start", "error", err)
+		fmt.Fprintf(os.Stderr, "BOOT: refusing to start: %v\n", err)
+		os.Exit(1)
+	}
 	tp, mp, err := initOtel()
 	if err != nil {
 		slog.Error(err.Error())
@@ -205,6 +214,8 @@ func main() {
 	}
 	common.InitMetrics()
 	core.InitMetrics()
+	// Every replica holds per-pod caches, so every replica must hear about changes.
+	_ = common.StartReplicaBroadcastSubscriber()
 	egressfilter.PlatformEntropyEnabled = config.Config.LlmServerEgressFilterEntropyEnabled
 	prompts.InitializeGlobalLoader()
 	// Every registered prompt must resolve against the embedded FS. Prompts ship
@@ -221,7 +232,7 @@ func main() {
 		slog.Error("main: prompt catalog is incomplete", "error", err)
 		os.Exit(1)
 	}
-	if err := core.InitTokenizers(); err != nil {
+	if err := llmruntime.InitTokenizers(); err != nil {
 		slog.Error("main: failed to init tokenizers", "error", err)
 		return
 	}
@@ -274,12 +285,13 @@ func main() {
 
 	// Start background integration KB sync
 	syncCtx, syncCancel := context.WithCancel(context.Background())
+	workspaceProxySrv := api.StartWorkspaceProxyTLS(syncCtx)
 	// Periodic cleanup of the in-memory egressfilter tenant-config cache.
 	// Without this, the map grows by one entry per tenant ever resolved
 	// and never shrinks. The cleanup walks the map once a minute and
 	// drops expired entries.
 	egressfilter.StartTenantConfigCacheCleanup(syncCtx)
-	go toolscore.StartIntegrationKBSync(syncCtx)
+	go knowledge.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 
 	// One-time sync of the capability catalog (agent tools + runbook-server
@@ -317,18 +329,54 @@ func main() {
 		slog.Warn("main: failed to register workspace stale sweep job", "error", err)
 	}
 
+	// Skill sources (#41514): download from GitHub with the tenant's GitHub
+	// integration token, and re-sync each source once per KB sync interval.
+	knowledge.GitHubTokenResolver = tools.ResolveTenantGithubToken
+	knowledge.FetchSkillSource = knowledge.FetchGitHubSkillSource
+	if err := common.NewLeaderIntervalJob("skill_source_sync", knowledge.SyncDueSkillSources, 10*time.Minute); err != nil {
+		slog.Warn("main: failed to register skill source sync job", "error", err)
+	}
+
 	// Weekly event-analysis digest. Convergent + leader-elected: the job fills
 	// whichever (account, week) slots have no row, so a missed tick self-heals.
 	if err := api.RegisterEventAnalysisDigestJob(); err != nil {
 		slog.Warn("main: failed to register event analysis digest job", "error", err)
 	}
 
+	// Marks Unknown any remediation run whose result was never recorded (#40734).
+	if err := api.RegisterRemediationRunReaper(); err != nil {
+		slog.Warn("main: failed to register remediation run reaper", "error", err)
+	}
+	// Follows up each settled run read-only for tenants with the remediation loop on (#40734).
+	if err := api.RegisterRemediationFollowups(); err != nil {
+		slog.Warn("main: failed to register remediation follow-ups", "error", err)
+	}
+	// Starts the background planning turns that write each alert's plan, for the same tenants (#40734).
+	if err := api.RegisterRemediationPlanning(); err != nil {
+		slog.Warn("main: failed to register remediation planning", "error", err)
+	}
+
+	// Daily LLM usage rollup that budget checks read (#40241). Convergent +
+	// leader-elected: rebuilds yesterday, today and any day not yet built.
+	if err := budget.RegisterUsageRollupJob(); err != nil {
+		slog.Warn("main: failed to register usage rollup job", "error", err)
+	}
+	// Fills conversation_account_id on older usage rows, which the AI Cost
+	// Analyser filters on (#40241).
+	if err := budget.RegisterUsageAccountBackfillJob(); err != nil {
+		slog.Warn("main: failed to register usage account backfill job", "error", err)
+	}
+
 	// Periodically delete never-used and stale long-term memories.
-	go core.StartMemoryTTLCleanup(syncCtx)
+	go memory.StartMemoryTTLCleanup(syncCtx)
 
 	// Expire stale WAITING conversations so the Waiting list stays an inbox.
 	if err := core.RegisterWaitingConversationExpiry(syncCtx); err != nil {
 		slog.Warn("main: failed to register waiting conversation expiry job", "error", err)
+	}
+
+	if err := llmruntime.RegisterLLMHookLinkCleanup(); err != nil {
+		slog.Warn("main: failed to register LLM hook link cleanup job", "error", err)
 	}
 
 	// Memory-v2 scheduled maintenance jobs (both the SQL-only bundle in
@@ -348,7 +396,7 @@ func main() {
 
 	// Wire the watch package against the LLM + security stack and register
 	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.
-	if err := core.BootstrapWatch(); err != nil {
+	if err := bootstrap.BootstrapWatch(); err != nil {
 		slog.Error("main: failed to bootstrap watch", "error", err)
 	}
 
@@ -360,6 +408,9 @@ func main() {
 		agents.CancelActiveCodeAnalyses()
 		syncCancel() // Stop the KB sync goroutine
 		slog.Info("main: connections closed, shutting down server")
+		if workspaceProxySrv != nil {
+			_ = workspaceProxySrv.Shutdown(context.Background())
+		}
 		err := srv.Shutdown(context.Background())
 		if err != nil {
 			slog.Error("main: server shutdown failed:", "error", err)

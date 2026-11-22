@@ -6,8 +6,11 @@ import NotifyBanner from '@shared/NotifyBanner';
 import Text from '@shared/format/Text';
 import ClusterDropDown from '@shared/navigation/ClusterDropDown';
 import ConversationLoader from '@shared/ConversationLoader';
+import { LiveStatusLoader } from './common/liveStatus';
 import Tooltip from '@ui/Tooltip';
+import { Skeleton } from '@ui/Skeleton';
 import AskNudgebeeLayout from '@shared/layout/AskNudgebeeLayoutV2';
+import { MAIN_RAIL_WIDTH, NUBI_SUBNAV_WIDTH, CONVERSATION_LIST_WIDTH_PX } from '@shared/layout/railWidths';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import { useData } from '@context/DataContext';
@@ -23,6 +26,7 @@ import { getUserSession, hasReadAccess, hasPermission } from '@lib/auth';
 import { applyFiltersOnRouter } from '@lib/router';
 import { Avatar, Box, CircularProgress, Typography } from '@mui/material';
 import { Divider } from '@ui/Divider';
+import { Card } from '@ui/Card';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
 import { useEffect, useRef, useReducer, useMemo, useCallback, useState } from 'react';
@@ -45,6 +49,7 @@ import QuestionNavigator from './common/QuestionNavigator';
 import FollowupSheet from './common/FollowupSheet';
 import MessageStream from './MessageStream';
 import TroubleshootList from './TroubleshootList';
+import SetupProgressBanner from '@components/onboarding/SetupProgressBanner';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useQueuedMessages } from '@hooks/useQueuedMessages';
 import QueuedMessagesBanner from './common/QueuedMessagesBanner';
@@ -130,9 +135,14 @@ const getInitials = (name) => {
 
 const NOOP = () => {};
 
+// The full page's fixed header and composer start past the app rail plus Nubi's sub-nav.
+const NUBI_NAV_WIDTH_PX = MAIN_RAIL_WIDTH + NUBI_SUBNAV_WIDTH;
+
 const KubernetesLLMResponseGenerator = ({
   accountId,
   query = '',
+  // A message the opener prepared for the person to review and send (not sent on its own).
+  draft = '',
   queryPrefix = '',
   querySuffix = '',
   popup = false,
@@ -197,7 +207,7 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [sessionId, conversationId]);
 
-  const { selectedCluster, setSelectedCluster } = useData();
+  const { selectedCluster, setSelectedCluster, allCluster } = useData();
 
   const [uiState, uiDispatch] = useReducer(componentReducer, null, () => {
     let restoredSessionId = router.query.session_id || sessionId || '';
@@ -290,7 +300,7 @@ const KubernetesLLMResponseGenerator = ({
     setRawConversations,
     setSelectedConversation,
   } = useConversationManager();
-  const { allAgents, enabledAgents, loadingAgents, allFunctions, refreshAgents } = useAgentConfiguration(accountId);
+  const { enabledAgents, loadingAgents, allSkills } = useAgentConfiguration(accountId);
   const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage, getReasoningForTool } =
     useTokenUsage(accountId);
   const { suggestions: conversationSuggestions, fetchSuggestions, clearSuggestions } = useConversationSuggestions(accountId);
@@ -326,8 +336,23 @@ const KubernetesLLMResponseGenerator = ({
     selectedConfig,
     setSelectedConfig,
     clearModelConfig,
+    extraRequestConfig,
+    setExtraRequestConfig,
     imageSupport,
+    modelsLoaded,
   } = useLLMInvestigationControl(accountId, eventId);
+  // While a model call waits on a retry or a summary, the thinking indicator shows why.
+  const runningLiveStatus = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return undefined;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.type === 'question') {
+        return messages[i].liveStatus;
+      }
+    }
+    return undefined;
+  }, [messages]);
 
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
@@ -338,6 +363,9 @@ const KubernetesLLMResponseGenerator = ({
     () => Boolean(router.query.session_id || router.query.conversation_id || currentlyProcessingQuestion),
     [router.query.session_id, router.query.conversation_id, currentlyProcessingQuestion]
   );
+
+  // The pre-chat landing view: no session/conversation picked yet and nothing is running.
+  const isEmptyLandingScreen = !popup && selectedSessionId === '' && selectedConversationId === '' && !currentlyProcessingQuestion;
 
   const navigatorQuestions = useMemo(
     () =>
@@ -502,6 +530,22 @@ const KubernetesLLMResponseGenerator = ({
   // moment the user optimistically answers, so the sheet collapses into its inline pill
   // instead of sitting with a loader until the next poll.
   const showFollowupSheet = Boolean(activeWaitingFollowup) && conversationStatus !== 'COMPLETED' && !isActiveFollowupOptimisticallyAnswered;
+
+  // Tell the page when a follow-up appears or is answered in this conversation (same pattern as
+  // nb:event-resolution-changed), so a tab showing the same alert reads again at once: the remediation tab shows the
+  // approval chat is asking for within one read.
+  const followupSessionId = selectedSessionId || router.query.session_id || sessionId;
+  const announceFollowup = useCallback(
+    (kind) => {
+      if (followupSessionId && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('nb:conversation-followup', { detail: { sessionId: followupSessionId, kind } }));
+      }
+    },
+    [followupSessionId]
+  );
+  useEffect(() => {
+    if (activeFollowupKey) announceFollowup('asked');
+  }, [activeFollowupKey, announceFollowup]);
 
   const displayMessages = useMemo(() => {
     if (!optimisticFollowupAnswer) {
@@ -973,6 +1017,11 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [queryPrefix, messages.length]);
 
+  // The opener's prepared message goes into the composer; the person sends it.
+  useEffect(() => {
+    if (draft) setGenerateQuestionText(draft);
+  }, [draft, sessionId, setGenerateQuestionText]);
+
   // Open an existing conversation already at the bottom: when its history finishes loading,
   // jump to the latest message instantly (behavior: 'auto'), once per session — so there's no
   // visible top-to-bottom scroll after the shimmer. Skipped for a brand-new first query (keep
@@ -1112,6 +1161,40 @@ const KubernetesLLMResponseGenerator = ({
     };
   }, [shouldPollConversation, needsConversationRefresh, selectedSessionId, selectedConversationId, fetchConversation]);
 
+  // The same conversation can be open in another surface — the Ask Nudgebee page in one tab
+  // and the automation editor's Nubi panel in another (#30669). Polling above only runs while
+  // this surface knows of an active turn, so an idle surface never sees a turn started
+  // elsewhere: it keeps accepting prompts as if the conversation were free, and misses what
+  // that turn changed. Re-read the conversation whenever the user comes back to this tab or
+  // window; a turn running elsewhere then shows as in progress here (which starts polling and
+  // gates the composer), and a turn that finished elsewhere appears in the thread.
+  const canRefreshOnReturn =
+    !shouldPollConversation &&
+    !isNewChat &&
+    !isConversationLoading &&
+    !currentlyProcessingQuestion &&
+    Boolean(selectedSessionId || selectedConversationId);
+  useEffect(() => {
+    if (!canRefreshOnReturn) return;
+    let inFlight = false;
+    const refresh = async () => {
+      // Switching tabs fires both events; one read is enough.
+      if (inFlight || document.visibilityState !== 'visible') return;
+      inFlight = true;
+      try {
+        await fetchConversation(selectedSessionId, selectedConversationId, 'poll', false);
+      } finally {
+        inFlight = false;
+      }
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [canRefreshOnReturn, selectedSessionId, selectedConversationId, fetchConversation]);
+
   useEffect(() => {
     if (conversationStatus === 'IN_PROGRESS') {
       const timeout = setTimeout(() => {
@@ -1192,7 +1275,26 @@ const KubernetesLLMResponseGenerator = ({
   // brief reset to '') before COMPLETED — leaving the editor canvas stale after an AI edit.
   // The active-latch is reset on a session switch so opening a historical (already-completed)
   // thread never fires this.
+  //
+  // A turn can also run in another surface on the same conversation (the Ask Nudgebee page in
+  // another tab, #30669) and finish before this one ever saw it active. It is recognised by a
+  // new last question: the last question is recorded whenever this surface sees a turn running
+  // or completed (the first read of a session only records it), so a completed read showing a
+  // question this surface never saw fires the same signal. A turn sent or watched here is
+  // recorded while it runs and never counts as one from elsewhere.
+  const lastQuestionId = useMemo(() => {
+    if (!Array.isArray(messages)) {
+      return null;
+    }
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.type === 'question' && !messages[i].isOptimistic && messages[i].messageId) {
+        return messages[i].messageId;
+      }
+    }
+    return null;
+  }, [messages]);
   const assistantWasActiveRef = useRef(false);
+  const seenQuestionIdRef = useRef(null);
   const completionSessionRef = useRef(selectedSessionId);
   useEffect(() => {
     if (apiMode !== 'workflow') {
@@ -1201,14 +1303,22 @@ const KubernetesLLMResponseGenerator = ({
     if (completionSessionRef.current !== selectedSessionId) {
       completionSessionRef.current = selectedSessionId;
       assistantWasActiveRef.current = false;
+      seenQuestionIdRef.current = null;
     }
-    if (conversationStatus === 'IN_PROGRESS' || conversationStatus === 'WAITING') {
+    const isActive = isConversationActivelyExecuting(conversationStatus) || conversationStatus === 'WAITING';
+    if (isActive) {
       assistantWasActiveRef.current = true;
-    } else if (conversationStatus === 'COMPLETED' && assistantWasActiveRef.current && onConversationComplete) {
-      assistantWasActiveRef.current = false;
-      onConversationComplete(selectedSessionId);
+    } else if (conversationStatus === 'COMPLETED') {
+      const finishedElsewhere = seenQuestionIdRef.current !== null && lastQuestionId !== null && lastQuestionId !== seenQuestionIdRef.current;
+      if ((assistantWasActiveRef.current || finishedElsewhere) && onConversationComplete) {
+        assistantWasActiveRef.current = false;
+        onConversationComplete(selectedSessionId);
+      }
     }
-  }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId]);
+    if ((isActive || conversationStatus === 'COMPLETED') && lastQuestionId !== null) {
+      seenQuestionIdRef.current = lastQuestionId;
+    }
+  }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId, lastQuestionId]);
 
   const handleDropdownChange = useCallback(
     (e) => {
@@ -1431,43 +1541,89 @@ const KubernetesLLMResponseGenerator = ({
       noLabel
       onClusterDataLoaded={handleClusterData}
       clusterData={selectedCluster}
-      minWidth={ds.space.mul(0, 90)}
+      minWidth='auto'
       groupByCloudProvider
       showPadding={true}
       showSmallTopPadding={false}
-      openDirection='up'
+      openDirection='down'
+      listboxHeight={ds.space.mul(0, 130)}
+      // Popper is portaled, so its width can't come from the wrapper's sx.
+      componentsProps={{ popper: { placement: 'bottom-start', style: { width: ds.space.mul(0, 126) } } }}
       // A chat stays on the account it started on; switching happens from a new chat.
       isDisabled={isChatScreen}
     />
   );
 
+  // An <input> doesn't size to its text, so the chip's width is derived from the label.
+  const accountLabelWidthCh = Math.max((selectedCluster?.label || '').length, 4) + 1;
+
+  // Only while the account list itself is unfetched. Keying on "nothing selected" instead would hang
+  // on a cross-tenant deep link, where ClusterDropDown deliberately never selects anything.
+  const isAccountLoading = allCluster == null && !selectedCluster?.value;
+
   // The account a chat runs on is chosen where the question is typed, next to the model.
   const composerAccountChip = popup ? undefined : (
-    <Tooltip
-      title={isChatScreen ? 'This chat stays on its account. Start a new chat to ask about another account.' : 'Account this chat runs on'}
-      placement='top'
-    >
-      <Box
-        data-testid='nubi-composer-account'
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          flexShrink: 0,
-          border: `0.5px solid ${ds.gray[300]}`,
-          borderRadius: ds.radius.sm,
-          backgroundColor: isChatScreen ? ds.background[300] : ds.background[100],
-          '&:hover': { borderColor: isChatScreen ? ds.gray[300] : ds.blue[500] },
-          '.MuiAutocomplete-root': { minHeight: 'auto !important' },
-          '& .MuiFormControl-root': { margin: '0 !important' },
-          '& .MuiOutlinedInput-notchedOutline': { border: 'none !important' },
-          '& .MuiOutlinedInput-root': { padding: `0 ${ds.space.mul(1, 7)} 0 0 !important` },
-          '& .MuiAutocomplete-input': { padding: `${ds.space[1]} 0 !important`, fontSize: 'var(--ds-text-caption) !important' },
-          '& li': { paddingLeft: '0 !important' },
-        }}
+    <>
+      {isAccountLoading && (
+        <Skeleton
+          shape='rect'
+          width={ds.space.mul(0, 50)}
+          height={ds.space.mul(0, 14)}
+          ariaLabel='Loading accounts'
+          sx={{ borderRadius: ds.radius.md, flexShrink: 0 }}
+        />
+      )}
+      <Tooltip
+        title={isChatScreen ? 'This chat stays on its account. Start a new chat to ask about another account.' : 'Account this chat runs on'}
+        placement='top'
       >
-        {clusterDropdownContent}
-      </Box>
-    </Tooltip>
+        <Box
+          data-testid='nubi-composer-account'
+          sx={{
+            // Kept mounted while loading: ClusterDropDown is what fetches and selects the account.
+            display: isAccountLoading ? 'none' : 'flex',
+            alignItems: 'center',
+            flexShrink: 0,
+            minWidth: ds.space.mul(0, 55),
+            maxWidth: ds.space.mul(0, 110),
+            minHeight: ds.space.mul(0, 14),
+            // Mirrors ModelPickerPopover's trigger in TextAreaV2 so the footer controls read as one set.
+            borderRadius: ds.radius.md,
+            backgroundColor: 'transparent',
+            '&:hover': isChatScreen ? {} : { backgroundColor: ds.gray[100] },
+            '.MuiAutocomplete-root': { minHeight: 'auto !important', minWidth: 0, flex: '1 1 auto' },
+            '& .MuiFormControl-root': { margin: '0 !important' },
+            '& .MuiOutlinedInput-notchedOutline': { border: 'none !important' },
+            '& .MuiInputAdornment-root': { ml: ds.space[0], mr: `${ds.space[0]} !important`, gap: ds.space[1] },
+            // Health dot is shown per option in the list; the selected value shows only its cloud icon.
+            '& .MuiInputAdornment-root > a': { display: 'none' },
+            // The cloud icon carries 16px of left padding.
+            '& .MuiInputAdornment-root > .MuiBox-root': { pl: '0 !important' },
+            '& .MuiOutlinedInput-root': {
+              padding: `0 ${ds.space.mul(1, 6)} 0 0 !important`,
+              backgroundColor: 'transparent !important',
+              flexWrap: 'nowrap !important',
+            },
+            '& .MuiAutocomplete-input': {
+              width: `${accountLabelWidthCh}ch !important`,
+              minWidth: '0 !important',
+              flex: '0 1 auto !important',
+              textOverflow: 'ellipsis',
+              padding: `${ds.space[1]} 0 !important`,
+              fontSize: 'var(--ds-text-caption) !important',
+              fontWeight: 'var(--ds-font-weight-medium) !important',
+              color: `${ds.gray[700]} !important`,
+              WebkitTextFillColor: `${ds.gray[700]} !important`,
+            },
+            '& li': { paddingLeft: '0 !important' },
+            // The dropdown's own spinner; loading is shown by the shimmer above instead.
+            '& .MuiCircularProgress-root': { display: 'none' },
+          }}
+        >
+          {clusterDropdownContent}
+        </Box>
+      </Tooltip>
+    </>
   );
 
   const content = (
@@ -1476,6 +1632,11 @@ const KubernetesLLMResponseGenerator = ({
         sx={{
           position: popup ? 'relative' : 'static',
           display: popup ? 'flex' : 'grid',
+          // AskNudgebeeLayoutV2's `body` is a flex column with alignItems:
+          // 'center', not 'stretch' — without an explicit width, this box
+          // shrinks to fit its own content instead of filling the available
+          // space, and every maxWidth inside it becomes a no-op.
+          width: '100%',
           transition: 'grid-template-columns 0.3s ease-in-out',
           gridTemplateColumns: 'minmax(0, 1fr)',
           ...(popup && {
@@ -1526,8 +1687,28 @@ const KubernetesLLMResponseGenerator = ({
               overflow: 'hidden',
               boxSizing: 'border-box',
             }),
+            // The sticky "nubi" title bar below still takes its own flow height, so this
+            // has to be a flex column capped at 100vh — scrollContainerRef then only gets
+            // whatever height is left, however tall the title bar actually renders.
+            ...(isEmptyLandingScreen && {
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              boxSizing: 'border-box',
+              height: '100vh',
+            }),
           }}
         >
+          {!isChatScreen && !popup && (
+            // Nubi is the default landing page now, so it carries the same
+            // "finish setup" nudge /home shows on arrival. Only on the
+            // pre-chat welcome screen — isChatScreen's header is fixed-position
+            // and would sit over a banner stacked above the chat, same reason
+            // PendingAgentInstallBanner is off on this route (layout/index.jsx).
+            <Box sx={{ padding: `0 ${ds.space[5]}` }}>
+              <SetupProgressBanner />
+            </Box>
+          )}
           {!isChatScreen && !popup && (
             <Box
               sx={{
@@ -1568,7 +1749,7 @@ const KubernetesLLMResponseGenerator = ({
                 zIndex: 20,
                 top: 0,
                 right: 0,
-                left: ds.space.mul(0, 38),
+                left: `calc(${NUBI_NAV_WIDTH_PX}px + ${ds.space[2]})`,
                 pr: ds.space[5],
                 backgroundColor: 'var(--ds-background-100)',
               }}
@@ -1777,7 +1958,18 @@ const KubernetesLLMResponseGenerator = ({
               overflowX: 'hidden',
               position: 'relative',
               mx: popup ? 0 : 'auto',
-              maxWidth: popup ? '100%' : '60%',
+              // On the landing view, the composer and the errors/optimize list below each cap
+              // their own width already (flat px, not relative to this column) — an extra %-of-
+              // viewport cap here just re-coupled both of them to the same shrinking number once
+              // the viewport got narrow enough to bind. Left uncapped there; still capped for the
+              // chat screen, where message bubbles need the narrower reading width.
+              maxWidth: popup
+                ? '100%'
+                : isEmptyLandingScreen
+                ? 'none'
+                : isConversationListVisible
+                ? `calc((100% - ${CONVERSATION_LIST_WIDTH_PX}px) * 0.85)`
+                : '65%',
               mb: popup ? 0 : isChatScreen ? ds.space.mul(1, 40) : 0,
               px: popup ? ds.space.mul(1, 5) : 0,
               pb: popup && (selectedSessionId != '' || selectedConversationId != '') ? ds.space.mul(0, 75) : popup ? ds.space.mul(0, 5) : 0,
@@ -1789,8 +1981,15 @@ const KubernetesLLMResponseGenerator = ({
                 flexDirection: 'column',
               }),
               ...(!popup && {
-                minHeight: '100vh',
-                transform: isConversationListVisible ? 'translateX(125px)' : 'translateX(0)',
+                // On the landing view the parent is already capped at 100vh (title bar + this),
+                // so this just takes whatever's left rather than claiming another full 100vh —
+                // the errors/optimize list below scrolls internally instead of the whole page.
+                // Explicit width: in the flex-column parent, `mx: auto` disables stretch, so without
+                // it this shrank to its content — and its widest content is the cards below.
+                ...(isEmptyLandingScreen ? { flex: 1, minHeight: 0, width: '50%' } : { minHeight: '100vh' }),
+                // The panel is `position: absolute` and won't push this content itself. Half its
+                // width re-centres the column in the space beside it; a full shift overflows the right edge.
+                transform: isConversationListVisible ? `translateX(${CONVERSATION_LIST_WIDTH_PX / 2}px)` : 'translateX(0)',
                 transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
               }),
 
@@ -1819,7 +2018,7 @@ const KubernetesLLMResponseGenerator = ({
                 display: 'flex',
                 position: 'relative',
                 flexDirection: 'column',
-                justifyContent: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup && 'center',
+                ...(isEmptyLandingScreen && { height: '100%' }),
                 ...(popup && selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && { flex: 1 }),
               }}
             >
@@ -1828,7 +2027,8 @@ const KubernetesLLMResponseGenerator = ({
                 flexDirection={'column'}
                 position={'relative'}
                 sx={{
-                  mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 25) : 0,
+                  mt: isEmptyLandingScreen ? ds.space.mul(1, 8) : 0,
+                  ...(isEmptyLandingScreen && { flex: 1, minHeight: 0 }),
                   ...(popup &&
                     selectedSessionId == '' &&
                     selectedConversationId == '' &&
@@ -1837,7 +2037,7 @@ const KubernetesLLMResponseGenerator = ({
                       pb: ds.space[1],
                     }),
                   '@media (max-width: 1280px)': {
-                    mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 15) : 0,
+                    mt: isEmptyLandingScreen ? ds.space.mul(1, 5) : 0,
                   },
                 }}
               >
@@ -1865,13 +2065,17 @@ const KubernetesLLMResponseGenerator = ({
                 {selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion ? (
                   <Box
                     sx={{
-                      maxWidth: popup ? '100%' : ds.space.mul(0, 362),
+                      // Wider than the errors/optimize list below (ds.space.mul(0, 400) = 800px).
+                      // A flat px cap, not a %-of-container one — the % version recomputed against
+                      // the column's width while it was still settling during hydration, so the
+                      // composer visibly shrank then snapped wider once layout stabilized.
+                      maxWidth: popup ? '100%' : ds.space.mul(0, 480),
                       mx: 'auto',
                       width: '100%',
                       mb: popup ? 0 : ds.space[3],
                       mt: popup ? 'auto' : 0,
                       '@media (max-width: 1300px)': {
-                        maxWidth: popup ? '100%' : ds.space.mul(0, 245),
+                        maxWidth: popup ? '100%' : ds.space.mul(0, 420),
                       },
                     }}
                   >
@@ -1880,12 +2084,12 @@ const KubernetesLLMResponseGenerator = ({
                       style={popup ? {} : { animationDelay: '0.3s' }}
                       sx={{
                         p: popup ? 0 : ds.space.mul(0, 3),
-                        borderRadius: ds.radius.xl,
+                        borderRadius: '20px',
                         background: popup
                           ? 'transparent'
                           : 'linear-gradient(to right,rgb(96, 165, 250, 0.2), rgb(96, 165, 250, 0.1), rgb(96, 165, 250, 0.2))',
-                        mt: popup ? 0 : ds.space.mul(1, 5),
-                        mb: ds.space[3],
+                        mt: popup ? 0 : ds.space.mul(1, 6),
+                        mb: ds.space[6],
                         mx: 'auto',
                       }}
                     >
@@ -1896,8 +2100,8 @@ const KubernetesLLMResponseGenerator = ({
                           alignItems: 'flex-end',
                           gap: popup ? ds.space.mul(0, 5) : ds.space.mul(0, 15),
                           backgroundColor: 'var(--ds-background-100)',
-                          borderRadius: ds.radius.xl,
-                          border: popup ? `1px solid var(--ds-blue-500) !important` : `0.75px solid ${'var(--ds-gray-600)'} !important`,
+                          borderRadius: '16px',
+                          border: popup ? `1px solid var(--ds-blue-500) !important` : `0.75px solid ${'var(--ds-blue-300)'} !important`,
                           boxShadow: popup
                             ? '0px 2px 7px 0px #3B82F60F,0px 0px 10px -1px #3B82F638'
                             : '0px 2px 7px 0px #3B82F60F,0px 4px 6px -1px #3B82F61F',
@@ -1933,7 +2137,7 @@ const KubernetesLLMResponseGenerator = ({
                         }}
                       >
                         <AutoSuggestTextarea
-                          functionSuggestions={allFunctions}
+                          skillSuggestions={allSkills}
                           ref={textareaRef}
                           onDraftChange={trackComposerDraft}
                           value={generateQuestionText}
@@ -1946,7 +2150,7 @@ const KubernetesLLMResponseGenerator = ({
                                 : 'Queue a follow-up message...'
                               : popup
                               ? 'Ask a question...'
-                              : 'Ask me about troubleshooting, error logs, resource usage, or optimizations.'
+                              : 'Ask about troubleshooting, logs or optimizations'
                           }
                           maxRows={popup ? 4 : 3}
                           minRows={popup ? 1 : 3}
@@ -1964,7 +2168,11 @@ const KubernetesLLMResponseGenerator = ({
                           selectedConfig={selectedConfig}
                           onConfigSelect={setSelectedConfig}
                           onConfigClear={clearModelConfig}
+                          composerConfig={extraRequestConfig}
+                          // Event conversations run on the event's settings, not per-turn picks.
+                          onComposerConfigChange={eventId ? undefined : setExtraRequestConfig}
                           imageSupport={imageSupport}
+                          modelsLoading={!modelsLoaded}
                           imageDraft={queueImageDraft}
                           onDraftSubmitted={(id) => setQueueImageDraft((current) => (current?.id === id ? undefined : current))}
                           isFollowUp={popup}
@@ -1983,46 +2191,57 @@ const KubernetesLLMResponseGenerator = ({
                   </Box>
                 ) : null}
 
-                {selectedSessionId == '' && selectedConversationId == '' && !popup && !currentlyProcessingQuestion && (
+                {isEmptyLandingScreen && (
                   <Box
-                    className={`animated-box`}
-                    style={{ animationDelay: '0.4s' }}
                     sx={{
                       mx: 'auto',
                       width: '100%',
-                      maxWidth: popup ? '95%' : ds.space.mul(0, 362),
+                      // Without this the side padding is added on top of 100% and the right card is clipped.
+                      boxSizing: 'border-box',
+                      maxWidth: popup ? '95%' : ds.space.mul(0, 400),
                       px: ds.space.mul(0, 5),
                       mt: ds.space.mul(0, 5),
+                      flex: 1,
+                      minHeight: 0,
+                      overflowY: 'auto',
                     }}
                   >
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space.mul(1, 10), mb: ds.space.mul(1, 5) }}>
-                      <Box>
+                    {/* Mounted only once the insights arrive, so the slide-up plays on the cards rather than on an empty box. */}
+                    {(troubleShootData.length > 0 || optimizationData.length > 0) && (
+                      <Box
+                        className='animated-box'
+                        style={{ animationDelay: '0.4s' }}
+                        sx={{ display: 'flex', flexDirection: 'row', gap: ds.space.mul(1, 4), mb: ds.space.mul(1, 5) }}
+                      >
                         {troubleShootData.length > 0 && (
-                          <Text
-                            value='Any Errors in the Past 24 Hours?'
-                            sx={{ fontWeight: 'var(--ds-font-weight-medium)', fontFamily: ds.font.sans, mb: ds.space[3] }}
-                          />
-                        )}
-                        {troubleShootData.map((data) => (
-                          <Box key={data.id}>
-                            <TroubleshootList data={data} type='troubleshooting' accountId={accountId} />
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Text
+                              value='Any Errors in the Past 24 Hours?'
+                              sx={{ fontWeight: ds.weight.medium, fontFamily: ds.font.sans, mb: ds.space[3] }}
+                            />
+                            <Card size='sm' elevation='flat' sx={{ '& > div:last-child .MuiAccordion-root': { borderBottom: 'none' } }}>
+                              {troubleShootData.map((data) => (
+                                <Box key={data.id}>
+                                  <TroubleshootList data={data} type='troubleshooting' accountId={accountId} />
+                                </Box>
+                              ))}
+                            </Card>
                           </Box>
-                        ))}
-                      </Box>
-                      <Box>
+                        )}
                         {optimizationData.length > 0 && (
-                          <Text
-                            value='What can we Optimize?'
-                            sx={{ fontWeight: 'var(--ds-font-weight-medium)', fontFamily: ds.font.sans, mb: ds.space[3] }}
-                          />
-                        )}
-                        {optimizationData.map((data) => (
-                          <Box key={data.id}>
-                            <TroubleshootList data={data} type='optimization' accountId={accountId} />
+                          <Box sx={{ flex: 1, minWidth: 0 }}>
+                            <Text value='What can we Optimize?' sx={{ fontWeight: ds.weight.medium, fontFamily: ds.font.sans, mb: ds.space[3] }} />
+                            <Card size='sm' elevation='flat' sx={{ '& > div:last-child .MuiAccordion-root': { borderBottom: 'none' } }}>
+                              {optimizationData.map((data) => (
+                                <Box key={data.id}>
+                                  <TroubleshootList data={data} type='optimization' accountId={accountId} />
+                                </Box>
+                              ))}
+                            </Card>
                           </Box>
-                        ))}
+                        )}
                       </Box>
-                    </Box>
+                    )}
                   </Box>
                 )}
               </Box>
@@ -2206,7 +2425,7 @@ const KubernetesLLMResponseGenerator = ({
                   mb={popup ? ds.space.mul(1, 5) : ds.space.mul(0, 35)}
                   sx={{ width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0, boxSizing: 'border-box' }}
                 >
-                  <ConversationLoader query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
+                  <LiveStatusLoader liveStatus={runningLiveStatus} query={currentlyProcessingQuestion} startedAt={activeQuestionStartedAt} />
                 </Box>
               );
             })()}
@@ -2220,18 +2439,24 @@ const KubernetesLLMResponseGenerator = ({
                 flexDirection: 'column',
                 ...(!popup && {
                   width: '100%',
-                  maxWidth: '60%',
+                  // 70% of the area beside the nav, or 90% of what's left beside the history panel.
+                  // This box is fixed, so its % is of the viewport and the nav width is taken out first.
+                  maxWidth: isConversationListVisible
+                    ? `calc((100% - ${NUBI_NAV_WIDTH_PX + CONVERSATION_LIST_WIDTH_PX}px) * 0.9)`
+                    : `calc((100% - ${NUBI_NAV_WIDTH_PX}px) * 0.7)`,
                   mx: 'auto',
                   position: 'fixed',
                   bottom: 0,
-                  left: ds.space.mul(1, 25),
+                  // Starts where the message column's container starts, so both centre on the same line.
+                  left: `${NUBI_NAV_WIDTH_PX}px`,
                   right: 0,
                   zIndex: 10,
                   backgroundColor: 'var(--ds-background-100)',
                   borderRadius: 'var(--ds-radius-lg) var(--ds-radius-lg) 0 0',
                   pt: ds.space[2],
                   px: 0,
-                  transform: isConversationListVisible ? 'translateX(125px)' : 'translateX(0)',
+                  // Same half-width shift as the scroll container above, so the two stay aligned.
+                  transform: isConversationListVisible ? `translateX(${CONVERSATION_LIST_WIDTH_PX / 2}px)` : 'translateX(0)',
                   transition: 'transform 0.4s cubic-bezier(0.4, 0, 0.2, 1)',
                 }),
                 ...(popup && {
@@ -2260,10 +2485,13 @@ const KubernetesLLMResponseGenerator = ({
                     selectedTierModels={selectedTierModels}
                     popup={popup}
                     onStop={handleStopInvestigation}
-                    onOptimisticSubmit={(answer) => setOptimisticFollowupAnswer({ key: activeFollowupKey, answer })}
-                    onSubmitError={() => {
+                    onOptimisticSubmit={(answer) => {
+                      setOptimisticFollowupAnswer({ key: activeFollowupKey, answer });
+                      announceFollowup('answered');
+                    }}
+                    onSubmitError={(message) => {
                       setOptimisticFollowupAnswer(null);
-                      snackbar.error('Couldn’t submit your response. Please try again.');
+                      snackbar.error(message || 'Couldn’t submit your response. Please try again.');
                     }}
                   />
                 </Box>
@@ -2305,7 +2533,7 @@ const KubernetesLLMResponseGenerator = ({
                     flexDirection: popup ? 'column' : 'row',
                     backgroundColor: 'var(--ds-background-100)',
                     borderRadius: ds.radius.xl,
-                    border: `1px solid var(--ds-blue-500) !important`,
+                    border: `1px solid var(--ds-blue-300) !important`,
                     boxShadow: '0px 2px 7px 0px #3B82F60F,0px 0px 10px -1px #3B82F638',
                     mt: 0,
                     padding: popup ? `${ds.space[3]} ${ds.space[4]}` : `${ds.space.mul(0, 5)} ${ds.space[4]}`,
@@ -2339,7 +2567,7 @@ const KubernetesLLMResponseGenerator = ({
                   }}
                 >
                   <AutoSuggestTextarea
-                    functionSuggestions={allFunctions}
+                    skillSuggestions={allSkills}
                     ref={textareaRef}
                     onDraftChange={trackComposerDraft}
                     fontSize='var(--ds-text-body)'
@@ -2367,7 +2595,11 @@ const KubernetesLLMResponseGenerator = ({
                     selectedConfig={selectedConfig}
                     onConfigSelect={setSelectedConfig}
                     onConfigClear={clearModelConfig}
+                    composerConfig={extraRequestConfig}
+                    // Event conversations run on the event's settings, not per-turn picks.
+                    onComposerConfigChange={eventId ? undefined : setExtraRequestConfig}
                     imageSupport={imageSupport}
+                    modelsLoading={!modelsLoaded}
                     imageDraft={queueImageDraft}
                     onDraftSubmitted={(id) => setQueueImageDraft((current) => (current?.id === id ? undefined : current))}
                     externalAgentsLoading={loadingAgents}
@@ -2434,14 +2666,7 @@ const KubernetesLLMResponseGenerator = ({
   );
 
   return !popup ? (
-    <AskNudgebeeLayout
-      handleNewChat={() => handleNewChat()}
-      handleHomePage={() => router.push('/home')}
-      handleToggle={handleToggle}
-      onAgentsRefreshed={refreshAgents}
-      externalAgents={allAgents}
-      externalAgentsLoading={loadingAgents}
-    >
+    <AskNudgebeeLayout handleNewChat={() => handleNewChat()} handleToggle={handleToggle}>
       {content}
     </AskNudgebeeLayout>
   ) : (
@@ -2457,6 +2682,7 @@ KubernetesLLMResponseGenerator.propTypes = {
   source: PropTypes.string,
   categorySource: PropTypes.string,
   query: PropTypes.string,
+  draft: PropTypes.string,
   queryPrefix: PropTypes.string,
   querySuffix: PropTypes.string,
   popup: PropTypes.bool,

@@ -79,7 +79,12 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		SearchToolsToolName,
 		WebSearchAgentName,
 		NudgebeeAgentName,
+		// Preloaded, not on-demand: when only reachable via search_tools the
+		// planner browsed repos one file per shell call instead.
+		AgentCodeAnalyzer,
 		toolcore.ToolExecuteShellCommand,
+		// Preloaded, not on-demand: found only through search_tools, it was not called.
+		tools.ToolIMMessageSend,
 	}
 
 	// And every lean core must NOT preload these specialists — reaching them
@@ -87,7 +92,7 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 	// (Some clouds may not have every one of these, but if it's present it's a bug.)
 	sharedForbidden := []string{
 		GithubAgentName,
-		getTicketAgentName(),
+		TicketsV2AgentName,
 		VisualizationAgentName,
 		PostgresAgentName,
 		MySQLAgentName,
@@ -133,8 +138,15 @@ func TestLeanOrchestratorParity_ReducedCoreShape(t *testing.T) {
 		t.Run(tt.name+"_bounded_size", func(t *testing.T) {
 			// 8 shared + memory (conditional but usually 1) + followup (conditional).
 			// Allow generous ceiling to avoid brittle test on every optional add.
-			assert.LessOrEqual(t, len(tt.names), 16,
-				"%s reduced core has %d tools; lean should stay ≤16 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
+			// 17 since code_analyzer joined the shared core (raised from 16
+			// deliberately — see trimmedK8sCoreToolNames for why it is preloaded).
+			// 18 since analyze_metric_series joined it (#41760): every alert
+			// investigation is asked to compute "getting worse" with it, so a
+			// search_tools hop would cost an iteration on each metric alert.
+			// 19 since im_message_send joined it: the planner does not call a write
+			// tool it only found through search_tools.
+			assert.LessOrEqual(t, len(tt.names), 19,
+				"%s reduced core has %d tools; lean should stay ≤19 preloaded — otherwise the reach-on-demand pattern isn't being preserved",
 				tt.name, len(tt.names))
 		})
 	}

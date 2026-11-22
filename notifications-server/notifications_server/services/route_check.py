@@ -60,6 +60,9 @@ def sample_message(request):
         return message_type, {"source": "optimize", "parameters": {"account_id": account_id}}
     if source == "automation":
         return "generic", {"source": "automation", "event_type": event, "parameters": {"account_id": account_id}}
+    if source == "llm_budget":
+        message = "AI Gateway: key sample has used $40.00 of its $50.00 daily cost limit (80%)."
+        return "generic", {"source": "llm_budget", "parameters": {"message": message}}
     return source, {"source": source, "parameters": {}}
 
 

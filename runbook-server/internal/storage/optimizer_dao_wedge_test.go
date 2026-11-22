@@ -170,12 +170,15 @@ func TestGetActiveTasks_BoundsScheduledByAge(t *testing.T) {
 
 	recID := uuid.New()
 	expectedCutoff := time.Now().UTC().Add(-model.ScheduledTaskStaleAfter)
+	expectedApprovalCutoff := time.Now().UTC().Add(-model.AutoOptimizeApprovalWindow)
 
 	mock.ExpectQuery(regexp.QuoteMeta(`created_at >`)).
 		WithArgs(
 			sqlmock.AnyArg(), // recommendation ids
 			string(model.AutopilotTaskStatusScheduled),
 			nearNow{expected: expectedCutoff, tolerance: time.Minute},
+			string(model.AutopilotTaskStatusPendingApproval),
+			nearNow{expected: expectedApprovalCutoff, tolerance: time.Minute},
 		).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "auto_pilot_id", "tenant_id", "account_id", "recommendation_id", "status",

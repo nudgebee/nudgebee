@@ -34,17 +34,22 @@ func TestIncludesPod(t *testing.T) {
 
 // TestSupportedManagesKinds pins the exact set of workload_type values
 // for which the synthesizer emits a Workload→Pod MANAGES edge. The
-// audit of public.k8s_pods showed that production traffic in unsupported
-// kinds (ReplicaSet, Runner, Node, Rollout) accounts for 88k+ pods —
-// those must NOT match here, or callers would create dangling edges.
+// audit of public.k8s_pods showed that traffic in unsupported kinds
+// (ReplicaSet, Runner, Node) accounts for 88k+ pods — those must NOT
+// match here, or callers would create dangling edges.
+//
+// Rollout was in that list until #42134: the kind resolved to no Workload
+// node, so its pods' MANAGES edge would have dangled. Now sources/k8s builds
+// one, and the edge resolves — so the rule is "what sources/k8s declares",
+// not a fixed list, and Rollout moved to must.
 func TestSupportedManagesKinds(t *testing.T) {
-	must := []string{"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}
+	must := []string{"Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Rollout"}
 	for _, k := range must {
 		if !supportedManagesKinds[k] {
 			t.Errorf("supportedManagesKinds[%q] = false, want true", k)
 		}
 	}
-	mustNot := []string{"ReplicaSet", "Runner", "Node", "Rollout", "Pod", ""}
+	mustNot := []string{"ReplicaSet", "Runner", "Node", "Pod", ""}
 	for _, k := range mustNot {
 		if supportedManagesKinds[k] {
 			t.Errorf("supportedManagesKinds[%q] = true, want false", k)
@@ -223,5 +228,29 @@ func TestUnmarshalLabels(t *testing.T) {
 	mixed := unmarshalLabels([]byte(`{"app":"api","scale":3,"ha":true}`))
 	if mixed["app"] != "api" || mixed["scale"] != "3" || mixed["ha"] != "true" {
 		t.Errorf("mixed-type JSON not stringified correctly: got %v", mixed)
+	}
+}
+
+func TestPodSearchApplies(t *testing.T) {
+	cases := []struct {
+		name   string
+		params SearchNodesParams
+		want   bool
+	}{
+		{"no filters", SearchNodesParams{}, true},
+		{"k8s source", SearchNodesParams{Source: "k8s"}, true},
+		{"pod type", SearchNodesParams{NodeTypes: []NodeType{NodeTypePod}}, true},
+		{"aws source", SearchNodesParams{Source: "aws"}, false},
+		{"workload type only", SearchNodesParams{NodeTypes: []NodeType{NodeTypeWorkload}}, false},
+		// A role search must not return Pods: none can carry a role.
+		{"roles", SearchNodesParams{Roles: []string{"cache"}, Namespace: "redis-test"}, false},
+		{"roles with pod type", SearchNodesParams{Roles: []string{"cache"}, NodeTypes: []NodeType{NodeTypePod}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podSearchApplies(tc.params); got != tc.want {
+				t.Errorf("podSearchApplies(%+v) = %v, want %v", tc.params, got, tc.want)
+			}
+		})
 	}
 }

@@ -6,7 +6,9 @@ import { queryGraphQL } from '@lib/HttpService';
 // which forwards the operation arguments verbatim as the action Input and wraps
 // the upstream JSON under response.data.data.<action>.
 
-const OWNER_FIELDS = `resource_type resource_key found owner_type owner_id owner_name source via`;
+// `no_active_resource` is only ever sent to callers who may assign owners; for
+// everyone else, and from a backend that predates it, the field is simply absent.
+const OWNER_FIELDS = `resource_type resource_key found owner_type owner_id owner_name source via no_active_resource`;
 const RULE_FIELDS = `id name resource_domain match_scope match_key match_value cloud_account_id owner_type owner_id priority enabled`;
 
 export const GET_OWNER = `

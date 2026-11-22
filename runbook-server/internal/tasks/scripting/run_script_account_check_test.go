@@ -59,7 +59,7 @@ func TestResolveExecutorType(t *testing.T) {
 		assert.Equal(t, tc.want, got, "explicit %q, provider %q", tc.explicit, tc.provider)
 	}
 
-	config.Config.TaskScriptExecutionModel = "local"
-	assert.Equal(t, "local", executors.ResolveExecutorType(executors.ExecutionConfig{AccountProvider: "SelfHosted"}),
+	config.Config.TaskScriptExecutionModel = "kubernetes"
+	assert.Equal(t, "kubernetes", executors.ResolveExecutorType(executors.ExecutionConfig{AccountProvider: "SelfHosted"}),
 		"an unrecognised provider falls back to the system default")
 }

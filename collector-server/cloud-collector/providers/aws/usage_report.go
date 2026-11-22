@@ -553,6 +553,14 @@ func classifyCurReadError(err error) error {
 }
 
 func isCurAuthorizationDenied(err error) bool {
+	// A role that can no longer be assumed fails every cost call with the same
+	// AccessDenied code as a refused bucket, because the SDK fetches credentials
+	// inside the call. That is a dead credential, not an account without cost
+	// reporting: filing it as not-configured kept such accounts showing
+	// Connected while nothing was collected from them.
+	if _, refused := assumeRoleRefusal(err); refused {
+		return false
+	}
 	_, code, _, ok := IsAWSPermissionError(err)
 	if !ok {
 		return false

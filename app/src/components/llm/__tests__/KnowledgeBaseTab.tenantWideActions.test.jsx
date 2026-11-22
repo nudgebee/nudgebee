@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import KnowledgeBaseTab from '@components/llm/KnowledgeBaseTab';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
 
 jest.mock('@api1/knowledge-base', () => ({
   __esModule: true,
@@ -16,26 +16,60 @@ jest.mock('@api1/knowledge-base', () => ({
     deleteKnowledgeBase: jest.fn(),
     retriggerKB: jest.fn(),
     setKnowledgeBaseEnabled: jest.fn(),
+    setKnowledgeBaseAccountOverride: jest.fn(),
+    updateKnowledgeBaseVisibility: jest.fn(),
+    listKnowledgeBaseAccountOverrides: jest.fn(),
     mapKnowledgeBaseToAgent: jest.fn(),
     unmapKnowledgeBaseFromAgent: jest.fn(),
     getKBLoadHistory: jest.fn(),
     testRetrieval: jest.fn(),
+    listSkillSources: jest.fn(),
   },
 }));
 jest.mock('@api1/ask-nudgebee', () => ({ __esModule: true, default: { listAgents: jest.fn(), listTools: jest.fn() } }));
 jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: { getK8sWorkloadNames: jest.fn(), getK8sNamespaceNames: jest.fn() } }));
-jest.mock('@lib/auth', () => ({ hasWriteAccess: jest.fn() }));
+jest.mock('@lib/auth', () => ({ hasWriteAccess: jest.fn(), isTenantAdmin: jest.fn() }));
 jest.mock('@components/llm/ScopeChip', () => ({ __esModule: true, default: () => null, HybridScopeChips: () => null }));
 jest.mock('@components/llm/KnowledgePolicySettings', () => ({ __esModule: true, default: () => null }));
-jest.mock('@components/llm/KBDocumentsModal', () => ({ __esModule: true, default: () => null }));
+const mockDocumentsModal = jest.fn();
+jest.mock('@components/llm/KBDocumentsModal', () => ({
+  __esModule: true,
+  default: (props) => {
+    mockDocumentsModal(props);
+    return null;
+  },
+}));
 jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
   __esModule: true,
-  default: ({ open, onSubmit }) =>
+  default: ({ open, onSubmit, scopeOptions, preset }) =>
     open ? (
-      <button type='button' onClick={() => onSubmit({ name: 'Runbooks', agentIds: [] })}>
-        Submit KB form
-      </button>
+      <div>
+        <span>{`scopes:${(scopeOptions || []).map((o) => o.value).join(',')}`}</span>
+        <span>{`preset:${preset?.title || 'none'}`}</span>
+        <button type='button' onClick={() => onSubmit({ name: 'terraform', agentIds: ['code_analyzer'] })}>
+          Submit tool instructions form
+        </button>
+        <button type='button' onClick={() => onSubmit({ name: 'Runbooks', agentIds: [] })}>
+          Submit KB form
+        </button>
+        <button type='button' onClick={() => onSubmit({ name: 'Runbooks', agentIds: ['*'], visibility: 'organisation', accountIds: [] })}>
+          Submit KB form for the organisation
+        </button>
+        <button type='button' onClick={() => onSubmit({ name: 'Runbooks', agentIds: [], visibility: 'account', accountIds: [] })}>
+          Submit KB form for this account
+        </button>
+      </div>
     ) : null,
+}));
+jest.mock('@components/llm/KnowledgeBaseSharingModal', () => ({
+  __esModule: true,
+  default: ({ open, knowledgeBase }) => (open ? <span>{`sharing:${knowledgeBase?.name}`}</span> : null),
+}));
+jest.mock('@components/llm/SkillSourcesSection', () => ({
+  __esModule: true,
+  default: ({ sources }) => <span>{`skill-sources:${sources.length}`}</span>,
+  SkillDetailsModal: ({ open, knowledgeBase }) => (open ? <span>{`skill-details:${knowledgeBase?.skill_meta?.source_path}`}</span> : null),
+  shortCommit: (sha) => (sha ? String(sha).slice(0, 7) : ''),
 }));
 jest.mock('@components/llm/MemoryTable', () => ({
   MemoryTable: ({ columns, rows }) => (
@@ -80,39 +114,22 @@ jest.mock('@ui/Switch', () => ({
   ),
 }));
 
-// Tenant-wide raw list: a user KB in one account, an integration KB provisioned
-// in two accounts (grouped into one row), and an integration KB in one account.
+// Tenant-wide list: a user KB in one account, and an integration's knowledge
+// base — one organisation row for the integration (#40605).
 const kbs = [
   { id: 'kb-m', name: 'Runbooks', kb_type: 'manual', status: 'active', enabled: true, account_id: 'acct-9', account_name: 'Prod' },
   {
-    id: 'kb-i1',
+    id: 'kb-i',
     name: 'Confluence',
     kb_type: 'integration',
     integration_id: 'int-1',
     status: 'active',
     enabled: true,
-    account_id: 'acct-9',
-    account_name: 'Prod',
-  },
-  {
-    id: 'kb-i2',
-    name: 'Confluence',
-    kb_type: 'integration',
-    integration_id: 'int-1',
-    status: 'active',
-    enabled: true,
-    account_id: 'acct-2',
-    account_name: 'Stage',
-  },
-  {
-    id: 'kb-s',
-    name: 'Jira',
-    kb_type: 'integration',
-    integration_id: 'int-2',
-    status: 'active',
-    enabled: true,
-    account_id: 'acct-9',
-    account_name: 'Prod',
+    account_id: '',
+    visibility: 'organisation',
+    document_count: 4,
+    kinds: ['sop'],
+    capability_details: [{ name: 'kubectl_execute', surface: 'agent_tool', scope: 'pass_through', description: 'Runs kubectl' }],
   },
 ];
 
@@ -121,6 +138,11 @@ const ok = (data = {}) => ({ data, errors: [] });
 beforeEach(() => {
   jest.clearAllMocks();
   hasWriteAccess.mockImplementation((id) => id === 'acct-9' || id === 'acct-1');
+  isTenantAdmin.mockReturnValue(false);
+  apiKnowledgeBase.setKnowledgeBaseAccountOverride.mockResolvedValue(ok());
+  apiKnowledgeBase.updateKnowledgeBaseVisibility.mockResolvedValue(ok());
+  apiKnowledgeBase.listKnowledgeBaseAccountOverrides.mockResolvedValue(ok([]));
+  apiKnowledgeBase.createKnowledgeBase.mockResolvedValue(ok({ id: 'kb-new' }));
   apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok(kbs));
   apiKnowledgeBase.getKnowledgeBase.mockResolvedValue(ok({ id: 'kb-m', name: 'Runbooks', kb_type: 'manual' }));
   apiKnowledgeBase.getKBAgents.mockResolvedValue(ok([]));
@@ -128,6 +150,7 @@ beforeEach(() => {
   apiKnowledgeBase.deleteKnowledgeBase.mockResolvedValue(ok());
   apiKnowledgeBase.retriggerKB.mockResolvedValue(ok());
   apiKnowledgeBase.setKnowledgeBaseEnabled.mockResolvedValue(ok());
+  apiKnowledgeBase.listSkillSources.mockResolvedValue(ok([]));
   apiAskNudgebee.listAgents.mockResolvedValue({ data: { data: { ai_list_agents: { data: [] } } } });
   apiAskNudgebee.listTools.mockResolvedValue({ data: { data: { ai_list_tools: { data: [] } } } });
 });
@@ -143,16 +166,28 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
     expect(screen.queryByRole('button', { name: 'Add Knowledge Base' })).not.toBeInTheDocument();
   });
 
-  it('keeps an integration KB shared by several accounts read-only, but not one in a single account', async () => {
+  it("shows an integration's knowledge base once, as an organisation KB a non-admin cannot change", async () => {
     render(<KnowledgeBaseTab accountId='' />);
     fireEvent.click(await screen.findByText('tab:integration'));
 
-    const shared = await screen.findByTestId('row-Confluence');
-    expect(within(shared).queryByTestId('menu-Confluence')).not.toBeInTheDocument();
-    expect(within(shared).getByRole('checkbox')).toBeDisabled();
-    const single = screen.getByTestId('row-Jira');
-    expect(within(single).getByText('menu:Retrigger')).toBeEnabled();
-    expect(within(single).getByRole('checkbox')).toBeEnabled();
+    const row = await screen.findByTestId('row-Confluence');
+    expect(screen.getAllByTestId('row-Confluence')).toHaveLength(1);
+    expect(within(row).getAllByText('Organisation').length).toBeGreaterThan(0);
+    expect(within(row).getByText('menu:Retrigger')).toBeDisabled();
+    expect(within(row).queryByText('menu:Who can use it')).not.toBeInTheDocument();
+  });
+
+  it("lets a tenant admin choose who can use an integration's knowledge base and retrigger it", async () => {
+    isTenantAdmin.mockReturnValue(true);
+    render(<KnowledgeBaseTab accountId='' />);
+    fireEvent.click(await screen.findByText('tab:integration'));
+
+    const row = await screen.findByTestId('row-Confluence');
+    fireEvent.click(within(row).getByText('menu:Who can use it'));
+    expect(await screen.findByText('sharing:Confluence')).toBeInTheDocument();
+
+    fireEvent.click(within(row).getByText('menu:Retrigger'));
+    await waitFor(() => expect(apiKnowledgeBase.retriggerKB).toHaveBeenCalledWith('', 'kb-i'));
   });
 
   it("runs delete, retrigger and the enable switch against the row's own account", async () => {
@@ -165,10 +200,6 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
     fireEvent.click(within(row).getByText('menu:Delete'));
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(apiKnowledgeBase.deleteKnowledgeBase).toHaveBeenCalledWith('acct-9', 'kb-m'));
-
-    fireEvent.click(screen.getByText('tab:integration'));
-    fireEvent.click(within(await screen.findByTestId('row-Jira')).getByText('menu:Retrigger'));
-    await waitFor(() => expect(apiKnowledgeBase.retriggerKB).toHaveBeenCalledWith('acct-9', 'kb-s'));
   });
 
   it("loads the edit form's agents for the row's account and saves to it", async () => {
@@ -208,5 +239,207 @@ describe('KnowledgeBaseTab tenant-wide row actions', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(apiKnowledgeBase.deleteKnowledgeBase).toHaveBeenCalledWith('acct-1', 'kb-m'));
+  });
+});
+
+// Organisation KBs: no account_id; visibility says who sees them.
+const orgKb = { id: 'kb-o', name: 'Failover', kb_type: 'manual', status: 'active', enabled: true, account_id: '', visibility: 'organisation' };
+const selectedKb = { ...orgKb, id: 'kb-sel', name: 'Payments', visibility: 'selected_accounts' };
+
+describe('KnowledgeBaseTab documents modal', () => {
+  it("hands the modal the knowledge base's own row, so its detail view has the roll-up and the catalog details", async () => {
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+    fireEvent.click(await screen.findByText('tab:integration'));
+    const row = await screen.findByTestId('row-Confluence');
+    fireEvent.click(within(row).getByRole('button', { name: /documents of knowledge base Confluence/ }));
+
+    const props = mockDocumentsModal.mock.calls.at(-1)[0];
+    expect(props.open).toBe(true);
+    expect(props.knowledgeBase).toMatchObject({ id: 'kb-i', kinds: ['sop'] });
+    expect(props.knowledgeBase.capability_details[0]).toMatchObject({ name: 'kubectl_execute', scope: 'pass_through' });
+  });
+});
+
+describe('KnowledgeBaseTab organisation KBs', () => {
+  it("gives an account admin only this account's switch, read-only otherwise", async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([orgKb, { ...selectedKb }]));
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    const row = await screen.findByTestId('row-Failover');
+    expect(within(row).getByText('Organisation')).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: 'Edit knowledge base' })).not.toBeInTheDocument();
+    expect(within(row).getByText('menu:Delete')).toBeDisabled();
+    expect(within(row).queryByText('menu:Turn off for all accounts')).not.toBeInTheDocument();
+
+    fireEvent.click(within(row).getByRole('checkbox'));
+    await waitFor(() => expect(apiKnowledgeBase.setKnowledgeBaseAccountOverride).toHaveBeenCalledWith('acct-1', 'kb-o', false));
+    expect(apiKnowledgeBase.setKnowledgeBaseEnabled).not.toHaveBeenCalled();
+
+    // Only a tenant admin changes which accounts use a selected-accounts KB.
+    expect(within(screen.getByTestId('row-Payments')).getByRole('checkbox')).toBeDisabled();
+  });
+
+  it('shows a KB this account switched off with its switch off, so it can be switched back on', async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([{ ...orgKb, switched_off: true }]));
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    const box = within(await screen.findByTestId('row-Failover')).getByRole('checkbox');
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    await waitFor(() => expect(apiKnowledgeBase.setKnowledgeBaseAccountOverride).toHaveBeenCalledWith('acct-1', 'kb-o', true));
+  });
+
+  it('lets a tenant admin edit, delete and turn off an organisation KB for all accounts from an account view', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([orgKb]));
+    apiKnowledgeBase.getKnowledgeBase.mockResolvedValue(ok({ ...orgKb }));
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    const row = await screen.findByTestId('row-Failover');
+    fireEvent.click(within(row).getByText('menu:Turn off for all accounts'));
+    await waitFor(() => expect(apiKnowledgeBase.setKnowledgeBaseEnabled).toHaveBeenCalledWith('', 'kb-o', false));
+
+    fireEvent.click(within(screen.getByTestId('row-Failover')).getByRole('button', { name: 'Edit knowledge base' }));
+    await waitFor(() => expect(apiKnowledgeBase.getKnowledgeBase).toHaveBeenCalledWith('', 'kb-o'));
+    expect(apiKnowledgeBase.getKBAgents).not.toHaveBeenCalled();
+    expect(await screen.findByText('scopes:account,organisation,selected_accounts')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Submit KB form for the organisation'));
+    await waitFor(() => expect(apiKnowledgeBase.updateKnowledgeBase).toHaveBeenCalledWith('', 'kb-o', expect.any(Object)));
+    expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).not.toHaveBeenCalled();
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).not.toHaveBeenCalled();
+
+    fireEvent.click(within(screen.getByTestId('row-Failover')).getByText('menu:Delete'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(apiKnowledgeBase.deleteKnowledgeBase).toHaveBeenCalledWith('', 'kb-o'));
+  });
+
+  it('widens an account KB to the organisation after saving its content', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(within(await screen.findByTestId('row-Runbooks')).getByRole('button', { name: 'Edit knowledge base' }));
+    fireEvent.click(await screen.findByText('Submit KB form for the organisation'));
+
+    await waitFor(() => expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).toHaveBeenCalledWith('kb-m', 'organisation', [], ''));
+    expect(apiKnowledgeBase.updateKnowledgeBase).toHaveBeenCalledWith('acct-1', 'kb-m', expect.any(Object));
+  });
+
+  it('lets a tenant admin add organisation KBs and switch them for everyone from the tenant-wide view', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([orgKb]));
+    render(<KnowledgeBaseTab accountId='' />);
+
+    const row = await screen.findByTestId('row-Failover');
+    fireEvent.click(within(row).getByRole('checkbox'));
+    await waitFor(() => expect(apiKnowledgeBase.setKnowledgeBaseEnabled).toHaveBeenCalledWith('', 'kb-o', false));
+    expect(apiKnowledgeBase.setKnowledgeBaseAccountOverride).not.toHaveBeenCalled();
+    expect(within(row).queryByText('menu:Load History')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge Base' }));
+    expect(await screen.findByText('scopes:organisation,selected_accounts')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Submit KB form for the organisation'));
+    await waitFor(() =>
+      expect(apiKnowledgeBase.createKnowledgeBase).toHaveBeenCalledWith('', expect.objectContaining({ visibility: 'organisation' }))
+    );
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).not.toHaveBeenCalled();
+  });
+
+  it('maps an organisation KB moved back to one account to all agents there', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([orgKb]));
+    apiKnowledgeBase.getKnowledgeBase.mockResolvedValue(ok({ ...orgKb }));
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue(ok());
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(within(await screen.findByTestId('row-Failover')).getByRole('button', { name: 'Edit knowledge base' }));
+    fireEvent.click(await screen.findByText('Submit KB form for this account'));
+
+    await waitFor(() => expect(apiKnowledgeBase.updateKnowledgeBaseVisibility).toHaveBeenCalledWith('kb-o', 'account', [], 'acct-1'));
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-1', 'kb-o', '*'));
+  });
+
+  it('saves tool instructions for the code agent only and marks them always load', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.mapKnowledgeBaseToAgent.mockResolvedValue(ok());
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add tool instructions' }));
+    expect(await screen.findByText('preset:Add tool instructions')).toBeInTheDocument();
+    expect(screen.getByText('scopes:')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Submit tool instructions form'));
+
+    await waitFor(() => expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledWith('acct-1', 'kb-new', 'code_analyzer', true));
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).toHaveBeenCalledTimes(1);
+    expect(apiKnowledgeBase.mapKnowledgeBaseToAgent).not.toHaveBeenCalledWith('acct-1', 'kb-new', '*');
+  });
+
+  it('does not carry the tool-instructions preset into a plain Add Knowledge Base', async () => {
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add tool instructions' }));
+    fireEvent.click(await screen.findByText('Submit tool instructions form'));
+    await waitFor(() => expect(apiKnowledgeBase.createKnowledgeBase).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText('Submit tool instructions form')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Knowledge Base' }));
+    expect(await screen.findByText('preset:none')).toBeInTheDocument();
+  });
+
+  it('hides Add tool instructions in the tenant-wide view', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    render(<KnowledgeBaseTab accountId='' />);
+
+    await screen.findByTestId('row-Runbooks');
+    expect(screen.queryByRole('button', { name: 'Add tool instructions' })).not.toBeInTheDocument();
+  });
+});
+
+// A skill synced from a skill source: an organisation KB whose content and
+// scope belong to the source.
+const syncedKb = {
+  id: 'kb-s',
+  name: 'pdf-processing',
+  kb_type: 'manual',
+  status: 'active',
+  enabled: true,
+  account_id: '',
+  visibility: 'organisation',
+  source_id: 'src-1',
+  skill_meta: { source_path: 'skills/pdf-processing', commit: 'abcdef1234567' },
+};
+
+describe('KnowledgeBaseTab synced skills', () => {
+  it('marks a synced skill, names its source and commit, and hides Edit and Delete', async () => {
+    isTenantAdmin.mockReturnValue(true);
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([syncedKb]));
+    apiKnowledgeBase.listSkillSources.mockResolvedValue(ok([{ id: 'src-1', repo: 'acme/skills', status: 'active' }]));
+    render(<KnowledgeBaseTab accountId='' />);
+
+    const row = await screen.findByTestId('row-pdf-processing');
+    expect(within(row).getByTestId('kb-synced-badge')).toHaveTextContent('Synced');
+    await waitFor(() => expect(within(row).getByTestId('kb-synced-source')).toHaveTextContent('acme/skills · abcdef1'));
+    expect(within(row).queryByRole('button', { name: 'Edit knowledge base' })).not.toBeInTheDocument();
+    expect(within(row).queryByText('menu:Delete')).not.toBeInTheDocument();
+    // The enabled switch stays.
+    expect(within(row).getByRole('checkbox')).toBeEnabled();
+
+    fireEvent.click(within(row).getByText('menu:Skill details'));
+    expect(await screen.findByText('skill-details:skills/pdf-processing')).toBeInTheDocument();
+
+    // Repositories live in their own tab next to User and Integration.
+    expect(screen.queryByText('skill-sources:1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('tab:sources'));
+    expect(await screen.findByText('skill-sources:1')).toBeInTheDocument();
+  });
+
+  it('falls back to the source path for a non-admin, and offers Delete once the skill is archived', async () => {
+    apiKnowledgeBase.getKnowledgeBases.mockResolvedValue(ok([{ ...syncedKb, status: 'archived' }]));
+    render(<KnowledgeBaseTab accountId='acct-1' />);
+
+    const row = await screen.findByTestId('row-pdf-processing');
+    expect(within(row).getByTestId('kb-synced-source')).toHaveTextContent('skills/pdf-processing · abcdef1');
+    expect(within(row).getByText('menu:Delete')).toBeInTheDocument();
+    expect(apiKnowledgeBase.listSkillSources).not.toHaveBeenCalled();
+    expect(screen.queryByText('tab:sources')).not.toBeInTheDocument();
   });
 });

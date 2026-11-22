@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -43,6 +44,8 @@ func failoverTarget(requested string, fb routing.Endpoint) (schemas.ModelProvide
 func markFailover(c *gin.Context, rm *reqMeta, target schemas.ModelProvider, model string, primaryStatus int) {
 	rm.provider = target
 	rm.model = model
+	// TTFT is reported per provider, so time it from the fallback attempt, not the failed primary.
+	rm.attemptStart = time.Now()
 	rm.decision.Reason = routing.ReasonFallback
 	rm.failover = map[string]any{
 		"from":           rm.decision.RequestedProvider,
@@ -86,7 +89,7 @@ func (h *handler) attemptTranslatedUnary(c *gin.Context, bctx *schemas.BifrostCo
 		if json.Unmarshal(rm.body, &oaiReq) != nil {
 			return false
 		}
-		breq := oaiReq.ToBifrostChatRequest(bctx)
+		breq := engineChatRequest(bctx, &oaiReq)
 		breq.Provider, breq.Model = target, model
 		resp, bErr := h.client.ChatCompletionRequest(bctx, breq)
 		if bErr != nil || resp == nil {
@@ -145,7 +148,7 @@ func (h *handler) tryFailoverStream(c *gin.Context, bctx *schemas.BifrostContext
 			if json.Unmarshal(rm.body, &oaiReq) != nil {
 				continue
 			}
-			breq := oaiReq.ToBifrostChatRequest(bctx)
+			breq := engineChatRequest(bctx, &oaiReq)
 			breq.Provider, breq.Model = target, model
 			markFailover(c, rm, target, model, primaryStatus)
 			h.streamChatWith(c, bctx, cancel, rm, breq)

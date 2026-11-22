@@ -29,13 +29,19 @@ func captureSlog(t *testing.T, level slog.Level) *bytes.Buffer {
 // error for IDs not present (or explicitly listed in errs).
 type stubTicketManager struct {
 	ticketmgr.TicketManager
-	byID map[string]*models.Ticket
-	errs map[string]error
-	gets []string // ticket IDs Get was called with, in order
+	byID        map[string]*models.Ticket
+	errs        map[string]error
+	gets        []string // ticket IDs Get was called with, in order
+	getProjects []string // config.Projects[0].Key Get was called with, in order ("" if none configured)
 }
 
-func (m *stubTicketManager) Get(_ *gin.Context, _ models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
+func (m *stubTicketManager) Get(_ *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {
 	m.gets = append(m.gets, ticketID)
+	if len(config.Projects) > 0 {
+		m.getProjects = append(m.getProjects, config.Projects[0].Key)
+	} else {
+		m.getProjects = append(m.getProjects, "")
+	}
 	if err, ok := m.errs[ticketID]; ok {
 		return nil, err
 	}
@@ -64,6 +70,35 @@ func TestCollectManagerUpdates_NonJiraToolProducesUpdate(t *testing.T) {
 	}
 	if updates[0].rowID != "row-1" || updates[0].fields.Status != "Resolved" {
 		t.Fatalf("update = %+v, want rowID=row-1 status=Resolved", updates[0])
+	}
+}
+
+// A multi-project GitHub/GitLab integration must query each ticket's own
+// repo, not always the integration's first-configured one.
+func TestCollectManagerUpdates_UsesEachTicketsOwnProjectKey(t *testing.T) {
+	stored := []models.Ticket{
+		{ID: "row-1", TicketID: "1", Status: "open", ProjectKey: "org/first-repo"},
+		{ID: "row-2", TicketID: "2", Status: "open", ProjectKey: "org/second-repo"},
+	}
+	manager := &stubTicketManager{byID: map[string]*models.Ticket{
+		"1": {TicketID: "1", Status: "closed"},
+		"2": {TicketID: "2", Status: "closed"},
+	}}
+	configuration := models.TicketConfigurations{
+		Tool:     "github",
+		Projects: []models.Project{{Key: "org/first-repo"}, {Key: "org/second-repo"}},
+	}
+
+	updates := collectManagerUpdates(newSafeGinContext(), manager, configuration, stored)
+
+	if len(updates) != 2 {
+		t.Fatalf("got %d updates, want 2", len(updates))
+	}
+	want := []string{"org/first-repo", "org/second-repo"}
+	for i, got := range manager.getProjects {
+		if got != want[i] {
+			t.Fatalf("Get call %d used project %q, want %q (got_projects=%v)", i, got, want[i], manager.getProjects)
+		}
 	}
 }
 

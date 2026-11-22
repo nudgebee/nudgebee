@@ -26,6 +26,7 @@ import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import CallSplitOutlinedIcon from '@mui/icons-material/CallSplitOutlined';
+import TimerOutlinedIcon from '@mui/icons-material/TimerOutlined';
 import { Card } from '@ui/Card';
 import { Stat } from '@ui/Stat';
 import { Chip } from '@ui/Chip';
@@ -72,6 +73,12 @@ const REJECT_LABEL: Record<string, string> = {
   no_credentials: 'No credentials',
   blocked: 'Blocked (deny rule)',
   secret_blocked: 'Secret blocked (DLP)',
+  key_policy: 'Key restriction',
+  user_policy: 'User policy',
+  user_suspended: 'User suspended',
+  malformed_path: 'Malformed path',
+  unreadable_body: 'Unreadable body',
+  model_mismatch: 'Model mismatch (path vs body)',
 };
 
 // ─── Outcome bar ────────────────────────────────────────────────────────────────
@@ -237,6 +244,7 @@ export function GovernanceView({ metrics, filters, loading, error, onDrill }: Go
   // Enrichment fields are optional (an older gateway build omits them) — default
   // to empty so the panels degrade gracefully rather than crash on version skew.
   const byProvider = gov?.outcomes_by_provider ?? [];
+  const ttftByProvider = gov?.ttft_by_provider ?? [];
   const routes = gov?.substitution_routes ?? [];
 
   if (error) {
@@ -431,6 +439,39 @@ export function GovernanceView({ metrics, filters, loading, error, onDrill }: Go
           </Box>
         </Card>
       </Box>
+
+      {/* ─── Row 4: time to first token by provider ─────────── */}
+      <Card id='gov-ttft-by-provider'>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+          <CardHeader icon={<TimerOutlinedIcon sx={{ fontSize: 18 }} />} title='Time to first token by provider' />
+          <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>
+            Streamed requests only: how long until the first part of the answer arrived. Typical (p50) and slow (p95).
+          </Box>
+          {ttftByProvider.length === 0 ? (
+            <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>No streamed requests in this window.</Box>
+          ) : (
+            ttftByProvider.map((p) => (
+              <Box
+                key={p.provider}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--ds-space-2)',
+                  padding: 'var(--ds-space-1) var(--ds-space-2)',
+                }}
+              >
+                <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)' }}>{p.provider || '—'}</Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-3)', fontVariantNumeric: 'tabular-nums' }}>
+                  <Box sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>{fmtCount(p.requests)} streamed</Box>
+                  <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-800)' }}>p50 {fmtDuration(p.p50_ms)}</Box>
+                  <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-800)' }}>p95 {fmtDuration(p.p95_ms)}</Box>
+                </Box>
+              </Box>
+            ))
+          )}
+        </Box>
+      </Card>
     </Box>
   );
 }

@@ -85,7 +85,7 @@ func (r *FilterRepository) GetFilterForTenant(ctx *security.RequestContext, tena
 	)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("no filter found for tenant %s", tenantID)
+		return nil, fmt.Errorf("no filter found for tenant %s: %w", tenantID, sql.ErrNoRows)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query filter: %w", err)
@@ -661,7 +661,7 @@ type UpsertResult struct {
 // (= "all") flow_sources filter into its concrete members when computing what a save
 // removed. Keep in sync with the UI list and the registered flow sources in
 // knowledge_graph/flow_sources/.
-var toggleableFlowSources = []string{"datadog-apm", "ebpf", "newrelic-apm", "traces"}
+var toggleableFlowSources = []string{"datadog-apm", "ebpf", "elastic-apm", "newrelic-apm", "traces"}
 
 // expandIfEmpty returns universe when sel is empty, otherwise sel. An empty
 // account_ids / flow_sources list means "all" everywhere the filter is consumed, so
@@ -741,7 +741,7 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 			TenantID:    tenantUUID,
 			FilterName:  "default",
 			AccountIDs:  accountIDs,
-			Sources:     []string{"aws", "k8s", "azure", "gcp"},
+			Sources:     []string{"aws", "k8s", "azure", "gcp", "selfhosted"},
 			FlowSources: flowSources,
 			Filters:     map[string]interface{}{},
 			IsDefault:   true,

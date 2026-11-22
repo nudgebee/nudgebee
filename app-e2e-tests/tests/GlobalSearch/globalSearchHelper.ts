@@ -4,8 +4,9 @@ import { LoginPage } from "../../pages/LoginPage";
 import { GlobalSearchLocators } from "./globalSearchLocators";
 
 // The route every test starts from. The search box lives in Header1.jsx, which renders
-// on every authenticated page, so this is only ever "somewhere with a header" — the
-// lightest one available, and the page the app itself redirects to from `/`.
+// on every authenticated page except /ask-nudgebee (the app's actual default landing
+// page since it redirects from `/` — but its own layout doesn't mount Header1). So this
+// stays /home: the lightest page that still has the header the search box needs.
 export const LANDING_PATH = "/home";
 
 // Same precedence LoginPage.selectCluster uses, so a run configured either way resolves

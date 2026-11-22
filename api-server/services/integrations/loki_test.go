@@ -297,3 +297,44 @@ func TestNormalizeLokiURL(t *testing.T) {
 	assert.Equal(t, "http://loki.example.com", normalizeLokiURL("http://loki.example.com/"))
 	assert.Equal(t, "", normalizeLokiURL(""))
 }
+
+func TestLokiConfigSchema_ConnectionMode(t *testing.T) {
+	p := Loki{}.ConfigSchema().Properties[LokiConnectionModeKey]
+	assert.Equal(t, LokiConnectionModeDirect, p.Default, "rows saved before the field existed are direct")
+	assert.Equal(t, []any{LokiConnectionModeDirect, LokiConnectionModeVMAgent}, p.Enum)
+}
+
+func TestLokiValidateConfig_VMAgent(t *testing.T) {
+	base := func(over map[string]string) []core.IntegrationConfigValue {
+		m := map[string]string{
+			LokiConnectionModeKey: LokiConnectionModeVMAgent,
+			"loki_url":            "http://10.0.0.9:3100",
+			"loki_auth_type":      LokiAuthNone,
+		}
+		for k, v := range over {
+			m[k] = v
+		}
+		return lokiValues(m)
+	}
+
+	t.Run("a private address is accepted without an egress check or probe", func(t *testing.T) {
+		assert.Empty(t, Loki{}.ValidateConfig(nil, base(nil), "acc"))
+	})
+	t.Run("basic and bearer auth are accepted when complete", func(t *testing.T) {
+		assert.Empty(t, Loki{}.ValidateConfig(nil, base(map[string]string{
+			"loki_auth_type": LokiAuthBasic, "loki_username": "u", "loki_password": "p"}), "acc"))
+		assert.Empty(t, Loki{}.ValidateConfig(nil, base(map[string]string{
+			"loki_auth_type": LokiAuthBearer, "loki_bearer_token": "t"}), "acc"))
+	})
+	t.Run("incomplete credentials are rejected", func(t *testing.T) {
+		assert.NotEmpty(t, Loki{}.ValidateConfig(nil, base(map[string]string{"loki_auth_type": LokiAuthBasic, "loki_username": "u"}), "acc"))
+		assert.NotEmpty(t, Loki{}.ValidateConfig(nil, base(map[string]string{"loki_auth_type": LokiAuthBearer}), "acc"))
+	})
+	t.Run("a ruler URL is rejected", func(t *testing.T) {
+		assert.NotEmpty(t, Loki{}.ValidateConfig(nil, base(map[string]string{"loki_rules_url": "http://10.0.0.9:3100"}), "acc"))
+	})
+	t.Run("a missing or non-http URL is rejected", func(t *testing.T) {
+		assert.NotEmpty(t, Loki{}.ValidateConfig(nil, base(map[string]string{"loki_url": ""}), "acc"))
+		assert.NotEmpty(t, Loki{}.ValidateConfig(nil, base(map[string]string{"loki_url": "ftp://x"}), "acc"))
+	})
+}

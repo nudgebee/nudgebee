@@ -192,3 +192,34 @@ func TestBridgeCallWithoutAgentRun(t *testing.T) {
 	require.NotContains(t, body, "model_tier")
 	require.NotContains(t, body, "task_type")
 }
+
+// An analysis's own execution token authenticates its model calls; the pod
+// token is used only when llm-server did not issue one.
+func TestLLMServerModelAuthenticatesWithAnalysisToken(t *testing.T) {
+	cases := map[string]struct {
+		ctx  context.Context
+		want string
+	}{
+		"analysis token":    {ctx: WithWorkspaceToken(context.Background(), "analysis-token"), want: "analysis-token"},
+		"no analysis token": {ctx: WithWorkspaceToken(context.Background(), ""), want: "pod-token"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var got string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Get("X-Workspace-Token")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"Choices":[{"Content":"ok","StopReason":"stop"}]}`))
+			}))
+			defer server.Close()
+
+			model := &llmServerModel{baseURL: server.URL, token: "pod-token", accountID: "account-1", client: server.Client()}
+			_, err := model.GenerateContent(tc.ctx, []llms.MessageContent{
+				{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextPart("hello")}},
+			})
+
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}

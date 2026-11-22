@@ -1,6 +1,6 @@
 {
   "name": "cloud_repeating_alarms",
-  "story": "Four and three quarter hours of cloud alarms in one account, none related to another: one function's error alarm fires every 10 minutes, a second function's fires hourly in two regions, an autoscaling alarm fires now and then, and six hosts raise CPU and disk alarms that come and go. Every alarm is stored closed with no duration, as cloud alarms are today, and arrives in batches up to ten minutes after it started. Nothing but the clock connects two subjects here, so no alert may be filed under another subject's incident unless it started with it.",
+  "story": "Four and three quarter hours of cloud alarms in one account, none related to another: one function's error alarm fires every 10 minutes, a second function's fires hourly in two regions, an autoscaling alarm fires now and then, and six hosts raise CPU and disk alarms that come and go. Every alarm is stored closed with no duration, as a cloud alarm is when no poll can end it, and arrives in batches up to ten minutes after it started; two more replays store each alarm firing until its next firing begins instead. Nothing but the clock connects two subjects here, so no alert may be filed under another subject's incident unless it started with it.",
   "namespace": "cloud",
   "shape": "cloud",
   "maps": {},

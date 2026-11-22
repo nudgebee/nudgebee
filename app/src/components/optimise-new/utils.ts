@@ -1,5 +1,6 @@
 import { ds } from 'src/utils/colors';
 import { recommendationDetails } from '@api1/recommendation/data';
+import { snakeToTitleCase } from '@utils/common';
 
 // ─── Shared types ───
 
@@ -33,6 +34,7 @@ export const RULE_LABELS: Record<string, string> = {
   vm_stopped: 'VM Stopped',
   missing_tags: 'Missing Tags',
   orphaned_volume: 'Orphaned Volume',
+  disk_performance_overprovisioned: 'Disk Performance Overprovisioned',
   storage_public_access: 'Storage Public Access',
   storage_versioning_disabled: 'Storage Versioning Disabled',
   storage_no_lifecycle: 'Storage No Lifecycle',
@@ -190,12 +192,10 @@ export const formatRuleName = (ruleName: string, category?: string): string => {
   if (RULE_LABELS[ruleName]) {
     return RULE_LABELS[ruleName];
   }
-  return ruleName
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase())
-    .replace(/^aws /i, 'AWS ')
-    .replace(/^azure /i, 'Azure ')
-    .replace(/^gcp /i, 'GCP ');
+  // snakeToTitleCase (not a bare "capitalize each word" regex) so acronyms like
+  // rds/ec2/ecs/alb render as RDS/EC2/ECS/ALB instead of Rds/Ec2/Ecs/Alb (#31426).
+  // Normalize spaces to underscores first since it only splits on '_'.
+  return snakeToTitleCase(ruleName.replace(/\s+/g, '_'));
 };
 
 // Every label a rule can carry, for search matching. The Rules filter shows one

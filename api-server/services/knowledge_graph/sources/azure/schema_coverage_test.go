@@ -21,7 +21,7 @@ func TestSpecificTypeHasSchema(t *testing.T) {
 	}
 	// The label set is what the ontology layer covers; a drop here means a kind
 	// or a synthesized label went missing rather than that Azure shrank.
-	if len(labels) != 27 {
-		t.Errorf("drove %d distinct Azure specific_type labels, want 27: %v", len(labels), labels)
+	if len(labels) != 30 {
+		t.Errorf("drove %d distinct Azure specific_type labels, want 30: %v", len(labels), labels)
 	}
 }

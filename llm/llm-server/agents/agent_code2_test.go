@@ -6,6 +6,8 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
 	"os"
 	"strings"
 	"testing"
@@ -808,4 +810,17 @@ func TestCodeAnalyzerLegacyNameIsPickerAlias(t *testing.T) {
 	require.True(t, ok, "legacy name must still resolve")
 	assert.True(t, core.IsSystemAgentAlias(agentCodeAnalyzerLegacyName), "legacy name must not be listed as its own picker entry")
 	assert.False(t, core.IsSystemAgentAlias(AgentCodeAnalyzer))
+}
+
+// TestCodeAnalyzerConfigSchemaGatedOnGitIntegrations: code_analyzer clones with
+// GitHub/GitLab credentials, so its availability is decided by those two tools.
+func TestCodeAnalyzerConfigSchemaGatedOnGitIntegrations(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	tool, ok := toolcore.GetNBTool("acct-1", AgentCodeAnalyzer)
+	require.True(t, ok)
+	cfg, ok := tool.(toolcore.NBToolConfig)
+	require.True(t, ok)
+
+	assert.Equal(t, map[string]any{tools.ToolExecuteGithubCliCommand: true, tools.ToolExecuteGitlabCliCommand: true},
+		cfg.ConfigSchema(ctx).Properties["tools"].Items)
 }

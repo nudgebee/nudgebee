@@ -1,5 +1,6 @@
 import apiDashboards, { type Panel } from '@api1/dashboards';
 import apiTrace from '@api1/kubernetes/trace';
+import { panelQueryWindow } from './dashboardRange';
 import { draftFromQuery, filterableColumns, findTable, renderEntityQuery, tablesFor, type EntityColumn, type EntityTable } from './entityQuery';
 import { renderTemplate, type VariableValues } from './templating';
 
@@ -163,27 +164,88 @@ export async function loadViewerFilterValues({ panel, column, accountIds, variab
 
   const target = (panel.targets || []).find((t) => !t.hide);
   if (!target?.query) return [];
-  const rendered = renderEntityQuery(target.query, (v) => renderTemplate(v, variables));
-  const table = findTable(String(rendered.table || ''));
-  const grouping = table.columns.some((c) => c.aggregate);
-  const response = await apiDashboards.executeEntityQuery({
-    account_ids: accountIds,
+  const rendered = renderEntityQuery(target.query, (v, f) => renderTemplate(v, variables, f), variables);
+  return queryColumnValues({
     datasource: panel.datasource,
-    query: {
-      table: rendered.table,
-      columns: [{ name: column }],
-      ...(rendered.where ? { where: rendered.where } : {}),
-      // Newest first on a row table, so a capped list leans to what is current.
-      order_by: [grouping || !table.defaultSort ? { column, order: 'asc' } : { column: table.defaultSort, order: 'desc' }],
-      limit: VIEWER_FILTER_VALUE_LIMIT,
-    },
-    time_column: target.time_column,
-    start_time: startTime,
-    end_time: endTime,
+    tableName: String(rendered.table || ''),
+    column,
+    where: rendered.where,
+    timeColumn: target.time_column,
+    accountIds,
+    startTime,
+    endTime,
   });
+}
+
+interface ColumnQuery {
+  datasource: Panel['datasource'];
+  tableName: string;
+  column: string;
+  where?: unknown;
+  timeColumn?: string;
+  accountIds: string[];
+  startTime: number;
+  endTime: number;
+  signal?: AbortSignal;
+}
+
+/** What one column holds, asked of the query engine. See `loadViewerFilterValues` for how complete it is. */
+async function queryColumnValues({
+  datasource,
+  tableName,
+  column,
+  where,
+  timeColumn,
+  accountIds,
+  startTime,
+  endTime,
+  signal,
+}: ColumnQuery): Promise<string[]> {
+  const table = findTable(tableName);
+  const grouping = table.columns.some((c) => c.aggregate);
+  const response = await apiDashboards.executeEntityQuery(
+    {
+      account_ids: accountIds,
+      datasource,
+      query: {
+        table: tableName,
+        columns: [{ name: column }],
+        ...(where ? { where } : {}),
+        // Newest first on a row table, so a capped list leans to what is current.
+        order_by: [grouping || !table.defaultSort ? { column, order: 'asc' } : { column: table.defaultSort, order: 'desc' }],
+        limit: VIEWER_FILTER_VALUE_LIMIT,
+      },
+      time_column: timeColumn,
+      start_time: startTime,
+      end_time: endTime,
+    },
+    signal
+  );
   if (response.errors || !response.data) {
     const first = Array.isArray(response.errors) ? (response.errors[0] as { message?: string }) : null;
     throw new Error(first?.message || 'Could not list the values.');
   }
   return distinctValues(response.data.rows.map((row) => row[0]));
+}
+
+interface VariableValuesRequest {
+  table: string;
+  column: string;
+  accountIds: string[];
+  startTime: number;
+  endTime: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * The choices of a variable filled from the query engine, over the dashboard's
+ * range the way a new panel on that table reads it: standing rows ignore the
+ * range, and a table with a minimum window is widened to it.
+ */
+export function loadVariableValues({ table: tableName, column, accountIds, startTime, endTime, signal }: VariableValuesRequest): Promise<string[]> {
+  const table = findTable(tableName);
+  const timeColumn = table.standing ? undefined : table.timeColumns[0];
+  const target = { ref_id: 'A', query: { table: tableName }, time_column: timeColumn };
+  const window = panelQueryWindow({ datasource: 'nudgebee', targets: [target] } as unknown as Panel, startTime, endTime);
+  return queryColumnValues({ datasource: 'nudgebee', tableName, column, timeColumn, accountIds, ...window, signal });
 }

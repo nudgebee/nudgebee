@@ -49,6 +49,8 @@ var (
 	evalAsksForAccess  = regexp.MustCompile(`(?i)not (currently )?(connected|configured|available|found)|isn'?t (connected|configured)|connect (the|an|your)|add (the|an|your) .*(account|subscription)|no (azure|aws|gcp)? ?(account|subscription)|which (configured )?(azure |aws |gcp )?(cloud )?(account|subscription)`)
 	evalAutomationLink = regexp.MustCompile(`/automation/([0-9a-f-]{36})`)
 	evalPlanShown      = regexp.MustCompile(`(?i)automation plan|here'?s my (updated )?plan`)
+	evalAsksChannel    = regexp.MustCompile(`(?i)channel`)
+	evalSlackChannelId = regexp.MustCompile(`^[CGD][A-Z0-9]{8,}$`)
 )
 
 type evalAccount struct{ id, name, provider string }
@@ -675,6 +677,100 @@ func TestWorkflowBuilderEval(t *testing.T) {
 		res.ToolCalls = sessionToolCalls(t, r.sessionId, env.cluster.id)
 		record(t, r, res, started)
 	})
+
+	t.Run("asks_for_slack_channel", func(t *testing.T) {
+		channel := os.Getenv("TEST_SLACK_CHANNEL")
+		if channel == "" {
+			t.Skip("TEST_SLACK_CHANNEL not set: the name of a channel in the Slack workspace connected to TEST_TENANT")
+		}
+		started := time.Now()
+		r := env.newRun(t, "channel", "")
+		// The request names no channel, and "SRE on-call" is not the name of anything the account
+		// has, so the builder has to ask where to post. It must ask without offering channel names
+		// of its own, and the automation it saves must carry the channel's id and be runnable —
+		// not a {{ Configs.* }} placeholder saved INACTIVE.
+		resp := r.say(fmt.Sprintf("Create an automation called %q: every weekday at 9am, list the pods that are not Running in the default namespace of the cluster %q "+
+			"and post the list to our SRE on-call channel in Slack.", "eval-slack-channel-"+r.sessionId[len(r.sessionId)-8:], env.cluster.name))
+		asked, offeredNames := false, false
+		for i := 0; i < 8 && resp.Status == core.ConversationStatusWaiting; i++ {
+			if evalPlanShown.MatchString(displayText(resp)) {
+				resp = handlePlanApprovalIfNeeded(r.t, r.sc, r.agent, r.env.userId, r.env.cluster.id, r.sessionId, resp)
+				r.note(resp, nil)
+				continue
+			}
+			reply := "Use your recommendation."
+			if evalAsksChannel.MatchString(resp.FollowupRequest.Question) {
+				asked = true
+				for _, option := range resp.FollowupRequest.FollowupOptions {
+					offeredNames = offeredNames || !strings.EqualFold(option, "Skip")
+				}
+				reply = channel
+			}
+			messageId, _ := uuid.Parse(resp.MessageId)
+			agentId, _ := uuid.Parse(resp.AgentId)
+			next, err := core.HandleConversationSessionRequest(r.sc, r.agent, r.env.userId, r.env.cluster.id, r.sessionId, reply,
+				core.ConversationSessionRequestWithMessageId(uuid.NullUUID{UUID: messageId, Valid: true}),
+				core.ConversationSessionRequestWithAgentId(uuid.NullUUID{UUID: agentId, Valid: true}))
+			r.note(next, err)
+			resp = next
+		}
+
+		res := evalResult{Scenario: "asks_for_slack_channel", Checks: map[string]bool{}}
+		res.Asked = asked
+		res.Checks["asks_for_channel"] = asked
+		res.Checks["offers_no_channel_names"] = asked && !offeredNames
+		res.WorkflowId = r.savedWorkflowId(resp)
+		r.cleanupSaved(res.WorkflowId)
+		res.Checks["saved"] = res.WorkflowId != ""
+		if res.WorkflowId != "" {
+			def := latestDefinition(t, res.WorkflowId)
+			env.scoreCommon(def, &res)
+			channels := evalSlackChannels(def)
+			allIds := len(channels) > 0
+			for _, value := range channels {
+				if !evalSlackChannelId.MatchString(value) {
+					allIds = false
+					res.Notes = append(res.Notes, fmt.Sprintf("channel saved as %q", value))
+				}
+			}
+			res.Checks["channel_saved_as_id"] = allIds
+			var status string
+			if dbms, err := common.GetDatabaseManager(common.Metastore); err == nil {
+				_ = dbms.Db.QueryRow(`SELECT status FROM workflows WHERE id = $1`, res.WorkflowId).Scan(&status)
+			}
+			res.Checks["saved_runnable"] = status != "" && status != "INACTIVE"
+		}
+		res.ToolCalls = sessionToolCalls(t, r.sessionId, env.cluster.id)
+		record(t, r, res, started)
+	})
+}
+
+// evalSlackChannels returns the Slack channel each task posts to, following a channel that is an
+// automation input to that input's default.
+func evalSlackChannels(def map[string]any) []string {
+	defaults := map[string]string{}
+	inputs, _ := def["inputs"].([]any)
+	for _, raw := range inputs {
+		input, _ := raw.(map[string]any)
+		id, _ := input["id"].(string)
+		value, _ := input["default"].(string)
+		defaults[id] = value
+	}
+	inputRef := regexp.MustCompile(`^\{\{\s*Inputs(?:\.([A-Za-z0-9_]+)|\[['"]([A-Za-z0-9_-]+)['"]\])\s*\}\}$`)
+	var channels []string
+	for _, task := range evalTasks(def) {
+		for _, key := range []string{"channel", "im_channel", "channel_id"} {
+			value, ok := task.params[key].(string)
+			if !ok {
+				continue
+			}
+			if ref := inputRef.FindStringSubmatch(strings.TrimSpace(value)); ref != nil {
+				value = defaults[ref[1]+ref[2]]
+			}
+			channels = append(channels, value)
+		}
+	}
+	return channels
 }
 
 // evalKeepsCluster: the fix keeps the step on the cluster — either the script

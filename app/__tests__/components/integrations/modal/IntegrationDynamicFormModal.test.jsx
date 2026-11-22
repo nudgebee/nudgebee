@@ -175,6 +175,7 @@ jest.mock('@lib/formatter', () => ({
 }));
 
 jest.mock('src/utils/common', () => ({
+  ...jest.requireActual('src/utils/common'),
   getAccountCreationSuccessMsg: (name) => `${name} account created successfully`,
   parseHttpResponseBodyMessage: () => 'Error occurred',
   safeJSONParse: (s) => {
@@ -435,6 +436,10 @@ describe('IntegrationDynamicFormModal', () => {
     expect(screen.getByTestId('prometheus-alert-delivery-url')).toHaveTextContent(
       '/api/webhooks/prometheus-alertmanager?token=tok-123&cluster=acme-prod'
     );
+    const snippet = screen.getByTestId('prometheus-alert-delivery-snippet').textContent;
+    expect(snippet).toContain("url: 'http://localhost/api/webhooks/prometheus-alertmanager?cluster=acme-prod'");
+    expect(snippet).toContain("credentials: 'tok-123'");
+    expect(snippet).not.toContain('token=');
   });
 
   test('points at creating the webhook integration when none is linked to the account', async () => {
@@ -467,6 +472,87 @@ describe('IntegrationDynamicFormModal', () => {
     });
     expect(screen.queryByTestId('prometheus-alert-delivery')).not.toBeInTheDocument();
     expect(mockListIntegrations).not.toHaveBeenCalled();
+  });
+
+  // The one-time "here's your token" screen (handleSubmit's `isNewCreation`
+  // branch) only ever fires right after creation — reopening an existing
+  // webhook integration later has to surface its URL some other way, or it's
+  // gone for good from this form's point of view (the value is still sitting
+  // in integration_config_values; nothing else here ever shows it again).
+  test('shows the webhook URL again when reopening an existing webhook integration', async () => {
+    const editData = {
+      id: 'pd-1',
+      name: 'My PagerDuty',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'My PagerDuty', token: 'secret-token' },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'pagerduty_webhook', title: 'Edit PagerDuty', editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('existing-webhook-url')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('existing-webhook-url')).toHaveTextContent('/api/webhooks/pagerduty?token=secret-token');
+    // PagerDuty has no header-auth snippet.
+    expect(screen.queryByTestId('existing-webhook-template')).not.toBeInTheDocument();
+  });
+
+  // Reopening is how most users get the setup again, so the edit view must offer
+  // the receiver that keeps the token out of the URL Alertmanager logs.
+  test('offers the header-auth Alertmanager receiver when reopening an Alertmanager webhook', async () => {
+    const editData = {
+      id: 'am-1',
+      name: 'My Alertmanager',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'My Alertmanager', token: 'am-token' },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'prometheus_alertmanager_webhook', title: 'Edit Alertmanager', editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('existing-webhook-template')).toBeInTheDocument();
+    });
+    const snippet = screen.getByTestId('existing-webhook-template').textContent;
+    expect(snippet).toContain("url: 'http://localhost/api/webhooks/prometheus-alertmanager'");
+    expect(snippet).toContain('type: Bearer');
+    expect(snippet).toContain("credentials: 'am-token'");
+    expect(snippet).toContain("- receiver: 'nudgebee'");
+    expect(snippet).not.toContain('token=');
+    // The token URL stays for senders and existing receivers that use it.
+    expect(screen.getByTestId('existing-webhook-url')).toHaveTextContent('/api/webhooks/prometheus-alertmanager?token=am-token');
+  });
+
+  test('does not show a webhook URL box for a brand-new webhook integration', async () => {
+    await act(async () => {
+      renderModal({ openModal: true, integrationName: 'pagerduty_webhook', title: 'Add PagerDuty', editData: null });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('existing-webhook-url')).not.toBeInTheDocument();
+  });
+
+  test('does not show a webhook URL box for a non-webhook integration being edited', async () => {
+    const editData = {
+      id: 'dd-1',
+      name: 'existing-config',
+      source: 'user',
+      integration_config_values: { integration_config_name: 'existing-config', api_token: 'secret' },
+    };
+
+    await act(async () => {
+      renderModal({ openModal: true, editData });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('modal')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('existing-webhook-url')).not.toBeInTheDocument();
   });
 
   // Advanced Settings used to show Per-Account Index but NOT Default Log Filters for

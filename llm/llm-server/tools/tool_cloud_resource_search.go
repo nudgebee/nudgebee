@@ -2,10 +2,13 @@ package tools
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/tools/core"
+
+	"github.com/lib/pq"
 )
 
 const ToolCloudResourceSearch = "cloud_resource_search_execute"
@@ -16,7 +19,7 @@ func init() {
 	})
 }
 
-type CloudResourceSearchTool struct{}
+type CloudResourceSearchTool struct{ core.ReadOnlyTool }
 
 type CloudResourceSearchRequest struct {
 	ResourceName string `json:"resource_name,omitempty"`
@@ -32,11 +35,15 @@ type CloudResourceSearchResponse struct {
 
 type CloudResourceInfo struct {
 	Name        string `json:"name" db:"name"`
+	ResourceID  string `json:"resource_id,omitempty" db:"resource_id"`
 	Type        string `json:"type" db:"type"`
 	Service     string `json:"service" db:"service"`
 	Region      string `json:"region" db:"region"`
 	AccountID   string `json:"account_id" db:"account_id"`
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// Matches before the limit: overall, and per account name as JSON.
+	Total         int    `json:"-" db:"total"`
+	AccountCounts string `json:"-" db:"account_counts"`
 }
 
 func (r CloudResourceSearchTool) Name() string {
@@ -55,8 +62,8 @@ func (r CloudResourceSearchTool) Description() string {
 * **Service-specific Search:** Search for resources within a specific service (e.g., S3, EC2, CloudSQL).
 
 **Input:** JSON with the following fields:
-* resource_name (optional): Name or partial name of the resource.
-* service (optional): Cloud service name (e.g., 'EC2', 'S3', 'Lambda').
+* resource_name (optional): Name or partial name of the resource, or its full id (e.g. an EC2 instance id).
+* service (optional): Cloud service name (e.g., 'EC2', 'S3', 'Lambda', 'Cosmos DB'). Friendly names and provider identifiers (e.g. 'microsoft.documentdb/databaseaccounts') both work.
 * resource_type (optional): Type of resource (e.g., 'instance', 'bucket').
 * region (optional): Region to search in.
 
@@ -71,7 +78,7 @@ func (r CloudResourceSearchTool) InputSchema() core.ToolSchema {
 		Properties: map[string]core.ToolSchemaProperty{
 			"resource_name": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Name or partial name of the resource",
+				Description: "Name or partial name of the resource, or its full id (e.g. an EC2 instance id)",
 			},
 			"service": {
 				Type:        core.ToolSchemaTypeString,
@@ -157,7 +164,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 	var args []interface{}
 	if tenantId != "" {
 		query = `
-			SELECT cr.name, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
+			SELECT cr.name, cr.resourse_id AS resource_id, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
 			FROM cloud_resourses cr
 			JOIN cloud_accounts ca ON cr.account = ca.id
 			WHERE ca.tenant = $1 AND cr.is_active = true AND ca.status = 'active'
@@ -165,52 +172,50 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		args = append(args, tenantId)
 	} else {
 		query = `
-			SELECT cr.name, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
+			SELECT cr.name, cr.resourse_id AS resource_id, cr.type, cr.service_name as service, cr.region, cr.account as account_id, ca.account_name
 			FROM cloud_resourses cr
 			LEFT JOIN cloud_accounts ca ON cr.account = ca.id
 			WHERE cr.account = $1 AND cr.is_active = true
 		`
 		args = append(args, nbRequestContext.AccountId)
 	}
-	argIdx := 2
+	servicePatterns := cloudServicePatterns(request.Service)
+	search := func(typeAliases []string) ([]CloudResourceInfo, error) {
+		filters, filterArgs := cloudResourceFilters(request, servicePatterns, typeAliases, len(args)+1)
+		rows, err := dbms.Db.Queryx(cloudResourceSearchPage(query+filters), append(append([]interface{}{}, args...), filterArgs...)...)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err := rows.Close(); err != nil {
+				nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: failed to close rows", "error", err)
+			}
+		}()
+		var found []CloudResourceInfo
+		for rows.Next() {
+			var res CloudResourceInfo
+			if err := rows.StructScan(&res); err == nil {
+				found = append(found, res)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return found, nil
+	}
 
-	if request.ResourceName != "" {
-		query += fmt.Sprintf(" AND cr.name ILIKE $%d", argIdx)
-		args = append(args, "%"+request.ResourceName+"%")
-		argIdx++
-	}
-	if request.Service != "" {
-		query += fmt.Sprintf(" AND cr.service_name ILIKE $%d", argIdx)
-		args = append(args, "%"+request.Service+"%")
-		argIdx++
-	}
-	if request.ResourceType != "" {
-		query += fmt.Sprintf(" AND cr.type ILIKE $%d", argIdx)
-		args = append(args, "%"+request.ResourceType+"%")
-		argIdx++
-	}
-	if request.Region != "" {
-		query += fmt.Sprintf(" AND cr.region = $%d", argIdx)
-		args = append(args, request.Region)
-	}
-
-	query += " ORDER BY ca.account_name ASC, cr.name ASC LIMIT 20"
-
-	var resources []CloudResourceInfo
-	rows, err := dbms.Db.Queryx(query, args...)
+	resources, err := search(nil)
 	if err != nil {
 		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			nbRequestContext.Ctx.GetLogger().Warn("cloud_resource_search: failed to close rows", "error", err)
-		}
-	}()
-
-	for rows.Next() {
-		var res CloudResourceInfo
-		if err := rows.StructScan(&res); err == nil {
-			resources = append(resources, res)
+	// A service name passed as the type ("cosmos") finds nothing in cr.type;
+	// retry matching it as a service. Only on a miss, so a real type such as
+	// "vm" is not widened to every row of the service.
+	if len(resources) == 0 && request.ResourceType != "" {
+		if aliases := cloudServiceAliasPatterns(request.ResourceType); len(aliases) > 0 {
+			if resources, err = search(aliases); err != nil {
+				return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+			}
 		}
 	}
 
@@ -218,7 +223,7 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 
 	response := CloudResourceSearchResponse{
 		Resources: resources,
-		Message:   fmt.Sprintf("Found %d cloud resources matching your query.", len(resources)),
+		Message:   fmt.Sprintf("Found %d cloud resources matching your query.", len(resources)) + cloudCutoffNote(resources),
 	}
 
 	// On a miss, bound any live fallback to the regions this account actually uses.
@@ -235,9 +240,9 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 			WHERE account = $1 AND is_active = true
 			  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'`
 		regionArgs := []interface{}{nbRequestContext.AccountId}
-		if request.Service != "" {
-			regionQuery += ` AND service_name ILIKE $2`
-			regionArgs = append(regionArgs, "%"+request.Service+"%")
+		if len(servicePatterns) > 0 {
+			regionQuery += ` AND service_name ILIKE ANY($2)`
+			regionArgs = append(regionArgs, pq.Array(servicePatterns))
 		}
 		regionQuery += ` ORDER BY region`
 
@@ -270,6 +275,9 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 				response.Message = hint
 			}
 		}
+		if request.Service != "" || request.ResourceType != "" {
+			response.Message = strings.TrimSpace(response.Message + serviceMissNote)
+		}
 	}
 
 	responseJSON, _ := common.MarshalJson(response)
@@ -278,4 +286,104 @@ func (r CloudResourceSearchTool) Call(nbRequestContext core.NbToolContext, input
 		Type:   core.NBToolResponseTypeJson,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// serviceMissNote follows a service or type search that found nothing, so the
+// model does not report an empty inventory as an unsupported service (#42036).
+const serviceMissNote = " Inventory names services by provider identifiers (Azure ARM types such as microsoft.documentdb/databaseaccounts for Cosmos DB, AWS names such as AmazonDynamoDB); if a friendly name found nothing, retry with that identifier. No matching synced resource does not mean Nudgebee does not support the service."
+
+// cloudResourceFilters builds the AND clauses for a search, numbering
+// placeholders from argIdx. With typeAliases, the type filter also matches
+// those service names.
+func cloudResourceFilters(request CloudResourceSearchRequest, servicePatterns, typeAliases []string, argIdx int) (string, []interface{}) {
+	var b strings.Builder
+	var args []interface{}
+	if request.ResourceName != "" {
+		// A full resource id (i-0abc…, a bucket name) finds its resource
+		// exactly; a substring match on ids would add noise to name searches.
+		fmt.Fprintf(&b, " AND (cr.name ILIKE $%d OR cr.resourse_id = $%d)", argIdx, argIdx+1)
+		args = append(args, "%"+request.ResourceName+"%", request.ResourceName)
+		argIdx += 2
+	}
+	if len(servicePatterns) > 0 {
+		fmt.Fprintf(&b, " AND cr.service_name ILIKE ANY($%d)", argIdx)
+		args = append(args, pq.Array(servicePatterns))
+		argIdx++
+	}
+	if request.ResourceType != "" {
+		if len(typeAliases) > 0 {
+			fmt.Fprintf(&b, " AND (cr.type ILIKE $%d OR cr.service_name ILIKE ANY($%d))", argIdx, argIdx+1)
+			args = append(args, "%"+request.ResourceType+"%", pq.Array(likePatterns(typeAliases)))
+			argIdx += 2
+		} else {
+			fmt.Fprintf(&b, " AND cr.type ILIKE $%d", argIdx)
+			args = append(args, "%"+request.ResourceType+"%")
+			argIdx++
+		}
+	}
+	if request.Region != "" {
+		fmt.Fprintf(&b, " AND cr.region = $%d", argIdx)
+		args = append(args, request.Region)
+	}
+	return b.String(), args
+}
+
+// likePatterns wraps each value for a substring ILIKE match.
+func likePatterns(values []string) []string {
+	patterns := make([]string, len(values))
+	for i, v := range values {
+		patterns[i] = "%" + v + "%"
+	}
+	return patterns
+}
+
+// cloudResourceSearchLimit caps one lookup's rows; cloudCutoffNote says when
+// more matched.
+const cloudResourceSearchLimit = 50
+
+// cloudResourceSearchPage wraps the filtered lookup so the limit is shared
+// across accounts (round-robin by name within each account) and the result
+// carries per-account match counts. Ordered by account name alone, the first
+// account alphabetically filled every row: a Lambda search returned 20
+// aws-demo functions and hid dev-aws, where the throttled one was (#39201).
+func cloudResourceSearchPage(filtered string) string {
+	return fmt.Sprintf(`
+		WITH m AS (%s)
+		SELECT name, resource_id, type, service, region, account_id, COALESCE(account_name, '') AS account_name,
+		       COUNT(*) OVER () AS total,
+		       COALESCE((SELECT json_object_agg(acct, n)::text FROM (
+		            SELECT COALESCE(account_name, account_id::text, 'unknown') AS acct, COUNT(*) AS n FROM m GROUP BY 1) a), '{}') AS account_counts
+		FROM (
+			SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.account_id ORDER BY m.name) AS rn
+			FROM m
+		) ranked
+		ORDER BY rn, COALESCE(account_name, ''), name
+		LIMIT %d`, filtered, cloudResourceSearchLimit)
+}
+
+// cloudCutoffNote tells the caller when more resources matched than were
+// returned, with per-account counts, so it can pick the right account or
+// narrow the search. Empty when nothing was cut.
+func cloudCutoffNote(resources []CloudResourceInfo) string {
+	if len(resources) == 0 || resources[0].Total <= len(resources) {
+		return ""
+	}
+	// Counted over every match, so accounts with nothing on the page still show.
+	byAccount := map[string]int{}
+	_ = common.UnmarshalJson([]byte(resources[0].AccountCounts), &byAccount)
+	names := make([]string, 0, len(byAccount))
+	for n := range byAccount {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if byAccount[names[i]] != byAccount[names[j]] {
+			return byAccount[names[i]] > byAccount[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, fmt.Sprintf("%s %d", n, byAccount[n]))
+	}
+	return fmt.Sprintf(" Showing %d of %d (by account: %s); narrow with resource_name, service, resource_type or region to see the rest.", len(resources), resources[0].Total, strings.Join(parts, ", "))
 }

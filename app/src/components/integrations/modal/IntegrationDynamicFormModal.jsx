@@ -17,6 +17,15 @@ import { Link } from '@ui/Link';
 import apiIntegrations from '@api1/integrations';
 import observability from '@api1/observability';
 import { ENCRYPTED_MASK } from '@api1/integrations/helpers';
+import {
+  joinConfigArray,
+  shouldShowField as sharedShouldShowField,
+  isFieldRequired as sharedIsFieldRequired,
+  getSortedFieldKeys as sharedGetSortedFieldKeys,
+  buildProbeConfigValues as sharedBuildProbeConfigValues,
+  hasSavedConfigValue,
+  isKeptSecret,
+} from '@components/integrations/form/schemaForm';
 import { ds } from 'src/utils/colors';
 import CopyButton from '@shared/buttons/CopyButton';
 import { titleCase } from '@lib/formatter';
@@ -28,16 +37,22 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import apiTicketIntegrations from '@api1/tickets';
 import cache from '@lib/cache';
 import VmAgentCredentialsDialog from './VmAgentCredentialsDialog';
+import k8sApi from '@api1/kubernetes';
+import { clustersCollectingClickHouseLogs, showsAgentProviderToggle } from './clickHouseLogsToggle';
+import { buildAlertmanagerReceiverSnippet, buildWebhookBaseUrl, buildWebhookUrl } from '@lib/webhookUrl';
 import { docsUrl } from '@lib/externalUrls';
 import ModelAliasList from '@components/common/forms/ModelAliasList';
+import McpWriteToolsField from '@components/common/forms/McpWriteToolsField';
 import LabelMappingCards, { parseLogLabelMappings, serializeLogLabelMappings } from './LabelMappingCards';
+import WebhookLabelHelpTooltip from './WebhookLabelHelpTooltip';
 import useLogFieldOptions, { fieldOptionsKey, indexForAccount } from './useLogFieldOptions';
 import DefaultFiltersCard, { emptyFilterCard, hasCardMissingAccount, parseDefaultFilters, serializeDefaultFilters } from './DefaultFiltersCard';
 import { TRACE_LABEL_ADVANCED_FIELDS, TRACE_LABEL_FIELDS } from '@components/common/settings/labelMapperFields';
+import { buildAgentProviderTogglePayload } from './agentProviderToggle';
 
 // Array-typed config fields travel as one comma-joined string in
 // integration_config_values; chips may be plain values or {label, value}.
-const joinConfigArray = (values) => values.map((v) => (v && typeof v === 'object' ? v.value : v)).join(',');
+// joinConfigArray moved to @components/integrations/form/schemaForm (imported above).
 
 // Group-header icon for the account dropdown — maps a group (the account's
 // cloud_provider: K8S/AWS/Azure/GCP) to its provider icon. Same pattern as the
@@ -124,6 +139,23 @@ const CANONICAL_TRACE_FIELD_OPTIONS = ALL_TRACE_LABEL_FIELDS.map(({ field }) => 
 // drift.
 const TRACE_CONCEPT_LABELS = Object.fromEntries(ALL_TRACE_LABEL_FIELDS.map(({ field, label }) => [field, label]));
 const TRACE_CONCEPT_ORDER = ALL_TRACE_LABEL_FIELDS.map(({ field }) => field);
+
+// Body for SolarWinds Orion's "Send a GET or POST Request to a Web Server" alert
+// action. Paste it into the alert's trigger action, and the same body with
+// "status": "resolved" into its reset action. Contract: integrations/orion_webhook.go.
+const ORION_WEBHOOK_BODY = `{
+  "status": "firing",
+  "alert_def_id": "\${N=Alerting;M=AlertDefID}",
+  "alert_active_id": "\${N=Alerting;M=AlertActiveID}",
+  "alert_name": "\${N=Alerting;M=AlertName}",
+  "object": "\${N=SwisEntity;M=Caption}",
+  "object_type": "\${N=Alerting;M=ObjectType}",
+  "object_url": "\${N=SwisEntity;M=DetailsUrl}",
+  "ip": "\${N=SwisEntity;M=IP_Address}",
+  "severity": "\${N=Alerting;M=Severity}",
+  "message": "\${N=Alerting;M=AlertMessage}",
+  "url": "\${N=Alerting;M=AlertDetailsUrl}"
+}`;
 
 // Example request body for the event webhook, shown in its setup modal.
 // Contract: api-server/services/integrations/event_webhook.go.
@@ -308,6 +340,9 @@ const IntegrationDynamicFormModal = ({
   const [labelMapping, setLabelMapping] = useState({ subject_name_labels: [], namespace_labels: [], severity_labels: [] });
   const [agentAccountProviders, setAgentAccountProviders] = useState([]);
   const [providerFields, setProviderFields] = useState([]);
+  // Clusters whose agent collects container logs into ClickHouse; the ClickHouse row
+  // offers its Logs toggle only there (see clickHouseLogsToggle.js).
+  const [clickHouseLogsClusters, setClickHouseLogsClusters] = useState(() => new Set());
   const [vmAgentCredentials, setVmAgentCredentials] = useState(null);
   const [isTesting, setIsTesting] = useState(false);
   // Object.keys, not !!editData: ListIntegrations passes `editData={selectedIntegration || {}}`,
@@ -372,6 +407,19 @@ const IntegrationDynamicFormModal = ({
       }
     }
   }, [openModal, isAgentSource, editData]);
+
+  useEffect(() => {
+    if (!openModal || !isAgentSource || editData?.type !== 'otel_clickhouse') {
+      return undefined;
+    }
+    let active = true;
+    k8sApi.getAgentHealth({}).then((res) => {
+      if (active) setClickHouseLogsClusters(clustersCollectingClickHouseLogs(res?.data));
+    });
+    return () => {
+      active = false;
+    };
+  }, [openModal, isAgentSource, editData?.type]);
 
   useEffect(() => {
     if (openModal) {
@@ -522,8 +570,9 @@ const IntegrationDynamicFormModal = ({
                     val = editData?.integrations_cloud_accounts?.[0]?.[key] || false;
                   }
                 }
-                if (prop.is_encrypted && editData?.integration_config_values?.[key]) {
-                  initialValues[key] = '*************************************************';
+                // The list API blanks secret values, so the mask follows has_value.
+                if (prop.is_encrypted && hasSavedConfigValue(editData, key)) {
+                  initialValues[key] = ENCRYPTED_MASK;
                 } else {
                   initialValues[key] = val;
                 }
@@ -796,123 +845,16 @@ const IntegrationDynamicFormModal = ({
     });
   }, [editData]);
 
-  // Helper function to check if condition values match current value
-  const checkConditionMatch = (conditionValues, currentValue) => {
-    if (Array.isArray(conditionValues)) {
-      return conditionValues.includes(currentValue);
-    }
-    return conditionValues === currentValue;
-  };
+  // Conditional-field machinery lives in @components/integrations/form/schemaForm
+  // (moved verbatim; the closure variables became parameters). These wrappers
+  // bind this modal's config/formValues back in so every call site below is
+  // unchanged.
+  const shouldShowField = (_key, field, valuesOverride, _visiting) =>
+    sharedShouldShowField(config, valuesOverride || formValues, _key, field, _visiting);
 
-  // Helper function to check if a field should be visible
-  const shouldShowField = (_key, field, valuesOverride, _visiting) => {
-    const values = valuesOverride || formValues;
-    if (field.hidden) {
-      return false;
-    }
-    // Always show fields without show_when or required_when conditions
-    if (!field.show_when && !field.required_when) {
-      return true;
-    }
+  const isFieldRequired = (key, field) => sharedIsFieldRequired(config, formValues, key, field);
 
-    // Helper to check that a dependency field is itself visible (with recursion guard)
-    const isDependencyVisible = (conditionKey) => {
-      const depField = config?.properties?.[conditionKey];
-      if (!depField) return true; // unknown field, assume visible
-      // Prevent infinite recursion: if we're already checking this key up the call stack
-      if (_visiting && _visiting.has(conditionKey)) return true;
-      const visiting = new Set(_visiting || []);
-      visiting.add(_key);
-      return shouldShowField(conditionKey, depField, values, visiting);
-    };
-
-    let shouldShow = false;
-    // Check show_when conditions (all must be satisfied)
-    if (field.show_when) {
-      shouldShow = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.show_when)) {
-        if (!isDependencyVisible(conditionKey)) {
-          shouldShow = false;
-          break;
-        }
-        const currentValue = values[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          shouldShow = false;
-          break;
-        }
-      }
-    }
-
-    // Check required_when conditions (all must be satisfied)
-    if (field.required_when) {
-      let allRequiredConditionsMet = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.required_when)) {
-        if (!isDependencyVisible(conditionKey)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-        const currentValue = values[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-      }
-      if (allRequiredConditionsMet) {
-        shouldShow = true;
-      }
-    }
-
-    return shouldShow;
-  };
-
-  // Helper function to check if a field is required based on current form state
-  const isFieldRequired = (key, field) => {
-    // account_id and integration_config_name are always required
-    if (key === 'account_id' || key === 'integration_config_name') return true;
-
-    // Check if it's in the base required array
-    const isBaseRequired = config.required?.includes(key);
-
-    // Check required_when conditions (all must be satisfied)
-    if (field.required_when) {
-      let allRequiredConditionsMet = true;
-      for (const [conditionKey, conditionValues] of Object.entries(field.required_when)) {
-        // If the dependency field is hidden, the required condition is not met
-        const depField = config?.properties?.[conditionKey];
-        if (depField && !shouldShowField(conditionKey, depField)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-        const currentValue = formValues[conditionKey];
-        if (!checkConditionMatch(conditionValues, currentValue)) {
-          allRequiredConditionsMet = false;
-          break;
-        }
-      }
-      if (allRequiredConditionsMet) {
-        return true;
-      }
-    }
-
-    return isBaseRequired;
-  };
-
-  // Helper function to sort fields by priority (highest first)
-  const getSortedFieldKeys = () => {
-    const visibleFields = Object.keys(config?.properties || {}).filter((key) => shouldShowField(key, config.properties[key]));
-
-    return visibleFields.sort((a, b) => {
-      const fieldA = config.properties[a];
-      const fieldB = config.properties[b];
-
-      // Get priority values, default to 0 if not specified
-      const priorityA = fieldA.priority || 0;
-      const priorityB = fieldB.priority || 0;
-
-      // Sort in descending order (highest priority first)
-      return priorityB - priorityA;
-    });
-  };
+  const getSortedFieldKeys = () => sharedGetSortedFieldKeys(config, formValues);
 
   const renderAdvancedToggle = () => (
     <Box
@@ -1112,21 +1054,14 @@ const IntegrationDynamicFormModal = ({
 
   const handleAgentProviderToggle = async (cloudAccountId, providerKey, newValue) => {
     setIsSubmitting(true);
-    const allAccountIds = agentAccountProviders.map((acc) => acc.cloud_account_id);
-    const providerMap = {};
-    agentAccountProviders.forEach((acc) => {
-      providerMap[acc.cloud_account_id] = acc.cloud_account_id === cloudAccountId ? String(newValue) : String(acc[providerKey]);
+    const payload = buildAgentProviderTogglePayload({
+      editData,
+      integrationName,
+      accountIds: agentAccountProviders.map((acc) => acc.cloud_account_id),
+      cloudAccountId,
+      providerKey,
+      newValue,
     });
-
-    const payload = {
-      ...(editData?.id && { integration_id: editData.id }),
-      integration_name: integrationName,
-      account_ids: allAccountIds,
-      integration_config_name: editData?.name,
-      skip_validation: true,
-      source: editData?.source || 'user',
-      integration_config_values: [{ name: providerKey, value: JSON.stringify(providerMap), is_encrypted: false }],
-    };
 
     try {
       const res = await apiIntegrations.addIntegrations(payload);
@@ -1271,7 +1206,6 @@ const IntegrationDynamicFormModal = ({
       return false;
     }
 
-    const ENCRYPTED_MASK = '*************************************************';
     const patternErrors = {};
     for (const key of filledKeys) {
       const field = config.properties[key];
@@ -1309,7 +1243,7 @@ const IntegrationDynamicFormModal = ({
       const currentValue = formValues[key];
 
       // For encrypted fields, if value is masked, it hasn't changed
-      if (field?.is_encrypted && currentValue === '*************************************************') {
+      if (field?.is_encrypted && currentValue === ENCRYPTED_MASK) {
         return false;
       }
 
@@ -1321,35 +1255,10 @@ const IntegrationDynamicFormModal = ({
     return !testableFieldChanged;
   };
 
-  // Build the config-values payload for connectivity / index probes: booleans and
-  // integers stringified; untyped encrypted secrets sent as the stored ciphertext
-  // with is_encrypted=true (omit-to-keep). Shared by Test Connection and the ES
-  // index fetch.
-  const buildProbeConfigValues = () => {
-    const { account_id: _a, integration_config_name: _n, account_mapping: _m, ...restFormValues } = formValues;
-    return Object.entries(restFormValues).map(([key, value]) => {
-      const field = config.properties?.[key];
-      const fieldType = field?.type;
-      let transformedValue = value;
-      if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
-        transformedValue = String(value);
-      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK) {
-        transformedValue = editData?.integration_config_values?.[key];
-      } else if (Array.isArray(value)) {
-        transformedValue = joinConfigArray(value);
-      }
-      return {
-        name: key,
-        // Both coerced, never left undefined. `&&` yields undefined when the schema
-        // carries no is_encrypted, and callers that inline this into a GraphQL string
-        // (gqlStringify) then emit the bare token `undefined`, which the Go decoder
-        // rejects with "expected type 'bool', got unconvertible type 'string'". The
-        // variables-based callers never saw it, because JSON.stringify drops undefined.
-        value: transformedValue ?? '',
-        is_encrypted: !!(field?.is_encrypted && editData?.integration_config_values?.[key] && value === ENCRYPTED_MASK),
-      };
-    });
-  };
+  // Probe payload builder lives in @components/integrations/form/schemaForm
+  // (moved verbatim; editData became a parameter). Shared by
+  // Test Connection and the ES index fetch.
+  const buildProbeConfigValues = () => sharedBuildProbeConfigValues(config, formValues, editData);
 
   // One field-list probe shared by both Advanced Settings sections that need it:
   // Default Log Filters (which column to filter on) and Log Label Mapping (which field
@@ -1609,11 +1518,7 @@ const IntegrationDynamicFormModal = ({
         let transformedValue = value;
         if (fieldType === 'boolean' || fieldType === 'bool') {
           transformedValue = String(value);
-        } else if (
-          field?.is_encrypted &&
-          editData?.integration_config_values?.[key] &&
-          value === '*************************************************'
-        ) {
+        } else if (isKeptSecret(field, editData, key, value)) {
           // User didn't re-enter the secret. Send empty so the backend preserves the stored value.
           transformedValue = '';
         }
@@ -1688,18 +1593,16 @@ const IntegrationDynamicFormModal = ({
       let transformedValue = value;
       if (fieldType === 'boolean' || fieldType === 'bool' || fieldType === 'integer') {
         transformedValue = String(value);
-      } else if (field?.is_encrypted && editData?.integration_config_values?.[key] && value === '*************************************************') {
-        transformedValue = editData?.integration_config_values?.[key];
+      } else if (isKeptSecret(field, editData, key, value)) {
+        // Untouched saved secret: the server keeps the stored value, looked up by name.
+        transformedValue = '';
       } else if (Array.isArray(value)) {
         transformedValue = joinConfigArray(value);
       }
       return {
         name: key,
         value: transformedValue,
-        is_encrypted:
-          field?.is_encrypted && editData?.integration_config_values?.[key] && value === '*************************************************'
-            ? true
-            : false,
+        is_encrypted: isKeptSecret(field, editData, key, value),
       };
     });
 
@@ -1944,7 +1847,8 @@ const IntegrationDynamicFormModal = ({
               const accessKey = configs.find((f) => f.name === 'access_key');
               const accessSecret = configs.find((f) => f.name === 'access_secret');
               if (accessKey && accessSecret) {
-                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value });
+                // The agent is created on the first selected account (CreateProxyAgent).
+                setVmAgentCredentials({ accessKey: accessKey.value, accessSecret: accessSecret.value, accountId: normalizedAccountIds[0] });
                 setShowModal(true);
               } else {
                 handleCloseModal(true);
@@ -1982,6 +1886,14 @@ const IntegrationDynamicFormModal = ({
     prometheus_alertmanager_webhook: {
       endpoint: 'prometheus-alertmanager',
       message: 'Configure the following url in your monitoring and alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/prometheus_alertmanager_webhook/'),
+        text: 'how to configure Alertmanager Webhook',
+      },
+      // Alertmanager can send the token as a Bearer header, which keeps it out of
+      // access logs and proxies that record the query string.
+      buildTemplate: (token) => buildAlertmanagerReceiverSnippet(buildWebhookBaseUrl('prometheus_alertmanager_webhook'), token),
+      templateMessage: 'For Prometheus Alertmanager, prefer this receiver — it sends the token in the Authorization header instead of the URL:',
     },
     datadog_webhook: {
       endpoint: 'datadog',
@@ -1994,10 +1906,18 @@ const IntegrationDynamicFormModal = ({
     azure_monitor_webhook: {
       endpoint: 'azure-monitor',
       message: 'Configure the following url in your monitoring and alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/azure_monitor_webhook/'),
+        text: 'how to configure Azure Monitor Webhook',
+      },
     },
     gcp_monitoring_webhook: {
       endpoint: 'gcp-monitoring',
       message: 'Configure the following URL as a webhook notification channel in GCP Cloud Monitoring',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/gcp_monitoring_webhook/'),
+        text: 'how to configure GCP Monitoring Webhook',
+      },
     },
     servicenow_webhook: {
       endpoint: 'servicenow',
@@ -2026,10 +1946,18 @@ const IntegrationDynamicFormModal = ({
     splunk_webhook: {
       endpoint: 'splunk',
       message: 'Configure the following URL in your Splunk alerting webhook subscription',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/splunk_webhook/'),
+        text: 'how to configure Splunk Webhook',
+      },
     },
     grafana_webhook: {
       endpoint: 'grafana',
       message: 'Configure the following URL in your Grafana alerting webhook contact point',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/grafana_webhook/'),
+        text: 'how to configure Grafana Webhook',
+      },
     },
     solarwinds_webhook: {
       endpoint: 'solarwinds',
@@ -2050,6 +1978,10 @@ const IntegrationDynamicFormModal = ({
     openobserve_webhook: {
       endpoint: 'openobserve',
       message: 'Configure the following URL as a Webhook destination in OpenObserve (Management → Alert Destinations)',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/openobserve_webhook/'),
+        text: 'how to configure OpenObserve Webhook',
+      },
       // OpenObserve delivers whatever the alert Template renders — there is no
       // fixed payload schema — so the destination is only half the setup. The
       // template below is what NudgeBee parses best; it is shown inline because
@@ -2069,17 +2001,55 @@ const IntegrationDynamicFormModal = ({
       templateMessage:
         'Send one alert, or {"events": [...]} with up to 100. Required: id (one occurrence), fingerprint (same on every occurrence), status (firing or resolved), title, rule_name. A resolve closes the alert with the same id and must carry the same labels. Optional: severity (critical, high, medium, low, info), description, starts_at / ends_at (RFC 3339), subject, source_tool, url, labels (string values only). An invalid request is rejected with the reason.',
     },
+    orion_webhook: {
+      endpoint: 'orion',
+      message:
+        'In SolarWinds Platform (Orion), add a "Send a GET or POST Request to a Web Server" action to each alert: method POST, content type application/json, this URL',
+      template: ORION_WEBHOOK_BODY,
+      templateMessage:
+        'Paste this body into the alert\'s Trigger action. Add the same action under Reset Actions with "status": "resolved". Every value is an Orion variable, so the body is the same for every alert. A request with a missing field is rejected with the reason.',
+    },
     cubeapm_webhook: {
       endpoint: 'cubeapm',
       message:
         'Add the following URL as a Webhook notification channel in CubeAPM. Leave the payload template unset — CubeAPM’s default body is already Alertmanager-compatible, which is the expected format',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/cubeapm_webhook/'),
+        text: 'how to configure CubeAPM Webhook',
+      },
     },
     signoz_webhook: {
       endpoint: 'signoz',
       message:
         'Add the following URL as a Webhook notification channel in SigNoz (Settings → Alert Channels → New Channel → Webhook). Alert rules Nudgebee creates in SigNoz notify the channels that use this URL',
+      learnMore: {
+        url: docsUrl('/docs/integrations/Webhooks/signoz_webhook/'),
+        text: 'how to configure SigNoz Webhook',
+      },
     },
   };
+
+  // Lets a user reopen an already-created webhook integration and get its URL
+  // back — the one-time "here's your token" screen above only ever fires on
+  // first creation (`isNewCreation` in handleSubmit), so this is the only
+  // other place that URL is reachable in-form. `editData?.id` (not just
+  // `editData`, which the Add flow passes as `{}`) is what tells an edit row
+  // apart from a fresh one. `integration_config_values` here is already the
+  // flattened field=>value map `toDynamicFormEditData` builds, not the raw
+  // array `getWebhookToken` (ListIntegrations' table) reads — so the token is
+  // read directly rather than through that helper.
+  const existingWebhookUrl = useMemo(() => {
+    if (!editData?.id || !integrationName?.endsWith('_webhook')) return '';
+    const token = editData?.integration_config_values?.token;
+    return typeof token === 'string' ? buildWebhookUrl(integrationName, token) : '';
+  }, [editData, integrationName]);
+  // The header-auth setup the create screen offers (the Alertmanager receiver),
+  // rebuilt for a reopened row, so the edit view does not leave the
+  // token-in-URL as the only thing to copy.
+  const existingWebhookTemplate =
+    existingWebhookUrl && webhookConfig[integrationName]?.buildTemplate
+      ? webhookConfig[integrationName].buildTemplate(editData?.integration_config_values?.token)
+      : '';
 
   // List rows carry integrations_cloud_accounts / integration_config_values as
   // JSON strings; the edit row arrives already parsed. Accept either.
@@ -2116,6 +2086,10 @@ const IntegrationDynamicFormModal = ({
           accountName: accountName || acc.cloud_account_id,
           webhookName: row.name,
           url: `${window.location.origin}/api/webhooks/prometheus-alertmanager?token=${encodeURIComponent(token)}${cluster}`,
+          snippet: buildAlertmanagerReceiverSnippet(
+            `${buildWebhookBaseUrl('prometheus_alertmanager_webhook')}${accountName ? `?cluster=${encodeURIComponent(accountName)}` : ''}`,
+            token
+          ),
         });
       });
     });
@@ -2165,6 +2139,27 @@ const IntegrationDynamicFormModal = ({
                 >
                   {receiver.url}
                 </Typography>
+                <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], mt: ds.space[2], mb: ds.space[1] }}>
+                  Or add this receiver, which sends the token in the Authorization header instead of the URL:
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
+                  <Typography
+                    component='pre'
+                    sx={{
+                      color: ds.gray[600],
+                      fontSize: 'var(--ds-text-body)',
+                      fontFamily: ds.font.mono,
+                      lineHeight: 1.6,
+                      flex: 1,
+                      m: 0,
+                      overflow: 'auto',
+                    }}
+                    data-testid='prometheus-alert-delivery-snippet'
+                  >
+                    {receiver.snippet}
+                  </Typography>
+                  <CopyButton text={receiver.snippet} />
+                </Box>
               </Box>
               <CopyButton text={receiver.url} />
             </Box>
@@ -2181,6 +2176,7 @@ const IntegrationDynamicFormModal = ({
     }
 
     const url = `${window.location.origin}/api/webhooks/${config.endpoint}?token=${response.value}`;
+    const template = config.buildTemplate ? config.buildTemplate(response.value) : config.template;
 
     return (
       <Grid container mt={2} mb={1} mr={1} sx={{ display: 'flex', flexDirection: 'column' }}>
@@ -2211,7 +2207,7 @@ const IntegrationDynamicFormModal = ({
           <CopyButton text={url} />
         </Box>
 
-        {config.template && (
+        {template && (
           <>
             <Typography variant='subtitle1' sx={{ fontSize: 'var(--ds-text-body-lg)' }}>
               {config.templateMessage}
@@ -2243,9 +2239,9 @@ const IntegrationDynamicFormModal = ({
                 }}
                 id={`${config.endpoint}-template`}
               >
-                {config.template}
+                {template}
               </Typography>
-              <CopyButton text={config.template} />
+              <CopyButton text={template} />
             </Box>
           </>
         )}
@@ -2279,7 +2275,8 @@ const IntegrationDynamicFormModal = ({
           >
             <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.brand[500], lineHeight: 1.6, textAlign: 'justify' }}>
               <strong>Tip (optional):</strong> When you paste this URL into your webhook provider, you can optionally append extra query parameters
-              (e.g. <code>&amp;env=prod</code>, <code>&amp;cluster=us-east-1</code>) directly to the URL inside the provider&apos;s configuration.
+              (e.g. <code>&amp;env=prod</code>, <code>&amp;cluster=us-east-1</code>; start with <code>?</code> instead of <code>&amp;</code> when the
+              URL has no query string yet) directly to the URL inside the provider&apos;s configuration.
               {` Every event delivered through that URL will be tagged with those labels in ${getBrandTitle()}.`}
               <br />
               <br />
@@ -2345,6 +2342,7 @@ const IntegrationDynamicFormModal = ({
         onClose={() => handleCloseModal(true)}
         accessKey={vmAgentCredentials?.accessKey}
         accessSecret={vmAgentCredentials?.accessSecret}
+        accountId={vmAgentCredentials?.accountId}
       />
       <Modal
         handleClose={() => {
@@ -2397,33 +2395,42 @@ const IntegrationDynamicFormModal = ({
                 >
                   {acc.account_name || acc.cloud_account_id}
                 </Typography>
-                {providerFields.map((provider) => (
-                  <Box
-                    key={provider.key}
-                    sx={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                    }}
-                  >
-                    <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
-                      {provider.label}
-                    </Typography>
-                    <FormControlLabel
-                      control={
-                        <Switch
-                          checked={!!acc[provider.key]}
-                          onChange={(e) => handleAgentProviderToggle(acc.cloud_account_id, provider.key, e.target.checked)}
-                          size='sm'
-                          disabled={isSubmitting}
-                        />
-                      }
-                      label={acc[provider.key] ? 'Enabled' : 'Disabled'}
-                      labelPlacement='start'
-                      sx={{ mr: 0, gap: ds.space[2] }}
-                    />
-                  </Box>
-                ))}
+                {providerFields
+                  .filter((provider) =>
+                    showsAgentProviderToggle({
+                      integrationType: editData?.type,
+                      providerKey: provider.key,
+                      isOn: acc[provider.key],
+                      logsCollected: clickHouseLogsClusters.has(acc.cloud_account_id),
+                    })
+                  )
+                  .map((provider) => (
+                    <Box
+                      key={provider.key}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                      }}
+                    >
+                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
+                        {provider.label}
+                      </Typography>
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={!!acc[provider.key]}
+                            onChange={(e) => handleAgentProviderToggle(acc.cloud_account_id, provider.key, e.target.checked)}
+                            size='sm'
+                            disabled={isSubmitting}
+                          />
+                        }
+                        label={acc[provider.key] ? 'Enabled' : 'Disabled'}
+                        labelPlacement='start'
+                        sx={{ mr: 0, gap: ds.space[2] }}
+                      />
+                    </Box>
+                  ))}
               </Box>
             ))}
             <Box
@@ -2462,6 +2469,57 @@ const IntegrationDynamicFormModal = ({
                 </Box>
               ) : (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
+                  {existingWebhookUrl && (
+                    <Box
+                      data-testid='existing-webhook-url'
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: ds.space[2],
+                        border: `1px solid ${ds.brand[200]}`,
+                        borderRadius: ds.radius.lg,
+                        p: ds.space[4],
+                      }}
+                    >
+                      <Typography sx={{ flex: 1, color: ds.gray[600], fontSize: 'var(--ds-text-body)', wordBreak: 'break-all' }}>
+                        {existingWebhookUrl}
+                      </Typography>
+                      <CopyButton text={existingWebhookUrl} size='sm' />
+                    </Box>
+                  )}
+                  {existingWebhookTemplate && (
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[600] }}>
+                        {webhookConfig[integrationName].templateMessage}
+                      </Typography>
+                      <Box
+                        data-testid='existing-webhook-template'
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: ds.space[2],
+                          border: `1px solid ${ds.brand[200]}`,
+                          borderRadius: ds.radius.lg,
+                          p: ds.space[4],
+                        }}
+                      >
+                        <Typography
+                          component='pre'
+                          sx={{
+                            flex: 1,
+                            m: 0,
+                            overflow: 'auto',
+                            color: ds.gray[600],
+                            fontSize: 'var(--ds-text-body)',
+                            fontFamily: ds.font.mono,
+                          }}
+                        >
+                          {existingWebhookTemplate}
+                        </Typography>
+                        <CopyButton text={existingWebhookTemplate} size='sm' />
+                      </Box>
+                    </Box>
+                  )}
                   {webhookConfig[integrationName]?.learnMore && (
                     <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400] }}>
                       Learn more about{' '}
@@ -2707,7 +2765,44 @@ const IntegrationDynamicFormModal = ({
                             break;
 
                           case 'string':
-                            if (field.widget === 'model_alias_list') {
+                            if (field.widget === 'mcp_write_tools') {
+                              inputComponent = (
+                                <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
+                                  <Typography
+                                    sx={{
+                                      fontFamily: 'var(--ds-font-display)',
+                                      fontSize: 'var(--ds-text-body)',
+                                      fontWeight: ds.weight.semibold,
+                                      color: ds.gray[800],
+                                      mb: ds.space[1],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    Security
+                                  </Typography>
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      color: ds.gray[400],
+                                      fontSize: 'var(--ds-text-small)',
+                                      lineHeight: 1.5,
+                                      mb: ds.space[2],
+                                      pl: ds.space[1],
+                                    }}
+                                  >
+                                    {field.description}
+                                  </Typography>
+                                  <McpWriteToolsField
+                                    label={field.display_name || 'Tools that need approval'}
+                                    value={formValues[key] || ''}
+                                    onChange={(value) => handleChange(key, value)}
+                                    disabled={field.disabled || field.allow_edit === false}
+                                    integrationId={editData?.id}
+                                    accountId={editData?.integrations_cloud_accounts?.[0]?.cloud_account_id}
+                                  />
+                                </Box>
+                              );
+                            } else if (field.widget === 'model_alias_list') {
                               inputComponent = (
                                 <Box key={`wrapper-${key}`} sx={{ mb: ds.space[1] }}>
                                   <Typography
@@ -2984,7 +3079,16 @@ const IntegrationDynamicFormModal = ({
                           <Box sx={{ display: 'flex', gap: ds.space[3], alignItems: 'flex-end', mb: ds.space[2] }}>
                             <Box sx={{ flex: 1 }}>
                               <Input
-                                label={condIdx === 0 ? 'Label name' : ''}
+                                label={
+                                  condIdx === 0 ? (
+                                    <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+                                      Label name
+                                      <WebhookLabelHelpTooltip help={config.webhook_label_help} matchesValues />
+                                    </Box>
+                                  ) : (
+                                    ''
+                                  )
+                                }
                                 placeholder='e.g. env'
                                 value={cond.key}
                                 onChange={(value) => handleConditionChange(ruleIdx, condIdx, 'key', value)}
@@ -3067,9 +3171,13 @@ const IntegrationDynamicFormModal = ({
                     fontWeight: 'var(--ds-font-weight-medium)',
                     mt: ds.space[6],
                     mb: ds.space[2],
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: ds.space[1],
                   }}
                 >
                   Webhook Label Mapping (Optional)
+                  <WebhookLabelHelpTooltip help={config.webhook_label_help} />
                 </Typography>
                 <Typography
                   variant='body2'

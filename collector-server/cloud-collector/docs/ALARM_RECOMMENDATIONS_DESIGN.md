@@ -28,13 +28,18 @@ The CloudWatch Alarm Recommendations system automatically detects missing monito
 ### Supported Services
 - **EC2**: CPU utilization, status checks (instance/system/EBS)
 - **RDS**: CPU, memory, storage, read/write latency
-- **ElastiCache**: CPU, memory, swap, evictions, replication lag
-- **ALB**: HTTP error rate (metric math), rejected connections, response time
-- **Lambda**: Error rate, throttles, duration, concurrent executions
-- **DynamoDB**: Read/write capacity, throttles, replication latency
-- **SQS**: Message visibility timeout, message age
-- **SNS**: Failed notifications, SMS spend, DLQ notifications
-- **S3**: Request latency
+- **CLB / ALB / NLB**: unhealthy hosts, latency, backend errors; HTTP error rate (metric math), rejected connections, response time; processed bytes, TCP resets
+- **ElastiCache**: memory usage (Redis/Valkey only), freeable memory, connections
+- **Lambda**: errors, throttles, dead-letter errors (functions with a DLQ)
+- **DynamoDB**: read/write throttle events
+- **SQS**: visible messages, age of oldest message
+- **SNS**: failed notifications
+
+A template only belongs here if its alarm can be scoped by the resource's own
+dimension alone. Metrics AWS publishes only with a second dimension (DynamoDB
+`SuccessfulRequestLatency` needs `Operation`, `ReplicationLatency` needs
+`ReceivingRegion`, S3 request metrics need `FilterId`) would create alarms that never
+receive data, so they are not templated.
 
 ---
 
@@ -172,6 +177,19 @@ if template.MetricType == "CONDITIONAL" {
 ```
 
 #### `IsAlarmMissing()`:
+
+`Meta["AlarmDetails"]` absent means the sync could not list the region's alarms, so
+`IsAlarmMissing` returns `ErrAlarmDetailsUnknown` and the caller emits an unevaluated
+placeholder (`providers.UnevaluatedRecommendation`) instead of a recommendation. The
+store step then leaves that rule's existing rows alone. Present but empty means the
+resource has no alarms.
+
+An alarm matches when it watches one of the template's covering metrics on the
+resource's dimension: the metrics listed in `satisfied_by`, or else the template's own
+`namespace`/`metric_name`. A metric math alarm watches each data metric in its
+expression. A metric math template has no metric of its own, so it must list
+`satisfied_by`.
+
 ```go
 // 1. Extract AlarmDetails from resource.Meta
 alarmDetails := resource.Meta["AlarmDetails"]
@@ -354,6 +372,12 @@ input := &cloudwatch.PutMetricAlarmInput{
 ```
 AWS API → GetResources() → Resource[]
 ```
+
+Each service's full `GetResources` lists the region's alarms once
+(`fetchAlarmsByResource`, or lazily with `regionAlarmAttacher`) and sets
+`Meta["AlarmDetails"]` per resource. If the listing fails the key is left unset (see
+`IsAlarmMissing`). Targeted refreshes (`GetResourcesByIds`) do not list alarms; their
+upsert merges Meta, so the last full sync's alarm listing is kept.
 
 **EC2 Example**:
 ```go

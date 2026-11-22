@@ -18,6 +18,8 @@ const (
 	GCPDiskNoLabels             = "missing_tags"
 	GCPDiskUnattached           = "orphaned_volume"
 
+	GCPDiskPerformanceOverprovisioned = "disk_performance_overprovisioned"
+
 	// =============================================================================
 	// GCP Cloud Storage Recommendations
 	// =============================================================================

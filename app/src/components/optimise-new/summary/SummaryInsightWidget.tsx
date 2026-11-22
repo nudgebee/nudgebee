@@ -4,15 +4,9 @@ import { ds } from 'src/utils/colors';
 import { Card } from '@ui/Card';
 import { Label } from '@ui/Label';
 import Tooltip from '@ui/Tooltip';
-import { subtotal, formatDollars, formatWholeCurrency, type InsightItem, type MainCategory } from './insights';
+import { AGING_DAYS, subtotal, formatDollars, formatWholeCurrency, type InsightItem, type MainCategory } from './insights';
 import { resourceAnchorName } from './ResourceLabel';
 import { toAssistantLabel, useBrandingConfig } from '@hooks/useTenantBranding';
-
-// Findings open longer than this are surfaced in the "Flagged" column. Not an
-// SLA — there is no SLA field, config or policy anywhere in the recommendation
-// service — just a threshold this page draws the line at, so the label says
-// what it measures ("open over 14 days") rather than implying a commitment.
-const AGING_DAYS = 14;
 
 const truncate = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max)}…` : s);
 
@@ -30,19 +24,15 @@ interface InsightWidgetData {
   newFindingsCount: number;
   newFindingsDollars: number;
   biggestOpportunity: { id: string; title: string; dollars: number } | null;
-  /** Findings open longer than AGING_DAYS, with their savings and share of the shown total. */
-  aging: { count: number; dollars: number; sharePct: number };
-  /** The single longest-standing finding — "flagged N days ago, still open". */
-  longestStanding: { id: string; days: number; title: string; resource: string; dollars: number } | null;
 }
 
 // Critical findings, new findings, and biggest opportunity are the only things
 // this widget still derives from the curated top-100-by-urgency ∪
-// top-100-by-impact list. Worst account and the category breakdown used to be
-// computed the same way, but that undercounts once a tenant has more open
-// findings than the curation pulls — they're now true tenant-wide aggregates
-// passed in as props (`worstAccount`, `categoryBreakdown`), sourced the same
-// way `totalSavings` already was.
+// top-100-by-impact list. Worst account, the category breakdown and the age
+// callouts used to be computed the same way, but that undercounts once a tenant
+// has more open findings than the curation pulls — they're now true tenant-wide
+// aggregates passed in as props (`worstAccount`, `categoryBreakdown`, `aging`,
+// `longestStanding`), sourced the same way `totalSavings` already was.
 const buildInsightWidgetData = (items: InsightItem[]): InsightWidgetData => {
   const criticalItems = items.filter((i) => i.severity === 'critical');
   const criticalDollars = subtotal(criticalItems);
@@ -57,39 +47,12 @@ const buildInsightWidgetData = (items: InsightItem[]): InsightWidgetData => {
   const biggestOpportunity =
     topItem && topItem.dollarImpact > 0 ? { id: topItem.id, title: topItem.title || topItem.summary, dollars: topItem.dollarImpact } : null;
 
-  // Age comes from `created_at` (see transformRecommendation), which is stable —
-  // unlike `updated_at`, which the finops-score cron bumps every ~6h. Both of
-  // these are computed over the curated pool for the same reason `newFindings`
-  // is: recommendation_groupings_v2 has no `created_at` column, so there is no
-  // full-set aggregate to ask (verified: the query engine rejects it).
-  const agingItems = items.filter((i) => i.ageDays >= AGING_DAYS);
-  const agingDollars = subtotal(agingItems);
-  const shownDollars = subtotal(items);
-
-  const oldest = [...items].sort((a, b) => b.ageDays - a.ageDays)[0];
-  const longestStanding =
-    oldest && oldest.ageDays >= AGING_DAYS
-      ? {
-          id: oldest.id,
-          days: Math.floor(oldest.ageDays),
-          title: oldest.title || oldest.summary,
-          resource: oldest.resourceId,
-          dollars: oldest.dollarImpact,
-        }
-      : null;
-
   return {
     criticalCount: criticalItems.length,
     criticalDollars,
     newFindingsCount: newItems.length,
     newFindingsDollars,
     biggestOpportunity,
-    aging: {
-      count: agingItems.length,
-      dollars: agingDollars,
-      sharePct: shownDollars > 0 ? Math.round((agingDollars / shownDollars) * 100) : 0,
-    },
-    longestStanding,
   };
 };
 
@@ -257,6 +220,10 @@ interface BreakdownRow {
   label: string;
   dollars: number;
   count: number;
+  /** How many of this category are in the curated top list below — not `count`
+   * (the true tenant-wide total): clicking this row filters that same curated
+   * list, so showing its own count here is what actually lands in the table. */
+  shownCount: number;
 }
 
 const BreakdownTable = ({
@@ -290,7 +257,9 @@ const BreakdownTable = ({
           cursor: 'pointer',
           border: 'none',
           display: 'grid',
-          gridTemplateColumns: '1fr auto 44px',
+          // Wider than the footer's plain-number column: a "shown/total" count
+          // (e.g. "23/2016") needs more room than a single number.
+          gridTemplateColumns: '1fr auto 76px',
           gap: ds.space[2],
           alignItems: 'center',
           padding: '8px 10px',
@@ -311,7 +280,10 @@ const BreakdownTable = ({
           )}
         </Typography>
         <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[600], textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-          {row.count}
+          {row.shownCount.toLocaleString()}
+          <Box component='span' sx={{ color: ds.gray[500] }}>
+            /{row.count.toLocaleString()}
+          </Box>
         </Typography>
       </Box>
     ))}
@@ -328,7 +300,8 @@ const BreakdownTable = ({
         cursor: 'pointer',
         border: 'none',
         display: 'grid',
-        gridTemplateColumns: '1fr auto 44px',
+        // Matches the rows' column width above so the count column stays aligned.
+        gridTemplateColumns: '1fr auto 76px',
         gap: ds.space[2],
         alignItems: 'center',
         padding: '5px 10px',
@@ -396,6 +369,12 @@ interface SummaryInsightWidgetProps {
   wipCount: number;
   /** True count of resolutions that completed successfully, same aggregate as `wipCount`. */
   resolvedCount: number;
+  /** Monthly savings of the recommendations those resolutions resolved, each counted once. */
+  resolvedSavings: number;
+  /** Full-set findings first raised more than AGING_DAYS ago; null until loaded or on failure. */
+  aging: { count: number; dollars: number } | null;
+  /** The oldest in-scope finding past AGING_DAYS, fetched outside the curated list; null when none. */
+  longestStanding: InsightItem | null;
   /** Full-set blast-radius safety from the safety-band groupings; null when nothing is assessed safe. */
   safeToApply: { count: number; dollars: number } | null;
   /** Deep-links into the Resolutions tab, InProgress-filtered and carrying the current account scope. */
@@ -436,6 +415,9 @@ const SummaryInsightWidget = ({
   worstAccount,
   wipCount,
   resolvedCount,
+  resolvedSavings,
+  aging,
+  longestStanding,
   safeToApply,
   onViewWorkInProgress,
   onViewResolved,
@@ -456,9 +438,14 @@ const SummaryInsightWidget = ({
   const breakdownRows: BreakdownRow[] = useMemo(
     () =>
       (Object.keys(CATEGORY_LABELS) as MainCategory[])
-        .map((category) => ({ category, label: CATEGORY_LABELS[category], ...categoryBreakdown[category] }))
+        .map((category) => ({
+          category,
+          label: CATEGORY_LABELS[category],
+          ...(categoryBreakdown[category] ?? { dollars: 0, count: 0 }),
+          shownCount: items.filter((i) => i.category === category).length,
+        }))
         .sort((a, b) => b.dollars - a.dollars),
-    [categoryBreakdown]
+    [categoryBreakdown, items]
   );
   const breakdownTotalCount = breakdownRows.reduce((sum, row) => sum + row.count, 0);
 
@@ -495,9 +482,13 @@ const SummaryInsightWidget = ({
               tone='default'
             />
             <Tile label='Work in progress' value={wipCount.toLocaleString()} secondary='resolutions' onClick={onViewWorkInProgress} />
-            {/* Count is real (resolution status aggregate). No $ pairing: that table
-                exposes `count` only — no savings sum to roll up. */}
-            <Tile label='Resolved' value={resolvedCount.toLocaleString()} secondary='resolutions' tone='positive' onClick={onViewResolved} />
+            <Tile
+              label='Resolved'
+              value={resolvedCount.toLocaleString()}
+              secondary={resolvedSavings > 0 ? `resolutions · ${formatDollars(resolvedSavings, savingsSymbol)}/mo` : 'resolutions'}
+              tone='positive'
+              onClick={onViewResolved}
+            />
           </TileStack>
         </ColumnShell>
 
@@ -557,30 +548,34 @@ const SummaryInsightWidget = ({
           </TileStack>
         </ColumnShell>
 
-        <ColumnShell title='Flagged' meta={data.aging.count > 0 ? 'of top findings' : undefined}>
+        <ColumnShell title='Flagged'>
           {/* Traffic light, worst first: red (longest standing) → amber (aging) →
               green (safe to apply). */}
           <TileStack>
-            {data.longestStanding && (
+            {longestStanding && (
               <Callout
-                onClick={() => onOpenResource(data.longestStanding!.id)}
+                onClick={() => onOpenResource(longestStanding.id)}
                 tone='critical'
                 kind='Longest standing'
-                title={`Open ${data.longestStanding.days} days`}
-                detail={`${truncate(resourceAnchorName(data.longestStanding.resource), 30)}${
-                  data.longestStanding.dollars > 0 ? ` · ${formatDollars(data.longestStanding.dollars, savingsSymbol)}/mo` : ''
+                title={`Open ${Math.floor(longestStanding.ageDays)} days`}
+                detail={`${truncate(resourceAnchorName(longestStanding.resourceId), 30)}${
+                  longestStanding.dollarImpact > 0 ? ` · ${formatDollars(longestStanding.dollarImpact, savingsSymbol)}/mo` : ''
                 }`}
               />
             )}
-            {data.aging.count > 0 && (
+            {aging && aging.count > 0 && (
               <Callout
                 onClick={onFocusAging}
                 tone='warning'
                 kind={`Open over ${AGING_DAYS} days`}
-                title={`${data.aging.count.toLocaleString()} findings`}
+                title={`${aging.count.toLocaleString()} findings`}
                 detail={
-                  data.aging.dollars > 0
-                    ? `${formatDollars(data.aging.dollars, savingsSymbol)}/mo · ${data.aging.sharePct}% of the savings shown`
+                  aging.dollars > 0
+                    ? // totalSavings is fetched separately and starts at 0, so the share
+                      // waits for it rather than reading "0%" while it loads.
+                      `${formatDollars(aging.dollars, savingsSymbol)}/mo${
+                        totalSavings > 0 ? ` · ${Math.min(100, Math.round((aging.dollars / totalSavings) * 100))}% of potential savings` : ''
+                      }`
                     : 'no monetised savings attached'
                 }
               />

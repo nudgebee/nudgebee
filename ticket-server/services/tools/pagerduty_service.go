@@ -13,6 +13,7 @@ import (
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -116,7 +117,18 @@ func (s *PagerDutyService) GetComments(ctx *gin.Context, config models.TicketCon
 			Updated: note.CreatedAt,
 		}
 	}
+	// PagerDuty's notes endpoint returns newest-first by default and exposes no
+	// query param to request otherwise (ListIncidentNotesWithContext takes no
+	// options) - sort here instead. CreatedAt is RFC3339 (confirmed from a real
+	// incident), which sorts correctly as a plain string.
+	sort.SliceStable(comments, func(i, j int) bool { return comments[i].Created < comments[j].Created })
 	return comments, nil
+}
+
+// GetAttachment is unimplemented: PagerDuty incident notes have no attachment
+// concept in their API (IncidentNote carries only id/user/content/created_at).
+func (s *PagerDutyService) GetAttachment(ctx *gin.Context, config models.TicketConfigurations, ticketID, attachmentID string) (string, io.ReadCloser, error) {
+	return "", nil, ticket.ErrNotSupported
 }
 
 func (s *PagerDutyService) Get(ctx *gin.Context, config models.TicketConfigurations, ticketID string) (*models.Ticket, error) {

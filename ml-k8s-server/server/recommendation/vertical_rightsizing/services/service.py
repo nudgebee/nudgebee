@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Union, Dict, Any
 
@@ -46,16 +47,21 @@ class CriticalRunnerException(Exception):
     pass
 
 
+class ScanAbortedError(CriticalRunnerException):
+    """The scan was stopped early because it was not going to finish usefully.
+
+    Nothing from an aborted scan is stored: a full-account run archives every Open
+    recommendation missing from its results, so saving a partial scan would archive the
+    workloads it never reached.
+    """
+
+
 class RecommendationService:
     def __init__(
         self,
         account_id: str,
         config: Config,
         metrics_provider: Optional[str] = None,
-        datadog_api_key: Optional[str] = None,
-        datadog_app_key: Optional[str] = None,
-        datadog_site: Optional[str] = None,
-        elasticsearch: Optional[dict] = None,
         tenant_id: str = "",
         metric_provider: str = "",
         metric_provider_source: str = "",
@@ -67,11 +73,6 @@ class RecommendationService:
         self._executor = ThreadPoolExecutor(self._config.max_workers, thread_name_prefix="rightsizing")
         self.account_id = account_id
         self.tenant_id = tenant_id
-        # Both providers' queries now travel through api-server, which resolves the
-        # account's integration and its credentials. The keys and passwords below are
-        # only read when the rollback flag sends the queries straight to the provider.
-        via_api_server = ApiServerMetricsConfigs.via_api_server
-        elasticsearch = elasticsearch or {}
         # Annotated because there are now four branches: without it the field's type is
         # whichever service the first branch builds, and the other three read as
         # assignment errors.
@@ -133,38 +134,12 @@ class RecommendationService:
                 f"hint {metric_provider or 'none'}/{metric_provider_source or 'none'})"
             )
         elif metrics_provider == "ES":
-            # An ES account has no Prometheus to fall back to, so a missing connection
-            # has to fail loudly. Falling through to PrometheusMetricsService is what
-            # made rightsizing silently produce nothing for these accounts.
-            if not via_api_server and not elasticsearch:
-                raise ValueError(
-                    f"metrics_provider=ES for account {account_id} but no elasticsearch connection was supplied"
-                )
             self._metrics_service_loaders = ElasticsearchMetricsService(
-                config,
-                account_id,
-                self._executor,
-                url=elasticsearch.get("url", ""),
-                auth_type=elasticsearch.get("auth_type"),
-                username=elasticsearch.get("username"),
-                password=elasticsearch.get("password"),
-                api_key=elasticsearch.get("api_key"),
-                bearer_token=elasticsearch.get("bearer_token"),
-                metrics_index=elasticsearch.get("metrics_index"),
-                tls_skip_verify=bool(elasticsearch.get("tls_skip_verify", False)),
-                tenant_id=tenant_id,
-                via_api_server=via_api_server,
+                config, account_id, self._executor, tenant_id=tenant_id
             )
         elif metrics_provider == "datadog":
             self._metrics_service_loaders = DatadogMetricsService(
-                config,
-                account_id,
-                self._executor,
-                api_key=datadog_api_key or "",
-                app_key=datadog_app_key or "",
-                site=datadog_site or "",
-                tenant_id=tenant_id,
-                via_api_server=via_api_server,
+                config, account_id, self._executor, tenant_id=tenant_id
             )
         else:
             self._metrics_service_loaders = PrometheusMetricsService(
@@ -173,6 +148,7 @@ class RecommendationService:
         self._k8s_loader = ClusterService(account_id, self._executor, config)
         self._strategy = NudgebeeStrategy(NudgebeeStrategySettings())
         self.errors: list[dict] = []
+        self._timed_out_objects = 0
 
     def close(self) -> None:
         """Release this scan's thread pool.
@@ -325,10 +301,14 @@ class RecommendationService:
             )
         except asyncio.TimeoutError:
             logger.warning(f"Timeout processing {k8s_object} after {timeout}s - skipping")
+            self._timed_out_objects += 1
             return None
         except Exception as e:
             logger.debug(f"Error processing {k8s_object}: {e}")
             return None
+        finally:
+            # The scan keeps every workload until it ends, including ones that failed.
+            k8s_object.release_pods()
 
     async def _collect_result(self) -> Result:
         workloads = await self._k8s_loader.list_scannable_objects()
@@ -359,6 +339,18 @@ class RecommendationService:
         scans = []
         logger.info(f"Using batch size: {batch_size} for {len(workloads)} workloads")
 
+        # A batch counts against the scan when a workload in it timed out and none produced a
+        # recommendation. An unreachable metrics source rarely times out a whole batch: the
+        # other workloads tend to come back empty quickly instead. Healthy scans have never had
+        # more than three batches in a row with any timeout. The deadline scales with the
+        # workload count so a large, healthy cluster is not cut off as it grows.
+        max_timed_out_batches = self._config.max_consecutive_timed_out_batches
+        deadline_seconds = max(
+            self._config.min_scan_deadline_seconds, len(workloads) * self._config.scan_seconds_per_workload
+        )
+        deadline = time.monotonic() + deadline_seconds
+        timed_out_batches = 0
+
         for i in range(0, len(workloads), batch_size):
             batch_workloads = workloads[i : i + batch_size]
             # Reduce verbosity - only log every 10th batch or for small batches
@@ -367,9 +359,31 @@ class RecommendationService:
             if batch_num % 10 == 0 or len(workloads) <= 50:
                 logger.debug(f"Processing batch {batch_num}/{total_batches}")
 
+            if time.monotonic() > deadline:
+                logger.warning(
+                    f"Aborting scan: still running after {deadline_seconds}s, " f"at batch {batch_num}/{total_batches}"
+                )
+                raise ScanAbortedError(f"Scan aborted: exceeded its {deadline_seconds}s deadline")
+
             # Process current batch concurrently
+            timed_out_before = self._timed_out_objects
             batch_tasks = [self._gather_object_allocations(k8s_object) for k8s_object in batch_workloads]
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+            batch_timed_out = self._timed_out_objects > timed_out_before
+            batch_scanned = any(r is not None and not isinstance(r, BaseException) for r in batch_results)
+            if batch_timed_out and not batch_scanned:
+                timed_out_batches += 1
+                if timed_out_batches >= max_timed_out_batches:
+                    logger.warning(
+                        f"Aborting scan: {timed_out_batches} batches in a row timed out with no recommendation, "
+                        f"at batch {batch_num}/{total_batches}"
+                    )
+                    raise ScanAbortedError(
+                        f"Scan aborted: timeouts and no recommendation in {timed_out_batches} batches in a row"
+                    )
+            else:
+                timed_out_batches = 0
 
             for result in batch_results:
                 if isinstance(result, Exception):

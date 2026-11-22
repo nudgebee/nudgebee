@@ -1,23 +1,23 @@
 import logging
-from typing import Any, Dict, Optional
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from slack_bolt.request import BoltRequest
 
 from sqlalchemy.orm import Session
 
-from notifications_server import teams_app, slack_app, sync_engine
+from notifications_server import slack_app, sync_engine
 from notifications_server.configs.settings import settings
 from notifications_server.message_templates.base import render_success_page
 from notifications_server.repositories.oauth_repository import (
     find_installation_by_tenant_and_platform,
     update_state_tenant,
 )
-from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
-from notifications_server.services.ms_teams.ms_teams import MsTeamsService, aad_tenant_id_of
+from notifications_server.routers.common import verify_action_token
+from notifications_server.services.ms_teams import connect_link
+from notifications_server.services.ms_teams.team_binding import CONNECTED
 from notifications_server.services.discord.discord import DiscordService
 from notifications_server.clients.discord_client import DiscordClient
 from pydantic import BaseModel
@@ -25,7 +25,6 @@ from pydantic import BaseModel
 OAUTH_NOT_FOUND = "OAuth flow not configured"
 
 INSTALLATION_ALREADY_EXISTS = "Installation already exists for tenant"
-MS_TEAMS_TENANT_ALREADY_LINKED = "This Microsoft tenant is already connected to another workspace"
 
 LOG = logging.getLogger(__name__)
 
@@ -36,46 +35,31 @@ router = APIRouter(
 )
 
 
-@router.get("/install/ms-teams")
-async def install_teams(state: Optional[str] = None):
-    # `state` is minted upstream (app signs identity into it); random fallback when absent.
-    auth_url = teams_app.get_authorization_request_url(
-        scopes=settings.ms_teams.scopes, state=state or str(uuid4()), redirect_uri=settings.ms_teams_redirect_uri
-    )
-    return RedirectResponse(url=auth_url)
+class MsTeamsLinkRequest(BaseModel):
+    token: str = ""
 
 
-@router.post("/callback/ms-teams")
-async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
-    code = data["code"]
-    tenant_id = data["tenant_id"]
+@router.post("/link/ms-teams", dependencies=[Depends(verify_action_token)])
+async def ms_teams_link(request: Request, body: MsTeamsLinkRequest):
+    """Redeem a connect link from the Teams bot as the signed-in admin of the
+    workspace in the tenant-id header. The app has already checked the admin's
+    role; this checks the link and that the admin is whoever added the bot,
+    then connects."""
+    try:
+        tenant_id = UUID(request.headers.get("tenant-id") or "")
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Tenant id missing for installation")
+    user_email = request.headers.get("x-user-email") or ""
 
-    LOG.info(f"MS Teams Installation request for tenant: {tenant_id}")
-    with Session(sync_engine) as session:
-        installations = find_installation_by_tenant_and_platform(session, tenant_id, "ms_teams")
-    if len(installations) > 0:
-        LOG.info(f"MS Teams Installation exists for tenant: {tenant_id}")
-        raise HTTPException(status_code=400, detail=INSTALLATION_ALREADY_EXISTS)
+    def _redeem():
+        with Session(sync_engine) as session:
+            return connect_link.redeem(session, body.token, tenant_id, user_email)
 
-    user_email = request.headers.get("x-user-email", None)
-
-    token_result = teams_app.acquire_token_by_authorization_code(
-        code, scopes=settings.ms_teams.scopes, redirect_uri=settings.ms_teams_redirect_uri
-    )
-    account = teams_app.get_accounts()[0]
-    aad_tenant_id = aad_tenant_id_of(token_result, account)
-    with Session(sync_engine) as session:
-        owner = ms_teams_aad_tenant_owner(session, aad_tenant_id)
-    if owner and owner != str(tenant_id):
-        LOG.warning(
-            f"MS Teams tenant {aad_tenant_id} is already linked to another tenant; refusing install for {tenant_id}"
-        )
-        raise HTTPException(status_code=400, detail=MS_TEAMS_TENANT_ALREADY_LINKED)
-    service = MsTeamsService(sync_engine)
-    service.save_teams_installation(teams_app.client_id, tenant_id, token_result, account, user_email)
-    success_html = render_success_page("MS-Teams", settings.base_url)
-
-    return HTMLResponse(content=success_html)
+    code = await run_in_threadpool(_redeem)
+    LOG.info("Microsoft Teams connect link for tenant %s: %s", tenant_id, code)
+    if code == CONNECTED:
+        return {"status": CONNECTED}
+    return JSONResponse(status_code=400, content={"code": code})
 
 
 slack_router = APIRouter(
@@ -159,7 +143,7 @@ class DiscordInstallRequest(BaseModel):
     bot_token: str
 
 
-@router.post("/install/discord")
+@router.post("/install/discord", dependencies=[Depends(verify_action_token)])
 async def discord_install(request: Request, body: DiscordInstallRequest):
     """Install or rotate the tenant's Discord bot token (one install per tenant;
     re-posting updates the credential in place). Reports the bot's guild count and

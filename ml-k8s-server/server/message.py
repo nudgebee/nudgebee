@@ -5,20 +5,30 @@ from datetime import datetime, UTC
 from typing import Any, Dict, List, Optional, Type
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from server.metrics.prometheus_metrics_hpa import PrometheusMetricsHPA
 from server.recommendation.recommendation_db import DBRecommendation
 from server.recommendation.vertical_rightsizing import generate_and_process_recommendation
 from server.recommendation.volume_rightsizing import generate_volume_rightsizing_recommendations
 import asyncio
 from server.utils import rabbitmq
-from server.utils.utils import DBConfig, QueueConfig, RecommendationConfig, get_trace, handle_df_for_nan
+from server.utils.utils import (
+    DBConfig,
+    QueueConfig,
+    RecommendationConfig,
+    get_trace,
+    handle_df_for_nan,
+    is_account_active,
+)
 from server.exception import CancelPrediction
 
 logger = logging.getLogger(__name__)
 
 
 class MlMessageAbstract(BaseModel):
+    # A validation error would otherwise quote the message, which can carry credentials.
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     action_name: str
     span_name: str
     exchange: str
@@ -32,7 +42,7 @@ class MlMessageAbstract(BaseModel):
         try:
             self.process_message()
         except CancelPrediction as e:
-            logger.warning(f"Prediction for message {self.model_dump()} canceled with warning {e}")
+            logger.warning(f"Prediction for {self.action_name} canceled with warning {e}")
         except Exception as e:
             logger.exception(f"Error in processing message {e}")
             raise e
@@ -221,12 +231,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
     batch_by_namespace: bool = True
     max_recommendations: Optional[int] = None
     metrics_provider: Optional[str] = None
-    datadog_api_key: Optional[str] = None
-    datadog_app_key: Optional[str] = None
-    datadog_site: Optional[str] = None
-    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
-    # sends it the same way it sends the Datadog keys above.
-    elasticsearch: Optional[Dict[str, Any]] = None
     # Set only when the account's own default metrics provider cannot answer the
     # rightsizing keys at all and its agent can. api-server decides that and sends
     # both fields or neither; this service forwards them without interpreting them.
@@ -236,6 +240,9 @@ class VerticalRightsizingRequest(MlMessageAbstract):
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
     def process_message(self):
+        if not is_account_active(self.account_id):
+            logger.info(f"Skipping vertical rightsizing for account {self.account_id}: account is not active")
+            return
         logger.info(
             f"Processing vertical rightsizing request for account {self.account_id}, "
             f"tenant {self.tenant_id}, namespace {self.namespace}"
@@ -251,10 +258,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
                     batch_by_namespace=self.batch_by_namespace,
                     max_recommendations=self.max_recommendations,
                     metrics_provider=self.metrics_provider,
-                    datadog_api_key=self.datadog_api_key,
-                    datadog_app_key=self.datadog_app_key,
-                    datadog_site=self.datadog_site,
-                    elasticsearch=self.elasticsearch,
                     metric_provider=self.metric_provider,
                     metric_provider_source=self.metric_provider_source,
                 )
@@ -275,10 +278,6 @@ class VerticalRightsizingRequest(MlMessageAbstract):
             "batch_by_namespace": self.batch_by_namespace,
             "max_recommendations": self.max_recommendations,
             "metrics_provider": self.metrics_provider,
-            "datadog_api_key": self.datadog_api_key,
-            "datadog_app_key": self.datadog_app_key,
-            "datadog_site": self.datadog_site,
-            "elasticsearch": self.elasticsearch,
             "metric_provider": self.metric_provider,
             "metric_provider_source": self.metric_provider_source,
         }
@@ -308,16 +307,13 @@ class VolumeRightsizingRequest(MlMessageAbstract):
     persist_recommendation: bool = False
     max_recommendations: Optional[int] = None
     metrics_provider: Optional[str] = None
-    datadog_api_key: Optional[str] = None
-    datadog_app_key: Optional[str] = None
-    datadog_site: Optional[str] = None
-    # Elasticsearch connection for metrics_provider == "ES"; api-server resolves and
-    # sends it the same way it sends the Datadog keys above.
-    elasticsearch: Optional[Dict[str, Any]] = None
     exchange: str = QueueConfig.ML_RECOMMENDATION_EXCHANGE
     queue: str = QueueConfig.ML_RECOMMENDATION_QUEUE
 
     def process_message(self):
+        if not is_account_active(self.account):
+            logger.info(f"Skipping volume rightsizing for account {self.account}: account is not active")
+            return
         logger.info(
             f"Processing volume rightsizing request for account {self.account}, "
             f"tenant {self.tenant}, namespace {self.namespace}"
@@ -331,10 +327,6 @@ class VolumeRightsizingRequest(MlMessageAbstract):
                     persist_recommendation=self.persist_recommendation,
                     max_recommendations=self.max_recommendations,
                     metrics_provider=self.metrics_provider,
-                    datadog_api_key=self.datadog_api_key,
-                    datadog_app_key=self.datadog_app_key,
-                    datadog_site=self.datadog_site,
-                    elasticsearch=self.elasticsearch,
                 )
             )
             logger.info(
@@ -351,10 +343,6 @@ class VolumeRightsizingRequest(MlMessageAbstract):
             "persist_recommendation": self.persist_recommendation,
             "max_recommendations": self.max_recommendations,
             "metrics_provider": self.metrics_provider,
-            "datadog_api_key": self.datadog_api_key,
-            "datadog_app_key": self.datadog_app_key,
-            "datadog_site": self.datadog_site,
-            "elasticsearch": self.elasticsearch,
         }
 
 
@@ -372,6 +360,6 @@ def ml_server_message_handler(body: str) -> None:
         if msg_obj:
             msg_obj(**parsed_message).process()
         else:
-            raise ValueError(f"Invalid message {parsed_message}")
+            raise ValueError(f"Invalid message action name {action_name}")
     else:
-        raise ValueError(f"Invalid message action name not present {parsed_message}")
+        raise ValueError("Invalid message action name not present")

@@ -330,16 +330,27 @@ func anomalyFingerprint(accountId string, anomalyType AnomalyType, name, namespa
 	return fmt.Sprintf("anomaly|%s|%s|%s|%s", accountId, anomalyType, name, namespace)
 }
 
+// anomalyDetectionInterval is how often the anomaly job runs: the
+// "Anomaly Execute" trigger in runbook-server's cron_triggers.yaml is hourly.
+const anomalyDetectionInterval = time.Hour
+
 // closeAnomalyEventIfOpen auto-resolves the FIRING Anomaly event for exactly
 // this (account, type, name, namespace) instance, if one is open. Call this
 // when a detection cycle EXPLICITLY evaluated this instance and found it
-// clean — ml.AnomalyResponse.HasAnomaly == false from the ML path, or
-// isAnomaly == false from the Prometheus comparison — not merely "no result
-// came back" (e.g. the ML new-workload/insufficient-training-data guard),
-// which carries no information about whether a prior anomaly recovered.
+// clean — ml.AnomalyResponse.HasAnomaly == false from the ML path — not merely
+// "no result came back" (e.g. the ML new-workload/insufficient-training-data
+// guard), which carries no information about whether a prior anomaly
+// recovered.
 //
-// This is a real per-cycle recovery signal, not an inferred one, so it closes
-// immediately — no debounce/buffer needed, unlike closeOrphanedAnomalyEvents.
+// By default it closes at the first clean run. With
+// FeatureAnomalyStableCloseEnabled it holds the close until the latest
+// anomalous detection is NBAnomalyCloseStableHours old, so an instance that
+// flaps hour to hour stays open rather than resolving and reopening (and, with
+// the digest flags on, being announced "resolved" then "returned") every hour.
+// starts_at is that detection: GenerateAnomalyEvent rewrites it on every
+// anomalous run. A held close is retried on each later clean run, so the hold
+// lasts N to N+1 runs. ends_at still records the first clean run, one
+// detection cycle after starts_at, not the hour the hold ran out.
 func closeAnomalyEventIfOpen(accountId, tenantId string, anomalyType AnomalyType, name, namespace string) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -348,17 +359,26 @@ func closeAnomalyEventIfOpen(accountId, tenantId string, anomalyType AnomalyType
 	}
 	fingerprint := anomalyFingerprint(accountId, anomalyType, name, namespace)
 
-	var id string
-	err = dbms.Db.QueryRowx(
-		// events.ends_at is `timestamp` with no timezone (see V175); binding an
-		// explicit UTC value here — rather than the SQL now(), which would cast
-		// through the session's timezone setting — keeps it consistent with
-		// every other write in this codebase, which timestamps in Go as UTC.
-		`UPDATE events SET status = 'RESOLVED', ends_at = $4
+	// events.ends_at is `timestamp` with no timezone (see V175); binding an
+	// explicit UTC value here — rather than the SQL now(), which would cast
+	// through the session's timezone setting — keeps it consistent with every
+	// other write in this codebase, which timestamps in Go as UTC.
+	now := time.Now().UTC()
+	query := `UPDATE events SET status = 'RESOLVED', ends_at = $4
 		 WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3 AND status = 'FIRING'
-		 RETURNING id`,
-		tenantId, accountId, fingerprint, time.Now().UTC(),
-	).Scan(&id)
+		 RETURNING id`
+	args := []any{tenantId, accountId, fingerprint, now}
+	if config.Config.FeatureAnomalyStableCloseEnabled {
+		query = `UPDATE events SET status = 'RESOLVED', ends_at = LEAST($4, starts_at + $6 * interval '1 minute')
+		 WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3 AND status = 'FIRING'
+		   AND starts_at <= $5
+		 RETURNING id`
+		stableSince := now.Add(-time.Duration(config.Config.NBAnomalyCloseStableHours) * time.Hour)
+		args = append(args, stableSince, int(anomalyDetectionInterval.Minutes()))
+	}
+
+	var id string
+	err = dbms.Db.QueryRowx(query, args...).Scan(&id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return
@@ -391,8 +411,9 @@ func publishAnomalyEventResolved(eventId string) {
 // recovery. A FIRING anomaly event whose updated_at hasn't moved in a long
 // time (default: 7 days) almost certainly fits that description, since a
 // live, still-evaluated instance is either re-confirmed as FIRING (bumping
-// updated_at via the upsert) or actively closed by closeAnomalyEventIfOpen
-// every single cycle.
+// updated_at via the upsert) or closed by closeAnomalyEventIfOpen on a clean
+// cycle, once any FeatureAnomalyStableCloseEnabled hold has passed. A flapping
+// instance keeps bumping updated_at, so this backstop never closes it.
 //
 // The window is deliberately much longer than the detection cadence — this
 // is cleanup for abandoned events, not a substitute for prompt closing.
@@ -819,7 +840,7 @@ func upsertAnomalyEvent(dbms *database.DatabaseManager, eventObj event.Event) er
 		returnedEventId = clearedAnomalyEventId(dbms, eventObj)
 	}
 
-	if _, err := event.InsertEvent(eventObj, ""); err != nil {
+	if _, err := event.InsertEvent(eventObj, "", event.ScheduledDetection()); err != nil {
 		return err
 	}
 
@@ -837,8 +858,8 @@ func upsertAnomalyEvent(dbms *database.DatabaseManager, eventObj event.Event) er
 // clearedAnomalyEventId returns the id of the event stored for this finding if
 // it is RESOLVED or CLOSED, and "" otherwise: no row (a first firing), a FIRING
 // row (re-detection of an open anomaly), or a failed lookup, which must not
-// cost the event its upsert. The id comes from the row because InsertEvent
-// returns the one it generated, which an update does not store.
+// cost the event its upsert. The read has to come before the upsert, which
+// overwrites the status; the id is taken from the same row.
 func clearedAnomalyEventId(dbms *database.DatabaseManager, eventObj event.Event) string {
 	var id, status string
 	err := dbms.Db.QueryRowx(

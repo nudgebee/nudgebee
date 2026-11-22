@@ -37,7 +37,7 @@ func TestParseCertificates_SeverityWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
-	recs, err := ParseCertificates(certs, ScanAccount{AccountID: "acc-1", TenantID: "tenant-1"}, now)
+	recs, err := ParseCertificates(certs, ScanAccount{AccountID: "acc-1", TenantID: "tenant-1"}, now, DefaultCertExpiryWarningDays)
 	if err != nil {
 		t.Fatalf("ParseCertificates: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestParseCertificates_SkipsInvalidNotAfter(t *testing.T) {
 			"status":   map[string]any{"not_after": "not-a-date"},
 		},
 	}
-	recs, err := ParseCertificates(certs, ScanAccount{}, time.Now())
+	recs, err := ParseCertificates(certs, ScanAccount{}, time.Now(), DefaultCertExpiryWarningDays)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,5 +113,67 @@ func TestFormatCertObjectID(t *testing.T) {
 	}
 	if got := formatCertObjectID("", "cluster-cert"); got != "cluster-cert" {
 		t.Errorf("got %q (cluster-scoped should drop namespace)", got)
+	}
+}
+
+func TestParseCertificates_ConfiguredWarningWindow(t *testing.T) {
+	var certs []map[string]any
+	if err := json.Unmarshal([]byte(certFixture), &certs); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 5, 9, 12, 0, 0, 0, time.UTC)
+
+	// expiring-soon is 5 days out, healthy is ~448 days out.
+	tests := []struct {
+		name         string
+		warningDays  int
+		wantExpiring string
+		wantHealthy  string
+	}{
+		{"window shorter than the nearest expiry", 3, "Info", "Info"},
+		{"window equal to the days left", 5, "High", "Info"},
+		{"window longer than every expiry", 500, "High", "High"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recs, err := ParseCertificates(certs, ScanAccount{}, now, tt.warningDays)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := map[string]string{}
+			for _, r := range recs {
+				got[r.AccountObjectID] = r.Severity
+			}
+			if got["monitoring/expiring-soon"] != tt.wantExpiring {
+				t.Errorf("expiring-soon severity = %q; want %q", got["monitoring/expiring-soon"], tt.wantExpiring)
+			}
+			if got["ingress-nginx/healthy"] != tt.wantHealthy {
+				t.Errorf("healthy severity = %q; want %q", got["ingress-nginx/healthy"], tt.wantHealthy)
+			}
+		})
+	}
+}
+
+func TestParseCertExpiryWarningDays(t *testing.T) {
+	tests := []struct {
+		raw    string
+		want   int
+		wantOK bool
+	}{
+		{"45", 45, true},
+		{" 90 ", 90, true},
+		{"1", 1, true},
+		{"0", 0, false},
+		{"-7", 0, false},
+		{"", 0, false},
+		{"12.5", 0, false},
+		{"thirty", 0, false},
+		{`{"days":30}`, 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := parseCertExpiryWarningDays(tt.raw)
+		if got != tt.want || ok != tt.wantOK {
+			t.Errorf("parseCertExpiryWarningDays(%q) = (%d, %v); want (%d, %v)", tt.raw, got, ok, tt.want, tt.wantOK)
+		}
 	}
 }

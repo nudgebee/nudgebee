@@ -34,6 +34,20 @@ def handle_df_for_nan(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def safe_get(d: Any, path: str | list[str], default: Any = None) -> Any:
+    """Safely get a nested value from a dictionary, returning default if any key is missing or None."""
+    if isinstance(path, str):
+        path = [path]
+    curr = d
+    for key in path:
+        if not isinstance(curr, dict):
+            return default
+        curr = curr.get(key)
+        if curr is None:
+            return default
+    return curr
+
+
 def get_model_name(account_id: str, tenant_id: str, namespace: str, deployment_name: str, model_type: str) -> str:
     return f"{tenant_id}_{account_id}_{namespace}_{deployment_name}_{model_type}.keras"
 
@@ -237,15 +251,6 @@ class ApiServerMetricsConfigs:
     # Under api-server's own 180s cap (handle_actions_metrics_timeout.go), so a slow
     # query surfaces here as a timeout naming the query rather than as a bare 400.
     timeout = int(os.environ.get("ML_METRICS_HTTP_TIMEOUT", 170))
-    # Datadog and Elasticsearch rightsizing queries go the same way, so their
-    # credentials stay in api-server instead of travelling in the trigger request.
-    # Set to "false" to send them straight to the provider again, which needs the
-    # credentials back in the request and is the rollback for one release.
-    via_api_server = os.environ.get("ML_METRICS_VIA_API_SERVER", "true").strip().lower() not in (
-        "false",
-        "0",
-        "no",
-    )
     # Rightsizing asks api-server for metric KEYS instead of writing each provider's
     # query language here. Default off for its first release: it changes where every
     # number in a recommendation comes from, and the numbers are the product. Turning
@@ -444,6 +449,8 @@ SQL_QUERY = "SELECT value FROM cloud_account_attrs WHERE cloud_account_id = :acc
 
 TENANT_SQL_QUERY = "SELECT tenant FROM cloud_accounts WHERE id = :account_id"
 
+ACCOUNT_STATUS_SQL_QUERY = "SELECT status FROM cloud_accounts WHERE id = :account_id"
+
 # Process-local, mirroring the equivalent cache in llm-server's security package. An
 # account's tenant never changes, so a miss is a one-time cost per account per pod.
 _tenant_id_cache: Dict[str, str] = {}
@@ -478,6 +485,20 @@ def resolve_tenant_id(account_id: str) -> str:
     except Exception as e:
         logger.warning(f"Failed to resolve tenant from DB for account:{account_id}, {e}")
     return ""
+
+
+def is_account_active(account_id: str) -> bool:
+    """Whether the cloud account exists and has status 'active'.
+
+    Rightsizing results are upserted with a status CASE that moves an archived row
+    back to Open, so a run for an account that is not active re-opens the
+    recommendations archived on it. A read error is raised, failing the message like
+    any other database error in the run.
+    """
+    engine = DatabaseEngine.get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(text(ACCOUNT_STATUS_SQL_QUERY), {"account_id": account_id}).first()
+    return row is not None and row[0] == "active"
 
 
 def get_prediction_duration(account_id: str) -> int:

@@ -11,14 +11,18 @@ import (
 
 	"slices"
 
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 )
 
 const (
-	// AUTH_SUPER_ADMIN_FULL_ROLE is the only role string that grants super-admin
-	// via the user_role table. The synthetic server-internal admin uses the
-	// `isServerInternal` field on SecurityContext instead (see
-	// NewSecurityContextForSuperAdmin) — there is no role-string equivalent.
+	// AUTH_SUPER_ADMIN_FULL_ROLE is the only role string that grants super-admin,
+	// and only from a user_roles row with tenant_id IS NULL: the app's token
+	// enricher reads that row and the gateway forwards it in allowed_roles. A
+	// tenant-scoped row carrying it is never honoured (see IsSuperAdminRole).
+	// The synthetic server-internal admin uses the `isServerInternal` field on
+	// SecurityContext instead (see NewSecurityContextForSuperAdmin) — there is
+	// no role-string equivalent.
 	AUTH_SUPER_ADMIN_FULL_ROLE         = "super_admin"
 	AUTH_SUPER_ADMIN_READONLY_ROLE     = "super_admin_readonly"
 	AUTH_TENANT_ADMIN_ROLE             = "tenant_admin"
@@ -42,24 +46,32 @@ const (
 )
 
 // Bumped from "security_context" to "security_context_v2" when scope storage
-// moved from per-role slice fields to a generic map keyed by role. The old
+// moved from per-role slice fields to a generic map keyed by role, and to
+// "security_context_v3" so that no context cached before tenant-scoped
+// super-admin rows stopped being honoured is served after it. The old
 // namespace's entries become orphans and expire via TTL.
-const securityContextCacheNamespace = "security_context_v2"
+const securityContextCacheNamespace = "security_context_v3"
 
 func init() {
 	common.CacheCreateNamespace(securityContextCacheNamespace)
 }
 
 type SecurityContext struct {
-	tenantId        string
-	accountIds      []string
-	userId          string
-	displayName     string
-	roles           []string
-	scopedEntityIds map[string][]string
-	k8sUser         map[string]string
-	k8sGroup        map[string][]string
-	k8sNamespaces   map[string][]string
+	// actionPermission is the current action's "<module>:<Class>" grant key
+	// (ActionKey). Each request works on its own copy of the context (it is
+	// unmarshalled from the cache per request), and the key is not part of the
+	// wire form (MarshalJSON), so it never leaks into the cache or to another
+	// service.
+	actionPermission string
+	tenantId         string
+	accountIds       []string
+	userId           string
+	displayName      string
+	roles            []string
+	scopedEntityIds  map[string][]string
+	k8sUser          map[string]string
+	k8sGroup         map[string][]string
+	k8sNamespaces    map[string][]string
 	// customPermissions is the set of dynamic-RBAC custom-role grants the user
 	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Resolved from
 	// custom_role_assignments → custom_role_permissions (direct + via groups).
@@ -178,6 +190,13 @@ func (sc *SecurityContext) IsSuperAdmin() bool {
 		slices.Contains(sc.roles, AUTH_SUPER_ADMIN_FULL_ROLE)
 }
 
+// IsServerInternal reports whether this is the synthetic server identity
+// (NewSecurityContextForSuperAdmin) used by NextAuth callbacks and other
+// server-side calls. Unlike IsSuperAdmin, no role satisfies it.
+func (sc *SecurityContext) IsServerInternal() bool {
+	return sc.isServerInternal
+}
+
 // IsSuperAdminReadonly reports whether the session is a cross-tenant
 // read-only super admin. Distinct from IsSuperAdmin — destructive gates
 // (tenant_delete, etc.) must NOT accept readonly. Read-only paths
@@ -276,6 +295,31 @@ func (sc *SecurityContext) GetScopedPermissionKeys() []string {
 	return keys
 }
 
+// GetScopedPermissionsByAccount returns the holder's account-scoped grant keys
+// per account ("<account id>" -> sorted "<module>:<class>" keys). Served to the
+// browser in the session JSON, never baked into the token, so the UI can enable a
+// surface on the accounts a bound grant covers and only on those. Advisory: the
+// gateway and the handlers still decide.
+func (sc *SecurityContext) GetScopedPermissionsByAccount() map[string][]string {
+	out := map[string][]string{}
+	if sc == nil {
+		return out
+	}
+	for accountId, perms := range sc.scopedCustomPermissions {
+		keys := []string{}
+		for k, ok := range perms {
+			if ok {
+				keys = append(keys, k)
+			}
+		}
+		if len(keys) > 0 {
+			slices.Sort(keys)
+			out[accountId] = keys
+		}
+	}
+	return out
+}
+
 // CanManage gates a non-privilege tenant-config operation: a full tenant admin,
 // a full super admin, or a matching dynamic-RBAC custom-role grant. NOTE: do NOT
 // use this for privilege-administration handlers (role / group / user-role
@@ -307,6 +351,9 @@ func (sc *SecurityContext) CanManage(module string, class string) bool {
 // still read the data their custom grant authorizes — mirroring the query
 // engine's PermissionModule skip.
 func (sc *SecurityContext) CanReadAccountData(accountId string, module string) bool {
+	if sc == nil {
+		return false
+	}
 	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
 		sc.HasScopedPermission(accountId, module, "Read") ||
 		sc.HasScopedPermission(accountId, module, "Write")
@@ -341,13 +388,23 @@ func (sc *SecurityContext) HasScopedRole(role string, entityId string) bool {
 }
 
 func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAccessType) bool {
-	if sc.IsSuperAdmin() {
+	// Synthetic server-side contexts carry no tenant, so there is nothing to
+	// check the account against.
+	if sc.isServerInternal {
 		return true
 	}
-	if sc.IsSuperAdminReadonly() {
-		return access == SecurityAccessTypeRead
+	// Everyone else — super admins included — may only touch accounts of the
+	// tenant they are signed into. A super admin reaches another tenant's
+	// account by switching tenant; letting them write it from here stored the
+	// session's tenant next to a foreign account. Super admins check
+	// through IsTenantAccount so an account onboarded minutes ago is not refused
+	// by the cached list (they used to bypass it entirely).
+	if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() {
+		if !sc.IsTenantAccount(accountId) {
+			return false
+		}
+		return sc.IsSuperAdmin() || access == SecurityAccessTypeRead
 	}
-
 	if !slices.Contains(sc.accountIds, accountId) {
 		return false
 	}
@@ -375,6 +432,40 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 	}
 
 	return false
+}
+
+// IsTenantAccount reports whether accountId is one of the accounts of the tenant
+// this context is signed into. Check it before storing a caller-supplied account
+// id next to the context's tenant id, or the row pairs one tenant with another
+// tenant's account. Says nothing about the caller's role on the account
+// — that is HasAccountAccess — so a custom-role holder whose grant is tenant-wide
+// still passes.
+//
+// accountIds is cached for 30 minutes and cloud-collector inserts onboarded AWS
+// accounts without invalidating it, so a miss is confirmed against the database
+// before refusing a freshly created account.
+func (sc *SecurityContext) IsTenantAccount(accountId string) bool {
+	if sc == nil || accountId == "" || sc.tenantId == "" {
+		return false
+	}
+	if slices.Contains(sc.accountIds, accountId) {
+		return true
+	}
+	// Both columns are uuid. Reject non-uuid input here so the query can cast the
+	// parameters (keeping the indexes usable) without erroring on a bad id.
+	if uuid.Validate(accountId) != nil || uuid.Validate(sc.tenantId) != nil {
+		return false
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false
+	}
+	var found bool
+	if err := dbms.Db.Get(&found, "SELECT EXISTS (SELECT 1 FROM cloud_accounts WHERE id = $1::uuid AND tenant = $2::uuid)", accountId, sc.tenantId); err != nil {
+		slog.Error("IsTenantAccount: account lookup failed", "error", err)
+		return false
+	}
+	return found
 }
 
 func (sc *SecurityContext) HasTenantAccess(access SecurityAccessType) bool {
@@ -506,11 +597,20 @@ func IsValidTenantRole(role string) bool {
 	return false
 }
 
+// IsSuperAdminRole reports whether role is a super-admin role string. Super
+// admin is platform-wide, so it is valid only on a user_roles row with
+// tenant_id IS NULL; any tenant-scoped row carrying one is ignored here and
+// forbidden by the CHECK constraints on user_roles and group_roles.
+// Case-insensitive, like the citext role column. Keep the list in step with
+// SUPER_ADMIN_ROLES in app/src/lib/superAdminRoles.ts.
+func IsSuperAdminRole(role string) bool {
+	return strings.EqualFold(role, AUTH_SUPER_ADMIN_FULL_ROLE) || strings.EqualFold(role, AUTH_SUPER_ADMIN_READONLY_ROLE)
+}
+
 // NewSecurityContextForSuperAdmin returns the synthetic admin context used by
 // server-side callers (NextAuth callbacks, internal RPC bypass). The
-// `isServerInternal` typed flag is the only way to obtain super-admin
-// privileges from a non-licensed-role path, so a user assigned a stray
-// role name in user_role can't impersonate this context.
+// `isServerInternal` typed flag can only be set inside this package, so no
+// role name, in user_roles or elsewhere, can produce this context.
 func NewSecurityContextForSuperAdmin() *SecurityContext {
 	return &SecurityContext{
 		tenantId:         "",
@@ -625,6 +725,13 @@ func NewSecurityContext(tenantId string, userId string) (*SecurityContext, error
 	// portion is the scope key (matches the per-account access checks),
 	// while the namespace half feeds the separate namespaces map.
 	accumulate := func(role, entityType, entityId string) {
+		// Every row read here is scoped to this tenant, and super admin is
+		// platform-wide: a tenant-scoped copy grants nothing, so it is dropped
+		// rather than honoured.
+		if IsSuperAdminRole(role) {
+			slog.Warn("ignoring tenant-scoped super-admin role", "tenant_id", tenantId, "user_id", userId, "role", role, "entity_type", entityType)
+			return
+		}
 		roles = append(roles, role)
 		switch entityType {
 		case RBAC_ENTITY_TYPE_ACCOUNT:

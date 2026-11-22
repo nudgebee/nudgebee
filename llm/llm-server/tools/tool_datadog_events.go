@@ -19,7 +19,10 @@ func init() {
 	})
 }
 
-type DatadogEventsExecuteTool struct{}
+type DatadogEventsExecuteTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m DatadogEventsExecuteTool) Name() string { return ToolDatadogEventsExecute }
 

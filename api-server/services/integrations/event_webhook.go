@@ -55,6 +55,22 @@ func (m EventWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels buildEventWebhookEvent builds. Update it with the parser.
+func (m EventWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Keys under each alert's labels become labels under their own name.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<key under labels>", Source: "labels.<key> of each alert"},
+			{Label: "source_tool", Source: "source_tool"},
+		},
+		Notes: []string{
+			"A value under labels that is not text rejects the whole delivery.",
+			`A label key starting with "nb_" rejects the whole delivery.`,
+			"severity, status, title and rule_name are not labels.",
+		},
+	}
+}
+
 func (m EventWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

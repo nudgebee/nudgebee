@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -26,7 +27,7 @@ func IsSystemAgentAlias(agent string) bool {
 }
 
 func RegisterNBAgentFactory(agent string, agentFactory func(accountId string) (NBAgent, error)) {
-	slog.Info("registering agent", "agent", agent)
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -52,6 +53,20 @@ type ExecutionTargetAwareAgent interface {
 	AcceptsExecutionTarget()
 }
 
+// PriorObservationsConsumer marks an agent that answers from its caller's
+// earlier step observations (a summarizer). Called without dependency context,
+// it gets those observations as QueryContext; other agent-tools get none.
+type PriorObservationsConsumer interface {
+	ConsumesPriorObservations()
+}
+
+// ProviderBoundAgent is a target-aware agent whose tools reach one kind of
+// account only (aws_logs runs the aws CLI). A target of another kind is
+// refused, so it can never answer from the conversation's own account.
+type ProviderBoundAgent interface {
+	TargetProvider() string
+}
+
 func NewToolFromAgent(agent NBAgent) toolcore.NBTool {
 	_, targetSupported := agent.(ExecutionTargetAwareAgent)
 	return &nbAgentTool{name: agent.GetName(), description: agent.GetDescription(), input: "Refer description for inputs", output: "Refer description for inputs", agent: agent, toolType: toolcore.NBToolTypeAgent, targetSupported: targetSupported}
@@ -67,15 +82,27 @@ func RegisterTargetAwareNBAgentFactoryAndTool(agent string, agentFactory func(ac
 	registerNBAgentFactoryAndTool(agent, agentFactory, toolDescription, toolInput, toolOutput, true)
 }
 
+// RegisterTargetRoutedNBAgentFactoryAndTool is RegisterTargetAwareNBAgentFactoryAndTool
+// for a factory that picks its agent by account (logs picks the account's log
+// provider): a call on another account gets the agent the factory builds for
+// that account.
+func RegisterTargetRoutedNBAgentFactoryAndTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
+	registerNBAgentTool(agent, agentFactory, toolDescription, toolInput, toolOutput, true, true)
+}
+
 func registerNBAgentFactoryAndTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool) {
-	slog.Info("registering agent", "agent", agent)
+	registerNBAgentTool(agent, agentFactory, toolDescription, toolInput, toolOutput, targetSupported, false)
+}
+
+func registerNBAgentTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool, routedByTarget bool) {
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
 	nbSystemAgents[strings.ToLower(agent)] = agentFactory
 	useResponseAlways := true
 	toolcore.RegisterNBToolFactory(agent, func(accountId string) (toolcore.NBTool, error) {
-		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: useResponseAlways, toolType: toolcore.NBToolTypeAgent, accountId: accountId, targetSupported: targetSupported}, nil
+		return &nbAgentTool{name: agent, description: toolDescription, input: toolInput, output: toolOutput, useResponseAlways: useResponseAlways, toolType: toolcore.NBToolTypeAgent, accountId: accountId, targetSupported: targetSupported, routedByTarget: routedByTarget}, nil
 	})
 }
 
@@ -112,7 +139,7 @@ func RegisterTargetAwareNBAgentFactoryAsTool(agent string, agentFactory func(acc
 }
 
 func registerNBAgentFactoryAsTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string, targetSupported bool) {
-	slog.Info("registering agent as tool", "agent", agent)
+	slog.Debug("registering agent as tool", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -123,7 +150,7 @@ func registerNBAgentFactoryAsTool(agent string, agentFactory func(accountId stri
 }
 
 func RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(agent string, agentFactory func(accountId string) (NBAgent, error), toolDescription string, toolInput string, toolOutput string) {
-	slog.Info("registering agent", "agent", agent)
+	slog.Debug("registering agent", "agent", agent)
 	if _, ok := nbSystemAgents[strings.ToLower(agent)]; ok {
 		slog.Warn("agent already registered", "agent", agent)
 	}
@@ -265,11 +292,6 @@ const (
 	NBToolCallAdditionalDetailsFollowupRequest = nbToolCallAdditionalDatailsFollowupRequest
 )
 
-type AgentTool interface {
-	toolcore.NBTool
-	GetAgent(ctx *security.RequestContext) NBAgent
-}
-
 type nbAgentTool struct {
 	name              string
 	description       string
@@ -280,6 +302,9 @@ type nbAgentTool struct {
 	toolType          toolcore.NBToolType
 	accountId         string
 	targetSupported   bool
+	// routedByTarget: the factory picks the agent by account, so a call on
+	// another account runs the agent built for that account.
+	routedByTarget bool
 }
 
 func (m *nbAgentTool) GetAgent(ctx *security.RequestContext) NBAgent {
@@ -335,6 +360,30 @@ func (m *nbAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarg
 
 func (m *nbAgentTool) SupportsDelegatedTarget() bool { return m.targetSupported }
 
+func (m *nbAgentTool) consumesPriorObservations(ctx *security.RequestContext) bool {
+	_, ok := m.GetAgent(ctx).(PriorObservationsConsumer)
+	return ok
+}
+
+// agentForCall is the agent this call runs: the tool's own, or for a tool
+// routed by target, the one its factory builds for the target account.
+func (m *nbAgentTool) agentForCall(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (NBAgent, error) {
+	if !m.routedByTarget {
+		return m.GetAgent(nbRequestContext.Ctx), nil
+	}
+	target, accountID, err := tools.ResolveObservabilityTarget(nbRequestContext, input)
+	if err != nil {
+		return nil, err
+	}
+	if target == nil || accountID == nbRequestContext.AccountId {
+		return m.GetAgent(nbRequestContext.Ctx), nil
+	}
+	if routed, ok := GetNBAgent(nbRequestContext.Ctx, m.name, accountID, AgentStatusEnabled); ok {
+		return routed, nil
+	}
+	return nil, fmt.Errorf("%s is not available for %s %q", m.name, target.Kind(), target.Name)
+}
+
 func (m *nbAgentTool) ConfigSchema(ctx *security.RequestContext) toolcore.ToolConfigSchema {
 	toolNames := map[string]any{}
 	agent := m.GetAgent(ctx)
@@ -372,7 +421,10 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 		}
 	}
 
-	agent := m.GetAgent(nbRequestContext.Ctx)
+	agent, err := m.agentForCall(nbRequestContext, input)
+	if err != nil {
+		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: err.Error()}, nil
+	}
 	if agent == nil {
 		return toolcore.NBToolResponse{}, errAgentNotFound
 	}
@@ -413,7 +465,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	} else if resp.Status == ConversationStatusFailed {
 		responseData := "Agent failed to provide a response."
 		if len(resp.Response) > 0 {
-			responseData = resp.Response[0]
+			responseData = StripUnresolvedStepLinks(resp.Response[0])
 		}
 		return toolcore.NBToolResponse{
 			Data:              responseData,
@@ -446,8 +498,10 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 				}, nil
 			}
 		}
+		// An E-number in the sub-agent's answer names one of its own steps;
+		// the parent would cite it as one of its own.
 		return toolcore.NBToolResponse{
-			Data:              resp.Response[0],
+			Data:              StripUnresolvedStepLinks(resp.Response[0]),
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			IsTerminal:        parentTerminal,
@@ -500,11 +554,25 @@ func childAgentTarget(ctx toolcore.NbToolContext, agent NBAgent, query toolcore.
 		return nil, nil
 	}
 	if _, ok := agent.(ExecutionTargetAwareAgent); !ok {
+		// Naming the conversation's own account is no handoff at all. (The
+		// resolver returns an error, not a panic, without a caller context.)
+		if own, err := tools.ResolveAgentHandoffTarget(ctx.Ctx, ctx.AccountId, target); err == nil && own != nil && own.AccountID == ctx.AccountId {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("agent %s does not support a delegated execution target", agent.GetName())
 	}
 	resolved, err := tools.ResolveAgentHandoffTarget(ctx.Ctx, ctx.AccountId, target)
 	if err != nil {
 		return nil, fmt.Errorf("agent target: %w", err)
+	}
+	if resolved == nil {
+		return nil, fmt.Errorf("agent target: %s %q did not resolve", target.Provider, target.Name)
+	}
+	if resolved.AccountID == ctx.AccountId {
+		return nil, nil
+	}
+	if bound, ok := agent.(ProviderBoundAgent); ok && !strings.EqualFold(bound.TargetProvider(), resolved.Provider) {
+		return nil, fmt.Errorf("agent %s reads %s accounts only; %s %q is not one", agent.GetName(), bound.TargetProvider(), resolved.Kind(), resolved.Name)
 	}
 	// A nested child re-resolves its caller's target by name; keep the
 	// connection identity validated at the first handoff.
@@ -607,8 +675,12 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 // created a cache.
 func subAgentCacheContext(ctx *security.RequestContext) *security.RequestContext {
 	goCtx := ctx.GetContext()
-	if disabled, _ := goCtx.Value(ContextKeyDisableCaching).(bool); !disabled {
+	if disabled, _ := goCtx.Value(llmruntime.ContextKeyDisableCaching).(bool); !disabled {
 		return ctx
 	}
-	return ctx.WithContext(context.WithValue(goCtx, ContextKeyDisableCaching, false))
+	return ctx.WithContext(context.WithValue(goCtx, llmruntime.ContextKeyDisableCaching, false))
 }
+
+// GrantScope: an agent wrapper reads nothing itself; the agent it delegates to
+// has each of its own tool calls checked at dispatch.
+func (m *nbAgentTool) GrantScope() toolcore.GrantScope { return toolcore.GrantScope{Unscoped: true} }

@@ -15,6 +15,23 @@ func IsTerminatedContainerAggKey(aggregationKey string) bool {
 	return terminatedContainerAggKeys[aggregationKey]
 }
 
+// IsNeverStartedContainerAggKey reports whether an event class describes a
+// container that never ran, so no log source holds anything of its own.
+//
+// What a log action returns for one of these is never the subject's output:
+// asked by workload, the healthy replicas still serving the old image; asked
+// for the pod, the kubelet's "previous terminated container … not found", at
+// the cost of an agent round-trip per event. The image name, the pull error and
+// the pod's events are the evidence for these, and pod_enricher and
+// resource_events_enricher already collect them.
+//
+// A container that ran, restarted and can no longer pull its image does have an
+// earlier instance, and this skips its logs too. That is the price of not
+// looking the pod up first, which costs more than the logs are worth here.
+func IsNeverStartedContainerAggKey(aggregationKey string) bool {
+	return aggregationKey == "image_pull_backoff_reporter"
+}
+
 // NeedsIncidentTimeAnchor is deliberately narrower than
 // IsTerminatedContainerAggKey: resolving the anchor costs a relay round-trip,
 // and get_resource ignores its name filter for pods, so that round-trip returns

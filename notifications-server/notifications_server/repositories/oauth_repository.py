@@ -33,7 +33,7 @@ def find_installation_by_tenant_and_platform(session: Session, tenant_id: str, p
             )
             .all()
         )
-        if integration_ids:
+        if integration_ids or platform == "ms_teams":
             result = [{"id": str(row.id)} for row in integration_ids]
         else:
             installations = (

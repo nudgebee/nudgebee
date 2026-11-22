@@ -1,0 +1,116 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+{{- $podSC := $r.podSecurityContext }}
+{{- $ctrSC := $r.containerSecurityContext }}
+{{- /*
+RabbitMQ 4.x refuses to join or upgrade a cluster that has stable feature
+flags disabled. Installs that started on Bitnami 12.6.1's default image (3.12)
+and were later pinned to 3.13 can still have some off. A single node enables
+the required ones itself at boot, but a multi-replica install upgrades node by
+node and cannot. So before the pods roll, this enables every stable flag on the
+running 3.x broker (`enable_feature_flag all` leaves experimental ones off).
+
+It runs the CLI from the new RabbitMQ image against the running node with the
+Erlang cookie: no extra image to mirror and no dependency on the management
+password. It acts only on a 3.x broker: on 4.x it does nothing, so later
+upgrades never switch on new 4.x flags (those are left to the operator). If the
+broker is unreachable it logs and exits 0 rather than block the upgrade: a
+single node still boots, and a broken broker is not made worse.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-feature-flags" (include "nudgebee.rabbitmq.fullname" .) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      {{- $pullSecrets := concat (.Values.global.imagePullSecrets | default (list)) ($r.image.pullSecrets | default (list)) }}
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- range . | uniq }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      {{- if $podSC.enabled }}
+      securityContext:
+        {{- toYaml (omit $podSC "enabled") | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: enable-stable-feature-flags
+          image: {{ include "nudgebee.rabbitmq.image" . }}
+          imagePullPolicy: {{ $r.image.pullPolicy }}
+          {{- if $ctrSC.enabled }}
+          securityContext:
+            {{- toYaml (omit $ctrSC "enabled") | nindent 12 }}
+          {{- end }}
+          env:
+            - name: HOME
+              value: /var/lib/rabbitmq
+            - name: REPLICAS
+              value: {{ $r.replicaCount | quote }}
+            {{- if eq "hostname" $r.clustering.addressType }}
+            - name: NODE
+              value: {{ printf "rabbit@%s-0.%s.%s.svc.%s" (include "nudgebee.rabbitmq.fullname" .) (include "nudgebee.rabbitmq.headlessName" .) (include "nudgebee.rabbitmq.namespace" .) $r.clusterDomain | quote }}
+            {{- else }}
+            - name: NODE
+              value: {{ printf "rabbit@%s-0" (include "nudgebee.rabbitmq.fullname" .) | quote }}
+            {{- end }}
+          command:
+            - sh
+            - -c
+            - |
+              set -u
+              cp /cookie-src/cookie "$HOME/.erlang.cookie" && chmod 600 "$HOME/.erlang.cookie"
+              ctl() { timeout 60 rabbitmqctl -n "$NODE" --longnames "$@"; }
+              if ! status=$(ctl -q status --formatter json 2>/dev/null); then
+                echo "RabbitMQ node $NODE not reachable; skipping the feature-flag check."
+                exit 0
+              fi
+              version=$(echo "$status" | sed -n 's/.*"rabbitmq_version":"\([^"]*\)".*/\1/p')
+              echo "RabbitMQ version: ${version:-unknown}"
+              case "$version" in
+                3.*) ;;
+                *) echo "Not a 3.x broker; nothing to do."; exit 0 ;;
+              esac
+              if ctl enable_feature_flag all; then
+                echo "All stable feature flags enabled."
+                exit 0
+              fi
+              echo "FAILED to enable the stable feature flags."
+              # A single node enables what it needs at boot, so only a
+              # multi-replica install must stop here.
+              if [ "$REPLICAS" -gt 1 ]; then exit 1; fi
+              exit 0
+          volumeMounts:
+            - name: home
+              mountPath: /var/lib/rabbitmq
+            - name: cookie-src
+              mountPath: /cookie-src
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+      volumes:
+        - name: home
+          emptyDir: {}
+        - name: cookie-src
+          secret:
+            secretName: {{ include "nudgebee.rabbitmq.erlangSecret" . }}
+            items:
+              - key: rabbitmq-erlang-cookie
+                path: cookie
+{{- end }}

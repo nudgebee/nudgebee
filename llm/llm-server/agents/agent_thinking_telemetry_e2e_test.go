@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -37,10 +37,10 @@ func TestThinkingTelemetry_E2E(t *testing.T) {
 
 	callOpts := []llms.CallOption{
 		llms.WithMaxTokens(2048),
-		core.WithThinkingLevel("low"),
+		llmruntime.WithThinkingLevel("low"),
 	}
 
-	resp, err := core.GenerateAndTrackLLMContent(reqCtx, os.Getenv("TEST_USER"), accountID, "e2e_thinking_test", "", "investigation", false, prompt, true, callOpts...)
+	resp, err := llmruntime.GenerateAndTrackLLMContent(reqCtx, os.Getenv("TEST_USER"), accountID, "e2e_thinking_test", "", "investigation", false, prompt, true, callOpts...)
 	if err != nil {
 		t.Skipf("Live LLM call skipped (provider unavailable or unconfigured): %v", err)
 	}

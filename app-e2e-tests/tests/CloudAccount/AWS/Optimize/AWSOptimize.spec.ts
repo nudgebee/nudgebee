@@ -285,7 +285,7 @@ test(
 );
 
 test(
-  "Cloud Optimize - open a Right Sizing row's actions menu, verify Resolve is offered disabled and Create Ticket enabled, dismiss it and verify no ticket form opens",
+  "Cloud Optimize - open a Right Sizing row's actions menu, verify Resolve is offered disabled and the ticket action matches the row's ticket state, dismiss it and verify no ticket form opens",
   { tag: ["@dev", "@regression", "@negative", "@functional"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
@@ -303,13 +303,24 @@ test(
       // a contract and not a property of the dev data.
       await expect(o.openMenuItems).toHaveCount(2);
       const resolve = o.menuItem(/^Resolve$/, "-0");
-      const createTicket = o.menuItem(/^Create Ticket$/, "-1");
+      // Located by its stable id suffix, not its label: once a recommendation already has a
+      // ticket the row disables this action and relabels it "Ticket: <id>"
+      // (CloudOptimizeRecommendationsTable.tsx getMenuItems), so a label match would miss it.
+      const ticketAction = o.menuItem(/^Create Ticket$/, "-1");
       await expect(resolve).toBeVisible();
       // Resolve ships disabled for every non-alarm category, so a menu that offers it as
       // clickable is a regression rather than a data difference.
       await expect(resolve).toHaveAttribute("aria-disabled", "true");
-      await expect(createTicket).toBeVisible();
-      await expect(createTicket).not.toHaveAttribute("aria-disabled", "true");
+      await expect(ticketAction).toBeVisible();
+      // Both shapes are valid and which one row 0 is depends on the dev data: a row with no
+      // ticket offers "Create Ticket" enabled; a row that already has one offers it disabled
+      // and relabelled "Ticket: <id>". Assert whichever this row happens to be.
+      const ticketLabel = ((await ticketAction.textContent()) ?? "").trim();
+      if (/^Ticket:/.test(ticketLabel)) {
+        await expect(ticketAction).toHaveAttribute("aria-disabled", "true");
+      } else {
+        await expect(ticketAction).not.toHaveAttribute("aria-disabled", "true");
+      }
     });
 
     await test.step("Escape dismisses the menu without starting a ticket", async () => {

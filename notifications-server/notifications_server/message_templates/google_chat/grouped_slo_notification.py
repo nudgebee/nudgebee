@@ -4,7 +4,17 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from notifications_server.configs.settings import public_ip
+from notifications_server.message_templates.google_chat.grouped_anomaly_notification import (
+    MAX_TEXT_LENGTH,
+    truncate_text,
+)
 from notifications_server.message_templates.slack.slo import SLOAlertParams
+from notifications_server.message_templates.slack.grouped_anomaly_notification import (
+    MAX_RESOLVED_ITEMS,
+    counts_phrase,
+    split_resolved,
+)
+from notifications_server.message_templates.slack.grouped_slo_notification import resolved_slo_line
 from notifications_server.message_templates.base import Emojis, format_burn_rate
 
 
@@ -21,11 +31,17 @@ def get_grouped_slo_alerts_gchat_template(input_data: List[SLOAlertParams]) -> D
         raise TypeError("Expected SLOAlertSummaryParams with an events list")
     alerts: List[SLOAlertParams] = input_data.events
 
+    firing, resolved = split_resolved(alerts)
     grouped: Dict[str, List[SLOAlertParams]] = defaultdict(list)
-    for alert in alerts:
+    for alert in firing:
         grouped[alert.account_name].append(alert)
 
-    lines.append(f"{Emojis.Alert.value} {len(alerts)} SLO Breach Alerts across {len(grouped)} accounts")
+    resolved_only = bool(resolved) and not firing
+    emoji = Emojis.Resolved.value if resolved_only else Emojis.Alert.value
+    counts = counts_phrase(len(firing), len(resolved), "SLO Breach Alerts", "")
+    total_accounts = len({alert.account_name for alert in alerts})
+
+    lines.append(f"{emoji} {counts} across {total_accounts} accounts")
     lines.append("")
 
     for account_name, acct_alerts in grouped.items():
@@ -46,6 +62,19 @@ def get_grouped_slo_alerts_gchat_template(input_data: List[SLOAlertParams]) -> D
             lines.append(f"• Firing Since: {human}")
             lines.append("")
 
-    lines.append(f"{Emojis.Event.value} Review impacted workloads to restore SLO compliance.")
+    if not resolved_only:
+        lines.append(f"{Emojis.Event.value} Review impacted workloads to restore SLO compliance.")
 
-    return {"text": "\n".join(lines)}
+    message = "\n".join(lines)
+    if not resolved:
+        return {"text": message}
+
+    # The section is short and bounded (capped items, clipped lines), so it is
+    # held back whole and only the firing part above it is ever truncated. A
+    # digest without the section is sent at full length, as it always was.
+    section = [f"{Emojis.Resolved.value} *Resolved*"]
+    section += [f"• {resolved_slo_line(alert, '*')}" for alert in resolved[:MAX_RESOLVED_ITEMS]]
+    if len(resolved) > MAX_RESOLVED_ITEMS:
+        section.append(f"+{len(resolved) - MAX_RESOLVED_ITEMS} more resolved")
+    tail = "\n\n" + "\n".join(section)
+    return {"text": truncate_text(message.rstrip("\n"), MAX_TEXT_LENGTH - len(tail)) + tail}

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
+	"nudgebee/services/query"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -22,6 +23,19 @@ func wantsTracesEnvelope(request observability.TracesV3Request) bool {
 func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 	if err != nil {
+		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+	// Every traces action reads its input from "request"; refuse a missing one here
+	// rather than panicking on the type assertion below.
+	reqInput, ok := actionPayload.Input["request"].(map[string]interface{})
+	if !ok {
+		c.JSON(400, common.ErrorActionBadRequest("missing or invalid request input"))
+		return
+	}
+	// Field conditions written without their _binary wrapper would be dropped by the
+	// decoder and the query would run unfiltered; move them under _binary instead.
+	if err := query.NormalizeQueryRequestWhere(reqInput); err != nil {
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 		return
 	}
@@ -262,6 +276,14 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
 		resp, err := observability.GetTracesQuery(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -281,6 +303,14 @@ func handleTracesAction(actionPayload *ActionRequest, c *gin.Context, tracer *tr
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "traces") {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 		resp, err := observability.GetGroupedTraces(ctx, request)

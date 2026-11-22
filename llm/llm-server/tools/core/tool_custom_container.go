@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/relay"
+	"nudgebee/llm/security"
 	"strings"
 
 	"github.com/google/uuid"
@@ -25,6 +26,40 @@ const containerImplType = "container"
 func (c nbCustomContainerTool) Name() string {
 	return c.tool.Name
 }
+
+// InferToolRequestType reports a write when the tool is marked as not
+// read-only, so its calls ask for approval; otherwise it stays unclassified.
+func (c nbCustomContainerTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
+	if CustomToolWrites(c.tool.Config) {
+		return ToolRequestTypeUpdate, nil
+	}
+	return "", nil
+}
+
+// approvalMark: a custom tool asks only when marked as not read-only.
+func (c nbCustomContainerTool) approvalMark() ToolApproval {
+	return customToolApproval(c.tool.Config)
+}
+
+// customToolApproval is when a custom tool's calls ask: always when it is
+// marked as a write, otherwise never.
+func customToolApproval(config map[string]any) ToolApproval {
+	if CustomToolWrites(config) {
+		return ToolApprovalAlways
+	}
+	return ToolApprovalNever
+}
+
+// CustomToolWrites reports a custom tool whose config marks it as not
+// read-only (`"read_only": false`). Absent means read-only, as before.
+func CustomToolWrites(config map[string]any) bool {
+	readOnly, set := config["read_only"].(bool)
+	return set && !readOnly
+}
+
+// ResultCanChange: a container tool runs the user's own command, which can
+// read anything that changes between calls (#39635).
+func (c nbCustomContainerTool) ResultCanChange() bool { return true }
 
 // GetImplType labels metrics emitted on behalf of this tool so
 // dashboards can slice container vs MCP vs builtin tool traffic.

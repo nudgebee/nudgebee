@@ -1,9 +1,12 @@
 package agents
 
 import (
+	"slices"
 	"strings"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -52,6 +55,10 @@ type remediationMode int
 const (
 	remediationModeInvestigation remediationMode = iota
 	remediationModeRecommendation
+	// remediationModeAlertPlan: an alert conversation in a tenant with the loop on (#40734). The alert has a stored
+	// plan whose every step is decided and recorded once, from any surface, so here the agent works on that
+	// plan (read, propose a different one, act on a step) and has no tool that runs a command outside it.
+	remediationModeAlertPlan
 )
 
 // resolveRemediationMode picks the mode from the request: a recommendation
@@ -63,7 +70,83 @@ func resolveRemediationMode(request core.NBAgentRequest) remediationMode {
 	if strings.TrimSpace(request.QueryConfig.RecommendationId) != "" {
 		return remediationModeRecommendation
 	}
+	if !events.RemediationLoopOn(request.AccountId) {
+		return remediationModeInvestigation
+	}
+	if _, alert := events.AlertFingerprintOfSession(requestSession(request)); alert {
+		return remediationModeAlertPlan
+	}
 	return remediationModeInvestigation
+}
+
+// requestSession is the session of the conversation request belongs to. A var so tests can stub it.
+var requestSession = func(request core.NBAgentRequest) string {
+	if request.SessionId != "" || request.ConversationId == "" {
+		return request.SessionId
+	}
+	dao := core.GetConversationDao()
+	if dao == nil {
+		return ""
+	}
+	conversation, err := dao.GetConversation(request.ConversationId)
+	if err != nil {
+		return ""
+	}
+	return conversation.SessionID
+}
+
+// remediationAlertPlanTools: tools in an alert conversation with the loop on; remediationAlertCheckTools: in its
+// read-only follow-up check. Both add alertCliTool; the check only kubectl, limited to strict reads (NBQueryConfig.StrictReadOnly).
+var (
+	remediationAlertPlanTools  = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix, toolcore.ToolRunStep}
+	remediationAlertCheckTools = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix, toolcore.ToolScheduleRecheck,
+		tools.ToolQueryPrometheus, tools.ToolGetEventById, tools.ToolGetEventRules}
+	// remediationAlertPlanningTools: in NudgeBee's background planning turn (NBQueryConfig.RemediationPlanTurn), the
+	// check's reads and propose_fix; no re-check, which belongs to a follow-up.
+	remediationAlertPlanningTools = []string{toolcore.ToolGetRemediationPlan, toolcore.ToolProposeFix,
+		tools.ToolQueryPrometheus, tools.ToolGetEventById, tools.ToolGetEventRules}
+)
+
+// readOnlyTurn reports whether request's turn may only read: a follow-up check, or an automatic investigation.
+func readOnlyTurn(ctx *security.RequestContext, request core.NBAgentRequest) bool {
+	return core.IsReadOnlyRun(ctx) || request.QueryConfig.ReadOnlyRun
+}
+
+// alertAccountProvider looks up the account's cloud. A var so tests can stub it.
+var alertAccountProvider = tools.GetCloudProviderForAccount
+
+// alertCliTool is the account's own CLI tool: kubectl_execute on a Kubernetes account, else its cloud's
+// (aws_execute, azure_execute, gcloud_execute); false for an account with neither.
+func alertCliTool(accountId string) (toolcore.NBTool, bool) {
+	name := map[string]string{"k8s": tools.ToolExecuteKubectlCommand, "aws": tools.ToolExecuteAwsCliCommand,
+		"azure": tools.ToolExecuteAzureCliCommand, "gcp": tools.ToolExecuteGcpCliCommand}[strings.ToLower(alertAccountProvider(accountId))]
+	if name == "" {
+		return nil, false
+	}
+	return toolcore.GetNBTool(accountId, name)
+}
+
+// withAlertPlanTools adds the alert's plan tools to an orchestrator's for a tenant with the remediation loop
+// on, so a fix asked for in an alert's chat can run as the plan's step (run_step), recorded once. Each refuses
+// outside an alert's conversation. A read-only run (the automatic investigation) gets none.
+func withAlertPlanTools(ctx *security.RequestContext, accountId string, supported []toolcore.NBTool) []toolcore.NBTool {
+	if !events.RemediationLoopOn(accountId) || core.IsReadOnlyRun(ctx) {
+		return supported
+	}
+	return appendTools(accountId, supported, remediationAlertPlanTools...)
+}
+
+// appendTools appends the registered tools named that supported does not have yet.
+func appendTools(accountId string, supported []toolcore.NBTool, names ...string) []toolcore.NBTool {
+	for _, name := range names {
+		if slices.ContainsFunc(supported, func(t toolcore.NBTool) bool { return t.Name() == name }) {
+			continue
+		}
+		if tool, ok := toolcore.GetNBTool(accountId, name); ok {
+			supported = append(supported, tool)
+		}
+	}
+	return supported
 }
 
 // ─── Shared base (guardrails both mode blocks assemble around) ───
@@ -97,10 +180,78 @@ const (
 )
 
 func (r RemediationAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	if resolveRemediationMode(query) == remediationModeRecommendation {
+	switch resolveRemediationMode(query) {
+	case remediationModeRecommendation:
 		return remediationRecommendationPrompt()
+	case remediationModeAlertPlan:
+		if readOnlyTurn(ctx, query) && query.QueryConfig.RemediationPlanTurn != "" {
+			return remediationAlertPlanningPrompt()
+		}
+		if readOnlyTurn(ctx, query) {
+			return remediationAlertCheckPrompt()
+		}
+		return remediationAlertPlanPrompt()
 	}
 	return remediationInvestigationPrompt()
+}
+
+// remediationAlertPlanPrompt is the prompt of remediationModeAlertPlan.
+func remediationAlertPlanPrompt() core.NBAgentPrompt {
+	return core.NBAgentPrompt{
+		Role: "A Remediation Assistant working on this alert's remediation plan with the person in the conversation",
+		Instructions: []string{
+			"This alert has a remediation plan that NudgeBee keeps: each step is run, declined or marked done once, from the remediation panel, the alert's Slack thread or this conversation, and every decision is recorded on the alert.",
+			"Start by reading the plan with `get_remediation_plan`: its steps, what was decided about each, and what NudgeBee's follow-up checks found after each run.",
+			"When the person asks to apply, roll back, skip or mark done a step, call `run_step` for that step with the plan_version and the step's command as the plan shows them. They confirm the call before it acts. Report the result, then say what comes next: the next step, a check, or a different plan.",
+			"When the person asks for a different fix, or the plan's steps did not work, write the plan yourself with `propose_fix`: one runnable command per step on this alert's own account, with how to check it and how to undo it. It replaces the current plan, and every command still needs a person's confirmation.",
+			"When a tool refuses, read its reason: it says what to correct or what a person must decide. Do not repeat a refused call unchanged.",
+			remediationNeverClaimLine,
+		},
+		Constraints: []string{
+			"Act on a step only when the person asked for that step; never run steps on your own initiative",
+			"Use past tense only for what run_step reported as run",
+		},
+		OutputFormat: "Short, in markdown: what was decided or proposed (each step once, with its command once), what the commands printed when they ran, and the next step. No long paragraphs.",
+	}
+}
+
+// remediationAlertCheckPrompt is the prompt of a read-only turn in remediationModeAlertPlan: NudgeBee's
+// follow-up check after a run of the alert's plan, with no person in the turn.
+func remediationAlertCheckPrompt() core.NBAgentPrompt {
+	return core.NBAgentPrompt{
+		Role: "A Remediation Assistant checking one alert after a remediation step, reading only",
+		Instructions: []string{
+			"You can only read: one read-only command at a time on the alert's own cluster with kubectl_execute, without a cluster argument (on a cloud account there is no CLI: read its metrics and events); prometheus_execute, get_event_by_id, get_event_rules and get_remediation_plan; and propose_fix and schedule_recheck. No person can answer during your turn.",
+			"The message quotes the step that ran and what it printed. Read the plan (get_remediation_plan), then find out whether the problem the alert reports is gone: the alert itself (get_event_by_id) and the workload or resource. Judge it by the signal that fired the alert, over a window that starts after the step. Prefer a few targeted reads, and stop once the evidence settles it.",
+			"Alert sources close alerts on their own schedule (the Kubernetes collector waits until every pod has been ready for 10 minutes, 60 after an out-of-memory kill), so a healthy workload with the alert still open is not proof the fix failed; say which you observed.",
+			"Then do one of these: it is gone, or healthy and not yet closed: say so with the evidence and propose nothing. The plan has steps still to run that explain what you find: say which step a person should run next and why. It persists, you know why and you are confident in a different, safe fix: write that plan and call propose_fix once (one command per step on this alert's account, with a read that checks it and a command that undoes it; order dependent steps with after). Too early to tell: call schedule_recheck with the minutes to wait at most and what the next check should confirm, and with until_command and until_expect when a read of the cluster shows the moment to look again. Otherwise report what a person needs to decide.",
+			"When a tool refuses or fails, read its reason, correct the call or try another read, and say what you could not check. Do not repeat a refused call unchanged.",
+		},
+		Constraints: []string{
+			"Change nothing: a person decides each step in the remediation panel, the alert's Slack thread or this conversation",
+		},
+		OutputFormat: "Short, in markdown, read on the web and in the alert's Slack thread: **Status:** one line (fixed, not fixed yet, or unclear, and why). **Evidence:** up to four bullets, each a read and what it showed. **Uncertain:** one line, only when something is. **Next:** one line (the step to run next, the plan you proposed, a re-check, or what a person decides). No other headings, no long paragraphs.",
+	}
+}
+
+// remediationAlertPlanningPrompt is the prompt of NudgeBee's background planning turn in remediationModeAlertPlan
+// (#40734): read-only, no person in the turn, it writes the alert's plan with propose_fix. Its own prompt, because
+// the follow-up check's is about judging a step that ran and proposes only when a fix did not hold.
+func remediationAlertPlanningPrompt() core.NBAgentPrompt {
+	return core.NBAgentPrompt{
+		Role: "A Remediation Assistant writing one alert's remediation plan, reading only",
+		Instructions: []string{
+			"You write this alert's remediation plan for the person who will act on it. No person can answer during your turn. You can read (kubectl_execute with one strict read at a time on the alert's own cluster, without a cluster argument; prometheus_execute, get_event_by_id, get_event_rules, get_remediation_plan) and write the plan with propose_fix.",
+			"The message says what to write and gives the investigation of the alert's current firing and what was already tried. Plan from it; read only what you need to make each command exact (names, namespaces, current values).",
+			"Call propose_fix with the plan: each step one command on this alert's own account, with a read that checks it and a command that undoes it, or, when the durable fix is a change in code or a deployment source, a step with a required_change (with its repo when known); order dependent steps with after. Include cause_key {\"what\", \"how\", \"against\"}: what failed (kind and name), how it failed in a word or two (oom, crashloop, timeout), and against what (the limit, dependency or change it hit), without numbers; leave a field empty when the investigation does not establish it. Include goal: one plain sentence saying when the alert counts as fixed, in terms of the signal that fired it.",
+			"When nothing a command can do would help, call propose_fix with an empty actions list and say why in the summary.",
+			"When propose_fix refuses, read its reason: it says what to correct, and may show the live state of what your plan changes. Correct the plan and call it again; repeat a call unchanged only when the refusal says to.",
+		},
+		Constraints: []string{
+			"Change nothing: a person decides each step in the remediation panel, the alert's Slack thread or its chat",
+		},
+		OutputFormat: "One or two lines: the plan you wrote (its cause and first step), or why there is none.",
+	}
 }
 
 // ─── Investigation block ───
@@ -390,6 +541,18 @@ func (r RemediationAgent) GetSupportedTools(ctx *security.RequestContext) []tool
 		supportedTools = append(supportedTools, tool)
 	}
 
+	// The alert's tools, for a tenant with the remediation loop on (#40734): the follow-up check's in a
+	// read-only run, else the plan's. GetSupportedToolsForRequest narrows the list to the request's mode.
+	if events.RemediationLoopOn(r.accountId) {
+		if cli, ok := alertCliTool(r.accountId); ok {
+			supportedTools = append(supportedTools, cli)
+		}
+		names := remediationAlertPlanTools
+		if core.IsReadOnlyRun(ctx) {
+			names = remediationAlertCheckTools
+		}
+		supportedTools = appendTools(r.accountId, supportedTools, names...)
+	}
 	return supportedTools
 }
 
@@ -399,8 +562,30 @@ func (r RemediationAgent) GetSupportedTools(ctx *security.RequestContext) []tool
 // and the dispatch-time auth check rejects remediation_execute even if the
 // model emits it anyway.
 func (r RemediationAgent) GetSupportedToolsForRequest(ctx *security.RequestContext, request core.NBAgentRequest) []toolcore.NBTool {
+	mode := resolveRemediationMode(request)
+	if mode == remediationModeAlertPlan {
+		names, readOnly := remediationAlertPlanTools, readOnlyTurn(ctx, request)
+		if readOnly {
+			names = remediationAlertCheckTools
+			if request.QueryConfig.RemediationPlanTurn != "" {
+				names = remediationAlertPlanningTools
+			}
+		}
+		var out []toolcore.NBTool
+		// A read-only turn gets the CLI only when its reads are strict (the follow-up check): nobody vets them.
+		// There, only kubectl: cloud CLIs fail closed (tools.readOnlyCheckRefusal).
+		if cli, ok := alertCliTool(r.accountId); ok && (!readOnly || request.QueryConfig.StrictReadOnly && cli.Name() == tools.ToolExecuteKubectlCommand) {
+			out = append(out, cli)
+		}
+		for _, name := range names {
+			if tool, ok := toolcore.GetNBTool(r.accountId, name); ok {
+				out = append(out, tool)
+			}
+		}
+		return out
+	}
 	supported := r.GetSupportedTools(ctx)
-	if resolveRemediationMode(request) != remediationModeRecommendation {
+	if mode != remediationModeRecommendation {
 		return supported
 	}
 	filtered := make([]toolcore.NBTool, 0, len(supported))
@@ -420,6 +605,11 @@ func (r RemediationAgent) GetPlannerType() core.AgentPlannerType {
 // IsWatchCapable: applies remediations (rollout/restart/scale) whose outcome
 // completes later, so it may register a background watch.
 func (r RemediationAgent) IsWatchCapable() bool { return true }
+
+// CritiqueEnabled: the answer critique is for investigations (a causal chain, no status-only update). With the
+// remediation loop on, this agent's answers are a plan, a step's result, or a follow-up check's status report,
+// which it rejects; with it off the agent is critiqued as on main.
+func (r RemediationAgent) CritiqueEnabled() bool { return !events.RemediationLoopOn(r.accountId) }
 
 func (r RemediationAgent) UpdateExecutorLlmResponse(
 	actions []core.NBAgentPlannerToolAction,
@@ -442,6 +632,6 @@ func (r RemediationAgent) GetSummaryToolName() string {
 	return ""
 }
 
-func (r RemediationAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (r RemediationAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }

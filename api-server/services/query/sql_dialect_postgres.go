@@ -19,7 +19,7 @@ func (d *postgresDialect) QuoteLiteral(s any) string {
 }
 
 func (d *postgresDialect) FuncDateTruncate(dateUnit string, columnName string) string {
-	return "DATE_TRUNC('" + dateUnit + "', " + columnName + ")"
+	return "DATE_TRUNC('" + safeDateUnit(dateUnit) + "', " + columnName + ")"
 }
 
 func (d *postgresDialect) FuncStringToDatetime(value string) string {

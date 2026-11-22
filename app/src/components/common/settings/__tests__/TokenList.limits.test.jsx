@@ -1,0 +1,19 @@
+import { limitsText } from '../TokenList';
+
+it('shows a cost limit in dollars and keeps the unit word for counts', () => {
+  const limits = [
+    { metric: 'cost', period: 'month', value: 2 },
+    { metric: 'requests', period: 'minute', value: 100, model: 'gpt-4o' },
+    { metric: 'tokens', period: 'day', value: 5000 },
+  ];
+  expect(limitsText(limits)).toBe('$2 / month, 100 requests / minute (gpt-4o), 5000 tokens / day');
+  expect(limitsText([])).toBe('—');
+});
+
+it('shows a concurrent limit without a window', () => {
+  expect(limitsText([{ metric: 'concurrent', period: '', value: 5 }])).toBe('5 requests at once');
+});
+
+it('adds the warn level to a limit that has one', () => {
+  expect(limitsText([{ metric: 'cost', period: 'day', value: 50, soft_pct: 80 }])).toBe('$50 / day · warn 80%');
+});

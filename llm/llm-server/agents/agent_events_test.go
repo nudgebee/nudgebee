@@ -29,6 +29,19 @@ func TestAgentEventsExposesStructuredEventTools(t *testing.T) {
 	assert.True(t, names[tools.ToolEventExecuteSql], "raw SQL must remain available as a fallback")
 }
 
+// HIGH CPUThrottlingPredicted/CPUSaturationPredicted events are auto-investigated
+// through the events agent, so it must be able to run the forecast. The k8s lean
+// orchestrator does not preload it (every k8s turn would carry it); chat reaches it
+// through the events agent or search_tools.
+func TestMetricForecastIsOfferedToEventsNotPreloaded(t *testing.T) {
+	names := map[string]bool{}
+	for _, tool := range (AgentEvents{}).GetSupportedTools(security.NewRequestContextForSuperAdmin()) {
+		names[tool.Name()] = true
+	}
+	assert.True(t, names[tools.ToolMetricForecast], "events agent must offer metric_forecast")
+	assert.False(t, containsTool(trimmedK8sCoreToolNames(), tools.ToolMetricForecast), "k8s lean must not preload metric_forecast")
+}
+
 func TestAgentEventsPromptPrefersStructuredTools(t *testing.T) {
 	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
 	joined := strings.Join(append(append([]string{}, prompt.Instructions...), prompt.Constraints...), "\n")
@@ -370,4 +383,15 @@ func TestReduceEventData_KeepsLogSpikeEvidence(t *testing.T) {
 	bare := reduceEventData(events.Event{Title: "test event"})
 	assert.NotContains(t, bare, "log_pattern_breakdown")
 	assert.NotContains(t, bare, "log_coverage_note")
+}
+
+// Every events-table example is expressible with the typed tools, so none
+// may teach the model to write SQL against events (#39979).
+func TestAgentEventsExamplesUseTypedEventTools(t *testing.T) {
+	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
+	for _, ex := range prompt.Examples {
+		for _, step := range ex.AnswerSteps {
+			assert.NotEqual(t, tools.ToolEventExecuteSql, step.Tool, ex.Question)
+		}
+	}
 }

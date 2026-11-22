@@ -69,7 +69,7 @@ Map changed files to services using this table:
 | `ml-k8s-server/` | ml-k8s-server | Python | `make lint && make test` | `ml-k8s-server/` |
 | `auto-pilot/` | auto-pilot | Python | `poetry run black --check . && poetry run flake8 .` | `auto-pilot/` |
 | `auto-pilot/sidecar/` | auto-pilot-sidecar | Python | `poetry run black --check . && poetry run flake8 .` | `auto-pilot/sidecar/` |
-| `notifications-server/` | notifications-server | Python | `poetry run black --check . && poetry run flake8 .` | `notifications-server/` |
+| `notifications-server/` | notifications-server | Python | `uv run black --check . && uv run flake8 .` | `notifications-server/` |
 | `app/` | frontend | TypeScript | `npm run lint2` | `app/` |
 | `deploy/` | infrastructure | — | Manual review | — |
 

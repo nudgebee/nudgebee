@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/security"
 )
 
 // meta mirrors how a stored config blob actually arrives: decoded from JSON, so every number is a
@@ -128,8 +129,22 @@ func TestRenderAttemptReportsAMergedFix(t *testing.T) {
 
 func TestRenderAttemptCarriesAFailedVerification(t *testing.T) {
 	line := renderAttempt(attempt{Kind: "CommandExecution", Ref: "kubectl rollout restart deployment/app -n web",
-		Status: "Success", Data: []byte(`{"verify":{"ran":true,"passed":false,"output":"0/3 ready"}}`), At: time.Now()})
+		Status: "Success", Data: []byte(`{"exit_code_reported":true,"verify":{"ran":true,"passed":false,"output":"0/3 ready"}}`), At: time.Now()})
 	require.Contains(t, line, "ran kubectl rollout restart deployment/app -n web -> success, verification FAILED: 0/3 ready")
+}
+
+// The planner is told how a run ended only as far as it is known: a success without an exit code is
+// unverified, a run in flight or with no result is said so, and a run that never ran is not "ran".
+func TestRenderAttemptSaysWhatIsNotKnown(t *testing.T) {
+	render := func(status, data string) string {
+		return renderAttempt(attempt{Kind: "CommandExecution", Ref: "kubectl rollout restart deployment/app -n web", Status: status, Data: []byte(data), At: time.Now()})
+	}
+	require.True(t, strings.HasSuffix(render("Success", `{"exit_code_reported":true}`), "-> success"))
+	require.True(t, strings.HasSuffix(render("Success", `{}`), "-> outcome unverified (no exit code was reported)"))
+	require.True(t, strings.HasSuffix(render("Success", `{"exit_code_reported":false}`), "-> outcome unverified (no exit code was reported)"))
+	require.True(t, strings.HasSuffix(render("Unknown", `{"reply_received":true}`), "-> outcome unknown (no result came back; it may have run)"))
+	require.True(t, strings.HasSuffix(render("InProgress", `{}`), "-> still running, no result yet"))
+	require.Contains(t, render("Failed", `{"not_sent":true,"error":"agent not connected"}`), "-> failed, not run")
 }
 
 // Rows from the dev audit: kubectl runs in demo recorded against a nudgebee/benchmark-server alert.
@@ -395,4 +410,56 @@ func TestLoadResourceDoesNotFallBackAcrossNamespaces(t *testing.T) {
 
 	require.Nil(t, loadResource(dbms, "acc-1", "llm-server", "", "deployment", "gone"))
 	require.NoError(t, mock.ExpectationsWereMet(), "exactly one query: no unscoped retry")
+}
+
+// The planner is told why a run failed, so a refused fix is kept and a guessed value is not swapped in
+// for a failure nobody recorded the reason of.
+func TestFailedRunsCarryTheirReasonToThePlanner(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	run := func(status, data string) attempt {
+		return attempt{Kind: "CommandExecution", Ref: "gcloud run services update api --update-env-vars MODE=ok", Status: status, Data: []byte(data), At: time.Now()}
+	}
+
+	refused := run("Failed", `{"error":"exit status 1\nERROR: (gcloud.run.services.update) PERMISSION_DENIED: Permission 'run.services.update' denied"}`)
+	refused.Reason = failedRunReason(ctx, refused)
+	require.Contains(t, refused.Reason, "refused by NudgeBee's permissions")
+	require.Contains(t, refused.Reason, "PERMISSION_DENIED")
+	require.Contains(t, renderAttempt(refused), "-> failed, refused by NudgeBee's permissions")
+
+	broken := run("Failed", `{"error":"ERROR: (gcloud.run.services.update) Revision 'api-00007' is not ready: container failed to start\nmore"}`)
+	require.Equal(t, `error: "ERROR: (gcloud.run.services.update) Revision 'api-00007' is not ready: container failed to start"`, failedRunReason(ctx, broken))
+
+	banner := run("failed", `{"error":"[account: dev-aws]\n\nAn error occurred (ValidationException) when calling the UpdateFunctionConfiguration operation: Invalid memory\nexit status 254"}`)
+	require.Contains(t, failedRunReason(ctx, banner), "ValidationException", "the cloud CLI's account banner is not the error")
+	require.Equal(t, "reason not recorded", failedRunReason(ctx, run("Failed", `{"exit_code":1}`)), "runs recorded before the error was kept")
+	require.Empty(t, failedRunReason(ctx, run("Success", `{}`)))
+	require.Empty(t, failedRunReason(ctx, attempt{Kind: "PullRequest", Status: "Failed"}))
+}
+
+// A step the operator marked done is not presented to the planner as a NudgeBee run.
+func TestManualAttemptsReadAsTheOperators(t *testing.T) {
+	manual := func(ref string) attempt {
+		return attempt{Kind: "CommandExecution", Ref: ref, Status: "Success", Data: []byte(`{"manual":true}`), At: time.Now(), SameEvent: true}
+	}
+	require.Contains(t, renderAttempt(manual("kubectl rollout restart deployment runner -n x")), "this incident: the operator ran kubectl rollout restart deployment runner -n x outside NudgeBee")
+	require.Contains(t, renderAttempt(manual("change:Update auth secret")), `the operator made the change "Update auth secret" outside NudgeBee`)
+	require.NotContains(t, renderAttempt(manual("change:Update auth secret")), "ran change:")
+}
+
+// A same-named row of another kind is not the workload being scaled.
+func TestRecordedReplicasMatchesTheKind(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	dbms := &common.DatabaseManager{Db: sqlx.NewDb(db, "sqlmock")}
+	row := func(typ string) *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"name", "type", "arn", "last_seen", "meta"}).AddRow("redis", typ, "", nil, []byte(`{"total_pods":0}`))
+	}
+	mock.ExpectQuery(`FROM cloud_resourses`).WithArgs("acc-1", "redis", "", "statefulset", "oss").WillReturnRows(row("StatefulSet"))
+	mock.ExpectQuery(`FROM cloud_resourses`).WithArgs("acc-1", "redis", "", "statefulset", "oss").WillReturnRows(row("Service"))
+
+	require.Equal(t, "0", recordedReplicas(dbms, "acc-1", "sts", "redis", "oss"))
+	require.Empty(t, recordedReplicas(dbms, "acc-1", "sts", "redis", "oss"))
+	require.Empty(t, recordedReplicas(dbms, "acc-1", "sts", "redis", ""), "no namespace, no lookup")
+	require.NoError(t, mock.ExpectationsWereMet())
 }

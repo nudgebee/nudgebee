@@ -8,21 +8,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"nudgebee/llm/agents/core"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/security"
-	"nudgebee/llm/services_server"
-	"nudgebee/llm/tools"
-	toolcore "nudgebee/llm/tools/core"
-	"nudgebee/llm/utils"
-	"nudgebee/llm/workspace"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/events"
+	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/security"
+	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
+	"nudgebee/llm/utils"
+	"nudgebee/llm/workspace"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -72,6 +76,48 @@ const codeAgentFailuresCacheNS = "code_agent_conv_failures"
 // for a terminal "no change required" outcome — the requested fix is already
 // present, so no diff and no PR were produced. It is a SUCCESS, not a failure.
 const codeAnalysisNoOpStatus = "no_op"
+
+// maxStatusPollErrors is how many consecutive unusable /status replies (a failed
+// call or a body that is not JSON) end a poll: 12 * 5s = 60s.
+const maxStatusPollErrors = 12
+
+// statusPollBudget counts consecutive unusable /status replies. Only a reply that
+// parses resets it, so an unreadable body cannot keep a poll alive to its deadline.
+type statusPollBudget struct{ consecutive int }
+
+// unusable records an unusable reply and reports whether the budget is spent.
+func (b *statusPollBudget) unusable() bool {
+	b.consecutive++
+	return b.consecutive >= maxStatusPollErrors
+}
+
+func (b *statusPollBudget) usable() { b.consecutive = 0 }
+
+// readStatusReply parses a /status body. An unreadable body spends the budget; only a
+// parsed one resets it, so the reset cannot happen before the body is known to be good.
+func readStatusReply(body []byte, budget *statusPollBudget) (reply map[string]any, exhausted bool, err error) {
+	if err := json.Unmarshal(body, &reply); err != nil {
+		return nil, budget.unusable(), err
+	}
+	if reply == nil {
+		// A JSON null parses cleanly but carries no status, so the poll would never end.
+		return nil, budget.unusable(), errors.New("status reply is null")
+	}
+	budget.usable()
+	return reply, false, nil
+}
+
+// codeAnalysisFailedStatus is the value the service puts in execution_status or
+// pr_creation_status when the work itself failed, inside an otherwise normal reply.
+const codeAnalysisFailedStatus = "failed"
+
+// codeAnalysisSuccessStatus is the execution_status of a run that did its job.
+// The service's contract (ExecutionStatusFailed in llm/code-analysis) is that a
+// caller treats any execution_status other than success or no_op as a failure.
+const codeAnalysisSuccessStatus = "success"
+
+// maxMalformedResultChars bounds how much of a non-JSON result is echoed back.
+const maxMalformedResultChars = 2000
 
 // A no-op carries the reason it happened. Mirrors NoOpBasisKey in
 // llm/code-analysis (orchestrator_agent.go): only a specialist verdict is a
@@ -180,7 +226,7 @@ Each call runs a full (expensive) analysis — decide the intended outcome first
 	core.RegisterNBAgentFactoryAndToolWithAliases(AgentCodeAnalyzer, codeAnalyzerFactory, toolDescription, toolInput, toolOutput, agentCodeAnalyzerLegacyName)
 }
 
-func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
+func forwardedLLMConfigToMap(c *llmruntime.ForwardedLLMConfig) map[string]any {
 	m := map[string]any{"provider": c.Provider}
 	if c.Model != "" {
 		m["model"] = c.Model
@@ -235,8 +281,8 @@ func forwardedLLMConfigToMap(c *core.ForwardedLLMConfig) map[string]any {
 // block dispatch instead of silently proceeding — the pod would otherwise run
 // with no usable credentials at all. logPrefix matches each call site's
 // existing "code"/"code followup" log prefix convention.
-func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentName, conversationId, logPrefix string) (*core.ForwardedLLMConfig, error) {
-	llmCfg, err := core.ResolveLLMConfigForForwarding(ctx, accountId, agentName, conversationId)
+func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentName, conversationId, logPrefix string) (*llmruntime.ForwardedLLMConfig, error) {
+	llmCfg, err := llmruntime.ResolveLLMConfigForForwarding(ctx, accountId, agentName, conversationId)
 	if err != nil {
 		return nil, fmt.Errorf("%s: failed to resolve LLM config for forwarding: %w", logPrefix, err)
 	}
@@ -246,11 +292,46 @@ func resolveLLMConfigForDispatch(ctx *security.RequestContext, accountId, agentN
 	return llmCfg, nil
 }
 
-// instead of launching a new pod per request.
-func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, creds []GitCredentials, provider string) (codeAnalysisResult, error) {
-	logger := ctx.GetLogger()
+// codeAnalysisMaxPollDuration bounds how long llm-server waits on one
+// code-analysis run, analysis or followup.
+const codeAnalysisMaxPollDuration = 30 * time.Minute
 
-	gitToken := resolveGitToken(ctx, creds, request.GitRepo, provider)
+// codeAnalysisTokenGrace keeps an analysis's execution token valid past the
+// polling window. It covers the dispatch call, a lazy workspace (re)creation
+// and clock skew, so a run that uses its whole window never fails its last
+// model call on an expired token.
+const codeAnalysisTokenGrace = 10 * time.Minute
+
+// setAnalysisWorkspaceToken issues the execution token the workspace uses for
+// its model calls during one analysis, so they run as the requesting user (or
+// the system user, for background runs) instead of with the pod's own token.
+// The token travels only in the request body: never log it.
+func setAnalysisWorkspaceToken(ctx *security.RequestContext, accountId string, analyzeRequest map[string]any) error {
+	token, err := workspace.ExecutionToken(ctx, accountId, "", codeAnalysisMaxPollDuration+codeAnalysisTokenGrace)
+	if err != nil {
+		return fmt.Errorf("workspace token: %w", err)
+	}
+	analyzeRequest["workspace_token"] = token
+	return nil
+}
+
+// codeAgentMode is the mode a request runs in: the explicit mode when it is
+// one of the two known values, otherwise fix when a PR was asked for and
+// explore when it was not.
+func codeAgentMode(request CodeAgent2Request) string {
+	switch request.Mode {
+	case codeAgentModeExplore, codeAgentModeFix:
+		return request.Mode
+	}
+	if request.RaisePr {
+		return codeAgentModeFix
+	}
+	return codeAgentModeExplore
+}
+
+// instead of launching a new pod per request.
+func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.NBAgentRequest, request CodeAgent2Request, gitToken string, provider string) (codeAnalysisResult, error) {
+	logger := ctx.GetLogger()
 
 	// Build the request body matching the code-analysis server's AgenticAnalyzeRequest
 	tenantId := ""
@@ -300,15 +381,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	//   - Otherwise fall back to the entrypoint signal (RaisePr): callers that
 	//     want a fix+PR set raise_pr=true (recommendation-apply, event auto-raise);
 	//     chat mentions don't, and stay in explore mode.
-	mode := codeAgentModeExplore
-	switch request.Mode {
-	case codeAgentModeExplore, codeAgentModeFix:
-		mode = request.Mode
-	default:
-		if request.RaisePr {
-			mode = codeAgentModeFix
-		}
-	}
+	mode := codeAgentMode(request)
 
 	// Reuse account-wide discovery and exact loading. Keep large documents out
 	// of every analysis prompt; the workspace resolves the reference manifest.
@@ -319,7 +392,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		knowledgeCtx := security.NewRequestContext(prepCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		candidates := core.DiscoverKnowledgeCandidates(knowledgeCtx, agentRequest, CodeAgent2{})
 		topK := config.Config.LlmServerSkillSelectionTopK
-		if topK <= 0 || topK > defaultForwardedSkillTopK {
+		if topK <= 0 {
 			topK = defaultForwardedSkillTopK
 		}
 		for _, candidate := range candidates[:min(len(candidates), topK)] {
@@ -347,9 +420,9 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		// llm_kb_agent_mappings before the rename are still inherited (the lookup
 		// UNIONs both names and dedupes by kb id).
 		// The wildcard sentinel carries KBs mapped to "All agents" (see
-		// toolcore.KBAgentWildcard); without it, code-analysis would be the one
+		// knowledge.KBAgentWildcard); without it, code-analysis would be the one
 		// agent an all-agents skill never reached.
-		skillAgentNames := toolcore.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
+		skillAgentNames := knowledge.WithKBAgentWildcard(append([]string{AgentCodeAnalyzer, agentCodeAnalyzerLegacyName}, agentRequest.InheritSkillsFromAgents...))
 		skillQuery := agentRequest.OriginalQuery
 		if skillQuery == "" {
 			skillQuery = request.Query
@@ -358,15 +431,15 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		if topK <= 0 {
 			topK = defaultForwardedSkillTopK
 		}
-		candidates, cErr := toolcore.ListActiveAgentSkillCandidates(ctx, request.AccountId, skillAgentNames)
+		candidates, cErr := knowledge.ListActiveAgentSkillCandidates(ctx, request.AccountId, skillAgentNames)
 		if cErr != nil {
 			logger.Warn("code: skill candidate fetch failed; skipping operator skills", "error", cErr)
 		} else if len(candidates) > 0 {
 			// SelectRelevantSkills returns all candidate ids when the query is empty
 			// or candidates <= topK, the top-K ids when it can rank, and an empty
 			// (non-nil) slice when nothing matched — in which case we forward nothing.
-			selectedIds := toolcore.SelectRelevantSkills(skillQuery, candidates, topK)
-			block, _, sErr := toolcore.LoadAgentSkillContentsByIDs(ctx, request.AccountId, selectedIds)
+			selectedIds := knowledge.SelectRelevantSkills(skillQuery, candidates, topK)
+			block, _, sErr := knowledge.LoadAgentSkillContentsByIDs(ctx, request.AccountId, selectedIds)
 			if sErr != nil {
 				logger.Warn("code: failed to load selected skill contents", "error", sErr)
 			} else if block != "" {
@@ -446,6 +519,11 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	if len(knowledgeFiles) > 0 {
 		analyzeRequest["knowledge_files"] = knowledgeFiles
 	}
+	// The agent's always-on instructions ride in the skills field, which every
+	// code-analysis agent template renders (#40899).
+	if block := core.AgentInstructionsBlock(agentRequest); block != "" {
+		skillsBlock = strings.TrimSpace(block + "\n\n" + skillsBlock)
+	}
 	if skillsBlock != "" {
 		analyzeRequest["skills"] = skillsBlock
 	}
@@ -489,6 +567,10 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 	logger.Info("code: executing analysis via workspace", "account_id", agentRequest.AccountId, "repo", request.GitRepo, "target_branch", branch)
 
+	if err := setAnalysisWorkspaceToken(ctx, agentRequest.AccountId, analyzeRequest); err != nil {
+		return codeAnalysisResult{}, fmt.Errorf("code: %w", err)
+	}
+
 	// Step 1: POST /analyze — code-analysis returns 202 with analysis_id
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, agentRequest.AccountId, "POST", "/analyze", nil, analyzeRequest)
 	if err != nil {
@@ -531,10 +613,8 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 	// collapsing per-poll re-writes to ~2 per step regardless of poll count.
 	persistedStepStatus := map[string]string{}
 
-	const maxConsecutiveErrors = 12 // 12 * 5s = 60s of consecutive failures before giving up
-	const maxPollDuration = 30 * time.Minute
-	consecutiveErrors := 0
-	pollDeadline := time.Now().Add(maxPollDuration)
+	var pollBudget statusPollBudget
+	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
 		select {
@@ -557,7 +637,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 
 		if time.Now().After(pollDeadline) {
 			cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
-			return codeAnalysisResult{}, fmt.Errorf("analysis polling exceeded maximum duration of %v", maxPollDuration)
+			return codeAnalysisResult{}, fmt.Errorf("analysis polling exceeded maximum duration of %v", codeAnalysisMaxPollDuration)
 		}
 
 		statusBytes, err := pollWm.CallAPI(ctx, agentRequest.AccountId, "GET", statusEndpoint, nil, nil)
@@ -569,20 +649,25 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 				// out the consecutive-error budget.
 				return codeAnalysisResult{}, fmt.Errorf("analysis lost with its workspace pod: %w", err)
 			}
-			consecutiveErrors++
+			exhausted := pollBudget.unusable()
 			logger.Warn("code: failed to poll analysis status", "error", err, "analysis_id", analysisID,
-				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors)
+			if exhausted {
 				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
-				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive errors: %w", consecutiveErrors, err)
+				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive errors: %w", pollBudget.consecutive, err)
 			}
 			continue
 		}
-		consecutiveErrors = 0
 
-		var statusResp map[string]any
-		if err := json.Unmarshal(statusBytes, &statusResp); err != nil {
-			logger.Warn("code: failed to parse status response", "error", err)
+		statusResp, exhausted, err := readStatusReply(statusBytes, &pollBudget)
+		if err != nil {
+			logger.Warn("code: failed to parse status response", "error", err, "analysis_id", analysisID,
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors,
+				"body_len", len(statusBytes), "body_prefix", common.TruncateHead(string(statusBytes), 200))
+			if exhausted {
+				cancelWorkspaceAnalysis(ctx, agentRequest.AccountId, analysisID)
+				return codeAnalysisResult{}, fmt.Errorf("analysis polling abandoned after %d consecutive unreadable status replies: %w", pollBudget.consecutive, err)
+			}
 			continue
 		}
 
@@ -1047,7 +1132,7 @@ func asJSONString(v any) string {
 // records (older pod image), the previous single-aggregate-row behavior is
 // kept unchanged.
 // modelTier and taskType are the tier attribution for this turn, resolved by the
-// CALLER via core.TierAttributionForRecord while the request context is still
+// CALLER via llmruntime.TierAttributionForRecord while the request context is still
 // live — this function runs in a goroutine that outlives the request, so it must
 // not read the context itself. Both nil on uninstrumented paths, which writes
 // NULL and keeps "legacy row" distinguishable from a real tier.
@@ -1083,7 +1168,7 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 			"completion_tokens", tu.CompletionTokens,
 			"conversation_id", query.ConversationId)
 	}
-	dao := core.GetConversationDao()
+	dao := llmruntime.GetUsageStore()
 
 	if dao == nil {
 		slog.Debug("code: skipping token usage tracking — conversation DAO unavailable")
@@ -1192,21 +1277,28 @@ func recordCodeAnalysisTokenUsage(query core.NBAgentRequest, tu *codeAnalysisTok
 // long-context tier switch inside GetConversationCost then applies per call,
 // as billed by the provider. cache_ttl_minutes is no longer written — see
 // trackTokenUsage rationale; storage cost lives in llm_cache_lifecycle.
-func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao core.IConversationDao,
+func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, dao llmruntime.UsageStore,
 	provider, model string, promptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens int,
-	latencySeconds *float64, modelTier, taskType *string) *core.TokenUsageRecord {
+	latencySeconds *float64, modelTier, taskType *string) *llmruntime.TokenUsageRecord {
 	nonCachedPromptTokens := promptTokens - cachedTokens
 	if nonCachedPromptTokens < 0 {
 		nonCachedPromptTokens = 0
 	}
 	var costUsd *float64
-	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens, core.TenantForPricing(query.AccountId)); err == nil {
+	if cost, err := dao.GetConversationCost(provider, model, nonCachedPromptTokens, cachedTokens, creationTokens, completionTokens, thinkingTokens, llmruntime.TenantForPricing(query.AccountId)); err == nil {
 		costUsd = &cost
 	} else {
 		slog.Debug("code: no pricing data for cost calc", "provider", provider, "model", model, "error", err)
 	}
+	// Same formula as trackTokenUsage: percentage (0-100) of prompt tokens
+	// served from cache, NULL when nothing was cached.
+	var cacheHitRate *float64
+	if promptTokens > 0 && cachedTokens > 0 {
+		rate := (float64(cachedTokens) / float64(promptTokens)) * 100
+		cacheHitRate = &rate
+	}
 
-	record := &core.TokenUsageRecord{
+	record := &llmruntime.TokenUsageRecord{
 		ConversationID:      query.ConversationId,
 		MessageID:           query.MessageId,
 		AgentID:             agentUUID,
@@ -1221,6 +1313,7 @@ func buildCodeAnalysisUsageRecord(query core.NBAgentRequest, agentUUID *string, 
 		CacheCreationTokens: creationTokens,
 		CostUsd:             costUsd,
 		IsCacheHit:          cachedTokens > 0,
+		CacheHitRate:        cacheHitRate,
 		LatencySeconds:      latencySeconds,
 		RequestStatus:       "success",
 		ModelTier:           modelTier,
@@ -1270,8 +1363,18 @@ func (l CodeAgent2) GetDescription() string {
 	return desc
 }
 
+// GetSupportedTools lists the git tools whose credentials code_analyzer clones
+// with. It does not call them through a planner; listing them is what gates the
+// agent-tool on a GitHub/GitLab integration (isToolConfigured checks an agent's
+// tools), so it is not offered on accounts where it can only fail.
 func (l CodeAgent2) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return []toolcore.NBTool{}
+	var out []toolcore.NBTool
+	for _, name := range []string{tools.ToolExecuteGithubCliCommand, tools.ToolExecuteGitlabCliCommand} {
+		if t, ok := toolcore.GetNBTool(l.accountId, name); ok && t != nil {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (l CodeAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -1434,6 +1537,11 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		return core.NBAgentResponse{}, err
 	}
 
+	var readOnlyRefusal string
+	if codeAgentRequest, readOnlyRefusal = readOnlyCodeRequest(ctx, query, codeAgentRequest); readOnlyRefusal != "" {
+		return core.NBAgentResponse{Response: []string{readOnlyRefusal}, Status: core.ConversationStatusFailed}, nil
+	}
+
 	// PR followup mode — skip repo detection and use workspace /analyze with followup fields
 	if codeAgentRequest.Followup && codeAgentRequest.PRURL != "" {
 		ctx.GetLogger().Info("code: PR followup mode", "pr_url", codeAgentRequest.PRURL, "pr_branch", codeAgentRequest.PRBranch)
@@ -1452,6 +1560,22 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// Hardcoding `RaisePr = true` here was the cause of PR #29338, where a
 	// pure exploration question ("what is the default Postgres connection
 	// limit?") got promoted to fix-mode and produced a spurious PR.
+
+	// What the caller itself named, kept so a refusal can say whether the
+	// repository came from the request or from the detection below.
+	callerRepo := codeAgentRequest.GitRepo
+
+	// A planner that was never told which repository holds a service writes one
+	// from the words of its brief. When the git host does not know that
+	// repository, the server's own detection below is the better answer, so the
+	// caller's value steps aside for it — with the commit and branch that came
+	// with it, which belong to a repository that is not there.
+	repoSetAside := l.callerRepoGivesWay(ctx, query, codeAgentRequest)
+	if repoSetAside {
+		ctx.GetLogger().Info("code: the repository the caller named is unknown to the git host; resolving one for the request instead",
+			"caller_repo", callerRepo)
+		codeAgentRequest.GitRepo, codeAgentRequest.GitCommit, codeAgentRequest.TargetBranch = "", "", ""
+	}
 
 	// Reuse the repo the conversation already settled on (a followup selection, or
 	// the one stored on the message config) before auto-detecting one.
@@ -1662,6 +1786,15 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		return core.NBAgentResponse{}, errors.New("git credentials are required but none were found for github or gitlab")
 	}
 
+	// Nothing took the place of the repository that was set aside — the detection
+	// found none, or came back with the very same one from the text of the
+	// request. The git host has already said it does not know it, so it is turned
+	// down by name here, and no user is asked to pick a repository on behalf of
+	// an invented one.
+	if repoSetAside && (codeAgentRequest.GitRepo == "" || sameRepository(codeAgentRequest.GitRepo, callerRepo)) {
+		return core.NBAgentResponse{}, repoRefusal(ctx, query, callerRepo, true, true, provider)
+	}
+
 	// If repo is still unknown, check if there are multiple projects to ask the user
 	if codeAgentRequest.GitRepo == "" {
 		var allProjectURLs []string
@@ -1688,6 +1821,16 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 				if matched := l.selectRepoFromConversationContext(ctx, query, codeAgentRequest.Query, allProjectURLs); matched != "" {
 					codeAgentRequest.GitRepo = matched
 				}
+			}
+
+			// An automatic alert investigation has nobody to pick a repository:
+			// say so and let the investigation carry on instead of waiting.
+			if codeAgentRequest.GitRepo == "" && core.IsReadOnlyRun(ctx) {
+				ctx.GetLogger().Info("code: repository choice not asked in read-only run", "count", len(allProjectURLs))
+				return core.NBAgentResponse{
+					Response: []string{core.ReadOnlyChoiceRefusal("repository", allProjectURLs)},
+					Status:   core.ConversationStatusFailed,
+				}, nil
 			}
 
 			// If auto-detection failed, ask the user via followup
@@ -1725,6 +1868,13 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	ctx.GetLogger().Info("code: using git provider", "provider", provider, "repo", repoUrl)
 
+	// Resolved once and used for both the check and the clone, so the check
+	// answers for exactly the credential the workspace will present.
+	gitToken := resolveGitToken(ctx, creds, codeAgentRequest.GitRepo, provider)
+	if err := refuseUnreadableRepo(ctx, query, codeAgentRequest.GitRepo, callerRepo, provider, gitToken); err != nil {
+		return core.NBAgentResponse{}, err
+	}
+
 	rememberConversationRepo(ctx, query.MessageId, codeAgentRequest.GitRepo)
 
 	// A second fix request in the same conversation is a retry, not a new bug.
@@ -1746,7 +1896,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 
 	// execute via workspace /analyze endpoint
 	startTime := time.Now()
-	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, creds, provider)
+	wsResult, err := evaluateCodeUsingWorkspace(ctx, query, codeAgentRequest, gitToken, provider)
 	latency := time.Since(startTime).Seconds()
 	if err != nil {
 		ctx.GetLogger().Error("code: failed to execute via workspace", "error", err.Error())
@@ -1779,20 +1929,32 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// Record token usage from code-analysis service (fire-and-forget). Tier
 	// attribution is resolved here, on the request goroutine, because the
 	// recorder outlives the request context.
-	modelTier, taskType := core.TierAttributionForRecord(ctx)
+	modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 	go recordCodeAnalysisTokenUsage(query, wsResult.TokenUsage, latency, modelTier, taskType)
 
 	// workspace path returns agent_response directly — parse and enrich
 	var actualResponse map[string]any
 	if err := json.Unmarshal([]byte(wsResult.AgentResponse), &actualResponse); err != nil {
-		return core.NBAgentResponse{
-			Response: []string{wsResult.AgentResponse},
-		}, nil
+		rawResponse := wsResult.AgentResponse
+		if repoSetAside {
+			rawResponse = repoSetAsideNote(callerRepo, codeAgentRequest.GitRepo) + "\n\n" + rawResponse
+		}
+		return malformedAnalysisResult(rawResponse), nil
 	}
-	actualResponse["source_details"] = map[string]any{
+	// A JSON null decodes without error and leaves the map nil; the writes below
+	// need a map to write to.
+	if actualResponse == nil {
+		actualResponse = map[string]any{}
+	}
+	sourceDetails := map[string]any{
 		"workloads.nudgebee.com/git.hash": codeAgentRequest.GitCommit,
 		"workloads.nudgebee.com/git.repo": codeAgentRequest.GitRepo,
 	}
+	if repoSetAside {
+		sourceDetails["requested_repo"] = callerRepo
+		actualResponse[repositoryNoteKey] = repoSetAsideNote(callerRepo, codeAgentRequest.GitRepo)
+	}
+	actualResponse["source_details"] = sourceDetails
 	addCompanionIssueGuidance(actualResponse)
 	jsonResponse, err := json.Marshal(actualResponse)
 	if err != nil {
@@ -1809,7 +1971,38 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	go trackPRInResolution(ctx, query, responseStr, codeAgentRequest.GitRepo, provider)
 	return core.NBAgentResponse{
 		Response: []string{finalResponse},
+		Status:   codeAnalysisResultStatus(actualResponse),
 	}, nil
+}
+
+// codeAnalysisResultStatus reports a failed step when the service says the analysis
+// or the pull request failed; otherwise it leaves the status for the executor.
+// A present execution_status fails closed: only success and no_op are not failures,
+// so partial_success, skipped and any value the service adds later count as failed.
+// An absent one is an analysis-only answer and is left to the executor.
+func codeAnalysisResultStatus(result map[string]any) core.ConversationStatus {
+	if v, _ := result["execution_status"].(string); strings.TrimSpace(v) != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case codeAnalysisSuccessStatus, codeAnalysisNoOpStatus:
+		default:
+			return core.ConversationStatusFailed
+		}
+	}
+	if v, _ := result["pr_creation_status"].(string); strings.EqualFold(strings.TrimSpace(v), codeAnalysisFailedStatus) {
+		return core.ConversationStatusFailed
+	}
+	return ""
+}
+
+// malformedAnalysisResult is the failed step for a result that is not JSON. A
+// finished analysis is always JSON, so plain text is an error message or a broken
+// reply, never an answer; what came back is kept, bounded, so the cause is visible.
+func malformedAnalysisResult(raw string) core.NBAgentResponse {
+	return core.NBAgentResponse{
+		Response: []string{"Code analysis returned a result that is not JSON, so it was not used as an answer. What came back: " +
+			core.TruncateHead(strings.TrimSpace(raw), maxMalformedResultChars)},
+		Status: core.ConversationStatusFailed,
+	}
 }
 
 // handleAnalysisResult inspects the analysis result, maintains the message-scoped
@@ -2046,6 +2239,17 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 		}
 		eventId = query.ConversationId
 	}
+	// A PR raised from an alert's conversation with the remediation loop on names the plan it carries out (C3).
+	if hadEventAnchor && events.RemediationLoopOn(query.AccountId) {
+		if link := prPlanLink(dbms.Db, query.AccountId, eventId, gitRepo); len(link) > 0 {
+			for k, v := range link {
+				metadata[k] = v
+			}
+			if b, err := json.Marshal(metadata); err == nil {
+				metadataJSON = b
+			}
+		}
+	}
 
 	_, err = dbms.Db.Exec(
 		`INSERT INTO event_resolution (id, event_id, type, data, status, type_reference_id, resolver_type, resolver_id, status_message, pr_lifecycle_state, pr_iteration_count)
@@ -2069,6 +2273,89 @@ func trackPRInResolution(ctx *security.RequestContext, query core.NBAgentRequest
 
 	ctx.GetLogger().Info("code: PR resolution row created for lifecycle tracking",
 		"pr_url", prURL, "event_id", eventId, "conversation_id", query.ConversationId)
+}
+
+// readOnlyCodeRequest keeps a read-only run from writing to a repository. A read-only run (an automatic
+// investigation, the remediation loop's planning turns and follow-up checks) has no person to approve a write, and
+// an agent tool such as this one is not stopped by the write-approval gate, so this agent enforces it itself: a fix
+// asked for with raise_pr is proposed as a diff instead (mode fix, no pull request), and a commit to an existing pull
+// request is refused. Runs that are not read-only are unchanged, including the investigation's own code-fix stage
+// (its auto-raise has its own setting and does not run read-only) and a person's chat. It applies only where the
+// remediation loop is on (EVENT_REMEDIATION_LOOP): with it off, every run is as before. A flag that cannot be read
+// is not off: the run stays read-only.
+func readOnlyCodeRequest(ctx *security.RequestContext, query core.NBAgentRequest, request CodeAgent2Request) (CodeAgent2Request, string) {
+	if !core.IsReadOnlyRun(ctx) && !query.QueryConfig.ReadOnlyRun {
+		return request, ""
+	}
+	if on, err := events.RemediationLoopRead(query.AccountId); err == nil && !on {
+		return request, ""
+	} else if err != nil {
+		ctx.GetLogger().Warn("code: remediation loop flag not read; the read-only run stays read-only", "error", err)
+	}
+	if request.Followup {
+		ctx.GetLogger().Info("code: pull request follow-up refused in a read-only run", "pr_url", request.PRURL)
+		return request, "Not done: this run only reads, so it does not commit to a pull request. Report the change instead."
+	}
+	if request.RaisePr {
+		ctx.GetLogger().Info("code: pull request not raised in a read-only run; proposing the fix as a diff")
+		request.RaisePr = false
+		request.Mode = "fix"
+	}
+	return request, ""
+}
+
+// prPlanLink is what a PR raised for an alert's event records of the alert's current remediation plan (#40734,
+// C3): plan_version, and option, the 1-based step the PR carries out, when one step is a source change that fits
+// the repository (the only one, or the only one naming it). Empty when the alert has no plan.
+func prPlanLink(db prTrackingEventLookup, accountId, eventId, gitRepo string) map[string]any {
+	var analysis string
+	err := db.Get(&analysis, `SELECT a.analysis FROM event_log_analysis a
+		 WHERE a.cloud_account_id = $1 AND a.analysis_type = $3
+		   AND (a.event_id = $2 OR a.event_fingerprint = (SELECT NULLIF(fingerprint, '') FROM events WHERE id = $2))
+		 ORDER BY COALESCE(a.updated_at, a.recorded_at) DESC LIMIT 1`, accountId, eventId, events.AnalysisTypeRemediation)
+	if err != nil || strings.TrimSpace(analysis) == "" {
+		return nil
+	}
+	link := map[string]any{"plan_version": events.PlanVersion(analysis)}
+	if option := prPlanOption(analysis, gitRepo); option > 0 {
+		link["option"] = option
+	}
+	return link
+}
+
+// prPlanOption is the 1-based step of the stored plan a PR against gitRepo carries out, or 0 when it is not clear.
+func prPlanOption(analysis, gitRepo string) int {
+	var plan struct {
+		Actions []struct {
+			ExecuteCommand string `json:"execute_command"`
+			RequiredChange *struct {
+				Where  string `json:"where"`
+				Target string `json:"target"`
+			} `json:"required_change"`
+		} `json:"actions"`
+	}
+	if json.Unmarshal([]byte(analysis), &plan) != nil {
+		return 0
+	}
+	_, repo := parseOrgRepo(gitRepo)
+	repo = strings.ToLower(strings.TrimSpace(repo))
+	var source, naming []int
+	for i, a := range plan.Actions {
+		if a.RequiredChange == nil || strings.TrimSpace(a.RequiredChange.Target) == "" || strings.TrimSpace(a.ExecuteCommand) != "" {
+			continue
+		}
+		source = append(source, i+1)
+		if repo != "" && strings.Contains(strings.ToLower(a.RequiredChange.Where+" "+a.RequiredChange.Target), repo) {
+			naming = append(naming, i+1)
+		}
+	}
+	switch {
+	case len(source) == 1:
+		return source[0]
+	case len(naming) == 1:
+		return naming[0]
+	}
+	return 0
 }
 
 // findOpenPRForRequest returns the url and head branch of a PR that this same
@@ -2672,7 +2959,7 @@ Log data: %v`
 	}
 
 	// Generate completion with temperature 0 for more deterministic results
-	completion, err := core.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract k8s info from log data: %w", err)
 	}
@@ -2988,7 +3275,7 @@ Reply with ONLY the chosen URL (exactly as listed above) or the single word UNCE
 		llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId,
 		query.AgentId, false, messages, true, llms.WithTemperature(0.0),
 	)
@@ -3041,7 +3328,7 @@ Text: %v`
 	}
 
 	// Generate completion with temperature 0 for more deterministic results
-	completion, err := core.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to extract git repo from query: %w", err)
 	}
@@ -3244,6 +3531,9 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		return core.NBAgentResponse{}, err
 	}
 	analyzeRequest["llm_config"] = forwardedLLMConfigToMap(llmCfg)
+	if block := core.AgentInstructionsBlock(query); block != "" {
+		analyzeRequest["skills"] = block
+	}
 	logger.Info("code followup: forwarding resolved LLM config to workspace analysis", "provider", llmCfg.Provider, "model", llmCfg.Model, "has_api_key", llmCfg.ApiKey != "")
 
 	// Pre-flight: verify workspace pod is reachable
@@ -3260,6 +3550,10 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	wm := workspace.NewWorkspaceManagerWithTimeout(60 * time.Second)
 	logger.Info("code followup: executing via workspace", "account_id", query.AccountId, "pr_url", request.PRURL)
 
+	if err := setAnalysisWorkspaceToken(ctx, query.AccountId, analyzeRequest); err != nil {
+		return core.NBAgentResponse{}, fmt.Errorf("code followup: %w", err)
+	}
+
 	// POST /analyze — code-analysis returns 202 with analysis_id
 	followupStart := time.Now()
 	respBytes, err := wm.CallAPIOrLazyCreate(ctx, query.AccountId, "POST", "/analyze", nil, analyzeRequest)
@@ -3270,7 +3564,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	var asyncResp map[string]any
 	if err := json.Unmarshal(respBytes, &asyncResp); err != nil {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
@@ -3278,7 +3572,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	// Sync response (backward compat)
 	if _, hasResult := asyncResp["agent_response"]; hasResult {
 		result := extractAgentResponseWithTokenUsage(respBytes)
-		modelTier, taskType := core.TierAttributionForRecord(ctx)
+		modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 		go recordCodeAnalysisTokenUsage(query, result.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 		return core.NBAgentResponse{Response: []string{result.AgentResponse}}, nil
 	}
@@ -3299,10 +3593,8 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	pollWm := workspace.NewWorkspaceManagerWithTimeout(30 * time.Second)
 	lastProgress := ""
 	persistedStepStatus := map[string]string{}
-	const maxConsecutiveErrors = 12
-	const maxPollDuration = 30 * time.Minute
-	consecutiveErrors := 0
-	pollDeadline := time.Now().Add(maxPollDuration)
+	var pollBudget statusPollBudget
+	pollDeadline := time.Now().Add(codeAnalysisMaxPollDuration)
 
 	for {
 		select {
@@ -3312,7 +3604,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		}
 
 		if time.Now().After(pollDeadline) {
-			return core.NBAgentResponse{}, fmt.Errorf("followup analysis polling exceeded maximum duration of %v", maxPollDuration)
+			return core.NBAgentResponse{}, fmt.Errorf("followup analysis polling exceeded maximum duration of %v", codeAnalysisMaxPollDuration)
 		}
 
 		statusBytes, err := pollWm.CallAPI(ctx, query.AccountId, "GET", statusEndpoint, nil, nil)
@@ -3322,19 +3614,25 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 				// here instead of waiting out the consecutive-error budget.
 				return core.NBAgentResponse{}, fmt.Errorf("followup lost with its workspace pod: %w", err)
 			}
-			consecutiveErrors++
+			exhausted := pollBudget.unusable()
 			logger.Warn("code followup: failed to poll status", "error", err, "analysis_id", analysisID,
-				"consecutive_errors", consecutiveErrors, "max_consecutive_errors", maxConsecutiveErrors)
-			if consecutiveErrors >= maxConsecutiveErrors {
-				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive errors: %w", consecutiveErrors, err)
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors)
+			if exhausted {
+				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive errors: %w", pollBudget.consecutive, err)
 			}
 			continue
 		}
-		consecutiveErrors = 0
 
-		var statusResp map[string]any
-		if err := json.Unmarshal(statusBytes, &statusResp); err != nil {
-			logger.Warn("code followup: failed to parse status response", "error", err)
+		statusResp, exhausted, err := readStatusReply(statusBytes, &pollBudget)
+		if err != nil {
+			logger.Warn("code followup: failed to parse status response", "error", err, "analysis_id", analysisID,
+				"consecutive_errors", pollBudget.consecutive, "max_consecutive_errors", maxStatusPollErrors,
+				"body_len", len(statusBytes), "body_prefix", common.TruncateHead(string(statusBytes), 200))
+			if exhausted {
+				// The pod is answering, so the cancel lands; without it the follow-up keeps running.
+				cancelWorkspaceAnalysis(ctx, query.AccountId, analysisID)
+				return core.NBAgentResponse{}, fmt.Errorf("followup polling abandoned after %d consecutive unreadable status replies: %w", pollBudget.consecutive, err)
+			}
 			continue
 		}
 
@@ -3367,7 +3665,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 			}
 			logger.Info("code followup: analysis completed", "analysis_id", analysisID)
 			caResult := extractAgentResponseWithTokenUsage(resultBytes)
-			modelTier, taskType := core.TierAttributionForRecord(ctx)
+			modelTier, taskType := llmruntime.TierAttributionForRecord(ctx)
 			go recordCodeAnalysisTokenUsage(query, caResult.TokenUsage, time.Since(followupStart).Seconds(), modelTier, taskType)
 			return core.NBAgentResponse{Response: []string{caResult.AgentResponse}}, nil
 		case "failed":
@@ -3378,6 +3676,6 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 	}
 }
 
-func (l CodeAgent2) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (l CodeAgent2) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }

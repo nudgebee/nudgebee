@@ -168,6 +168,32 @@ func TestWriteApprovalCardNamesTheConversationsOwnAccount(t *testing.T) {
 	require.Nil(t, (&plannerExecutor{ctx: e.ctx, agentRequest: NBAgentRequest{AccountId: "unknown-id"}}).destinationOf(postgres, action, nil), "an account that cannot be named keeps the generic card")
 }
 
+// fakeMCPTool stands in for an MCP integration tool, which tools/core does not export.
+type fakeMCPTool struct {
+	tools.PostgresExecuteTool
+	integration string
+}
+
+func (f fakeMCPTool) Name() string               { return "mcp_test_ask_wiki_question" }
+func (f fakeMCPTool) MCPIntegrationName() string { return f.integration }
+
+// An MCP tool's call goes to its integration, so the card names the integration,
+// not the conversation's cluster.
+func TestWriteApprovalCardNamesTheMCPIntegration(t *testing.T) {
+	e := writeTargetExecutor(t, "prod-id")
+	tools.StubAccountTargets(t, map[string]*toolcore.ExecutionTarget{
+		"dev-id": {Provider: "kubernetes", Name: "k8s-dev", AccountID: "dev-id"},
+	})
+	tool := fakeMCPTool{integration: "MCP-test"}
+	action := NBAgentPlannerToolAction{Tool: tool.Name(), ToolInput: `{"question":"what is the reconciler?"}`}
+
+	got := confirmationQuestionWithTarget("", action, toolcore.ToolRequestTypeUpdate, e.destinationOf(tool, action, nil))
+
+	require.Contains(t, got, "on MCP integration **MCP-test**")
+	require.NotContains(t, got, "Kubernetes cluster")
+	require.Equal(t, &FollowupTarget{Provider: "mcp", Kind: "MCP integration", Name: "MCP-test"}, e.destinationOf(tool, action, nil).followupTarget())
+}
+
 // The approval's stored config carries where the write lands, for the UI.
 func TestApprovalConfigCarriesTheTarget(t *testing.T) {
 	onProd := &writeTarget{Target: toolcore.ExecutionTarget{Provider: "kubernetes", Name: "k8s-prod", AccountID: "prod-id"}, Integration: "prod"}
@@ -217,4 +243,34 @@ func TestOwnClusterNamedOrNotIsOneApproval(t *testing.T) {
 	require.Equal(t, unnamed, key(`{"command":"kubectl create configmap x","cluster":"k8s-dev"}`))
 	require.Equal(t, unnamed, key(`{"command":"kubectl create configmap x --context k8s-dev"}`))
 	require.Equal(t, "kubectl_execute@k8s-prod@prod-id", key(`{"command":"kubectl create configmap x","cluster":"k8s-prod"}`), "another cluster keeps its own approval")
+}
+
+// An automation runs on the account it belongs to: a run on another account
+// is approved for that account, its card names it, and write access is
+// checked there — also when the account cannot be described.
+func TestAutomationRunOnAnotherAccountIsThatAccountsWrite(t *testing.T) {
+	tools.StubAccountTargets(t, map[string]*toolcore.ExecutionTarget{
+		"prod-id": {Provider: "aws", Name: "aws-prod", AccountID: "prod-id"},
+	})
+	e := &plannerExecutor{
+		ctx:          security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"dev-id", "prod-id"}),
+		agentRequest: NBAgentRequest{AccountId: "dev-id", UserId: "user"},
+	}
+	trigger := tools.WorkflowTriggerTool{}
+
+	require.Equal(t, "workflow_trigger@prod-id", approvalKey(e, trigger, `{"id":"wf-1","account_id":"prod-id"}`))
+	require.Equal(t, "workflow_trigger", approvalKey(e, trigger, `{"id":"wf-1"}`), "the conversation's own account keeps its key")
+
+	action := NBAgentPlannerToolAction{Tool: trigger.Name(), ToolInput: `{"id":"wf-1","account_id":"prod-id"}`}
+	target := e.writeTargetOf(trigger, action)
+	require.Equal(t, "On AWS account **aws-prod**:\nRun it?", confirmationQuestionWithTarget("Run it?", action, toolcore.ToolRequestTypeCreate, target))
+	require.Equal(t, []string{"prod-id"}, writeAccountOf("dev-id", target, true))
+
+	for _, tool := range []toolcore.NBTool{tools.WorkflowExecutionRetriggerTool{}, tools.WorkflowExecutionCancelTool{}, tools.WorkflowDryRunTool{}} {
+		require.Equal(t, tool.Name()+"@prod-id", approvalKey(e, tool, `{"id":"wf-1","execution_id":"ex-1","account_id":"prod-id"}`))
+	}
+
+	unknown := e.writeTargetOf(trigger, NBAgentPlannerToolAction{Tool: trigger.Name(), ToolInput: `{"id":"wf-1","account_id":"gone-id"}`})
+	require.NotNil(t, unknown, "an account that cannot be described is still where the run lands")
+	require.Equal(t, []string{"gone-id"}, writeAccountOf("dev-id", unknown, true))
 }

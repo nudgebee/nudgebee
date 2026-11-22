@@ -1,15 +1,22 @@
 /**
- * GatewayUsage — the "AI Gateway" tab on the Optimize page (peer to LLM Analyser).
+ * GatewayUsage — the body of the AI Gateway page (`/ai-gateway`, its own sidenav
+ * section).
  *
  * Where the LLM Analyser reports NB's own agent-conversation spend, this reports all
  * BYO-token traffic forwarded through the gateway — its own dataset and query API.
  *
  * This component is the SHELL: it owns the shared filter state (date window +
  * granularity), fetches the aggregate metrics once via `useGatewayData`, and hosts
- * the sub-tab navigation (Overview · Models · Users · Requests) — mirroring the AI
- * Cost Analyser's `CostAnalyser` shell. Each tab is a self-contained view under
- * `./views`; the Overview / Models / Users views read the shared `metrics`, while
- * Requests owns its own paginated fetch (`useGatewayRequests`).
+ * the sub-tab navigation — mirroring the AI Cost Analyser's `CostAnalyser` shell.
+ * Each tab is a self-contained view under `./views`; the Overview / Models / Users
+ * views read the shared `metrics`, while Requests owns its own paginated fetch
+ * (`useGatewayRequests`).
+ *
+ * The tabs are split into the page's sections (`GROUPS`: Connect · Monitor ·
+ * Activity · Governance). The page's top tab strip and the sidenav pick the
+ * section through the hash; this shell shows only the active section's tabs. It
+ * stays mounted across sections, so a drill-in that crosses one (Users → Requests)
+ * keeps its scope.
  *
  * Users → Requests drill-in: clicking a user on the Users tab scopes the Requests
  * tab to that user and switches to it; the Requests tab's own User filter
@@ -26,6 +33,7 @@ import RocketLaunchOutlinedIcon from '@mui/icons-material/RocketLaunchOutlined';
 import DashboardOutlinedIcon from '@mui/icons-material/DashboardOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleAltOutlinedIcon from '@mui/icons-material/PeopleAltOutlined';
+import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import ReceiptLongOutlinedIcon from '@mui/icons-material/ReceiptLongOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import HandymanOutlinedIcon from '@mui/icons-material/HandymanOutlined';
@@ -39,11 +47,13 @@ import ConnectView from './views/ConnectView';
 import OverviewView from './views/OverviewView';
 import ModelsView from './views/ModelsView';
 import UsersView from './views/UsersView';
+import KeysView from './views/KeysView';
 import RequestsView from './views/RequestsView';
 import SessionsView from './views/SessionsView';
 import ToolsView from './views/ToolsView';
 import GovernanceView from './views/GovernanceView';
 import type { GatewayGranularity } from '@api1/gateway-usage';
+import { canViewGatewayUserAccess } from '@lib/auth';
 
 interface GatewayUsageProps {
   /** The selected account; scopes the request (empty = all accessible accounts). */
@@ -74,41 +84,62 @@ const DATE_RANGE_SHORTCUTS = ['Last 24 Hours', 'Current Week', 'Current Month', 
 // Every sub-tab, and the source of truth for TabId — a new tab added here is
 // automatically deep-linkable, and one added only to `tabOptions` below fails to
 // type-check rather than silently resolving to the default.
-const TAB_IDS = ['connect', 'overview', 'models', 'users', 'requests', 'sessions', 'tools', 'governance'] as const;
+const TAB_IDS = ['connect', 'overview', 'models', 'users', 'keys', 'requests', 'sessions', 'tools', 'governance'] as const;
 
 type TabId = (typeof TAB_IDS)[number];
 
-// The parent's top-level fragment for this tab (optimise page `filterOptions`).
-// The sub-tab is encoded as `#ai-gateway/<sub-tab>` so a shared link lands on the
-// exact sub-tab. TabId doubles as the URL fragment — no separate mapping needed.
-const PARENT_FRAGMENT = 'ai-gateway';
+// The page's sections, in order, each with its tabs (first = the section's
+// default). The section id is the top-level hash fragment the page's tab strip
+// and the sidenav link to (pages/ai-gateway/index.tsx, layout/index.jsx).
+export const GROUPS = {
+  connect: ['connect'],
+  monitor: ['overview', 'models', 'users', 'keys'],
+  activity: ['requests', 'sessions', 'tools'],
+  governance: ['governance'],
+} as const satisfies Record<string, readonly TabId[]>;
+
+export type GroupId = keyof typeof GROUPS;
+
+const GROUP_IDS = Object.keys(GROUPS) as GroupId[];
 const DEFAULT_TAB: TabId = 'overview';
 
-// Resolves the current URL hash to the sub-tab it selects.
-//   null            — the hash isn't this tab's (we're heading to another top-level
-//                     tab); leave our state alone.
-//   DEFAULT_TAB     — the hash is ours but names no valid sub-tab. A bare `#ai-gateway`
-//                     is what the top-level tab's own link points at, so it must resolve
-//                     to the default rather than "no opinion" — otherwise clicking that
-//                     tab strips the sub-fragment and the URL stops matching the screen.
-//                     Mirrors Auto Optimize, whose parent tab resets to its first sub-tab.
-//   TabId           — the sub-tab named in `#ai-gateway/<sub-tab>`.
-function subTabFromHash(): TabId | null {
-  if (typeof window === 'undefined') return null;
-  const hash = decodeURIComponent((window.location.hash || '').replace('#', ''));
-  const [parent, sub] = hash.split('/');
-  if (parent !== PARENT_FRAGMENT) return null;
-  return TAB_IDS.includes(sub as TabId) ? (sub as TabId) : DEFAULT_TAB;
+const groupOf = (tab: TabId): GroupId => GROUP_IDS.find((g) => (GROUPS[g] as readonly TabId[]).includes(tab)) ?? 'monitor';
+
+// The one hash each tab is written as: `#<section>` for a section's default tab,
+// `#<section>/<tab>` otherwise — so the sidenav's bare `#monitor` link and a
+// tab's own URL never disagree about which tab is open.
+function hashFor(tab: TabId): string {
+  const group = groupOf(tab);
+  return GROUPS[group][0] === tab ? `#${group}` : `#${group}/${tab}`;
+}
+
+const currentHash = () => (typeof window === 'undefined' ? '' : decodeURIComponent(window.location.hash || ''));
+
+// Resolves the current URL hash to the tab it selects. A section with no (or an
+// unknown) tab opens its default tab; a tab named under the wrong section opens
+// that tab, and the writer moves the hash to its real section. No hash, or a
+// foreign one, is Overview.
+function tabFromHash(): TabId {
+  const [parent, sub] = currentHash().replace('#', '').split('/');
+  let tab: TabId = DEFAULT_TAB;
+  if (TAB_IDS.includes(sub as TabId)) tab = sub as TabId;
+  else if (GROUP_IDS.includes(parent as GroupId)) tab = GROUPS[parent as GroupId][0];
+  if (tab === 'users' && !canViewGatewayUserAccess()) return DEFAULT_TAB;
+  return tab;
 }
 
 export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   const router = useRouter();
   const [filters, setFilters] = React.useState<GatewayFilters>(() => defaultFilters());
-  // Initialize from the URL so a deep link (`#ai-gateway/users`) opens on that
+  // Initialize from the URL so a deep link (`#monitor/users`) opens on that
   // sub-tab; fall back to Overview.
-  const [tab, setTab] = React.useState<TabId>(() => subTabFromHash() ?? DEFAULT_TAB);
+  const [tab, setTab] = React.useState<TabId>(() => tabFromHash());
+  // The tab the URL last named — tells the writer whether a change crossed sections.
+  const urlTab = React.useRef<TabId>(tab);
   // Users → Requests drill-in: when set, the Requests tab is scoped to this user.
   const [selectedUser, setSelectedUser] = React.useState<{ id: string; name: string } | null>(null);
+  // Keys → Requests drill-in: when set, the Requests tab is scoped to this API key.
+  const [selectedKey, setSelectedKey] = React.useState<{ id: string; name: string } | null>(null);
   // Governance → Requests drill-in: when set, the Requests tab is scoped to the
   // rows behind a governance count (a routing/reject reason, DLP, or error class).
   const [selectedGov, setSelectedGov] = React.useState<GovScope | null>(null);
@@ -125,31 +156,29 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // from the session, so the UI sends no tenant in the request.
   const { loading, error, metrics } = useGatewayData(accountId, filters);
 
-  // Tab → URL. Writing `#ai-gateway/<tab>` on every tab change (click or drill-in)
-  // makes the current sub-tab shareable and survives reload. A shallow `replace`
-  // keeps this out of the history stack and off the data-fetch path; the parent
-  // optimise page matches on the `ai-gateway` prefix only, so it stays on this tab
-  // and ignores the sub-fragment (it has no `tabOptions`).
+  // Tab → URL. Every tab change (click or drill-in) writes the tab's hash, so the
+  // current tab is shareable and survives reload. Within a section it's a shallow
+  // `replace`; a drill-in that crosses sections (Users → Requests) is a `push`, so
+  // browser Back returns to where it started instead of leaving the page.
   //
-  // The guards mean mount never navigates: `tab` is seeded from the hash, so they
-  // already agree. Only a real tab change writes.
+  // Mount never navigates while the hash already selects `tab` (it was seeded from
+  // it); only a hash that names the tab some other way — none, or a tab under the
+  // wrong section — is rewritten to its canonical form.
   React.useEffect(() => {
-    const sub = subTabFromHash();
-    // A foreign hash means another top-level tab owns the URL — either we're being
-    // switched away from, or a click on our own tab hasn't landed its navigation
-    // yet (AnchorComponent selects the tab synchronously, ahead of the Link push).
-    // Writing here would clobber that hash and race the navigation already in
-    // flight. Same rule as the reader below: not our hash, not our business.
-    if (sub === null || sub === tab) return;
-    // `replace` rejects with a `cancelled` error ("Cancel rendering route") when a
-    // newer navigation supersedes this one — e.g. a top-level tab click landing
-    // mid-flight. The newer URL is the one we want, so a cancellation is expected,
-    // not a failure; absorb it and let any real navigation error surface.
-    router
-      .replace({ pathname: router.pathname, query: router.query, hash: `#${PARENT_FRAGMENT}/${tab}` }, undefined, { shallow: true })
-      .catch((err: Error & { cancelled?: boolean }) => {
+    const crossed = groupOf(urlTab.current) !== groupOf(tab);
+    urlTab.current = tab;
+    const hashSection = currentHash().replace('#', '').split('/')[0];
+    if (tabFromHash() === tab && hashSection === groupOf(tab)) return;
+    // A navigation rejects with a `cancelled` error ("Cancel rendering route") when
+    // a newer one supersedes it — e.g. a top-level tab click landing mid-flight. The
+    // newer URL is the one we want, so a cancellation is expected, not a failure;
+    // absorb it and let any real navigation error surface.
+    const url = { pathname: router.pathname, query: router.query, hash: hashFor(tab) };
+    (crossed ? router.push(url, undefined, { shallow: true }) : router.replace(url, undefined, { shallow: true })).catch(
+      (err: Error & { cancelled?: boolean }) => {
         if (!err?.cancelled) throw err;
-      });
+      }
+    );
     // Deliberately keyed on `tab` alone: this effect writes, and the one below reads.
     // Adding `router` (a fresh object each render) would re-fire the write on every
     // navigation and fight that reader. The closed-over router is from this commit,
@@ -158,15 +187,24 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   }, [tab]);
 
   // URL → tab, for hash changes that don't originate from setTab: browser
-  // back/forward, and the top-level AI Gateway tab's own link (which points at a
-  // bare `#ai-gateway`, and so resolves to the default sub-tab — without this the
-  // screen would keep showing the old sub-tab that the URL no longer names).
-  // A null means the hash belongs to another top-level tab and isn't ours to act on.
+  // back/forward, and the sidenav / top tab strip links (a bare `#activity` opens
+  // that section's default tab). Next leaves router.asPath unchanged when only the
+  // hash changes natively (`location.hash = …`, as the guided tour does), so
+  // hashchange re-syncs too.
+  const [hashChangeCount, setHashChangeCount] = React.useState(0);
   React.useEffect(() => {
-    const sub = subTabFromHash();
-    if (sub && sub !== tab) setTab(sub);
+    const onHashChange = () => setHashChangeCount((n) => n + 1);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+  React.useEffect(() => {
+    const next = tabFromHash();
+    if (next === tab) return;
+    // The URL already names `next`, so the writer must not count this as a crossing.
+    urlTab.current = next;
+    setTab(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.asPath]);
+  }, [router.asPath, hashChangeCount]);
 
   // Bridge the 'YYYY-MM-DD' strings to the picker's epoch-ms model and back.
   const dateTimeValue = React.useMemo(
@@ -210,6 +248,16 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // The Requests tab's User dropdown reads/writes the same scope.
   const onChangeUser = React.useCallback((user: { id: string; name: string } | null) => setSelectedUser(user), []);
 
+  // Drill-in from the Keys tab: scope Requests to this key and jump to it.
+  // A key belongs to one user, so a user scope left over from an earlier drill-in
+  // could only narrow this to nothing; clear it.
+  const onSelectKey = React.useCallback((id: string, name: string) => {
+    setSelectedKey({ id, name });
+    setSelectedUser(null);
+    setTab('requests');
+  }, []);
+  const onChangeKey = React.useCallback((key: { id: string; name: string } | null) => setSelectedKey(key), []);
+
   // Drill-in from the Tools tab: scope Requests to this tool and jump to it.
   const onSelectTool = React.useCallback((tool: string) => {
     setSelectedTool(tool);
@@ -239,33 +287,40 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
   // colour change) — matching every other CustomTabs usage.
   // `value: TabId` ties each tab to TAB_IDS, so a tab can't be shown here without
   // also being deep-linkable.
-  const tabOptions: { value: TabId; text: string; icon: React.ElementType; iconSize: number }[] = [
+  const allTabOptions: { value: TabId; text: string; icon: React.ElementType; iconSize: number }[] = [
     { value: 'connect', text: 'Connect', icon: RocketLaunchOutlinedIcon, iconSize: 16 },
     { value: 'overview', text: 'Overview', icon: DashboardOutlinedIcon, iconSize: 16 },
     { value: 'models', text: 'Models', icon: AutoAwesomeOutlinedIcon, iconSize: 16 },
     { value: 'users', text: 'Users', icon: PeopleAltOutlinedIcon, iconSize: 16 },
+    { value: 'keys', text: 'Keys', icon: VpnKeyOutlinedIcon, iconSize: 16 },
     { value: 'requests', text: 'Requests', icon: ReceiptLongOutlinedIcon, iconSize: 16 },
     { value: 'sessions', text: 'Sessions', icon: ForumOutlinedIcon, iconSize: 16 },
     { value: 'tools', text: 'Tools', icon: HandymanOutlinedIcon, iconSize: 16 },
     { value: 'governance', text: 'Governance', icon: ShieldOutlinedIcon, iconSize: 16 },
   ];
+  // Only the open section's tabs; a one-tab section shows no strip. Non-admins get
+  // no per-user breakdown, so the Users tab is hidden for them.
+  const sectionTabs: readonly TabId[] = GROUPS[groupOf(tab)];
+  const tabOptions = allTabOptions.filter((t) => sectionTabs.includes(t.value) && (t.value !== 'users' || canViewGatewayUserAccess()));
 
   return (
     <Box id='gateway-usage-root' sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', pb: 'var(--ds-space-5)' }}>
       {/* Sub-tabs + shared filter controls (date range always visible; the
           granularity toggle only affects the Overview chart). */}
       <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
-        <CustomTabs
-          options={{ tabOptions }}
-          value={tab}
-          onChange={(next: string) => setTab(next as TabId)}
-          behavior='filter'
-          ariaLabel='AI Gateway screens'
-        />
+        {tabOptions.length > 1 && (
+          <CustomTabs
+            options={{ tabOptions }}
+            value={tab}
+            onChange={(next: string) => setTab(next as TabId)}
+            behavior='filter'
+            ariaLabel='AI Gateway screens'
+          />
+        )}
 
         {/* The date/granularity controls only apply to the data tabs, not Connect. */}
         {tab !== 'connect' && (
-          <Box id='gateway-filter-bar' sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap' }}>
+          <Box id='gateway-filter-bar' sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap', ml: 'auto' }}>
             <ToggleGroup
               selection='single'
               size='sm'
@@ -296,6 +351,7 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
       {tab === 'overview' && <OverviewView metrics={metrics} filters={filters} loading={loading} error={error} onSelectDay={onSelectDay} />}
       {tab === 'models' && <ModelsView metrics={metrics} loading={loading} error={error} />}
       {tab === 'users' && <UsersView metrics={metrics} loading={loading} error={error} onSelectUser={onSelectUser} />}
+      {tab === 'keys' && <KeysView metrics={metrics} loading={loading} error={error} onSelectKey={onSelectKey} />}
       {tab === 'requests' && (
         <RequestsView
           filters={filters}
@@ -303,6 +359,8 @@ export function GatewayUsage({ accountId, gatewayUrl }: GatewayUsageProps) {
           metricsLoading={loading}
           userFilter={selectedUser}
           onChangeUser={onChangeUser}
+          keyFilter={selectedKey}
+          onChangeKey={onChangeKey}
           toolFilter={selectedTool}
           onClearTool={onClearTool}
           govFilter={selectedGov}

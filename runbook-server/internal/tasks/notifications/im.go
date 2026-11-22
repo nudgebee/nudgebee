@@ -4,6 +4,8 @@ import (
 	"errors"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/notification"
+
+	"go.temporal.io/sdk/temporal"
 )
 
 // ImSendTask defines a task for sending a notification via IM.
@@ -15,7 +17,7 @@ func (t *ImSendTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *ImSendTask) GetDescription() string {
-	return "Send a message to Slack, MS Teams, or Google Chat."
+	return "Send a message to Slack, MS Teams, or Google Chat, through the app or through a webhook integration (provider slack_webhook, ms_teams_webhook or google_chat_webhook; channel is the integration id; no team or thread). As a step it fails, naming the reason, when the message is not delivered; as a hook it only logs that."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -64,6 +66,10 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		if triggeredBy := taskCtx.GetUserDisplayName(); triggeredBy != "" {
 			metadata["triggered_by"] = triggeredBy
 		}
+		// Step citations in the message link to this event's investigation.
+		if eventID := taskCtx.GetEventID(); eventID != "" {
+			metadata["event_id"] = eventID
+		}
 		request.Parameters = map[string]any{
 			"workflow_metadata": metadata,
 		}
@@ -93,6 +99,14 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 			output["rule_management_url"] = resp.RuleManagementURL
 		}
 	}
+	if err == nil && (resp.Status == notification.StatusFailed || resp.Status == notification.StatusNotSent) {
+		output["reason"] = resp.Reason
+		message := notification.NotDeliveredMessage(request.Platform, channel, resp.Reason)
+		if resp.Status == notification.StatusNotSent || (resp.Retryable != nil && !*resp.Retryable) {
+			return output, temporal.NewNonRetryableApplicationError(message, types.ErrTypeNotificationNotDelivered, nil)
+		}
+		return output, temporal.NewApplicationError(message, types.ErrTypeNotificationNotDelivered)
+	}
 
 	return output, err
 }
@@ -104,7 +118,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "Notification Provider",
 				Required:    true,
-				Options:     []string{"slack", "ms_teams", "google_chat"},
+				Options:     []string{"slack", "ms_teams", "google_chat", "slack_webhook", "ms_teams_webhook", "google_chat_webhook"},
 				Order:       1,
 			},
 			"team_id": {
@@ -115,7 +129,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 			},
 			"channel": {
 				Type:        "string",
-				Description: "Provider Channel",
+				Description: "Provider Channel; for a webhook provider, the webhook integration id",
 				Required:    true,
 				Order:       3,
 			},
@@ -127,7 +141,7 @@ func (t *ImSendTask) InputSchema() *types.Schema {
 			},
 			"message_thread_id": {
 				Type:        "string",
-				Description: "Message ID for Response on Threads",
+				Description: "Message ID for Response on Threads; not supported for webhook providers",
 				Required:    false,
 				Order:       5,
 			},
@@ -166,7 +180,7 @@ func (t *ImSendTask) OutputSchema() *types.Schema {
 			},
 			"reason": {
 				Type:        "string",
-				Description: "Why the message was not delivered, e.g. which notification rule suppressed it. Set only when status is suppressed.",
+				Description: "Why the message was not delivered: which notification rule suppressed it, or the reason code (e.g. no_destination, channel_not_found) when status is failed or not_sent.",
 				Required:    false,
 			},
 			"rule_management_url": {

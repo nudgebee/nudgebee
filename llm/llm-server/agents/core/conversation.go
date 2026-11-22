@@ -6,19 +6,23 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/prompts"
-	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
-	"slices"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"nudgebee/llm/attachments"
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/events"
+	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/prompts"
+	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 
 	toolcore "nudgebee/llm/tools/core"
 
-	"github.com/google/shlex"
 	"github.com/google/uuid"
 	"github.com/samber/lo"
 	"github.com/tmc/langchaingo/llms"
@@ -104,14 +108,14 @@ func generateConversationTitle(ctx *security.RequestContext, accountId string, c
 
 	// Use Lite model for title generation
 	titleCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := GenerateAndTrackLLMContent(titleCtx, userId, accountId, conversationId, messageId, "summary_agent", false, messageContent, true, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(titleCtx, userId, accountId, conversationId, messageId, "summary_agent", false, messageContent, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		return "", fmt.Errorf("llm call for title generation failed: %w", err)
 	}
@@ -148,7 +152,7 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 		}
 	}
 
-	if agentName != "" && agentName == ToolLlm {
+	if agentName != "" && agentName == llmruntime.ToolLlm {
 		title = "Processing LLM Request"
 	}
 
@@ -172,11 +176,18 @@ func generateConversationTitleAsync(ctx *security.RequestContext, conversationId
 	err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
 		title, err := generateConversationTitle(bgCtx, accountId, conversationId, messageId, query, userId)
 		if err != nil {
-			bgCtx.GetLogger().Warn("conversation: unable to generate title via LLM in background task", "conversation_id", conversationId, "error", err)
-			bgCtx.GetLogger().Info("conversation: title generation task completed with error")
-			return
+			bgCtx.GetLogger().Warn("conversation: unable to generate title via LLM in background task, falling back to query", "conversation_id", conversationId, "error", err)
+			if derived, ok := common.DeriveTitleFromJSONQuery(query); ok {
+				title = derived
+			} else {
+				title = query
+				if len(title) > 100 {
+					title = common.TruncateHead(title, 97) + "..."
+				}
+			}
+		} else {
+			bgCtx.GetLogger().Info("conversation: generated title via LLM in background task", "conversation_id", conversationId, "title", title)
 		}
-		bgCtx.GetLogger().Info("conversation: generated title via LLM in background task", "conversation_id", conversationId, "title", title)
 		err = GetConversationDao().UpdateConversationTitle(conversationId, title)
 		if err != nil {
 			bgCtx.GetLogger().Error("conversation: unable to update conversation title in background task", "conversation_id", conversationId, "error", err)
@@ -323,14 +334,14 @@ func generateCompactResponse(ctx *security.RequestContext, accountId, conversati
 	// Reformatting a finished answer for Slack — no tools, no reasoning — so it
 	// resolves on the summary tier instead of the conversation's main model.
 	compactCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := GenerateAndTrackLLMContent(compactCtx, userId, accountId, conversationId, messageId, "compact_response_agent", true, messageContent, false)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(compactCtx, userId, accountId, conversationId, messageId, "compact_response_agent", true, messageContent, false)
 	if err != nil {
 		return "", fmt.Errorf("llm call for compact response generation failed: %w", err)
 	}
@@ -387,11 +398,17 @@ type additionalConversationSessionRequestConfig struct {
 	isNewConversation     bool
 	isResume              bool
 	isQueuedDispatch      bool
-	images                []ImageAttachment
+	runProfile            *RunProfile
+	images                []attachments.ImageAttachment
 	channelContext        string
 	channelContextRefs    map[string]any
 	replyRef              string
+	askerRef              string
 	skipHistory           bool
+	title                 string
+	// callerSource is the source the caller sent, before any fallback to the
+	// conversation's stored source.
+	callerSource ConversationSource
 }
 
 type ConversationSessionRequestConfig interface {
@@ -471,6 +488,24 @@ func (h sessionRequestWithSource) apply(c *additionalConversationSessionRequestC
 }
 func ConversationSessionRequestWithSource(source ConversationSource) ConversationSessionRequestConfig {
 	return sessionRequestWithSource{
+		source: source,
+	}
+}
+
+type sessionRequestWithCallerSource struct {
+	source ConversationSource
+}
+
+func (h sessionRequestWithCallerSource) apply(c *additionalConversationSessionRequestConfig) {
+	c.callerSource = h.source
+}
+
+// ConversationSessionRequestWithCallerSource records the source the caller
+// actually sent, before the chat endpoint fills an empty one from the stored
+// conversation. A user's follow-up on an alert conversation sends none, so it
+// stays a user turn for investigation depth.
+func ConversationSessionRequestWithCallerSource(source ConversationSource) ConversationSessionRequestConfig {
+	return sessionRequestWithCallerSource{
 		source: source,
 	}
 }
@@ -633,15 +668,29 @@ func ConversationSessionRequestWithQueuedDispatch() ConversationSessionRequestCo
 	return sessionRequestWithQueuedDispatch{}
 }
 
+type sessionRequestWithRunProfile struct{ profile *RunProfile }
+
+func (h sessionRequestWithRunProfile) apply(c *additionalConversationSessionRequestConfig) {
+	c.runProfile = h.profile
+}
+
+// ConversationSessionRequestWithRunProfile makes the request create the
+// conversation of the governed run profile (from a validated run claim). It
+// is used only when the conversation is created; an existing conversation
+// keeps the profile it has.
+func ConversationSessionRequestWithRunProfile(profile *RunProfile) ConversationSessionRequestConfig {
+	return sessionRequestWithRunProfile{profile: profile}
+}
+
 type sessionRequestWithImages struct {
-	images []ImageAttachment
+	images []attachments.ImageAttachment
 }
 
 func (h sessionRequestWithImages) apply(c *additionalConversationSessionRequestConfig) {
 	c.images = h.images
 }
 
-func ConversationSessionRequestWithImages(images []ImageAttachment) ConversationSessionRequestConfig {
+func ConversationSessionRequestWithImages(images []attachments.ImageAttachment) ConversationSessionRequestConfig {
 	return sessionRequestWithImages{
 		images: images,
 	}
@@ -698,6 +747,40 @@ func ConversationSessionRequestWithReplyRef(replyRef string) ConversationSession
 	}
 }
 
+type sessionRequestWithAskerRef struct {
+	askerRef string
+}
+
+func (h sessionRequestWithAskerRef) apply(c *additionalConversationSessionRequestConfig) {
+	c.askerRef = h.askerRef
+}
+
+// ConversationSessionRequestWithAskerRef carries an opaque per-question
+// correlator through to NBAgentRequest.AskerRef — see ConversationApiRequest.AskerRef.
+func ConversationSessionRequestWithAskerRef(askerRef string) ConversationSessionRequestConfig {
+	return sessionRequestWithAskerRef{
+		askerRef: askerRef,
+	}
+}
+
+type sessionRequestWithTitle struct {
+	title string
+}
+
+func (h sessionRequestWithTitle) apply(c *additionalConversationSessionRequestConfig) {
+	c.title = h.title
+}
+
+// ConversationSessionRequestWithTitle names the conversation this request
+// creates, skipping title generation. It has no effect when the conversation
+// already exists. Event investigations use it to keep the event id in the
+// title, which the Investigations tab and the investigation counts match on.
+func ConversationSessionRequestWithTitle(title string) ConversationSessionRequestConfig {
+	return sessionRequestWithTitle{
+		title: title,
+	}
+}
+
 type sessionRequestWithoutConversationHistory struct{}
 
 func (h sessionRequestWithoutConversationHistory) apply(c *additionalConversationSessionRequestConfig) {
@@ -734,7 +817,35 @@ func resolveSessionRequestConfigs(configs ...ConversationSessionRequestConfig) a
 	if defaultConfig.skipHistory {
 		defaultConfig.config.SkipConversationHistory = true
 	}
+	// Which follow-up a person answered, and who they were, is written by this server when it
+	// records the answer (refineAgentQuestionAndHandleFollowups) and read back from the message's
+	// stored config. A caller's config never supplies it: an approved write is attributed to, and
+	// used once under, that approval (ApprovedWriteRecorder).
+	defaultConfig.config.ToolConfirmationRefs = nil
 	return defaultConfig
+}
+
+// isChatOrAlertSource reports whether a turn is a person's chat (app, CLI, or a
+// Slack/Teams thread) or an alert investigation. Only these save memory and
+// session notes and get an answer-confidence score; automations, PR jobs,
+// builders and any source added later skip that background work.
+func isChatOrAlertSource(source ConversationSource) bool {
+	switch source {
+	case "", ConversationSourceUserInvestigation, ConversationSourceUserInvestigationCLI,
+		ConversationSourceInvestigation, ConversationSourceInstantNotification:
+		return true
+	}
+	return false
+}
+
+// withMemoryWriteOff returns a copy of m with writing switched off, leaving reading and reranking as they were.
+func withMemoryWriteOff(m *toolcore.MemoryOverrides) *toolcore.MemoryOverrides {
+	out := m.Clone()
+	if out == nil {
+		out = &toolcore.MemoryOverrides{}
+	}
+	out.Write = lo.ToPtr(false)
+	return out
 }
 
 func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgent, userId string, accountId string, sessionId string, query string, configs ...ConversationSessionRequestConfig) (NBAgentResponse, error) {
@@ -765,7 +876,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 	// additional guidance. ReAct planners cache AccountContext in their system
 	// prefix while AccountPrompt stays in the dynamic human turn. The GC loader
 	// is soft-failing — DB issues never block a chat turn.
-	gcPrompt := toolcore.LoadActiveGlobalContext(ctx, accountId)
+	gcPrompt := knowledge.LoadActiveGlobalContext(ctx, accountId)
 
 	agentRequest := NBAgentRequest{
 		Query:                 query,
@@ -787,13 +898,20 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 		PreviousState:         defaultConfig.previousState,
 		IsResume:              defaultConfig.isResume,
 		IsQueuedDispatch:      defaultConfig.isQueuedDispatch,
+		RunProfile:            defaultConfig.runProfile,
 		Images:                defaultConfig.images,
 		ChannelContext:        defaultConfig.channelContext,
 		ChannelContextRefs:    defaultConfig.channelContextRefs,
 		ReplyRef:              defaultConfig.replyRef,
+		AskerRef:              defaultConfig.askerRef,
+		Title:                 defaultConfig.title,
+		CallerSource:          defaultConfig.callerSource,
 	}
 
 	response, err := handleConversationRequest(ctx, agentRequest, agent, sessionId, defaultConfig.source)
+	if AfterConversationTurn != nil {
+		AfterConversationTurn(ctx, agentRequest)
+	}
 
 	if defaultConfig.source == ConversationSourceInstantNotification || defaultConfig.source == ConversationSourceInvestigation {
 		sendReplyToNotificationServer(ctx, agentRequest, response, err)
@@ -891,7 +1009,34 @@ func markConversationActive(ctx *security.RequestContext, conversationId string,
 // llmConfigSource is handled outside the switch: pinning a config slot is
 // independent of picking a model, so it persists whichever of the two branches
 // below applies — or neither.
-func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+// conversationModelUnchanged reports whether a turn's blanket model pick is
+// what the conversation already stores, so writing it again would change
+// nothing. The chat UI sends the picked model with every message; without this
+// each message rewrote the row and told every replica to drop its cached copy.
+// Anything else (a reset, tier picks, a new config source, stored tier picks
+// the blanket write would clear) still goes through the write.
+func conversationModelUnchanged(conv Conversation, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) bool {
+	if llmConfigReset || llmTierOverrides.HasAny() || llmProvider == "" || llmModel == "" {
+		return false
+	}
+	if conv.LlmTierOverrides.HasAny() {
+		return false
+	}
+	if llmConfigSource != "" && lo.FromPtr(conv.LlmConfigSource) != llmConfigSource {
+		return false
+	}
+	return lo.FromPtr(conv.LlmProvider) == llmProvider && lo.FromPtr(conv.LlmModel) == llmModel
+}
+
+func applyConversationModelConfig(ctx *security.RequestContext, dao IConversationDao, conversationId, llmProvider, llmModel string, llmTierOverrides llmruntime.ConversationTierOverrides, llmConfigSource string, llmConfigReset bool) {
+	// One override-cache broadcast per call, however many columns changed.
+	changed := false
+	defer func() {
+		if changed {
+			InvalidateConversationOverrideCache(conversationId)
+		}
+	}()
+
 	// A reset drops everything and takes no other write: the picker sends it
 	// only when nothing is selected, so there is nothing to persist after it.
 	if llmConfigReset {
@@ -899,7 +1044,7 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 			ctx.GetLogger().Warn("conversation: failed to clear llm model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: cleared sticky llm model configuration")
 		return
 	}
@@ -908,7 +1053,7 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 		if uerr := dao.UpdateConversationConfigSource(conversationId, llmConfigSource); uerr != nil {
 			ctx.GetLogger().Warn("conversation: failed to update pinned llm config source", "error", uerr)
 		} else {
-			InvalidateConversationOverrideCache(conversationId)
+			changed = true
 			ctx.GetLogger().Info("conversation: updated sticky llm config source", "config_source", llmConfigSource)
 		}
 	}
@@ -919,14 +1064,14 @@ func applyConversationModelConfig(ctx *security.RequestContext, dao IConversatio
 			ctx.GetLogger().Warn("conversation: failed to update per-tier model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: updated sticky per-tier model configuration", "tier_count", len(llmTierOverrides.Picks))
 	case llmProvider != "" && llmModel != "":
 		if uerr := dao.UpdateConversationModelBlanket(conversationId, llmProvider, llmModel); uerr != nil {
 			ctx.GetLogger().Warn("conversation: failed to update sticky model configuration", "error", uerr)
 			return
 		}
-		InvalidateConversationOverrideCache(conversationId)
+		changed = true
 		ctx.GetLogger().Info("conversation: updated sticky blanket model configuration", "provider", llmProvider, "model", llmModel)
 	}
 }
@@ -949,8 +1094,8 @@ type droppedTierPick struct {
 // provider AND model discarded it, so those tiers silently fell back to account
 // defaults. Guessing a provider from the config's first model is not a fix: on a
 // mixed config that row can belong to a different provider than the base slot.
-func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (ConversationTierOverrides, []droppedTierPick) {
-	var overrides ConversationTierOverrides
+func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (llmruntime.ConversationTierOverrides, []droppedTierPick) {
+	var overrides llmruntime.ConversationTierOverrides
 	var dropped []droppedTierPick
 	for tier, p := range picks {
 		if p.ConfigSource == "" && (p.Provider == "" || p.Model == "") {
@@ -958,9 +1103,9 @@ func tierOverridesFromPicks(picks map[string]toolcore.TierModelPick) (Conversati
 			continue
 		}
 		if overrides.Picks == nil {
-			overrides.Picks = make(map[string]TierModelPick)
+			overrides.Picks = make(map[string]llmruntime.TierModelPick)
 		}
-		overrides.Picks[tier] = TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
+		overrides.Picks[tier] = llmruntime.TierModelPick{Provider: p.Provider, Model: p.Model, ConfigSource: p.ConfigSource}
 	}
 	return overrides, dropped
 }
@@ -1100,6 +1245,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	newConversation := false
+	turnPolicyApplied := false
 	var conversation Conversation
 	if request.ConversationId != "" {
 		conversation, err = GetConversationDao().GetConversation(request.ConversationId)
@@ -1116,6 +1262,22 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			if sessionId != "" && sessionId != conversation.SessionID {
 				return NBAgentResponse{}, errors.New("conversation: sessionId doesnt match with existing conversation")
 			}
+
+			// Before anything is written for this turn, the follow-up resume
+			// below included.
+			// The run's profile comes with the row: every later step of this
+			// turn, and every agent it starts, is governed by its owner. An
+			// agent bound to another extension is refused before anything is
+			// written for the turn.
+			if err := CheckAgentInRun(agent, conversation.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
+			ctx = WithRunProfile(ctx, conversation.RunProfile)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, ActingUser(ctx, request.UserId))
+			if err != nil {
+				return NBAgentResponse{}, err
+			}
+			turnPolicyApplied = true
 
 			if request.IsQueuedDispatch {
 				// Reject a superseded claim before writing sticky model settings.
@@ -1166,10 +1328,22 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// blanket and per-tier picks are mutually exclusive, so persisting a
 			// blanket pick clears the stored tier picks — and a rejected turn
 			// must not cost the user their model selection.
-			applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+			if !conversationModelUnchanged(conversation, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset) {
+				applyConversationModelConfig(ctx, GetConversationDao(), request.ConversationId, llmProvider, llmModel, llmTierOverrides, request.QueryConfig.LlmConfigSource, request.QueryConfig.LlmConfigReset)
+			}
 
 			if isFollowupResume {
 				request.ConversationId = conversation.ID.String()
+				// This path returns before the stored message config is merged
+				// below, so carry the chat's depth pick over here.
+				if request.QueryConfig.InvestigationDepth == "" {
+					if prevConfig, ok := LatestMessageConfig(ctx, request.ConversationId); ok {
+						request.QueryConfig.InvestigationDepth = prevConfig.InvestigationDepth
+					}
+				}
+				// The resumed agents run on this ctx, not the one stamped
+				// below, so the run keeps its depth across the pause.
+				ctx = WithInvestigationDepth(ctx, resolveInvestigationDepth(ctx, request, agent))
 				resp, rErr := HandleFollowupAndResumeV2(ctx, request)
 				// Resume returns early here, skipping the SessionId/ConversationId
 				// stamping the normal path does below; without it the response
@@ -1196,6 +1370,12 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// create new conversation
 		if conversation.ID == uuid.Nil {
+			// Refused before the conversation is written: an agent bound to an
+			// extension starts only that extension's runs, from every entry
+			// point (chat, auto chat, queued dispatch, event analysis).
+			if err := CheckAgentInRun(agent, request.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
 			newConversation = true
 			tenantId, err := security.GetTenantIdFromAccountId(request.AccountId)
 			if err != nil {
@@ -1210,7 +1390,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			// async title-generation task finishes).
 			var title string
 			initialTitleSource := common.StripLeadingAgentMention(request.Query)
-			if derived, ok := common.DeriveTitleFromJSONQuery(initialTitleSource); ok {
+			if request.Title != "" {
+				title = request.Title
+			} else if derived, ok := common.DeriveTitleFromJSONQuery(initialTitleSource); ok {
 				// Webhook/alert triggers send a JSON payload as the query; unwrap it to
 				// a readable field so the placeholder isn't the raw `{"description":...`
 				// envelope. Matters most for single-shot classifiers (e.g.
@@ -1227,14 +1409,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			} else {
 				title = DefaultConversationTitle
 			}
-			var saveTierOverrides *ConversationTierOverrides
+			var saveTierOverrides *llmruntime.ConversationTierOverrides
 			if llmTierOverrides.HasAny() {
 				to := llmTierOverrides
 				saveTierOverrides = &to
 				llmProvider = ""
 				llmModel = ""
 			}
-			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource)
+			id, err := GetConversationDao().SaveConversation(request.ConversationId, sessionId, tenantId, request.AccountId, request.UserId, "", title, ConversationStatusInProgress, source, llmProvider, llmModel, saveTierOverrides, request.QueryConfig.LlmConfigSource, request.RunProfile)
 			if err != nil {
 				ctx.GetLogger().Error("conversation: unable to save conversation to DB", "error", err)
 				return NBAgentResponse{}, err
@@ -1257,8 +1439,20 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			return NBAgentResponse{}, ErrConversationPendingFollowup
 		}
 
+		if !turnPolicyApplied {
+			if err := CheckAgentInRun(agent, conversation.RunProfile); err != nil {
+				return NBAgentResponse{}, err
+			}
+			ctx = WithRunProfile(ctx, conversation.RunProfile)
+			ctx, err = policyFor(ctx).ConversationTurn(ctx, agent, conversation, ActingUser(ctx, request.UserId))
+			if err != nil {
+				return NBAgentResponse{}, err
+			}
+		}
+
 		// Handle existing conversation found by session ID - update model if needed
-		if !newConversation && llmProvider != "" && llmModel != "" {
+		if !newConversation && llmProvider != "" && llmModel != "" &&
+			!conversationModelUnchanged(conversation, llmProvider, llmModel, llmruntime.ConversationTierOverrides{}, "", false) {
 			err = GetConversationDao().UpdateConversationModel(conversation.ID.String(), llmProvider, llmModel)
 			if err != nil {
 				ctx.GetLogger().Warn("conversation: failed to update sticky model configuration", "error", err)
@@ -1290,13 +1484,13 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	// them up on every downstream LLM call.
 	parentContext := ctx.GetContext()
 	if request.QueryConfig.LlmProvider != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmProviderOverride, request.QueryConfig.LlmProvider)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmProviderOverride, request.QueryConfig.LlmProvider)
 	}
 	if request.QueryConfig.LlmModelName != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmModelOverride, request.QueryConfig.LlmModelName)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmModelOverride, request.QueryConfig.LlmModelName)
 	}
 	if llmTierOverrides.HasAny() {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmTierModelOverrides, llmTierOverrides)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmTierModelOverrides, llmTierOverrides)
 	}
 	// The pin falls back to the conversation row when the request didn't carry
 	// one. MergeFrom normally inherits it from the previous message, but that
@@ -1309,7 +1503,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		effectiveConfigSource = *conversation.LlmConfigSource
 	}
 	if effectiveConfigSource != "" {
-		parentContext = context.WithValue(parentContext, ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
+		parentContext = context.WithValue(parentContext, llmruntime.ContextKeyLlmConfigSourceOverride, effectiveConfigSource)
 	}
 
 	ctx = security.NewRequestContext(
@@ -1358,6 +1552,13 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	messageStatus := ConversationStatusCompleted
 	messageType := MessageTypeGeneration
 
+	// Saved with the message so a recovered run stays read-only.
+	if IsReadOnlyRun(ctx) {
+		request.QueryConfig.ReadOnlyRun = true
+	}
+	// Before the message's stored config is restored below: only the caller's own config is dropped.
+	dropCallerApprovalsInAlertChat(ctx, request.AccountId, conversation.SessionID, &request.QueryConfig)
+
 	if request.MessageId == "" {
 		parentAgentId := uuid.Nil
 		if request.ParentAgentId != "" {
@@ -1369,28 +1570,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 
 		// get previous message && if there is any tool config, then add it to current message as propagation
-		if request.QueryConfig.ToolConfigs == nil {
-			previousConversations, err := GetConversationDao().ListConversationMessages("", "", conversation.ID.String(), false)
-			if err != nil {
-				ctx.GetLogger().Error("conversation: unable to lookup previous conversations", "error", err)
-			}
-			if len(previousConversations) > 0 {
-				for _, v := range slices.Backward(previousConversations) {
-					if v.Status == ConversationStatusQueued || v.MessageType != string(MessageTypeGeneration) {
-						continue
-					}
-					if v.MessageConfig != nil && *v.MessageConfig != "" {
-						prevConfig := toolcore.NBQueryConfig{}
-						err := common.UnmarshalJson([]byte(*v.MessageConfig), &prevConfig)
-						if err != nil {
-							ctx.GetLogger().Error("conversation: unable to unmarshal message config from previous message", "error", err, "data", *v.MessageConfig, "id", v.ID)
-						}
-						// Skipping history is a property of the turn that asked for it; a
-						// user's follow-up after an automated re-analysis needs the history.
-						prevConfig.SkipConversationHistory = false
-						request.QueryConfig.MergeFrom(prevConfig)
-						break
-					}
+		// A turn that sends its own tool configs doesn't inherit the previous
+		// config, but still keeps the chat's depth pick.
+		if request.QueryConfig.ToolConfigs == nil || request.QueryConfig.InvestigationDepth == "" {
+			if prevConfig, ok := LatestMessageConfig(ctx, conversation.ID.String()); ok {
+				if request.QueryConfig.ToolConfigs == nil {
+					request.QueryConfig.MergeFrom(prevConfig)
+				} else {
+					request.QueryConfig.InvestigationDepth = prevConfig.InvestigationDepth
 				}
 			}
 		}
@@ -1408,7 +1595,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// Fallback to resolved config if still empty
 		if effectiveProvider == "" || effectiveModel == "" {
-			if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil {
+			if res, err := llmruntime.ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil {
 				if effectiveProvider == "" {
 					effectiveProvider = res.Provider
 				}
@@ -1420,6 +1607,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			}
 		}
 
+		// Saved with the message so an approval resume, which rebuilds the request from it, saves nothing either.
+		if !isChatOrAlertSource(request.ConversationSource) {
+			request.QueryConfig.Memory = withMemoryWriteOff(request.QueryConfig.Memory)
+		}
 		messageId, err := GetConversationDao().SaveConversationMessage("", conversation.ID.String(), request.AccountId, request.UserId, MessageRoleHuman, historyType, request.Query, "", agent.GetName(), parentAgentId, request.QueryConfig, request.ConversationContext, effectiveProvider, effectiveModel, ConversationStatusInProgress)
 		if err != nil {
 			ctx.GetLogger().Error("conversation: unable to save user query to DB", "error", err)
@@ -1447,7 +1638,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 		// Save image attachments (non-fatal: message is saved even if attachment storage fails)
 		if len(request.Images) > 0 {
-			dao := GetAttachmentDAO()
+			dao := attachments.GetAttachmentDAO()
 			if dao != nil {
 				_, attachErr := dao.SaveAttachments(request.MessageId, conversation.ID.String(), request.AccountId, request.Images)
 				if attachErr != nil {
@@ -1536,8 +1727,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) get a
 	// throwaway conversation per call with no user-facing title — skip the
-	// summary_agent title generation for them.
-	if request.Query != "" && newConversation && !isSingleShotClassifier(agent) {
+	// summary_agent title generation for them. A request that set its own title
+	// keeps it.
+	if request.Query != "" && newConversation && request.Title == "" && !isSingleShotClassifier(agent) {
 		generateConversationTitleAsync(ctx, request.ConversationId, request.MessageId, request.AccountId, agent.GetName(), request.Query, request.UserId)
 	}
 
@@ -1549,12 +1741,16 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		request.ClientTools = request.QueryConfig.ClientTools
 		ctx.GetLogger().Debug("conversation: restored client tools from query config", "count", len(request.ClientTools))
 	}
+	// Carried in the config so delegated sub-agents, which do not inherit the source, save nothing either.
+	if !isChatOrAlertSource(request.ConversationSource) {
+		request.QueryConfig.Memory = withMemoryWriteOff(request.QueryConfig.Memory)
+	}
 
 	// Generate acknowledgment for new messages (not for retries or existing messages)
 	// TO Do move this to async task
 	// Single-shot internal classifiers have no user watching for an acknowledgment,
 	// so skip the acknowledgment_agent call for them.
-	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
+	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != llmruntime.ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
 		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId, request.ConversationSource)
 	}
 
@@ -1591,12 +1787,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 	}
 
-	// before passing the request to agent eval functions
-	request, err = evalLLMFunction(ctx, request)
-	if err != nil {
-		ctx.GetLogger().Error("conversation: unable to evaluate functions", "error", err)
-		return NBAgentResponse{}, err
-	}
+	// "/skill-name question" puts that skill in front of the question.
+	var commandSkills []knowledge.SkillCommand
+	request, commandSkills = evalSkillCommand(ctx, request)
+	saveSkillCommandReferences(ctx, request, conversation.ID.String(), commandSkills)
+
+	// Resolved after the message config merge, so a chat pick made on an
+	// earlier turn carries over; sub-agents inherit it through ctx.
+	ctx = WithInvestigationDepth(ctx, resolveInvestigationDepth(ctx, request, agent))
 
 	convSetupDur := time.Since(t0)
 	ctx.GetLogger().Info("conversation: executing agent", "agent", agent.GetName(), "setup_duration", convSetupDur.String())
@@ -1619,6 +1817,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 	agentResponseContent := ""
 	if len(agentResponse.Response) > 0 {
+		// Before anything reads or saves the answer, so the saved, returned and
+		// notified copies all carry the charts.
+		resolveAnswerCharts(request.ConversationId, agentResponse.Response)
 		agentResponseContent = agentResponse.Response[0]
 		switch agentResponse.Status {
 		case ConversationStatusWaiting, ConversationStatusWaitingForClientTool:
@@ -1655,12 +1856,22 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	} else if effectiveSource == "" {
 		effectiveSource = request.ConversationSource
 	}
+	// Before the answer is saved, returned or sent, so every copy carries the
+	// same record of which automations ran. A paused turn's answer is a question
+	// for the user; its record goes on the answer that finishes the turn.
+	runReceipt := ""
+	if executeErr == nil && status != ConversationStatusWaiting && status != ConversationStatusWaitingForClientTool {
+		runReceipt = applyRunReceipt(ctx, request.AccountId, request.MessageId, effectiveSource, agentResponse.Response)
+		if runReceipt != "" {
+			agentResponseContent = agentResponse.Response[0]
+		}
+	}
 	if len(agentResponse.Response) > 0 &&
 		agentResponse.AgentName != RouterAgentName &&
-		agentResponse.AgentName != ToolLlm &&
+		agentResponse.AgentName != llmruntime.ToolLlm &&
 		!isSingleShotClassifier(agent) &&
 		isContextExtractionApplicable(effectiveSource) {
-		updateConversationContextAsync(ctx, request, agentResponseContent, conversation.ID.String(), conversation.Context, agentResponse.AgentName)
+		updateConversationContextAsync(ctx, request, toolcore.StripChartData(agentResponseContent), conversation.ID.String(), conversation.Context, agentResponse.AgentName)
 	}
 	conversation, err = GetConversationDao().GetConversation(conversation.ID.String())
 	if err != nil {
@@ -1754,14 +1965,14 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 			}
 		}
 
-		if status == ConversationStatusCompleted && agentResponse.AgentName != ToolLlm {
+		if status == ConversationStatusCompleted && agentResponse.AgentName != llmruntime.ToolLlm {
 			computeProductivityMetricsAsync(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId)
 			// Post-hoc answer grading. Runs only after the answer row is
 			// committed above, so the grader reads the same text the user sees,
 			// and is fire-and-forget — the turn is already complete and its
 			// status does not depend on the outcome. Self-gates on the feature
 			// flag and on the turn being an investigation.
-			ScoreAnswerConfidenceAsync(ctx, request, agentResponseContent)
+			ScoreAnswerConfidenceAsync(ctx, request, toolcore.StripChartData(agentResponseContent))
 		}
 
 		if status == ConversationStatusCompleted || status == ConversationStatusFailed {
@@ -1782,7 +1993,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if agentResponse.MessageId == "" {
 		agentResponse.MessageId = request.MessageId
 	}
-	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != ToolLlm && !isSingleShotClassifier(agent) {
+	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != llmruntime.ToolLlm && !isSingleShotClassifier(agent) {
 		tools := agent.GetSupportedTools(ctx)
 		evaluateAgentResponseAsync(ctx, agentResponse, request.AccountId, tools, request.UserId)
 	}
@@ -1793,8 +2004,18 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	// Generate compact response for InstantNotification source (Slack) and Investigation
-	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != ToolLlm {
-		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, agentResponse.Response[0])
+	if config.Config.SlackCompactResponse && (effectiveSource == ConversationSourceInstantNotification || effectiveSource == ConversationSourceInvestigation) && status == ConversationStatusCompleted && len(agentResponse.Response) > 0 && agentResponse.Response[0] != "" && agentResponse.AgentName != llmruntime.ToolLlm {
+		// The rewrite model sees chart placeholders, not chart data, and the charts
+		// are put back after: a model must never retype chart numbers.
+		// Nor does it see the run record, which goes back on unchanged: a
+		// rewrite must not reword what ran.
+		compactResponse, compactErr := generateCompactResponse(ctx, request.AccountId, request.ConversationId, request.MessageId, request.UserId, request.Query, toolcore.StripChartData(withoutRunReceipt(runReceipt, agentResponse.Response[0])))
+		if compactErr == nil {
+			compactResponse = toolcore.RestoreCharts(compactResponse, agentResponse.Response[0])
+			if runReceipt != "" {
+				compactResponse = joinRunReceipt(runReceipt, compactResponse)
+			}
+		}
 
 		if compactErr != nil {
 			ctx.GetLogger().Warn("conversation: failed to generate compact response, using original", "error", compactErr)
@@ -1811,63 +2032,213 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		}
 	}
 
+	if executeErr != nil {
+		// Set only on the returned value, after the context update, so the failure
+		// text never becomes the conversation's last answer.
+		agentResponse.Response = []string{agentResponseContent}
+	}
 	return agentResponse, executeErr
 }
 
-func evalLLMFunction(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, error) {
-	message := strings.TrimSpace(request.Query)
-
-	if !strings.HasPrefix(strings.ToLower(message), "/") {
-		request.Query = message
-		return request, nil
+// resolveAnswerCharts swaps the chart_refs in an answer for the charts the metrics
+// tools saved with their tool calls in this conversation (#40909), in place.
+func resolveAnswerCharts(conversationID string, response []string) {
+	if len(response) == 0 {
+		return
 	}
-
-	parts, err := shlex.Split(message)
-	// extract function name and arguments /call functionName arg1 arg2 ...
-	if err != nil {
-		ctx.GetLogger().Warn("conversation: invalid function call syntax", "message", message, "error", err)
-		request.Query = message
-		return request, nil
-	}
-
-	functionName := ""
-	functionArgs := []string{}
-
-	if parts[0] == "/call" {
-		if len(parts) < 2 {
-			ctx.GetLogger().Info("conversation: invalid function call syntax, missing function name", "message", message)
-			request.Query = message
-			return request, errors.New("invalid function call syntax, missing function name")
+	response[0] = toolcore.ResolveMetricCharts(response[0], func(ref string) ([]byte, bool) {
+		chart, err := GetConversationDao().GetToolCallChart(conversationID, ref)
+		if err != nil {
+			slog.Warn("conversation: unable to load chart", "error", err, "conversation_id", conversationID, "chart_ref", ref)
 		}
-
-		functionName = parts[1]
-		if len(parts) > 2 {
-			functionArgs = parts[2:]
-		}
-	} else {
-		functionName = strings.TrimPrefix(parts[0], "/")
-		if len(parts) > 1 {
-			functionArgs = parts[1:]
-		}
-	}
-
-	function, err := GetLLMFunctionByName(ctx, request.AccountId, functionName)
-	if err != nil {
-		ctx.GetLogger().Info("conversation: function not found", "function_name", functionName, "error", err)
-		return request, fmt.Errorf("function '%s' not found", functionName)
-	}
-
-	// requires some more work to validate arguments against function variables and types
-	request.Query = function.Prompt
-	if len(functionArgs) > 0 && len(function.Variables) == 0 {
-		request.Query = function.Prompt + "\n\n Question:" + strings.Join(functionArgs, " ")
-	} else if len(functionArgs) > 0 && len(function.Variables) > 0 {
-		request.Query = function.Prompt + "\n\n Inputs:" + strings.Join(functionArgs, " ")
-	}
-	return request, nil
+		return chart, len(chart) > 0
+	})
 }
 
-func HandleConversationMessageRequest(accountId, conversationId, messageId string, resumeAgentId ...string) (NBAgentResponse, error) {
+var getSkillsForCommandFn = knowledge.GetSkillsForCommand
+
+// maxSkillMentions caps how many "/name" words in one message are looked up.
+const maxSkillMentions = 3
+
+// skillMention is one "/name" or "/call name" in a message: text[start:end].
+type skillMention struct {
+	start, end int
+	name       string
+}
+
+func isMentionSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
+// readSkillWord reads a skill-name word at text[i:] (a letter, then letters,
+// digits, "_", "-" or ":"), dropping a trailing ":". Returns "" when none.
+func readSkillWord(text string, i int) (string, int) {
+	j := i
+	for j < len(text) {
+		c := text[j]
+		isLetter := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+		if isLetter || (j > i && ((c >= '0' && c <= '9') || c == '_' || c == '-' || c == ':')) {
+			j++
+			continue
+		}
+		break
+	}
+	for j > i && text[j-1] == ':' {
+		j--
+	}
+	return text[i:j], j
+}
+
+// endsMention reports whether a mention may end at text[end]: the end of the
+// text, a space, or punctuation that is itself followed by a space or the end
+// (so "/pod-triage." counts but "/pod-triage.md" does not).
+func endsMention(text string, end int) bool {
+	if end >= len(text) || isMentionSpace(text[end]) {
+		return true
+	}
+	if !strings.ContainsRune(",;:.!?)", rune(text[end])) {
+		return false
+	}
+	return end+1 >= len(text) || isMentionSpace(text[end+1]) || strings.ContainsRune(",;:.!?)", rune(text[end+1]))
+}
+
+// findSkillMentions returns the first maxSkillMentions "/name" words of text
+// that start a word and end at a space, punctuation or the end of the text,
+// so a path such as /var/log never counts. "/call name" counts as "name".
+func findSkillMentions(text string) []skillMention {
+	var out []skillMention
+	for i := 0; i < len(text) && len(out) < maxSkillMentions; i++ {
+		if text[i] != '/' || (i > 0 && !isMentionSpace(text[i-1])) {
+			continue
+		}
+		name, end := readSkillWord(text, i+1)
+		if name == "" {
+			continue
+		}
+		if strings.EqualFold(name, "call") {
+			j := end
+			for j < len(text) && isMentionSpace(text[j]) {
+				j++
+			}
+			if next, nextEnd := readSkillWord(text, j); next != "" && j > end {
+				name, end = next, nextEnd
+			}
+		}
+		if !endsMention(text, end) {
+			i = end
+			continue
+		}
+		out = append(out, skillMention{start: i, end: end, name: name})
+		i = end - 1
+	}
+	return out
+}
+
+// evalSkillCommand handles "/skill-name" (or "/call skill-name") words in a
+// message: each one that names a skill the account can see puts that skill's
+// text ahead of the message. A mention that opens the message is dropped; one
+// further in is replaced by the skill's name so the sentence still reads.
+// Words that name no skill (a path, say) are left as typed. A leading
+// "@agent" mention is kept in front. Returns the skills it loaded.
+func evalSkillCommand(ctx *security.RequestContext, request NBAgentRequest) (NBAgentRequest, []knowledge.SkillCommand) {
+	query := strings.TrimSpace(request.Query)
+	_, rest := common.ParseAgentMention(query)
+	prefix := query[:len(query)-len(rest)]
+
+	mentions := findSkillMentions(rest)
+	if len(mentions) == 0 {
+		return request, nil
+	}
+	names := make([]string, len(mentions))
+	for i, m := range mentions {
+		names[i] = m.name
+	}
+	skills, err := getSkillsForCommandFn(ctx, request.AccountId, names)
+	if err != nil {
+		ctx.GetLogger().Warn("conversation: unable to look up skill commands", "skills", names, "error", err)
+		return request, nil
+	}
+
+	// Skills named back to back at the very start are dropped, not replaced.
+	leading := make([]bool, len(mentions))
+	from := 0
+	for i, m := range mentions {
+		_, ok := skills[strings.ToLower(m.name)]
+		if !ok || strings.TrimSpace(rest[from:m.start]) != "" {
+			break
+		}
+		leading[i], from = true, m.end
+	}
+
+	// One block per skill, in the order the message first names them.
+	var blocks []string
+	var used []knowledge.SkillCommand
+	loaded := map[string]bool{}
+	for _, m := range mentions {
+		skill, ok := skills[strings.ToLower(m.name)]
+		if !ok || loaded[skill.ID] {
+			continue
+		}
+		loaded[skill.ID] = true
+		used = append(used, skill)
+		body := strings.TrimSpace(skill.Data)
+		if utf8.RuneCountInString(body) > knowledge.SkillCommandMaxChars {
+			body = body[:runeByteOffset(body, knowledge.SkillCommandMaxChars)] +
+				fmt.Sprintf("\n[Cut at %d characters. Load the skill %q to read the rest.]", knowledge.SkillCommandMaxChars, skill.Name)
+		}
+		blocks = append(blocks, fmt.Sprintf("<skill name=%q>\n%s\n</skill>", skill.Name, body))
+		ctx.GetLogger().Info("conversation: skill command", "skill", skill.Name, "kb_id", skill.ID)
+	}
+
+	// Edit the message from the end, so earlier offsets stay valid.
+	question := rest
+	for i := len(mentions) - 1; i >= 0; i-- {
+		m := mentions[i]
+		skill, ok := skills[strings.ToLower(m.name)]
+		if !ok {
+			continue
+		}
+		replacement := ""
+		if !leading[i] {
+			replacement = fmt.Sprintf("%q", skill.Name)
+		}
+		question = question[:m.start] + replacement + question[m.end:]
+	}
+	if len(blocks) == 0 {
+		return request, nil
+	}
+	text := strings.Join(blocks, "\n\n")
+	// A skill dropped from the start can leave its punctuation behind ("/x, then ...").
+	if question = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(question), ",;:")); question != "" {
+		text += "\n\n" + question
+	}
+	request.Query = prefix + text
+	return request, used
+}
+
+// saveSkillCommandReferences records the skills a "/skill-name" message loaded
+// on that message, like a load_skills call does, so they are listed with the
+// answer's contexts. Best-effort: a failed save never fails the turn.
+func saveSkillCommandReferences(ctx *security.RequestContext, request NBAgentRequest, conversationId string, skills []knowledge.SkillCommand) {
+	if len(skills) == 0 || request.MessageId == "" || conversationId == "" {
+		return
+	}
+	refs := make([]AgentReference, 0, len(skills))
+	for _, skill := range skills {
+		refs = append(refs, AgentReference{
+			Type:        AgentReferenceTypeKB,
+			ReferenceID: skill.ID,
+			Metadata:    map[string]any{"kind": AgentReferenceKindSkill, "via": "skill_command", "name": skill.Name},
+		})
+	}
+	if err := saveSkillCommandReferencesFn(request.AccountId, conversationId, request.MessageId, uuid.Nil.String(), refs); err != nil {
+		ctx.GetLogger().Error("conversation: failed to save skill command references", "error", err, "message_id", request.MessageId)
+	}
+}
+
+var saveSkillCommandReferencesFn = func(accountId, conversationId, messageId, agentId string, refs []AgentReference) error {
+	return GetConversationDao().SaveAgentReferences(accountId, conversationId, messageId, agentId, refs)
+}
+
+func HandleConversationMessageRequest(ctx *security.RequestContext, accountId, conversationId, messageId string, resumeAgentId ...string) (NBAgentResponse, error) {
 	history := GetConversationDao()
 	conversationMessage, err := history.GetConversationMessage(messageId, accountId, conversationId)
 	if err != nil {
@@ -1881,7 +2252,10 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 		return NBAgentResponse{}, err
 	}
 
-	ctx := security.NewRequestContextForTenantAccountAdmin(conversation.TenantID.String(), conversationMessage.UserID.String(), []string{conversation.AccountID.String()})
+	// A recovered alert investigation still has no person to approve changes.
+	if messageRanReadOnly(conversationMessage) {
+		ctx = WithReadOnlyRun(ctx)
+	}
 
 	// Defense-in-depth: don't reprocess a message whose conversation already
 	// reached a terminal state. Mirrors the same guard in
@@ -2023,17 +2397,77 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 	response, err := HandleConversationSessionRequest(ctx, agent, conversation.UserID.String(), conversation.AccountID.String(), conversation.SessionID, conversationMessage.Message, ConversationSessionRequestWithMessageId(uuid.NullUUID{
 		UUID:  targetMessageId,
 		Valid: true,
-	}), ConversationSessionRequestWithSource(conversationSource), ConversationSessionRequestWithConversationId(uuid.NullUUID{
-		UUID:  conversation.ID,
-		Valid: true,
-	}), ConversationSessionRequestWithPreviousState(waitingState), ConversationSessionRequestWithAgentId(uuid.NullUUID{
-		UUID:  resumeAgentUUID,
-		Valid: resumeAgentValid,
-	}), ConversationSessionRequestWithIsResume(true))
+	}), ConversationSessionRequestWithSource(conversationSource),
+		// Resuming continues the run that paused (typically an automation
+		// awaiting approval), so it keeps that run's investigation depth rule.
+		ConversationSessionRequestWithCallerSource(conversationSource),
+		ConversationSessionRequestWithConversationId(uuid.NullUUID{
+			UUID:  conversation.ID,
+			Valid: true,
+		}), ConversationSessionRequestWithPreviousState(waitingState), ConversationSessionRequestWithAgentId(uuid.NullUUID{
+			UUID:  resumeAgentUUID,
+			Valid: resumeAgentValid,
+		}), ConversationSessionRequestWithIsResume(true))
 
 	if err != nil {
 		ctx.GetLogger().Error("conversation: unable to reprocess conversation message", "error", err, "message", conversationMessage.ID.String())
 		return response, err
 	}
 	return response, nil
+}
+
+// dropCallerApprovalsInAlertChat drops the approvals a caller's config carries (tool_confirmations) in an alert's
+// conversation with the remediation loop on, or with the flag unread: there a "yes" decides a change on the alert,
+// and it counts only as the answer to its follow-up, which this server records (refineAgentQuestionAndHandleFollowups)
+// after checking who may answer it. Any other conversation is as before.
+func dropCallerApprovalsInAlertChat(ctx *security.RequestContext, accountId, sessionId string, cfg *toolcore.NBQueryConfig) {
+	if len(cfg.ToolConfirmations) == 0 {
+		return
+	}
+	if _, alert := events.AlertFingerprintOfSession(sessionId); !alert {
+		return
+	}
+	on, err := events.RemediationLoopRead(accountId)
+	if err == nil && !on {
+		return
+	}
+	ctx.GetLogger().Warn("conversation: approvals sent with the request dropped in an alert's conversation", "session_id", sessionId, "count", len(cfg.ToolConfirmations), "flag_error", err)
+	cfg.ToolConfirmations = nil
+}
+
+// LatestMessageConfig is the inheritable config of the conversation's latest
+// generation message that saved one: what a follow-up turn carries over (tool
+// configs, the chat's investigation depth pick, ...). ok is false when no
+// message saved a config or the lookup failed.
+func LatestMessageConfig(ctx *security.RequestContext, conversationID string) (toolcore.NBQueryConfig, bool) {
+	raw, err := GetConversationDao().GetLatestMessageConfig(conversationID)
+	if err != nil {
+		ctx.GetLogger().Error("conversation: unable to lookup previous message config", "error", err)
+		return toolcore.NBQueryConfig{}, false
+	}
+	if raw == "" {
+		return toolcore.NBQueryConfig{}, false
+	}
+	prevConfig := toolcore.NBQueryConfig{}
+	if err := common.UnmarshalJson([]byte(raw), &prevConfig); err != nil {
+		ctx.GetLogger().Error("conversation: unable to unmarshal message config from previous message", "error", err, "data", raw)
+	}
+	return inheritableMessageConfig(prevConfig), true
+}
+
+// inheritableMessageConfig is the part of the previous message's config a new
+// message carries over. Skipping history and read-only belong to the turn that
+// asked for them: a user's follow-up after an automated re-analysis needs the
+// history and may ask for a change. Approvals belong to the request they were
+// given in: a "yes" to one change must not run a different change on the same
+// cluster in a later message.
+func inheritableMessageConfig(prev toolcore.NBQueryConfig) toolcore.NBQueryConfig {
+	prev.SkipConversationHistory = false
+	prev.ReadOnlyRun = false
+	prev.StrictReadOnly = false
+	prev.RemediationPlanTurn = ""
+	prev.InvestigationRunId = ""
+	prev.ToolConfirmations = nil
+	prev.ToolConfirmationRefs = nil
+	return prev
 }

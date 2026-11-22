@@ -249,24 +249,24 @@ func defaultTenantConfig(tenantID uuid.UUID) *egressfilter.TenantConfig {
 func egressConfigGet(c *gin.Context, context *security.RequestContext) {
 	tenantID, err := tenantUUIDFromContext(context)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	cfg, err := daoGetTenantConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		slog.Error("egressfilter config: get failed", "tenant_id", tenantID, "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	if cfg == nil {
 		envMode := egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)
-		c.JSON(200, buildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
+		c.JSON(200, BuildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
+	c.JSON(200, BuildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
 }
 
 // egressConfigUpdate sets the tenant's mode and/or enabled flag. It is a
@@ -275,14 +275,14 @@ func egressConfigGet(c *gin.Context, context *security.RequestContext) {
 func egressConfigUpdate(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	tenantID, err := tenantUUIDFromContext(context)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	var request egressConfigRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
 		slog.Error("egressfilter config: error binding request", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	// DecodeMapToStruct uses mapstructure (reflection) which BYPASSES the
@@ -303,14 +303,14 @@ func egressConfigUpdate(c *gin.Context, context *security.RequestContext, payloa
 	}
 
 	if err := mergeEgressConfigUpdate(cfg, request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	if err := persistTenantConfig(c, cfg); err != nil {
 		return // response already written
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
+	c.JSON(200, BuildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, patternsFromCfg(cfg)), nil))
 }
 
 // egressPatternUpsert creates or updates one custom detection pattern. The
@@ -320,13 +320,13 @@ func egressConfigUpdate(c *gin.Context, context *security.RequestContext, payloa
 func egressPatternUpsert(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	tenantID, err := tenantUUIDFromContext(context)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	var request egressPatternUpsertRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -360,23 +360,23 @@ func egressPatternUpsert(c *gin.Context, context *security.RequestContext, paylo
 			}
 		}
 		if !found {
-			c.JSON(404, buildApiResponse(nil, []error{errors.New(errorEgressPatternNotFound)}))
+			c.JSON(404, BuildApiResponse(nil, []error{errors.New(errorEgressPatternNotFound)}))
 			return
 		}
 	}
 
 	if err := egressfilter.ValidateCustomRules(rules); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "egressfilter: " + err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "egressfilter: " + err.Error()}}))
 		return
 	}
 	if err := setCustomRules(cfg, rules); err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if err := persistTenantConfig(c, cfg); err != nil {
 		return
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, rules), nil))
+	c.JSON(200, BuildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, true, rules), nil))
 }
 
 // egressPatternDelete removes one custom pattern by id. Deleting an unknown id
@@ -384,24 +384,24 @@ func egressPatternUpsert(c *gin.Context, context *security.RequestContext, paylo
 func egressPatternDelete(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	tenantID, err := tenantUUIDFromContext(context)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	var request egressPatternDeleteRequest
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	if strings.TrimSpace(request.ID) == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorEgressPatternIDReq)}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorEgressPatternIDReq)}))
 		return
 	}
 
 	cfg, err := daoGetTenantConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		slog.Error("egressfilter config: read-before-write failed", "tenant_id", tenantID, "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	// Track whether an override row actually existed so the no-op path below
@@ -425,7 +425,7 @@ func egressPatternDelete(c *gin.Context, context *security.RequestContext, paylo
 	// (and avoid materializing an override row for a tenant that had none).
 	if len(kept) < len(rules) {
 		if err := setCustomRules(cfg, kept); err != nil {
-			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		if err := persistTenantConfig(c, cfg); err != nil {
@@ -433,7 +433,7 @@ func egressPatternDelete(c *gin.Context, context *security.RequestContext, paylo
 		}
 		hasOverride = true
 	}
-	c.JSON(200, buildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, hasOverride, kept), nil))
+	c.JSON(200, BuildApiResponse(egressConfigResponse(cfg, cfg.Mode, cfg.Enabled, hasOverride, kept), nil))
 }
 
 // egressClearOverride drops the tenant's override row entirely, so the next
@@ -441,17 +441,17 @@ func egressPatternDelete(c *gin.Context, context *security.RequestContext, paylo
 func egressClearOverride(c *gin.Context, context *security.RequestContext) {
 	tenantID, err := tenantUUIDFromContext(context)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 	if err := daoDeleteTenantConfig(c.Request.Context(), tenantID); err != nil {
 		slog.Error("egressfilter config: clear override failed", "tenant_id", tenantID, "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	egressfilter.InvalidateTenantConfig(tenantID)
 	envMode := egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode)
-	c.JSON(200, buildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
+	c.JSON(200, BuildApiResponse(egressConfigResponse(nil, envMode, config.Config.LlmServerEgressFilterSecretsEnabled, false, nil), nil))
 }
 
 // --- Shared handler helpers --------------------------------------------------
@@ -463,7 +463,7 @@ func loadOrDefault(c *gin.Context, tenantID uuid.UUID) (*egressfilter.TenantConf
 	cfg, err := daoGetTenantConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		slog.Error("egressfilter config: read-before-write failed", "tenant_id", tenantID, "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return nil, err
 	}
 	if cfg == nil {
@@ -477,7 +477,7 @@ func loadOrDefault(c *gin.Context, tenantID uuid.UUID) (*egressfilter.TenantConf
 func persistTenantConfig(c *gin.Context, cfg *egressfilter.TenantConfig) error {
 	if err := daoUpsertTenantConfig(c.Request.Context(), cfg); err != nil {
 		slog.Error("egressfilter config: upsert failed", "tenant_id", cfg.TenantID, "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return err
 	}
 	egressfilter.InvalidateTenantConfig(cfg.TenantID)
@@ -660,18 +660,18 @@ func handleEgressfilterConfigApis(r *gin.Engine, tracer trace.Tracer, meter metr
 		var actionRequest ActionRequest
 		if err := c.ShouldBindJSON(&actionRequest); err != nil {
 			slog.Error("egressfilter config: error binding rpc request", "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "egressfilter: " + err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "egressfilter: " + err.Error()}}))
 			return
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New(errorEgressInvalidPayload)}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorEgressInvalidPayload)}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -699,7 +699,7 @@ func handleEgressfilterConfigApis(r *gin.Engine, tracer trace.Tracer, meter metr
 			common.MetricsApiRequestsTotal("egressfilter_clear_override")
 			egressClearOverride(c, context)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New(errorEgressUnsupported)}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New(errorEgressUnsupported)}))
 		}
 	})
 }

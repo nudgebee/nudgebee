@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -393,6 +394,30 @@ func TestRunOnePoll_ExpiredWithEmptyObservation(t *testing.T) {
 	last := notifier.lastCall(t)
 	assert.Equal(t, StatusExpired, last.Status)
 	assert.Contains(t, last.Summary, "before condition was met")
+}
+
+// TestRunOnePoll_NotReadOnly_TerminatesFailedAtOnce (#42460): a command refused
+// as not a read never ran and never will, so the watch ends on the first poll
+// instead of retrying up to WatchMaxFailures.
+func TestRunOnePoll_NotReadOnly_TerminatesFailedAtOnce(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{
+		kind:       SourceKind("fake_obs_not_read_only"),
+		observeErr: fmt.Errorf("tool source: %w: \"kubectl -n demo delete pod x\" is a delete", ErrNotReadOnly),
+	}
+	installSource(t, src)
+	withConfig(t, func() { config.Config.WatchMaxFailures = 3 })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`SET status = \$1`).
+		WithArgs(string(StatusFailed), nil, sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	last := notifier.lastCall(t)
+	assert.Equal(t, StatusFailed, last.Status)
 }
 
 func TestRunOnePoll_SourceNotRegistered_TerminatesFailed(t *testing.T) {
@@ -1072,4 +1097,90 @@ func TestRunOnePoll_ExpiredAndSourceFails_ExpiresWithoutRetrying(t *testing.T) {
 	last := notifier.lastCall(t)
 	assert.Equal(t, StatusExpired, last.Status)
 	assert.Contains(t, last.Summary, "boom")
+}
+
+func overrideSecurityContextBuilder(t *testing.T, b SecurityContextBuilder) {
+	t.Helper()
+	prev := getSecurityContextBuilder()
+	SetSecurityContextBuilder(b)
+	t.Cleanup(func() { SetSecurityContextBuilder(prev) })
+}
+
+// The poll's context is its owner's own (#42461), so building it is the owner check: a revoked owner ends the watch
+// without polling, closed out under NudgeBee's account-scoped context.
+func TestRunOnePoll_PollContextOwnerRevoked_TerminatesFailedWithoutObserving(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{kind: SourceKind("fake_poll_ctx_revoked")}
+	installSource(t, src)
+	overrideSecurityContextBuilder(t, func(Watch) (*security.SecurityContext, error) { return nil, ErrOwnerAccessRevoked })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`SET status = \$1`).
+		WithArgs(string(StatusFailed), nil, sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 0, src.observeCount())
+	assert.Equal(t, StatusFailed, notifier.lastCall(t).Status)
+}
+
+// A poll context that could not be built (services-server down) is a failed poll, not a silent skip.
+func TestRunOnePoll_PollContextUnavailable_RecordsFailure(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{kind: SourceKind("fake_poll_ctx_err")}
+	installSource(t, src)
+	overrideSecurityContextBuilder(t, func(Watch) (*security.SecurityContext, error) {
+		return nil, errors.New("services-server unavailable")
+	})
+	withConfig(t, func() { config.Config.WatchMaxFailures = 3 })
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "completed")
+	mock.ExpectExec(`(?s)UPDATE llm_watch_tasks.*failure_count = failure_count \+ 1`).
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), w.ID, w.TenantID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 0, src.observeCount())
+	assert.Equal(t, 0, notifier.callCount())
+}
+
+// NudgeBee's own watch (a remediation wait, #42461) ends without a summary, chat update or notify: the feature that
+// owns it reads the terminal row, and its agent's next turn is the answer.
+func TestRunOnePoll_NudgeBeesWatchEndsWithoutChatMessage(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	src := &fakeSource{kind: SourceKind("fake_origin_completed"), observation: Observation{Data: "3/3"}}
+	installSource(t, src)
+
+	w := validRunningWatch(src.kind, PredicateKindRegex, "3/3")
+	origin := OriginRemediation
+	w.Origin = &origin
+	mock.ExpectExec(`(?s)SET status = \$1, final_result = \$2.*poll_count = poll_count \+ 1.*last_poll_result = \$7`).
+		WithArgs(string(StatusCompleted), sqlmock.AnyArg(), nil, sqlmock.AnyArg(), w.ID, w.TenantID, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet(), "only the terminal row is written: no chat append")
+	assert.Equal(t, 0, notifier.callCount())
+}
+
+// A timer watch's one tick at its deadline ends it EXPIRED, without a chat message (NudgeBee's own wait).
+func TestRunOnePoll_TimerEndsExpiredAtItsDeadline(t *testing.T) {
+	exec, _, mock, notifier, _ := newExecutorWithMocks(t)
+	w := validRunningWatch(SourceKindTimer, PredicateKindNever, "-")
+	origin := OriginRemediation
+	w.Origin = &origin
+	w.ExpiresAt = time.Now().Add(-time.Second)
+	mock.ExpectExec(`SET status = \$1`).
+		WithArgs(string(StatusExpired), sqlmock.AnyArg(), nil, sqlmock.AnyArg(), w.ID, w.TenantID, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	exec.RunOnePoll(context.Background(), w)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+	assert.Equal(t, 0, notifier.callCount())
 }

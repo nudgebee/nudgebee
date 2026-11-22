@@ -25,7 +25,7 @@ var k8sIngressSchema = core.SpecificTypeSchema{
 		{Name: "path", Indexed: true},
 		{Name: "hosts"},
 		{Name: "paths"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 		{Name: "lb_hostname"},
 		{Name: "dns_name"},
 		{Name: "lb_ip"},

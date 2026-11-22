@@ -99,13 +99,13 @@ func (t *TemporalTaskContext) IsDryRun() bool {
 	return t.dryRun
 }
 
-func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, isDryRun bool) TaskContext {
+func NewTemporalTaskContextFromActivity(ctx context.Context, tenantID, accountID, workflowID, eventID, userID, workflowName, userDisplayName string, temporalClient client.Client, temporalDataConverter converter.DataConverter, store model.WorkflowStore, logger temporalLog.Logger, isDryRun bool) TaskContext {
 	activityInfo := activity.GetInfo(ctx)
 
 	tc := TemporalTaskContext{
 		context:         ctx,
 		dataConverter:   temporalDataConverter,
-		logger:          activity.GetLogger(ctx),
+		logger:          logger,
 		temporalClient:  temporalClient,
 		store:           store,
 		tenantID:        tenantID,

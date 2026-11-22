@@ -5,7 +5,7 @@ import { authOptions } from '@pages/api/auth/[...nextauth]';
 import { decrypt, decodeSessionJWT } from '@lib/internal';
 import { queryGraphQL } from '@lib/HttpService';
 import { hasAccountAccess } from '@lib/accountAccess';
-import { ALLOWED_RELAY_ENDPOINTS } from '@lib/relayEndpoints';
+import { ALLOWED_RELAY_ENDPOINTS, relayForwardBody, resolveRelayAccountId } from '@lib/relayEndpoints';
 import crypto from 'crypto';
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
 
@@ -102,12 +102,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       // --- Step 2: Account Access Validation ---
-      // The relay's /request handler reads body.account_id first then falls back to
-      // top-level account_id (relay-server request.go:60-63). Mirror that here so
-      // callers using either shape (e.g. XtermTerminal sends flat) are properly
-      // authz-checked; otherwise hasAccountAccess's empty-id guard 403s the
-      // top-level-shape callers that previously slipped through.
-      const accountId = req.body?.body?.account_id ?? req.body?.account_id;
+      // Authorise exactly the account id the relay endpoint will act on; see
+      // resolveRelayAccountId for which field each endpoint reads.
+      const resolved = resolveRelayAccountId(relaySegment, req.body);
+      if (!resolved.ok) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: 'Invalid account_id' });
+        res.status(400).json({ error: 'invalid_account_id', description: resolved.error });
+        return;
+      }
+      const accountId = resolved.accountId ?? '';
       if (!(await hasAccountAccess(userDetails.userId, userDetails.tenantId, accountId, traceParent))) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'Access denied' });
         res.status(403).json({ error: 'forbidden', description: 'Access denied' });
@@ -115,6 +118,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       // --- Step 3: Relay request ---
+      const forwardBody = JSON.stringify(relayForwardBody(relaySegment, req.body));
       const relaySpan = tracer.startSpan('relayFetch', undefined, trace.setSpan(context.active(), span));
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -134,7 +138,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         while (attempt > 0 && !success) {
           const response = await fetch(`${relayEndpoint}/${relaySegment}`, {
             headers,
-            body: JSON.stringify(req.body),
+            body: forwardBody,
             method: 'post',
           });
 

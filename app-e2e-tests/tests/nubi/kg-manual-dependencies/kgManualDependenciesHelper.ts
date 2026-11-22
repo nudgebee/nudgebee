@@ -60,7 +60,7 @@ export function sourceEndpointText(draft: DeclarationDraft): string {
 }
 
 // Logs in, opens the Nubi panel, lands on b-Cortex > Knowledge Graph, opens its
-// Settings dialog and moves to the Manual Dependencies tab.
+// Settings dialog and moves to the Manual Declarations tab.
 export async function openManualDependencies(page: Page): Promise<KgManualDependenciesLocators> {
   const loginPage = new LoginPage(page);
   const nubi = new NubiLocators(page);
@@ -76,18 +76,18 @@ export async function openManualDependencies(page: Page): Promise<KgManualDepend
   await expect(locators.kgSettingsBtn, "the Knowledge Graph Settings control is missing — it renders only for a tenant admin").toBeVisible({
     timeout: 30000,
   });
-  await openSettingsOnManualDependencies(locators);
+  await openSettingsOnManualDeclarations(locators);
   return locators;
 }
 
 // Opens the Settings dialog, which always lands on Coverage, and moves to Manual
-// Dependencies. Coverage is asserted on the way so a dialog that opened on the
+// Declarations. Coverage is asserted on the way so a dialog that opened on the
 // wrong tab reports itself by name.
-export async function openSettingsOnManualDependencies(locators: KgManualDependenciesLocators): Promise<void> {
+export async function openSettingsOnManualDeclarations(locators: KgManualDependenciesLocators): Promise<void> {
   await locators.kgSettingsBtn.click();
   await expect(locators.settingsDialog).toBeVisible({ timeout: 30000 });
   await expect(locators.coverageDescription).toBeVisible({ timeout: 30000 });
-  await locators.manualDependenciesTab.click();
+  await locators.manualDeclarationsTab.click();
   await expect(locators.manualDepsDescription).toBeVisible({ timeout: 30000 });
   await waitForListLoaded(locators);
 }
@@ -106,7 +106,7 @@ export async function waitForListLoaded(locators: KgManualDependenciesLocators):
 export async function remountManualDependencies(locators: KgManualDependenciesLocators): Promise<void> {
   await locators.settingsCloseBtn.click();
   await locators.settingsDialog.waitFor({ state: "detached", timeout: 20000 });
-  await openSettingsOnManualDependencies(locators);
+  await openSettingsOnManualDeclarations(locators);
 }
 
 // CustomTable paginates client-side past ten rows (AUTO_PAGINATE_THRESHOLD) and
@@ -141,7 +141,7 @@ export async function findDeclarationRow(locators: KgManualDependenciesLocators,
 
 export async function expectDeclarationListed(locators: KgManualDependenciesLocators, name: string): Promise<void> {
   const found = await findDeclarationRow(locators, name);
-  expect(found, `the declaration ${name} is not listed on any page of Manual Dependencies`).toBe(true);
+  expect(found, `the declaration ${name} is not listed on any page of the Dependencies section`).toBe(true);
   await expect(locators.declarationRow(name)).toBeVisible();
 }
 
@@ -151,11 +151,11 @@ export async function expectDeclarationAbsent(locators: KgManualDependenciesLoca
   await waitForListLoaded(locators);
   await expect(locators.declarationRow(name)).toHaveCount(0, { timeout: 30000 });
   const found = await findDeclarationRow(locators, name);
-  expect(found, `the declaration ${name} is still listed on a page of Manual Dependencies`).toBe(false);
+  expect(found, `the declaration ${name} is still listed on a page of the Dependencies section`).toBe(false);
 }
 
 export async function openNewDeclarationDialog(locators: KgManualDependenciesLocators): Promise<void> {
-  await locators.newDeclarationBtn.click();
+  await locators.declareDependencyBtn.click();
   await expect(locators.newDeclarationDialog).toBeVisible({ timeout: 15000 });
   await expect(locators.sourceNameInput).toBeVisible({ timeout: 15000 });
 }
@@ -286,7 +286,7 @@ export async function deleteDeclarationIfPresent(page: Page, locators: KgManualD
     if (await locators.settingsDialog.isVisible().catch(() => false)) {
       await remountManualDependencies(locators);
     } else {
-      await openSettingsOnManualDependencies(locators);
+      await openSettingsOnManualDeclarations(locators);
     }
     // A test that never got as far as saving leaves nothing to delete, so a row
     // found on no page is a normal outcome here.

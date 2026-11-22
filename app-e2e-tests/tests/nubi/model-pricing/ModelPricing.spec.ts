@@ -5,6 +5,7 @@ import {
   FIXTURE_PROVIDER,
   OP_DELETE,
   OP_UPSERT,
+  chooseProvider,
   createRate,
   fillNewRateForm,
   openModelPricingTab,
@@ -155,7 +156,7 @@ test.describe("Nubi Model Pricing Tab", () => {
   );
 
   test(
-    "Model Pricing - open Add price, enter an unrecognised provider, save, verify the unknown-provider error and that no pricing mutation is sent",
+    "Model Pricing - open Add price, try to use an unsupported provider, save, verify the price is refused and that no pricing mutation is sent",
     { tag: ["@dev", "@regression", "@negative", "@validation"] },
     async ({ page }) => {
       test.setTimeout(150000);
@@ -163,12 +164,29 @@ test.describe("Nubi Model Pricing Tab", () => {
       const upserts = trackOperation(page, OP_UPSERT);
       const model = uniqueModelName();
 
-      // "open-ai" is the exact typo the allowlist exists to catch: it would
-      // store a row that never matches a usage row.
-      await fillNewRateForm(locators, { model, input: "1", output: "2", provider: "open-ai" });
+      await locators.addPriceBtn.click();
+      await locators.modelInput.waitFor({ state: "visible", timeout: 15000 });
+
+      // "open-ai" is the exact typo the provider list exists to prevent: it
+      // would store a row that never matches a usage row.
+      if ((await locators.providerSelect.count()) > 0) {
+        // Picked from a list since #40551, so the typo is simply not on offer
+        // and the only way to get it wrong is to pick nothing.
+        await locators.providerSelect.click();
+        await expect(locators.filterOption(FIXTURE_PROVIDER)).toBeVisible({ timeout: 15000 });
+        await expect(locators.filterOption("open-ai")).toHaveCount(0);
+        await page.keyboard.press("Escape");
+        await expect(locators.filterOption(FIXTURE_PROVIDER)).toHaveCount(0);
+      } else {
+        // The earlier text field accepts the typo and refuses it on save.
+        await locators.providerInput.fill("open-ai");
+      }
+      await locators.modelInput.fill(model);
+      await locators.inputRateInput.fill("1");
+      await locators.outputRateInput.fill("2");
       await locators.formSaveBtn.click();
 
-      await expect(locators.toastWithText(/^Unknown provider\. Use one of:/)).toBeVisible({ timeout: 20000 });
+      await expect(locators.toastWithText(/^(Select a provider and enter a model name\.|Unknown provider\. Use one of:)/)).toBeVisible({ timeout: 20000 });
       await expect(locators.priceFormDialog).toBeVisible();
       expect(upserts.count).toBe(0);
     }
@@ -185,7 +203,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
       await locators.addPriceBtn.click();
       await locators.modelInput.waitFor({ state: "visible", timeout: 15000 });
-      await locators.providerInput.fill(FIXTURE_PROVIDER);
+      await chooseProvider(locators, FIXTURE_PROVIDER);
       await locators.modelInput.fill(model);
       await locators.inputRateInput.fill("1.5");
       await locators.formSaveBtn.click();

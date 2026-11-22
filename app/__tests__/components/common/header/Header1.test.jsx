@@ -394,50 +394,6 @@ describe('Header1', () => {
     });
   });
 
-  describe('demo account banner', () => {
-    it('shows demo account banner when allCluster has only 1 cluster', async () => {
-      useData.mockReturnValue({
-        selectedCluster: { value: 'demo', cloud_provider: 'K8s', agent: {} },
-        allCluster: [{ value: 'demo', cloud_provider: 'K8s' }],
-      });
-      await act(async () => {
-        render(<Header1 />);
-      });
-      expect(screen.getByTestId('demo-account-banner')).toBeInTheDocument();
-    });
-
-    it('does not show demo banner when allCluster has more than 1 cluster', async () => {
-      await act(async () => {
-        render(<Header1 />);
-      });
-      expect(screen.queryByTestId('demo-account-banner')).not.toBeInTheDocument();
-    });
-
-    it('navigates to user-management integrations on Connect Account click', async () => {
-      useData.mockReturnValue({
-        selectedCluster: { value: 'demo', cloud_provider: 'K8s', agent: {} },
-        allCluster: [{ value: 'demo', cloud_provider: 'K8s' }],
-      });
-      await act(async () => {
-        render(<Header1 />);
-      });
-      fireEvent.click(screen.getByTestId('custom-btn-Connect Account'));
-      expect(mockRouter.push).toHaveBeenCalledWith('/user-management#integrations');
-    });
-
-    it('opens help docs on demo-banner "Need help?" click', async () => {
-      useData.mockReturnValue({
-        selectedCluster: { value: 'demo', cloud_provider: 'K8s', agent: {} },
-        allCluster: [{ value: 'demo', cloud_provider: 'K8s' }],
-      });
-      await act(async () => {
-        render(<Header1 />);
-      });
-      fireEvent.click(screen.getByTestId('demo-banner-help'));
-      expect(window.open).toHaveBeenCalledWith('https://docs.nudgebee.com/docs/features/', '_blank', 'noopener');
-    });
-  });
-
   describe('snackbar / agent version alerts', () => {
     it('shows snackbar when agent is NOT_CONNECTED', async () => {
       useData.mockReturnValue({

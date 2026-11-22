@@ -1,7 +1,15 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
-import { classifyAction, buildCatalog, normalizeModule, type PermissionClass } from '@lib/permissionCatalog';
+import * as yaml from 'js-yaml';
+import {
+  classifyAction,
+  buildCatalog,
+  normalizeModule,
+  isTokenScopeBlockedAction,
+  withRunTimeGrants,
+  RUN_TIME_GRANTS,
+  type PermissionClass,
+} from '@lib/permissionCatalog';
 
 // Pull every action name from actions.yaml (+ the EE overlay) directly, so this
 // test stays decoupled from rpcRoutes internals and exercises the real action
@@ -88,6 +96,59 @@ describe('permissionCatalog', () => {
     'billing_list',
     'billing_list_usage_costs',
     'billing_aggregate',
+    // AI Gateway administration is tenant-admin only (#38963, #38965).
+    'llm_gateway_get_settings',
+    'llm_gateway_update_settings',
+    'llm_gateway_list_routing_rules',
+    'llm_gateway_create_routing_rule',
+    'llm_gateway_update_routing_rule',
+    'llm_gateway_delete_routing_rule',
+    'llm_gateway_list_tiers',
+    'llm_gateway_set_tier',
+    'llm_gateway_reset_tier',
+    'llm_gateway_list_models',
+    'llm_gateway_list_rate_limits',
+    'llm_gateway_upsert_rate_limit',
+    'llm_gateway_delete_rate_limit',
+    'llm_gateway_list_user_access',
+    'llm_gateway_upsert_user_access',
+    // Every key in the tenant, and revoking any of them, is tenant-admin only (#38965).
+    'users_list_tenant_tokens',
+    'users_delete_tenant_token',
+    // bees_install / bees_uninstall: installing a Worker Bee creates its account
+    // and the role it acts with. Privilege administration, like role assignment
+    // above; the handler is tenant-admin only.
+    'bees_install',
+    'bees_uninstall',
+    // Sign-in internals the app server calls as super admin. Their tables have
+    // no tenant column, so a users:Read / tenants:Read grant read any tenant's
+    // credential hashes, roles and tenants.
+    'users_get_auth_by_username',
+    'users_get_by_provider_account',
+    'users_get_super_admin_role',
+    'tenant_by_user_v2',
+    'users_get_details',
+    // Creating or deleting a bee's principal, or the user behind it, is the same
+    // privilege administration.
+    'bees_create_principal',
+    'bees_delete_principal',
+    'users_create_bee',
+    // Changing an installed bee's dial and previewing an install are tenant-admin
+    // only in runbook-server.
+    'bees_update_modes',
+    'bees_check_install',
+    // Reloads the shared system templates for every tenant.
+    'workflow_sync_templates',
+    // Trace aggregates whose tables have no tenant column.
+    'traces_groupings_v2',
+    'traces_heatmap_v2',
+    // branding: tenant branding overrides are super-admin only
+    // (ee/branding/service.go), so there is no grant to offer.
+    'branding_list_overrides',
+    'branding_get_override',
+    'branding_upsert_override',
+    'branding_apply_previous_override',
+    'branding_delete_override',
   ];
 
   it('classifies every action in actions.yaml except the non-grantable ones', () => {
@@ -129,6 +190,37 @@ describe('permissionCatalog', () => {
     expect(customroles!.classes).toEqual(['Read']);
   });
 
+  it('keeps AI Gateway administration non-grantable and usage grantable', () => {
+    for (const name of [
+      'llm_gateway_get_settings',
+      'llm_gateway_update_settings',
+      'llm_gateway_list_routing_rules',
+      'llm_gateway_create_routing_rule',
+      'llm_gateway_update_routing_rule',
+      'llm_gateway_delete_routing_rule',
+      'llm_gateway_list_tiers',
+      'llm_gateway_set_tier',
+      'llm_gateway_reset_tier',
+      'llm_gateway_list_models',
+      'llm_gateway_list_rate_limits',
+      'llm_gateway_upsert_rate_limit',
+      'llm_gateway_delete_rate_limit',
+      'llm_gateway_list_user_access',
+      'llm_gateway_upsert_user_access',
+    ]) {
+      expect(classifyAction(name)).toBeNull();
+    }
+    for (const name of ['llm_gateway_aggregate_usage', 'llm_gateway_list_requests', 'llm_gateway_list_sessions', 'llm_gateway_get_request_body']) {
+      expect(classifyAction(name)).not.toBeNull();
+    }
+  });
+
+  it('keeps tenant-wide API key actions non-grantable', () => {
+    expect(classifyAction('users_list_tenant_tokens')).toBeNull();
+    expect(classifyAction('users_delete_tenant_token')).toBeNull();
+    expect(isTokenScopeBlockedAction('users_list_tenant_tokens')).toBe(true);
+  });
+
   it('keeps non-grantable modules out of the catalog', () => {
     const modules = new Set(buildCatalog(ACTION_NAMES).map((e) => e.module));
     for (const m of ['auth', 'nudgebee', 'product', 'relay', 'signup', 'userauths', 'webhook']) {
@@ -144,6 +236,13 @@ describe('permissionCatalog', () => {
     expect(classifyAction('features_list')).toEqual({ module: 'tenants', class: 'Read' });
     expect(classifyAction('featureflag_upsert')).toEqual({ module: 'tenants', class: 'Write' });
     expect(new Set(buildCatalog(ACTION_NAMES).map((e) => e.module)).has('featureflags')).toBe(false);
+  });
+
+  // Delivery history is read like the alerts it delivered, so an events:Read
+  // grant reaches it and a notifications grant (rules) does not.
+  it('reads delivery history with events:Read', () => {
+    expect(classifyAction('notifications_list_deliveries')).toEqual({ module: 'events', class: 'Read' });
+    expect(classifyAction('notifications_aggregate_deliveries')).toEqual({ module: 'events', class: 'Read' });
   });
 
   // The platform changelog is available to every signed-in user via
@@ -186,8 +285,29 @@ describe('permissionCatalog', () => {
     // Agent health + cluster catalog are re-homed under the accounts module.
     expect(classifyAction('agents_list_health')).toEqual({ module: 'accounts', class: 'Read' });
     expect(classifyAction('k8s_cluster_groupings_v2')).toEqual({ module: 'accounts', class: 'Read' });
+    // Changing how Nudgebee connects to a cloud account is account management.
+    expect(classifyAction('cloud_account_update')).toEqual({ module: 'accounts', class: 'Write' });
+    expect(classifyAction('cloud_update_cloudformation_permissions')).toEqual({ module: 'accounts', class: 'Write' });
+    expect(classifyAction('cloud_setup_monitoring_webhook')).toEqual({ module: 'accounts', class: 'Execute' });
+    expect(classifyAction('cloud_check_credentials')).toEqual({ module: 'accounts', class: 'Read' });
+    expect(classifyAction('cloud_check_monitoring_permission')).toEqual({ module: 'accounts', class: 'Read' });
+    // Resource-level cloud actions stay under cloud.
+    expect(classifyAction('cloud_execute_command')).toEqual({ module: 'cloud', class: 'Execute' });
+    expect(classifyAction('cloud_resource_attributes_upsert')).toEqual({ module: 'cloud', class: 'Write' });
     expect(classifyAction('k8s_pods_v2')).toEqual({ module: 'k8s', class: 'Read' });
     expect(classifyAction('ticket_add_comment')).toEqual({ module: 'tickets', class: 'Write' });
+  });
+
+  // llm-server calls security_scan_image directly, not through the gateway, so
+  // it sends this action's grant key itself (services_server/service.go). A
+  // change to the classification must change that key too.
+  it('matches the grant key llm-server sends with security_scan_image', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), '..', 'llm/llm-server/services_server/service.go'), 'utf8');
+    const sent = src.match(/ScanImageActionPermission\s*=\s*"([^"]+)"/);
+    expect(sent).toBeTruthy();
+    const c = classifyAction('security_scan_image');
+    expect(c).not.toBeNull();
+    expect(`${c!.module}:${c!.class}`).toBe(sent![1]);
   });
 
   // The editor explains a grant by listing the actions behind it. Only ~40% of
@@ -232,5 +352,40 @@ describe('permissionCatalog', () => {
     // Both scope groups must be populated so the editor renders both sections.
     expect(catalog.some((e) => e.scope === 'tenant')).toBe(true);
     expect(catalog.some((e) => e.scope === 'account')).toBe(true);
+  });
+
+  describe('run-time grants', () => {
+    const catalog = buildCatalog(ACTION_NAMES);
+    const withRun = withRunTimeGrants(catalog);
+    const byModule = new Map(withRun.map((e) => [e.module, e]));
+
+    it('adds Execute to k8s, explained, so a change step needs no Write', () => {
+      const before = catalog.find((e) => e.module === 'k8s')!;
+      const after = byModule.get('k8s')!;
+      // Guard: the class is added only because no action supplies it.
+      expect(before.classes).not.toContain('Execute');
+      expect(after.classes).toEqual([...before.classes, 'Execute']);
+      expect(after.notes?.Execute).toMatch(/without Write/);
+      expect(after.actions).toEqual(before.actions);
+      expect(after.scope).toBe('account');
+      expect(RUN_TIME_GRANTS.map((g) => g.module)).toEqual(['k8s']);
+    });
+
+    it('offers no run-time Execute on modules whose steps act through an integration', () => {
+      // Database and ticket steps need the integration type's use grant only.
+      for (const module of ['database', 'tickets']) expect(byModule.get(module)?.classes).not.toContain('Execute');
+    });
+
+    it('leaves every other module as built', () => {
+      for (const e of catalog) {
+        if (RUN_TIME_GRANTS.some((g) => g.module === e.module)) continue;
+        expect(byModule.get(e.module)).toBe(e);
+      }
+    });
+
+    it('does not override a class an action already supplies', () => {
+      const entry = { module: 'k8s', scope: 'account' as const, classes: ['Read', 'Execute'] as PermissionClass[], actions: {} };
+      expect(withRunTimeGrants([entry])[0]).toBe(entry);
+    });
   });
 });

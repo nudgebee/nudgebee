@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -56,32 +57,30 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/livez" || strings.HasPrefix(c.Request.URL.Path, "/debug") {
+		// /debug (pprof) is not public: it exposes heap and goroutine dumps of a
+		// process that holds cloud credentials.
+		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/livez" {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
 		}
 
-		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
+		if config.Config.CloudCollectorServerToken == "" {
+			logger.Error("CLOUD_COLLECTOR_SERVER_TOKEN is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
+			return
+		}
 
-		if authHeader == config.Config.CloudCollectorServerToken {
+		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
+		authHeaderHash := sha256.Sum256([]byte(authHeader))
+		tokenHash := sha256.Sum256([]byte(config.Config.CloudCollectorServerToken))
+		if subtle.ConstantTimeCompare(authHeaderHash[:], tokenHash[:]) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
-		} else {
-			maskedAuth := ""
-			if authHeader != "" {
-				if len(authHeader) > 8 {
-					maskedAuth = authHeader[:4] + "***"
-				} else {
-					maskedAuth = "***"
-				}
-			}
-			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
-			c.Writer.WriteHeader(401)
-			c.Abort()
-			return
 		}
+		logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method)
+		c.AbortWithStatus(http.StatusUnauthorized)
 	}
 }
 
@@ -91,6 +90,27 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 		prop.Inject(c.Request.Context(), propagation.HeaderCarrier(c.Writer.Header()))
 		c.Next()
 	}
+}
+
+// newEngine returns the router with its middleware chain and the pprof routes.
+// API routes are added by the caller.
+func newEngine() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
+	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health", "/livez")}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
+	r.Use(traceResponseHeaderMiddleware())
+	r.Use(authHandlerMiddleware())
+	// Registered after the auth middleware: gin binds a route's middleware at
+	// registration time, so pprof registered before r.Use would skip auth.
+	pprof.Register(r)
+	return r
 }
 
 func main() {
@@ -121,19 +141,7 @@ func main() {
 	providers.StartPermissionAuditCollector()
 	defer providers.StopPermissionAuditCollector()
 
-	r := gin.New()
-	pprof.Register(r)
-	r.Use(gin.Recovery())
-	// otelgin must run before sloggin so the server span is on the request
-	// context when the access log line is emitted with trace_id/span_id.
-	r.Use(otelgin.Middleware(config.SERVICE_NAME))
-	slogginConfig := sloggin.DefaultConfig()
-	slogginConfig.WithTraceID = true
-	slogginConfig.WithSpanID = true
-	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health", "/livez")}
-	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
-	r.Use(traceResponseHeaderMiddleware())
-	r.Use(authHandlerMiddleware())
+	r := newEngine()
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
@@ -265,6 +273,16 @@ func main() {
 		if err != nil {
 			slog.Error("Failed to start cloud account post-report consumer", "error", err)
 		}
+	}()
+
+	// One-off cleanup of secret values stored before the collector redacted them.
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("Meta redaction backfill panicked", "error", r)
+			}
+		}()
+		account.RunMetaRedactionBackfill(context.Background(), logger)
 	}()
 
 	// Start the MQ heartbeat that backs the /livez liveness probe. If a consumer or

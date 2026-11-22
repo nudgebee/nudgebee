@@ -38,6 +38,28 @@ func (m DynatraceWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels the classic and OpenPipeline paths build. Update it with the parser.
+func (m DynatraceWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of fields. Which ones depends on whether the notification is a classic problem or comes through OpenPipeline.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "severity", Source: "ProblemSeverity, or event.category on OpenPipeline"},
+			{Label: "impact", Source: "ProblemImpact, or dt.davis.impact_level"},
+			{Label: "service", Source: "the root-cause entity, else the first impacted entity"},
+			{Label: "entity_names", Source: "all impacted entity names, joined with commas"},
+			{Label: "tags", Source: "all tags, joined with commas"},
+			{Label: "namespace", Source: "k8s.namespace.name (OpenPipeline problems)"},
+			{Label: "k8s_cluster_name", Source: "k8s.cluster.name (OpenPipeline)"},
+			{Label: "event_category", Source: "event.category (OpenPipeline)"},
+		},
+		Notes: []string{
+			"tags and entity_names are joined with commas, so a single tag or entity cannot be matched.",
+			"OpenPipeline events, as opposed to problems, name fields by replacing dots with underscores, for example k8s_namespace_name, and send no severity or tags.",
+			"State and title are not labels.",
+		},
+	}
+}
+
 func (m DynatraceWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

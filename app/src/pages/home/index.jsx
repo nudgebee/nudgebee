@@ -66,7 +66,7 @@ import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import { useData } from '@context/DataContext';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getUserSession, getCurrentTenant, hasPermission, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
+import { getUserSession, getCurrentTenant, hasPermission, hasGrantOnAccount, missingPermissionMessage, isGrantsOnlyUser } from '@lib/auth';
 import DSTooltip from '@ui/Tooltip';
 import { FiArrowRight } from 'react-icons/fi';
 import useCurrencySymbol from '@hooks/useCurrencySymbol';
@@ -74,6 +74,7 @@ import PendingFollowUps from '@components/home/PendingFollowUps';
 import VmOverviewCard from '@components/home/VmOverviewCard';
 import { isSelfHostedProvider } from '@components/overview/providers';
 import { clearSavedWorkflowFilters } from '@components/workflow/utils/listingFilterPersistence';
+import { clearSavedExecutionFilters } from '@components/workflow/execution-dashboard/useExecutionDashboard';
 import { VmServerIcon, RecommendationIcon, OptimizeSummaryIcon } from '@assets';
 
 const replaceCurrencyInText = (text, targetCurrencySymbol) => {
@@ -110,8 +111,9 @@ const getApplicationLink = (rule, workloadFqdn) => {
 
 // VM insights (insight_rules.json unique_id 131/132) are CVE rows for a self-hosted
 // fleet, not k8s workload rows.
-const isSelfHostedVmRule = (rule) =>
-  Array.isArray(rule?.cloud_providers) && rule.cloud_providers.some((p) => String(p).toLowerCase() === 'selfhosted');
+const isSelfHostedRule = (rule) => Array.isArray(rule?.cloud_providers) && rule.cloud_providers.some((p) => String(p).toLowerCase() === 'selfhosted');
+// Event rules that also cover a VM fleet (firing alerts) are not CVE rows — the backend link already points at the Events tab.
+const isSelfHostedVmRule = (rule) => isSelfHostedRule(rule) && rule?.source !== 'Event';
 
 // The backend (Go computeRedirectURL) emits a complete, filter-applied relative URL
 // and stores it on the insight row, so consume it verbatim — except for a VM fleet's
@@ -380,11 +382,16 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
         // the investigate page for that event; otherwise fall back to the rule link.
         const investigateId = app.event_id && accountId ? app.event_id : null;
         const vmVulnHref = isVmVulnChip && accountId ? `/vm?accountId=${accountId}&vulnId=${encodeURIComponent(app.name)}#instances` : null;
-        const href = investigateId || vmVulnHref ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
+        // A VM fleet's firing-alert chips (uid 133) carry the alert name; open the Events tab on just that alert.
+        const vmAlertHref =
+          isSelfHostedRule(rule) && rule?.source === 'Event' && accountId
+            ? `/vm?accountId=${accountId}&eventAggregationKey=${encodeURIComponent(app.name)}&eventStatus=FIRING#alerts`
+            : null;
+        const href = investigateId || vmVulnHref || vmAlertHref ? null : getApplicationLink(rule, `${app.name}:${app.namespace}`);
         const onClick = investigateId
           ? () => router.push(`/investigate?id=${investigateId}&accountId=${accountId}`)
-          : vmVulnHref
-          ? () => window.open(vmVulnHref, '_blank')
+          : vmVulnHref || vmAlertHref
+          ? () => window.open(vmVulnHref || vmAlertHref, '_blank')
           : href
           ? () => window.open(href, '_blank')
           : undefined;
@@ -408,7 +415,8 @@ const ServiceChipRow = ({ applications, rule, accountId, maxShown = 4 }) => {
       })}
       {overflow > 0 &&
         (() => {
-          const moreHref = rule?.redirect_url || null;
+          // Same target the row opens, so a VM fleet's "+N more" keeps the severity filter.
+          const moreHref = buildInsightLink({ rule, account_id: accountId });
           return (
             <Chip
               variant='count'
@@ -584,8 +592,8 @@ SectionHeader.propTypes = {
   tone: PropTypes.oneOf(['critical', 'info', 'warning', 'success', 'agent', 'neutral']),
 };
 
-const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows }) => {
-  const { totalCount = 0, actionedCount = 0, configuredCount = 0 } = workflowData || {};
+export const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows, onViewRuns }) => {
+  const { totalCount = 0, actionedCount = 0, configuredCount = 0, windowStart, windowEnd } = workflowData || {};
 
   // Deep-link a stat to the automations listing with the matching filters.
   // `filters` maps to the URL query params WorkflowListing reads (status / type /
@@ -655,7 +663,9 @@ const AutomationsCard = ({ workflowData, accountId, onManage, onViewWorkflows })
           label='Triggered (24h)'
           value={String(actionedCount)}
           id='automations-triggered-stat'
-          onClick={actionedCount > 0 ? () => viewWorkflows({ status: 'All', last_execution_status: 'All' }) : undefined}
+          info={{ tooltip: 'Automation runs started in the last 24 hours, dry runs included' }}
+          // Counts runs, so open the Executions list for the exact window that was counted.
+          onClick={actionedCount > 0 ? () => onViewRuns?.({ accountId, from: windowStart, to: windowEnd }) : undefined}
         />
         <Stat
           size='sm'
@@ -674,6 +684,7 @@ AutomationsCard.propTypes = {
   accountId: PropTypes.string,
   onManage: PropTypes.func,
   onViewWorkflows: PropTypes.func,
+  onViewRuns: PropTypes.func,
 };
 
 const EMPTY_STATE_NO_DATA_THRESHOLD_MS = 48 * 60 * 60 * 1000;
@@ -1677,7 +1688,7 @@ const HomeWidgets = React.memo(({ selectedCluster, cluster }) => {
         >
           {links.map((link) => {
             const mod = moduleForFragment(link.fragment);
-            const disabled = gateQuickLinks && !hasPermission(mod, 'Read');
+            const disabled = gateQuickLinks && !hasPermission(mod, 'Read') && !hasGrantOnAccount(mod, 'Read', linkAccountId);
             const row = (
               <Box
                 display={'flex'}
@@ -1813,13 +1824,22 @@ const Home = () => {
         if (recommendation.length > 0) {
           const allRecommendations = recommendation.map((r) => r.recommendation);
           const parsedArray = allRecommendations.map((r) => safeJSONParse(r)).filter(Boolean);
-          const expiringSoon = parsedArray?.filter((item) => {
-            const expiry = new Date(item.expiry_date);
-            return expiry.getTime() - new Date().getTime() <= 30 * 24 * 60 * 60 * 1000;
-          })?.length;
-          if (expiringSoon) {
-            setCertificateData({ expiringSoon });
-          }
+          // Split by real-time expiry. The old filter had no lower bound, so a
+          // negative difference (a cert already past its expiry_date) still
+          // satisfied "<= 30 days" and got counted — and labelled — as expiring.
+          const now = new Date().getTime();
+          const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+          let expiringSoon = 0;
+          let expired = 0;
+          parsedArray.forEach((item) => {
+            const diff = new Date(item.expiry_date).getTime() - now;
+            if (diff < 0) expired += 1;
+            else if (diff <= THIRTY_DAYS_MS) expiringSoon += 1;
+          });
+          const next = {};
+          if (expiringSoon) next.expiringSoon = expiringSoon;
+          if (expired) next.expired = expired;
+          setCertificateData(next);
         }
       })
       .finally(() => {
@@ -1861,7 +1881,7 @@ const Home = () => {
       const [totalResponse, configuredResponse, actionedResponse] = await Promise.all([
         apiWorkflow.getWorkflowCount(accountId, { status: 'ACTIVE' }),
         apiWorkflow.getWorkflowCount(accountId, { status: 'ACTIVE', triggerType: 'event' }),
-        apiWorkflow.getWorkflowExecutionCount(accountId, { startDate: dateRange.startDate }),
+        apiWorkflow.getWorkflowExecutionCount(accountId, dateRange),
       ]);
 
       // Tolerate two response shapes: { data: { <field>: { count } } } or { <field>: { count } }
@@ -1874,6 +1894,9 @@ const Home = () => {
         totalCount: pickCount(totalResponse, 'workflows_count'),
         configuredCount: pickCount(configuredResponse, 'workflows_count'),
         actionedCount: pickCount(actionedResponse, 'workflows_count_executions'),
+        // The Triggered (24h) link replays this window so the runs list matches the count.
+        windowStart: dateRange.startDate.toISOString(),
+        windowEnd: dateRange.endDate.toISOString(),
       };
       setWorkflowData(next);
     } catch (error) {
@@ -1892,6 +1915,12 @@ const Home = () => {
 
   // Memoize category filters — insightData only changes on API response, not on
   // unrelated state updates elsewhere on the page.
+  // Ops-category insights split by source. Event-source Ops are live issues
+  // (e.g. FIRING CloudWatch alarms → #events/events) and belong on Troubleshoot;
+  // Recommendation-source Ops are configuration findings (missing backups/alarms/
+  // HA → #optimize/configuration) and belong on Optimize. Routing them by source
+  // keeps each card consistent with where its View Details link lands. Only cloud
+  // (non-K8s) accounts surface Ops on these two cards. See #40336.
   const troubleshootItems = useMemo(
     () =>
       insightData.filter(
@@ -1899,7 +1928,7 @@ const Home = () => {
           o.type == 'Troubleshooting' ||
           o.rule?.category == 'Troubleshooting' ||
           o.type == 'Performance' ||
-          (selectedCluster?.cloud_provider != 'K8s' && o.type == 'Ops')
+          (selectedCluster?.cloud_provider && selectedCluster.cloud_provider != 'K8s' && o.type == 'Ops' && o.rule?.source == 'Event')
       ),
     [insightData, selectedCluster?.cloud_provider]
   );
@@ -1912,11 +1941,21 @@ const Home = () => {
           g.type == 'Cost' ||
           g.type == 'InfraUpgrade' ||
           g.type == 'Security' ||
-          g.type == 'Configuration'
+          g.type == 'Configuration' ||
+          (selectedCluster?.cloud_provider && selectedCluster.cloud_provider != 'K8s' && g.type == 'Ops' && g.rule?.source != 'Event')
       ),
+    [insightData, selectedCluster?.cloud_provider]
+  );
+  // Certificate expiry is surfaced by the dedicated getCertificate path (which
+  // reads each cert's expiry_date and splits expiring vs expired). The insight
+  // engine can't see expiry_date — it lives inside the recommendation JSON, not
+  // a column — so its row counts every open cert rec regardless of date and
+  // contradicts that path. Drop it here so the card shows one consistent number.
+  const isCertificateInsight = (o) => o.rule?.filters?.some((f) => f.column === 'rule_name' && f.value === 'certificate_expiry');
+  const opsItems = useMemo(
+    () => insightData.filter((g) => (g.type == 'Ops' || g.rule?.category == 'Ops') && !isCertificateInsight(g)),
     [insightData]
   );
-  const opsItems = useMemo(() => insightData.filter((g) => g.type == 'Ops' || g.rule?.category == 'Ops'), [insightData]);
 
   const securityHasExternal =
     Object.keys(imageScanData).length > 0 ||
@@ -1949,9 +1988,10 @@ const Home = () => {
     const parts = [];
     if (imageScanData?.totalCritical) parts.push(`${imageScanData.totalCritical} critical CVEs`);
     if (certificateData?.expiringSoon) parts.push(`${certificateData.expiringSoon} certs expiring`);
+    if (certificateData?.expired) parts.push(`${certificateData.expired} certs expired`);
     if (opsItems.length) parts.push(`${opsItems.length} ops issues`);
     return parts.length ? parts.join(' · ') : 'Vulnerabilities, certificates, image scans';
-  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, opsItems.length]);
+  }, [imageScanData?.totalCritical, certificateData?.expiringSoon, certificateData?.expired, opsItems.length]);
 
   return (
     <>
@@ -1960,7 +2000,8 @@ const Home = () => {
         <Grid item xs={12} lg={9} sx={{ pt: '0px !important' }}>
           <K8sAccountModal openModal={showModal} handleClose={closeModal} />
           <>
-            {!isSelfHostedProvider(selectedCluster?.cloud_provider) && (
+            {/* A VM fleet has no Troubleshoot baseline to show, so its card appears only while alerts are firing. */}
+            {(!isSelfHostedProvider(selectedCluster?.cloud_provider) || troubleshootItems.length > 0) && (
               <CardsBlock
                 title='Troubleshoot'
                 subtitle={troubleshootSubtitle}
@@ -1980,7 +2021,12 @@ const Home = () => {
                     icon={<KeyboardArrowRightIcon />}
                     iconPlacement='end'
                     onClick={() =>
-                      window.open(`/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`, '_blank')
+                      window.open(
+                        isSelfHostedProvider(selectedCluster?.cloud_provider)
+                          ? `/vm?accountId=${selectedCluster?.value || ''}#alerts`
+                          : `/troubleshoot?accountId=${selectedCluster?.value || ''}&accountIds=${selectedCluster?.value || ''}`,
+                        '_blank'
+                      )
                     }
                   >
                     View all issues
@@ -2089,48 +2135,55 @@ const Home = () => {
                         </Box>
                       </Box>
                     ) : null}
-                    {certificateData && Object.keys(certificateData).length > 0 ? (
-                      <Box
-                        onClick={() =>
+                    {[
+                      certificateData?.expiringSoon && {
+                        key: 'expiring',
+                        label: `${certificateData.expiringSoon} ${
+                          certificateData.expiringSoon === 1 ? 'certificate' : 'certificates'
+                        } expiring within 30 days`,
+                      },
+                      certificateData?.expired && {
+                        key: 'expired',
+                        label: `${certificateData.expired} ${certificateData.expired === 1 ? 'certificate' : 'certificates'} expired`,
+                      },
+                    ]
+                      .filter(Boolean)
+                      .map((row) => {
+                        const openSslTab = () =>
                           selectedCluster?.value &&
-                          window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
-                        }
-                        sx={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 'var(--ds-space-3)',
-                          py: 'var(--ds-space-2)',
-                          px: 'var(--ds-space-3)',
-                          mx: 'var(--ds-space-2)',
-                          borderBottom: '1px solid var(--ds-gray-100)',
-                          '&:last-child': { borderBottom: 'none' },
-                          cursor: 'pointer',
-                          transition: 'background-color 120ms ease',
-                          '&:hover': { backgroundColor: 'var(--ds-background-200)' },
-                        }}
-                      >
-                        <Box sx={{ flexShrink: 0 }}>
-                          <InsightIcon severity='high' icon={LockOutlinedIcon} />
-                        </Box>
-                        <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
-                          {`${certificateData.expiringSoon} certificates expiring in less than 30 days`}
-                        </Typography>
-                        <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                          <Button
-                            tone='ghost'
-                            size='xs'
-                            icon={<AgentSparkleIcon />}
-                            iconPlacement='start'
-                            onClick={() =>
-                              selectedCluster?.value &&
-                              window.open(`/kubernetes/details/${selectedCluster.value}#security/ssl-certificate-issues`, '_blank')
-                            }
+                          window.open(`/kubernetes/details/${selectedCluster.value}?severity=High#security/ssl-certificate-issues`, '_blank');
+                        return (
+                          <Box
+                            key={row.key}
+                            onClick={openSslTab}
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 'var(--ds-space-3)',
+                              py: 'var(--ds-space-2)',
+                              px: 'var(--ds-space-3)',
+                              mx: 'var(--ds-space-2)',
+                              borderBottom: '1px solid var(--ds-gray-100)',
+                              '&:last-child': { borderBottom: 'none' },
+                              cursor: 'pointer',
+                              transition: 'background-color 120ms ease',
+                              '&:hover': { backgroundColor: 'var(--ds-background-200)' },
+                            }}
                           >
-                            Review
-                          </Button>
-                        </Box>
-                      </Box>
-                    ) : null}
+                            <Box sx={{ flexShrink: 0 }}>
+                              <InsightIcon severity='high' icon={LockOutlinedIcon} />
+                            </Box>
+                            <Typography sx={{ flex: 1, minWidth: 0, fontSize: 'var(--ds-text-body)', lineHeight: 1.5, color: 'var(--ds-gray-800)' }}>
+                              {row.label}
+                            </Typography>
+                            <Box sx={{ flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                              <Button tone='ghost' size='xs' icon={<AgentSparkleIcon />} iconPlacement='start' onClick={openSslTab}>
+                                Review
+                              </Button>
+                            </Box>
+                          </Box>
+                        );
+                      })}
                   </>
                 }
               />
@@ -2155,6 +2208,10 @@ const Home = () => {
             onViewWorkflows={(query) => {
               clearSavedWorkflowFilters();
               router.push({ pathname: '/automation', query });
+            }}
+            onViewRuns={(query) => {
+              clearSavedExecutionFilters();
+              router.push({ pathname: '/automation', query, hash: 'executions' });
             }}
           />
           <VmOverviewCard

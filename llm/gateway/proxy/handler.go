@@ -8,16 +8,20 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -66,6 +70,27 @@ func stripPath(fullPath, mount string) string {
 	return strings.TrimPrefix(fullPath, mount)
 }
 
+// cleanPath normalises a stripped provider path into the one the gateway forwards and
+// classifies. Bifrost's HTTP client resolves "." and ".." segments and repeated slashes when
+// it sends a request, so the gateway cleans them first: the endpoint a policy judges is then
+// the one the provider receives. ok is false for a path that would change meaning downstream
+// in a way cleaning cannot settle: a "%" (the client decodes the path once more), a "?" or "#"
+// (they arrive percent-encoded and would start a query or fragment), a backslash, a control
+// character, or no leading slash.
+func cleanPath(p string) (string, bool) {
+	if p == "" {
+		return p, true
+	}
+	if p[0] != '/' || strings.ContainsAny(p, `%?#\`) || strings.ContainsFunc(p, unicode.IsControl) {
+		return "", false
+	}
+	cleaned := path.Clean(p)
+	if strings.HasSuffix(p, "/") && cleaned != "/" {
+		cleaned += "/" // a provider may route on the trailing slash
+	}
+	return cleaned, true
+}
+
 // hopByHopResponseHeaders must not be copied from the provider response back to
 // the client; the edge sets streaming/transport headers explicitly.
 var hopByHopResponseHeaders = map[string]struct{}{
@@ -82,21 +107,13 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	// (operator/account credential) when none is registered.
 	creds := credResolver()
 	h := &handler{
-		client:  client,
-		sink:    sink,
-		bodyLog: bodyLog,
-		limiter: limiter,
-		pricer:  pricer,
-		router:  router,
-		// Request pipeline (control stages), run after auth and before passthrough.
-		// route → ratelimit → resolver → filter. Each stage is pluggable; an unset
-		// stage defaults to pass-through.
-		pipeline: NewPipeline(
-			routeStage{router: router},
-			ratelimitStage{limiter: limiter},
-			resolverStage{creds: creds},
-			filterStage{},
-		),
+		client:   client,
+		sink:     sink,
+		bodyLog:  bodyLog,
+		limiter:  limiter,
+		pricer:   pricer,
+		router:   router,
+		pipeline: newControlPipeline(router, limiter, creds),
 	}
 	// Auth runs first (the pipeline keys off the resolved identity), then the handler
 	// runs the pipeline and forwards.
@@ -109,6 +126,19 @@ func RegisterRoutes(r *gin.Engine, client *bifrost.Bifrost, sink metering.Sink, 
 	r.POST("/v1/chat/completions", authmw, h.handleChat)
 	r.POST("/v1/embeddings", authmw, h.handleEmbeddings)
 	r.GET("/v1/models", authmw, h.handleModels)
+}
+
+// newControlPipeline builds the control stages, run after auth and before passthrough:
+// access → route → policy → ratelimit → resolver → filter. An unset stage passes through.
+func newControlPipeline(router routing.Resolver, limiter *ratelimit.Limiter, creds CredResolver) *Pipeline {
+	return NewPipeline(
+		accessStage{},
+		routeStage{router: router},
+		policyStage{router: router},
+		ratelimitStage{limiter: limiter},
+		resolverStage{creds: creds},
+		filterStage{},
+	)
 }
 
 type handler struct {
@@ -130,6 +160,13 @@ func (h *handler) handle(c *gin.Context) {
 		h.recordReject(auth.FromContext(c), "", "", c.Request.Method, c.Request.URL.Path, http.StatusNotFound, "unknown_provider", start)
 		return
 	}
+	path, ok := cleanPath(stripPath(c.Request.URL.Path, prefix)) // e.g. /v1/messages, or /models/x:generateContent
+	if !ok {
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", "malformed request path")
+		// Escaped, since a refused path can hold a NUL, which would fail the whole usage batch insert.
+		h.recordReject(auth.FromContext(c), provider, "", c.Request.Method, c.Request.URL.EscapedPath(), http.StatusBadRequest, "malformed_path", start)
+		return
+	}
 
 	body, err := readBody(c)
 	if err != nil {
@@ -148,28 +185,45 @@ func (h *handler) handle(c *gin.Context) {
 
 	logRequestProvenance(c, body)
 
-	path := stripPath(c.Request.URL.Path, prefix) // e.g. /v1/messages, or /models/x:generateContent
-	model, bodyStream := parseBody(body)
-	if model == "" {
-		model = modelFromPath(provider, path) // Gemini/GET carry the model in the path
+	identity := auth.FromContext(c)
+	endpoint, generative := classifyEndpoint(provider, c.Request.Method, path)
+	model, bodyStream, bodyOK := parseBody(body)
+	// A call the policy judges must name its model the way every provider reads it. Other
+	// paths keep the best-effort read: a raw upload (a JSONL file) is not a JSON object.
+	if !bodyOK && endpoint != "" {
+		edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request", unreadableBodyMessage)
+		h.recordReject(identity, provider, "", c.Request.Method, path, http.StatusBadRequest, "unreadable_body", start)
+		return
+	}
+	// Gemini serves the model named in the path (/models/{model}:method), so that is the one
+	// judged; the body is read only where the path names no model. A body naming another
+	// model is refused rather than guessing which of the two a provider honours.
+	if pathModel := modelFromPath(provider, path); pathModel != "" {
+		if model != "" && strings.TrimPrefix(model, "models/") != pathModel {
+			edgeerr.Write(c, string(provider), http.StatusBadRequest, "invalid_request",
+				fmt.Sprintf("the request body names model %q but the path names %q", model, pathModel))
+			h.recordReject(identity, provider, pathModel, c.Request.Method, path, http.StatusBadRequest, "model_mismatch", start)
+			return
+		}
+		model = pathModel
 	}
 	// Streaming is signalled either by a body flag (Anthropic/OpenAI: "stream":true)
 	// or by the path (Gemini: ...:streamGenerateContent).
 	streaming := bodyStream || strings.Contains(strings.ToLower(path), "stream")
 
-	identity := auth.FromContext(c)
-
 	// The Bifrost context carries per-request state; the resolver stage sets a
 	// per-tenant credential on it, so it must exist before the pipeline runs.
 	bctx, cancel := schemas.NewBifrostContextWithCancel(c.Request.Context())
 
-	// Run the control pipeline (route → ratelimit → resolver → filter). Stages may
+	// Run the control pipeline (access → route → policy → ratelimit → resolver → filter). Stages may
 	// rewrite the request shape, inject a tenant credential, or reject the request.
 	rc := &RequestContext{
 		Gin: c, Ctx: c.Request.Context(), Bctx: bctx,
 		Identity: identity, Provider: provider,
 		Model: model, Path: path, Body: body, Streaming: streaming,
+		Endpoint: endpoint, Generative: generative,
 	}
+	defer rc.ReleaseSlots()
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
@@ -203,6 +257,12 @@ func (h *handler) handle(c *gin.Context) {
 
 	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
 	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
+	// A model list is never a stream, and only the unary path filters it: a body
+	// "stream":true on the GET must not route a restricted caller around the filter.
+	if rc.FilterModelList {
+		streaming = false
+	}
+
 	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
 	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
@@ -222,6 +282,7 @@ func (h *handler) handle(c *gin.Context) {
 		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
+		filterModels:  rc.FilterModelList,
 	}
 
 	// Cross-provider substitution (P2): a rule resolved a different provider. Translate
@@ -258,12 +319,36 @@ type reqMeta struct {
 	failover       map[string]any // set when a transient primary failure fell over to a fallback
 	dlp            map[string]any // set when the egress filter detected/redacted a secret
 	start          time.Time
+	firstChunk     time.Time // when the first streamed chunk arrived; zero if none
+	attemptStart   time.Time // when a failover attempt began; zero when the primary served
 	sessionID      string
 	sessionSource  string
 	prefixFinger   string // stable-prefix fingerprint (cache-affinity key + inferred session id)
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
+	filterModels   bool // cut a provider model list to what identity may use
+}
+
+// markFirstChunk records when the first streamed chunk arrived (first call wins).
+func (rm *reqMeta) markFirstChunk() {
+	if rm.firstChunk.IsZero() {
+		rm.firstChunk = time.Now()
+	}
+}
+
+// ttftMs is the time to the first streamed chunk, measured from the attempt that served it,
+// or nil for a request that streamed none.
+func (rm *reqMeta) ttftMs() *int64 {
+	if !rm.streaming || rm.firstChunk.IsZero() {
+		return nil
+	}
+	from := rm.start
+	if !rm.attemptStart.IsZero() {
+		from = rm.attemptStart
+	}
+	ms := rm.firstChunk.Sub(from).Milliseconds()
+	return &ms
 }
 
 // Surface values — the entrypoint a request arrived on, captured on every usage row
@@ -291,6 +376,18 @@ func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schem
 	// fail over before forwarding it to the client.
 	if isRetryable(resp.StatusCode) && h.tryFailoverUnary(c, bctx, rm, resp.StatusCode) {
 		return
+	}
+	if rm.filterModels && resp.StatusCode == http.StatusOK {
+		filtered, err := filterModelList(rm.provider, resp.Body, func(id string) bool {
+			return targetAllowed(rm.identity, string(rm.provider), id)
+		})
+		if err != nil {
+			slog.Warn("proxy: provider model list unreadable, not forwarded", "provider", rm.provider, "error", err)
+			edgeerr.Write(c, string(rm.provider), http.StatusBadGateway, "upstream_error", "the provider's model list could not be read")
+			h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadGateway, nil, nil, nil)
+			return
+		}
+		resp.Body = filtered
 	}
 	for k, v := range resp.Headers {
 		if _, hop := hopByHopResponseHeaders[strings.ToLower(k)]; !hop {
@@ -359,6 +456,7 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		writeJSONError(c, http.StatusBadGateway, "upstream_error", "passthrough stream returned empty first chunk")
 		return
 	}
+	rm.markFirstChunk()
 	// Valid first chunk: from here the client receives head.StatusCode. Usage may
 	// arrive on this chunk or a later one; meter reflects the status the client got.
 	status = head.StatusCode
@@ -495,6 +593,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		Streaming:  rm.streaming,
 		StatusCode: status,
 		LatencyMS:  time.Since(rm.start).Milliseconds(),
+		TTFTMs:     rm.ttftMs(),
 		Headers:    headers,
 		Usage:      usage,
 		SessionID:  rm.sessionID,
@@ -518,6 +617,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		// Tenant-scoped: a tenant's own price override wins over the built-in rate (else the
 		// built-in), so one tenant's negotiated rate never bleeds onto another's cost.
 		ev.CostUsd = h.pricer.CostUSD(ev.TenantID, ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+		ev.CacheSavingsUsd = h.pricer.CacheSavingsUSD(ev.TenantID, ev.Model, ev.CacheReadTokens, ev.CacheWriteTokens)
 	}
 	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
 	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
@@ -527,14 +627,10 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		h.sink.Record(ev)
 	}
 
-	// Reconcile token/cost usage against quotas (requests were counted pre-call).
+	// Reconcile token/cost usage against quotas (requests were counted pre-call), on the
+	// target actually served — rm is updated on failover and substitution.
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
-		h.limiter.Reconcile(ctx, ratelimit.Scope{
-			TenantID: rm.identity.TenantID,
-			UserID:   rm.identity.UserID,
-			APIKeyID: rm.identity.APIKeyID,
-			Model:    ev.RequestedModel,
-		}, ev.TotalTokens, ev.CostUsd)
+		h.limiter.Reconcile(ctx, quotaScope(rm.identity, rm.decision, string(rm.provider), rm.model), ev.TotalTokens, ev.CostUsd)
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.
@@ -577,10 +673,19 @@ func (h *handler) recordReject(id auth.Identity, provider schemas.ModelProvider,
 // recordRejectPipeline records a rejection from a control stage (rate limit, missing
 // credential, block), carrying the routing decision plus the stage's reject reason.
 func (h *handler) recordRejectPipeline(rc *RequestContext, status int, start time.Time) {
+	if rc.RefusalSuppressed {
+		return // over the key's refusal cap; see keyRefusals
+	}
 	d := rc.Decision
 	derived := map[string]any{"reject_reason": rc.RejectReason}
 	if rc.DLP != nil {
 		derived["dlp"] = rc.DLP // an enforce-mode secret block carries the rule ids
+	}
+	if rc.PolicyTarget != "" {
+		derived["policy_target"] = rc.PolicyTarget // the routed target a policy refused
+	}
+	if rc.Endpoint != "" {
+		derived["endpoint"] = rc.Endpoint
 	}
 	h.sink.Record(metering.NewEvent(metering.EventInput{
 		Provider: rc.Provider, Model: rc.Model,
@@ -644,19 +749,105 @@ func logRequestProvenance(c *gin.Context, body []byte) {
 	)
 }
 
-// parseBody extracts the model and stream flag from a provider-native JSON body.
-// Both are best-effort hints: model feeds key selection (bypassed when the plugin
-// injects a key) and stream selects the streaming path.
-func parseBody(body []byte) (model string, stream bool) {
-	if len(body) == 0 {
-		return "", false
+// unreadableBodyMessage tells the caller why parseBody refused its body.
+const unreadableBodyMessage = `the request body must be valid JSON that names the model once, under the exact key "model"`
+
+// parseBody extracts the model and stream flag from a provider-native JSON body. It reads the
+// exact top-level "model" and "stream" keys, the ones a provider reads; decoding into a struct
+// would also match "MODEL" or "Model" and keep the last. ok is false for a JSON object the
+// gateway cannot read the way every provider would: invalid JSON, which a lenient parser may
+// read past (Python's accepts NaN and takes the last duplicate), or one naming the model twice
+// or under a key differing from "model" only in case. Providers disagree on those, so the
+// gateway could judge one model while the provider serves another. Otherwise both values are
+// best-effort hints: model feeds routing, policy and key selection, and stream selects the
+// streaming path.
+func parseBody(body []byte) (model string, stream bool, ok bool) {
+	obj := bytes.TrimLeft(body, " \t\r\n")
+	if len(obj) == 0 || obj[0] != '{' {
+		return "", false, true // not a JSON object (empty, multipart, a raw upload)
 	}
-	var m struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	if !json.Valid(obj) {
+		return "", false, false
 	}
-	_ = json.Unmarshal(body, &m)
-	return m.Model, m.Stream
+	exact, variant := 0, false
+	eachMember(obj, func(key, value []byte) {
+		name := string(key[1 : len(key)-1])
+		if bytes.IndexByte(key, '\\') >= 0 {
+			_ = json.Unmarshal(key, &name) // "mod\u0065l" is "model" to a provider
+		}
+		switch {
+		case name == "model":
+			exact++
+			_ = json.Unmarshal(value, &model)
+		case strings.EqualFold(name, "model"):
+			variant = true // refused even alone: a provider decoding like encoding/json reads it
+		case name == "stream":
+			_ = json.Unmarshal(value, &stream)
+		}
+	})
+	return model, stream, exact <= 1 && !variant
+}
+
+// eachMember calls fn with the quoted key and the value of each member of obj, a JSON object
+// that json.Valid accepted, both as subslices of obj: a large body (base64 images) is scanned
+// in place, never copied.
+func eachMember(obj []byte, fn func(key, value []byte)) {
+	i := 1 // past the '{'
+	for {
+		i = skipJSONSpace(obj, i)
+		switch obj[i] {
+		case '}':
+			return
+		case ',':
+			i = skipJSONSpace(obj, i+1)
+		}
+		keyEnd := jsonValueEnd(obj, i)
+		start := skipJSONSpace(obj, skipJSONSpace(obj, keyEnd)+1) // past the ':'
+		end := jsonValueEnd(obj, start)
+		fn(obj[i:keyEnd], obj[start:end])
+		i = end
+	}
+}
+
+// jsonValueEnd returns the index just past the valid JSON value that starts at b[i].
+func jsonValueEnd(b []byte, i int) int {
+	switch b[i] {
+	case '"':
+		for i++; b[i] != '"'; i++ {
+			if b[i] == '\\' {
+				i++ // an escaped character never ends the string
+			}
+		}
+		return i + 1
+	case '{', '[':
+		for depth := 0; ; {
+			switch b[i] {
+			case '"':
+				i = jsonValueEnd(b, i)
+				continue
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+			i++
+			if depth == 0 {
+				return i
+			}
+		}
+	default: // a number, true, false or null
+		for i < len(b) && !strings.ContainsRune(",}] \t\r\n", rune(b[i])) {
+			i++
+		}
+		return i
+	}
+}
+
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && strings.ContainsRune(" \t\r\n", rune(b[i])) {
+		i++
+	}
+	return i
 }
 
 // safeHeaders copies client headers to forward, stripping auth, hop-by-hop, and

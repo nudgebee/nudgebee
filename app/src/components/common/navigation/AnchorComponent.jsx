@@ -68,6 +68,10 @@ const AnchorComponent = ({
     const [parentFrag, childFrag] = hash.split('/');
 
     if (filterOptions && filterOptions.length > 0) {
+      // Matches by fragment regardless of disabled -- a disabled tab/sub-tab
+      // named directly in the URL still highlights as selected (the page
+      // renders a permission-denied placeholder in its content area for it
+      // instead of swapping to another tab behind the user's back).
       const parent = filterOptions.find((opt) => opt.fragment === parentFrag);
       if (parent) {
         let subtab = 0;
@@ -295,6 +299,16 @@ const AnchorComponent = ({
     }
   }, [activeDropdownTab, activeDropdownSubtab, filterOptions, showGroupedTabs]);
 
+  // Next's router leaves router.asPath unchanged when only the hash changes
+  // natively (address-bar edit, `location.hash = …`), so re-sync on hashchange too.
+  const [hashChangeCount, setHashChangeCount] = useState(0);
+  useEffect(() => {
+    if (!manageRoute) return undefined;
+    const onHashChange = () => setHashChangeCount((n) => n + 1);
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, [manageRoute]);
+
   // Sync internal state with URL Hash (Reactive Updates)
   useEffect(() => {
     if (manageRoute) {
@@ -303,6 +317,9 @@ const AnchorComponent = ({
       const [parentFrag, childFrag] = hash.split('/');
 
       if (filterOptions.length > 0 && hash) {
+        // See getInitialState's matching comment: matches by fragment
+        // regardless of disabled, so a permission-gated tab/sub-tab named
+        // directly in the URL still highlights as selected.
         const parent = filterOptions.find((opt) => opt.fragment === parentFrag);
         if (parent) {
           // Only update if strictly different to avoid loop
@@ -327,7 +344,7 @@ const AnchorComponent = ({
         setActiveDropdownSubtab(getInitialState().subtab);
       }
     }
-  }, [router.asPath, filterOptions, manageRoute]);
+  }, [router.asPath, filterOptions, manageRoute, hashChangeCount]);
 
   // Trigger Parent onChange callback
   useEffect(() => {
@@ -341,12 +358,22 @@ const AnchorComponent = ({
     }
 
     if (onChangeFilter && activeDropdownTab !== undefined) {
+      const activeTabOption = filterOptions[activeDropdownTab];
+      const activeSubOption = activeTabOption?.tabOptions?.find((opt) => opt.value === (activeDropdownSubtab || 0));
+      // The active tab/sub-tab can be disabled (permission-gated) -- either it was
+      // named directly in the URL, or it's the index-0 default and that happens to
+      // be disabled. Surface it so the page can render a permission-denied
+      // placeholder in its content area, in place of that tab's real content,
+      // rather than this component silently navigating the user away.
+      const blocked = activeTabOption?.disabled ? activeTabOption : activeSubOption?.disabled ? activeSubOption : null;
+
       onChangeFilter(activeDropdownTab, activeDropdownSubtab || 0, {
         tab: activeDropdownTab,
         subtab: activeDropdownSubtab || 0,
+        blocked,
       });
     }
-  }, [activeDropdownSubtab, activeDropdownTab]);
+  }, [activeDropdownSubtab, activeDropdownTab, filterOptions]);
 
   const contentTopMargin = hideParentTabs ? ds.space[4] : ds.space.mul(0, 32);
 
@@ -365,6 +392,7 @@ const AnchorComponent = ({
             boxShadow,
             mt: marginTop,
             position: 'absolute',
+            top: 0,
             left: 0,
             right: 0,
             // Higher than the plain "2" a page's own Tabs.jsx active-tab underline
@@ -609,7 +637,7 @@ const AnchorComponent = ({
                               two different code paths, so a count formatted only
                               in one of them shows "99+" above and "3.4k" below on
                               the same page. */}
-                          {opt.count && (
+                          {opt.count && !opt.disabled && (
                             <Chip variant='count' size='2xs' tone={selected ? 'info' : 'neutral'}>
                               {formatTabCount(opt.count)}
                             </Chip>
@@ -666,7 +694,7 @@ const AnchorComponent = ({
         <ErrorBoundary resetKey={router.asPath}>
           <PendingAgentInstallBanner />
         </ErrorBoundary>
-        {filterOptions?.[activeDropdownTab]?.options?.length > 0 ? (
+        {filterOptions?.[activeDropdownTab]?.options?.length > 0 && !filterOptions[activeDropdownTab]?.disabled ? (
           <Box position={'relative'} mb={ds.space[2]}>
             <Box
               sx={{
@@ -714,12 +742,18 @@ const AnchorComponent = ({
             <Tabs
               options={{
                 ...filterOptions[activeDropdownTab],
-                tabOptions: showGroupedTabs
+                tabOptions: (showGroupedTabs
                   ? filterOptions[activeDropdownTab]?.tabOptions?.slice(range[0], range[1])
-                  : filterOptions[activeDropdownTab]?.tabOptions?.map((opt) => ({
-                      ...opt,
-                      showBottomMargin: true,
-                    })),
+                  : filterOptions[activeDropdownTab]?.tabOptions
+                )?.map((opt) => ({
+                  ...opt,
+                  // A sub-tab with no disabled/tooltip of its own inherits its parent's --
+                  // otherwise a permission-gated parent (e.g. Optimize) renders every one
+                  // of its sub-tabs (Right Sizing, Configuration, ...) as fully enabled.
+                  disabled: opt.disabled ?? filterOptions[activeDropdownTab]?.disabled,
+                  disabledTooltip: opt.disabledTooltip ?? filterOptions[activeDropdownTab]?.disabledTooltip,
+                  ...(!showGroupedTabs && { showBottomMargin: true }),
+                })),
               }}
               value={activeDropdownSubtab}
               smallSize={true}

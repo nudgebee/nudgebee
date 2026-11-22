@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/budget"
@@ -26,7 +27,7 @@ func handleSyncConversationStatusApi(r *gin.Engine) {
 		dao := core.GetConversationDao()
 		if dao == nil {
 			slog.Error("sync: conversation dao is not initialized")
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "conversation dao is not initialized",
 				},
@@ -36,7 +37,7 @@ func handleSyncConversationStatusApi(r *gin.Engine) {
 		err := dao.MarkInProgressConversationAsKilled()
 		if err != nil {
 			slog.Error("sync: error syncing conversation status", "error", err)
-			c.JSON(500, buildApiResponse(nil, []error{
+			c.JSON(500, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: err.Error(),
 				},
@@ -89,9 +90,12 @@ func init() {
 	}
 }
 
-// checkBudgetAndRestartMessage checks budget limits and conversation state before restarting a message.
-// Returns true if message should be restarted, false if the conversation is terminal, budget exceeded, or error occurred.
-func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.ConversationMessage) bool {
+// checkBudgetAndRestartMessage checks conversation state, budget limits and the
+// sender's access before restarting a message. It returns the context the restart
+// runs as, and false if the message must not be restarted now: the conversation is
+// terminal, the budget is exceeded, the sender lost access (all three fail the
+// message), or the sender's access could not be checked (left for the next sweep).
+func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.ConversationMessage) (*security.RequestContext, bool) {
 	logger := slog.With("message", message.ID.String(), "conversation", message.ConversationID.String(), "account", message.AccountID.String())
 
 	// Get conversation to check status and budget
@@ -100,7 +104,7 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 		logger.Error("sync: unable to get conversation for budget check", "error", err)
 		// Mark as failed - can't proceed without conversation details
 		_ = dao.UpdateConversationMessage(message.ID.String(), "Failed to restart: unable to get conversation details", core.ConversationStatusFailed)
-		return false
+		return nil, false
 	}
 
 	// Skip messages whose conversation already reached a terminal state.
@@ -111,7 +115,7 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 		logger.Info("sync: skipping message for terminal conversation, fixing orphaned message status",
 			"conversation_status", conversation.Status)
 		_ = dao.UpdateConversationMessage(message.ID.String(), message.Response, conversation.Status)
-		return false
+		return nil, false
 	}
 
 	// Determine module based on session_id
@@ -121,18 +125,35 @@ func checkBudgetAndRestartMessage(dao core.IConversationDao, message core.Conver
 	}
 
 	// Check budget limits before restarting
-	budgetExceeded, budgetErrorMsg := budget.CheckBudgetLimits(conversation.TenantID.String(), message.AccountID.String(), module, logger)
+	budgetExceeded, budgetErrorMsg := budget.CheckBudgetLimitsForReply(conversation.TenantID.String(), message.AccountID.String(), module, logger)
 	if budgetExceeded {
 		logger.Warn("sync: budget limit exceeded, marking conversation as failed instead of restarting", "error", budgetErrorMsg)
 		// Mark message and conversation as failed due to budget limit - prevent infinite retry
 		_ = dao.UpdateConversationMessage(message.ID.String(), budgetErrorMsg, core.ConversationStatusFailed)
 		_ = dao.UpdateConversationStatus(conversation.ID.String(), core.ConversationStatusFailed)
-		return false
+		return nil, false
+	}
+
+	// Run as the person who sent the message, checked before the message is
+	// claimed: if services-server cannot be reached the row stays with the dead
+	// worker and the next sweep tries again.
+	ctx, err := core.RecoveryContext(message, conversation)
+	if errors.Is(err, core.ErrRecoveryAccessDenied) {
+		logger.Warn("sync: sender no longer has access, marking conversation as failed instead of restarting", "error", err)
+		_ = dao.UpdateConversationMessage(message.ID.String(), recoveryAccessDeniedNote, core.ConversationStatusFailed)
+		_ = dao.UpdateConversationStatus(conversation.ID.String(), core.ConversationStatusFailed)
+		return nil, false
+	}
+	if err != nil {
+		logger.Warn("sync: could not check the sender's access, leaving the message for the next sweep", "error", err)
+		return nil, false
 	}
 
 	logger.Info("sync: budget check passed, restarting conversation message")
-	return true
+	return ctx, true
 }
+
+const recoveryAccessDeniedNote = "Could not confirm your access to this account, so this answer was not resumed."
 
 func syncDeadWorkerMessages() error {
 	dao := core.GetConversationDao()
@@ -255,7 +276,8 @@ func isOwnOrphanRecoverable(message core.ConversationMessage, bootCutoff time.Ti
 func restartMessages(dao core.IConversationDao, messages []core.ConversationMessage) {
 	for _, message := range messages {
 		// Check budget before restarting
-		if !checkBudgetAndRestartMessage(dao, message) {
+		runCtx, ok := checkBudgetAndRestartMessage(dao, message)
+		if !ok {
 			continue
 		}
 
@@ -273,7 +295,7 @@ func restartMessages(dao core.IConversationDao, messages []core.ConversationMess
 		// No defer cancel here as it's in a loop; the worker will call it
 		currentErr := workerPool.Submit(submissionCtx, func() {
 			defer cancel()
-			_, err = core.HandleConversationMessageRequest(message.AccountID.String(), message.ConversationID.String(), message.ID.String())
+			_, err = core.HandleConversationMessageRequest(runCtx, message.AccountID.String(), message.ConversationID.String(), message.ID.String())
 			if err != nil {
 				logger.Error("sync: unable to restart conversation messages", "error", err)
 			}
@@ -391,6 +413,12 @@ func syncStuckEventAnalyses() error {
 			continue
 		}
 
+		// With the remediation loop on, an investigation that must wait for the alert's conversation stays
+		// IN_PROGRESS with its reason, kept fresh each tick, and is never abandoned while it waits.
+		if !isRCAAnalysisType(a.AnalysisType) && events.RemediationLoopOn(a.AccountId) && investigationMustWait(dbManager, a, conv) {
+			continue
+		}
+
 		// If conversation is still actively running or waiting for a client tool response,
 		// skip — the sync job must not restart it as the relay may still deliver the result.
 		if conv.Status == core.ConversationStatusInProgress ||
@@ -406,7 +434,9 @@ func syncStuckEventAnalyses() error {
 		// The updated_at floor is a second guard that relies on
 		// UpsertEventAnalysis(InProgress) bumping updated_at on every status
 		// write (see events/event_analyzer_repository.go).
-		if time.Since(a.UpdatedAt) < minRecoveryAge {
+		// A row the gate parked (isGateReason) was last written by no worker, so it restarts as soon as the gate
+		// clears.
+		if time.Since(a.UpdatedAt) < minRecoveryAge && !isGateReason(a.StatusReason) {
 			continue
 		}
 
@@ -419,7 +449,7 @@ func syncStuckEventAnalyses() error {
 				"event_id", a.EventId, "session", parentSessionId, "conv_status", conv.Status,
 				"updated_at", a.UpdatedAt, "age", time.Since(a.UpdatedAt).Round(time.Minute))
 			failCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
-			failResp, terminal, failErr := failAbandonedEventAnalysis(failCtx, a, dbManager)
+			failResp, terminal, failErr := failAbandonedEventAnalysis(failCtx, a, dbManager, abandonReason(conv.Status))
 			if failErr != nil {
 				slog.Error("sync: failed to mark stale analysis as failed", "error", failErr, "event_id", a.EventId)
 			} else if terminal {
@@ -439,7 +469,7 @@ func syncStuckEventAnalyses() error {
 		func() {
 			submissionCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 
-			err := getEventAnalysisWorkerPool().Submit(submissionCtx, func() {
+			err := submitStuckAnalysisRecovery(submissionCtx, func() {
 				defer cancel()
 				newCtx := security.NewRequestContextForTenantAccountAdmin(tenantId, security.GetSystemUserId(), []string{a.AccountId})
 
@@ -489,11 +519,25 @@ func syncStuckEventAnalyses() error {
 	return nil
 }
 
+const (
+	abandonReasonStuck   = "recovery abandoned: analysis stuck for over 24 hours"
+	abandonReasonStopped = "stopped before it finished: the investigation was ended (an approval or question went unanswered, or someone stopped it)"
+)
+
+// abandonReason says why an abandoned analysis failed. A TERMINATED
+// conversation was ended on purpose (Stop, or the waiting-expiry job), not
+// stuck, so the event page should not report it as stuck.
+func abandonReason(convStatus core.ConversationStatus) string {
+	if convStatus == core.ConversationStatusTerminated {
+		return abandonReasonStopped
+	}
+	return abandonReasonStuck
+}
+
 // failAbandonedEventAnalysis persists abandonment before checking the normal pipeline.
 // RCA uses a separate conversation and must never drain normal investigation tokens.
-func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager) (EventAnalysisResponse, bool, error) {
+func failAbandonedEventAnalysis(ctx *security.RequestContext, analysis events.InProgressAnalysis, dbManager *common.DatabaseManager, reason string) (EventAnalysisResponse, bool, error) {
 	repo := events.NewEventAnalysisRepositoryForAccount(ctx, dbManager, analysis.AccountId)
-	const reason = "recovery abandoned: analysis stuck for over 24 hours"
 	switch analysis.AnalysisType {
 	case events.AnalysisTypeRCAAttempt:
 		return EventAnalysisResponse{}, false, repo.UpdateRCAAttemptStatus(ctx, analysis.ID, analysis.EventId, analysis.AccountId, string(events.AnalysisStatusFailed), reason)
@@ -557,4 +601,37 @@ func reconcilePendingEventAnalysisTerminal(ctx *security.RequestContext, db *com
 	if response, terminal := getConfirmedTerminalAnalysis(ctx, EventAnalysisRequest{EventId: eventID, AccountId: accountID}, db); terminal {
 		publish(context.WithoutCancel(ctx.GetContext()), accountID, eventID, response, response.Status)
 	}
+}
+
+// submitStuckAnalysisRecovery queues a stuck analysis's recovery on the event-analysis workers. A var so tests can
+// see what recovery would restart.
+var submitStuckAnalysisRecovery = func(ctx context.Context, task func()) error {
+	return getEventAnalysisWorkerPool().Submit(ctx, task)
+}
+
+// investigationMustWait reports whether the stuck investigation a (remediation loop on) must keep waiting rather
+// than be restarted or abandoned now: its pipeline is running (a live hold), or the alert's conversation is someone
+// else's (investigationBlocked, or still waiting on a person). A waiting one is parked again (reason, fresh
+// updated_at), so it is never aged out while it waits. A var so tests can stub it.
+var investigationMustWait = func(dbManager *common.DatabaseManager, a events.InProgressAnalysis, conv core.Conversation) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), decisionDBTimeout)
+	defer cancel()
+	if hold, err := events.EventPipelineHoldOf(ctx, dbManager.Db, a.AccountId, a.EventFingerprint); err == nil && hold == events.PipelineLive {
+		return true
+	}
+	reason, err := investigationBlocked(ctx, dbManager.Db, a.AccountId, a.EventFingerprint)
+	if err != nil {
+		slog.Warn("sync: alert conversation not checked", "error", err, "event_id", a.EventId)
+	}
+	if reason == "" && (conv.Status == core.ConversationStatusWaiting || conv.Status == core.ConversationStatusWaitingForClientTool) {
+		reason = gateReasonApproval
+	}
+	if reason == "" {
+		return false
+	}
+	reqCtx := security.NewRequestContextForSuperAdmin()
+	if err := events.NewEventAnalysisRepository(dbManager).ParkEventAnalysis(reqCtx, a.EventId, a.EventFingerprint, a.AccountId, a.EventAggregationKey, reason); err != nil {
+		slog.Warn("sync: waiting reason not recorded", "error", err, "event_id", a.EventId)
+	}
+	return true
 }

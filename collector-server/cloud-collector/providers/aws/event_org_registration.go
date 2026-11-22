@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -293,7 +295,11 @@ func processOrgRegistrationMessage(pCtx providers.CloudProviderContext, messageB
 		// No token verification for Delete — the single-account token is consumed after Create,
 		// and the event arrives through our trusted SNS→SQS pipeline. Account lookup by
 		// account_number + tenant is sufficient authentication.
-		err = handleOrgAccountDelete(pCtx, props, tenant)
+		if isSingleAccount {
+			handleSingleAccountDelete(pCtx, cfEvent, props, tenant)
+		} else {
+			err = handleOrgAccountDelete(pCtx, props, tenant)
+		}
 	default:
 		logger.Warn("aws: unknown CF RequestType for registration", "requestType", cfEvent.RequestType)
 		sendCfnResponse(cfEvent, "SUCCESS", "Unknown request type, ignoring", props.AccountNumber)
@@ -443,7 +449,6 @@ func handleOrgAccountCreate(
 
 	// Step 4: Upsert cloud_account_attrs for aws_org_type = member
 	upsertOrgTypeAttr(dbms, newAccountId, "member", logger)
-	attachTenantDefaultLLMProvider(dbms, tenant.TenantID, newAccountId, logger)
 
 	// Step 5: Trigger initial data load (async, same as CreateAccount flow)
 	triggerStoreUsageReport(newAccountId, tenant.TenantID, true, logger)
@@ -480,6 +485,62 @@ func handleOrgAccountDelete(
 
 	logger.Info("aws: disabled org member account", "accountNumber", props.AccountNumber)
 	return nil
+}
+
+// handleSingleAccountDelete processes a Delete for a single-account registration.
+// CloudFormation sends it when the stack is deleted and also when a failed create
+// rolls back; either way the stack's CrossAccountRole is deleted with it, so the
+// account can no longer be read and is disabled rather than left showing Active.
+// Only the account still using this stack's role and external id is touched:
+// deleting an old stack after a newer one reconnected the account changes nothing.
+// Best-effort: a failure here is logged, never returned, so a database problem on
+// our side cannot leave the customer's stack stuck in DELETE_FAILED.
+func handleSingleAccountDelete(
+	pCtx providers.CloudProviderContext,
+	cfEvent CfnCustomResourceEvent,
+	props CfnRegistrationProperties,
+	tenant tenantInfo,
+) {
+	logger := pCtx.GetLogger()
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		logger.Error("aws: failed to get database manager for single-account delete", "error", err)
+		return
+	}
+
+	var accountId string
+	err = dbms.QueryRowAndScan(&accountId,
+		`UPDATE cloud_accounts SET status = 'disabled', updated_at = NOW()
+		WHERE account_number = $1 AND tenant = $2 AND external_id = $3 AND assume_role = $4
+		RETURNING id`,
+		props.AccountNumber, tenant.TenantID, props.ExternalId, props.RoleArn,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		logger.Info("aws: no account uses the deleted stack's role, nothing to disable",
+			"accountNumber", props.AccountNumber, "externalId", props.ExternalId)
+		return
+	}
+	if err != nil {
+		logger.Error("aws: failed to disable single account on stack delete", "error", err, "accountNumber", props.AccountNumber)
+		return
+	}
+
+	connectionStatusJSON, err := json.Marshal(map[string]interface{}{"cf_stack": cfStackStatus(cfEvent)})
+	if err != nil {
+		logger.Error("aws: failed to marshal agent connection status", "error", err)
+		return
+	}
+	if _, err := dbms.Exec(
+		`UPDATE agent SET connection_status = COALESCE(connection_status, '{}'::jsonb) || $1::jsonb, updated_at = NOW()
+		WHERE cloud_account_id = $2 AND type = 'AWS'`,
+		string(connectionStatusJSON), accountId,
+	); err != nil {
+		logger.Error("aws: failed to record stack delete on agent", "error", err, "accountId", accountId)
+	}
+
+	logger.Info("aws: disabled single account after its stack was deleted or rolled back",
+		"accountId", accountId, "accountNumber", props.AccountNumber, "stackId", cfEvent.StackId)
 }
 
 // lookupTenant fetches tenant data needed for org registration verification.
@@ -563,38 +624,6 @@ func upsertOrgTypeAttr(dbms *common.DatabaseManager, accountId string, orgType s
 	)
 	if err != nil {
 		logger.Error("aws: failed to upsert aws_org_type attr", "error", err, "accountId", accountId)
-	}
-}
-
-// attachTenantDefaultLLMProvider links the tenant's default LLM provider
-// (the LLM integration whose default_llm_provider config value is 'true') to a
-// newly registered account and flags it as
-// that account's default. No-op when the tenant has no single enabled default.
-// Copy of llm.AttachTenantDefaultLLMProviderSQL in api-server
-// (api-server/services/llm/tenant_default.go) — keep the two in sync.
-func attachTenantDefaultLLMProvider(dbms *common.DatabaseManager, tenantId string, accountId string, logger *slog.Logger) {
-	_, err := dbms.Exec(
-		`INSERT INTO integrations_cloud_accounts (
-			integration_id, cloud_account_id, tenant_id, link_role, default_llm_provider
-		)
-		SELECT i.id, $2, $1, 'own', true
-		FROM integrations i
-		JOIN integration_config_values icv
-		  ON icv.integration_id = i.id AND icv.name = 'default_llm_provider' AND icv.value = 'true'
-		WHERE i.tenant_id = $1
-		  AND i.type = 'llm'
-		  AND i.status = 'enabled'
-		  AND (
-			SELECT count(*) FROM integrations d
-			JOIN integration_config_values dv
-			  ON dv.integration_id = d.id AND dv.name = 'default_llm_provider' AND dv.value = 'true'
-			WHERE d.tenant_id = $1 AND d.type = 'llm' AND d.status = 'enabled'
-		  ) = 1
-		ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role) DO NOTHING`,
-		tenantId, accountId,
-	)
-	if err != nil {
-		logger.Error("aws: failed to attach the default LLM provider", "error", err, "accountId", accountId)
 	}
 }
 
@@ -858,8 +887,6 @@ func handleSingleAccountCreate(
 
 	logger.Info("aws: created single-account via auto-registration", "accountId", newAccountId, "accountNumber", accountNumber, "externalId", props.ExternalId)
 
-	attachTenantDefaultLLMProvider(dbms, tenant.TenantID, newAccountId, logger)
-
 	// Trigger initial data load
 	triggerStoreUsageReport(newAccountId, tenant.TenantID, true, logger)
 
@@ -970,20 +997,10 @@ func updateAgentStatusFromCfEvent(cfEvent CfnCustomResourceEvent, accountId stri
 		return
 	}
 
-	// Parse stack name and region from StackId ARN
-	// Format: arn:aws:cloudformation:us-east-1:123456789012:stack/stackName/guid
-	_, stackRegion, _, _, stackName := parseARN(cfEvent.StackId)
-
 	props := cfEvent.ResourceProperties
 	connectionStatus := map[string]interface{}{
 		"account_number": props.AccountNumber,
-		"cf_stack": map[string]interface{}{
-			"template_version": props.TemplateVersion,
-			"stack_name":       stackName,
-			"stack_region":     stackRegion,
-			"stack_status":     cfEvent.RequestType + "_IN_PROGRESS",
-			"updated_at":       time.Now().UTC().Format(time.RFC3339),
-		},
+		"cf_stack":       cfStackStatus(cfEvent),
 	}
 
 	connectionStatusJSON, err := json.Marshal(connectionStatus)
@@ -1013,6 +1030,20 @@ func updateAgentStatusFromCfEvent(cfEvent CfnCustomResourceEvent, accountId stri
 		logger.Error("aws: failed to update agent status from CF event", "error", err, "accountId", accountId)
 	} else {
 		logger.Info("aws: updated agent status from CF event", "accountId", accountId, "requestType", cfEvent.RequestType, "templateVersion", props.TemplateVersion)
+	}
+}
+
+// cfStackStatus is the agent's connection_status.cf_stack entry for a CF event.
+func cfStackStatus(cfEvent CfnCustomResourceEvent) map[string]interface{} {
+	// Parse stack name and region from StackId ARN
+	// Format: arn:aws:cloudformation:us-east-1:123456789012:stack/stackName/guid
+	_, stackRegion, _, _, stackName := parseARN(cfEvent.StackId)
+	return map[string]interface{}{
+		"template_version": cfEvent.ResourceProperties.TemplateVersion,
+		"stack_name":       stackName,
+		"stack_region":     stackRegion,
+		"stack_status":     cfEvent.RequestType + "_IN_PROGRESS",
+		"updated_at":       time.Now().UTC().Format(time.RFC3339),
 	}
 }
 

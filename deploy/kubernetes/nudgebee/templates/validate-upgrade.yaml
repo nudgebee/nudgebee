@@ -1,0 +1,6 @@
+{{- /*
+Upgrade-time check that the release renders against this chart's own defaults;
+see nudgebee.failOnReusedValues. The PostgreSQL, RabbitMQ and Redis templates
+also call it, so it fires before their own render errors.
+*/ -}}
+{{- include "nudgebee.failOnReusedValues" . }}

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"nudgebee/tickets-server/common"
@@ -210,6 +211,21 @@ func GetIssueCreationTemplate(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, templates)
 }
 
+func GetTransitionMetadata(ctx *gin.Context) {
+	var request models.IssueTemplateMetaRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	metadata, err := services.FetchTransitionMetadata(ctx, request)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unable to fetch ticket transition metadata for integration %s, project %s: %v", request.Input.IntegrationId, request.Input.ProjectKey, err)})
+		return
+	}
+	ctx.JSON(http.StatusOK, metadata)
+}
+
 func QueryIssueFieldDetails(ctx *gin.Context) {
 	var fieldValuesRequest models.FieldValuesRequest
 	if err := ctx.ShouldBindJSON(&fieldValuesRequest); err != nil {
@@ -262,6 +278,34 @@ func GetTicketComments(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, issue)
 	} else {
 		ctx.JSON(http.StatusOK, issue)
+	}
+}
+
+// GetTicketAttachment streams a comment attachment's bytes (not JSON), for
+// platforms whose attachments require ticket-server's stored credentials to
+// fetch (ServiceNow, Jira). Called by the app's own proxy route, never
+// directly by the browser - nothing here authenticates the end user, that
+// happens one layer up where the session cookie is actually available.
+func GetTicketAttachment(ctx *gin.Context) {
+	ticket, ok := bindAndAuthoriseTicketRequest(ctx, "read")
+	if !ok {
+		return
+	}
+
+	contentType, data, err := services.FetchTicketAttachment(ctx, ticket)
+	if err != nil {
+		slog.Error("Failed to fetch attachment due to:", "ticketID", ticket.TicketID, "attachmentID", ticket.AttachmentID, "error", slog.AnyValue(err))
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch attachment"})
+		return
+	}
+	defer func() { _ = data.Close() }()
+
+	if contentType != "" {
+		ctx.Header("Content-Type", contentType)
+	}
+	ctx.Status(http.StatusOK)
+	if _, err := io.Copy(ctx.Writer, data); err != nil {
+		slog.Error("Failed to stream attachment body", "ticketID", ticket.TicketID, "attachmentID", ticket.AttachmentID, "error", err)
 	}
 }
 

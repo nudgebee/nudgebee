@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { canManageMessagingPlatforms } from '@lib/messagingPlatforms';
 import { resolveRequestAuth } from '@lib/sessionToken';
 import { getRequestId, handleErrorResponse, sendAuthenticationError } from 'src/utils/apiUtils';
 
@@ -18,6 +19,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return sendAuthenticationError(res);
     }
 
+    if (!canManageMessagingPlatforms(auth.jwt)) {
+      return res.status(403).json({ error: 'forbidden' });
+    }
+
     const notificationServiceEndpoint = process.env.NOTIFICATION_SERVICE_URL || 'http://notifications:80';
     const url = `${notificationServiceEndpoint}/api/integrations/install/discord`;
 
@@ -29,6 +34,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         'tenant-id': tenantId,
         'x-user-email': userEmail || '',
         'x-request-id': requestId,
+        'X-ACTION-TOKEN': process.env.NOTIFICATION_SERVER_TOKEN || '',
       },
       body: JSON.stringify(req.body),
     });

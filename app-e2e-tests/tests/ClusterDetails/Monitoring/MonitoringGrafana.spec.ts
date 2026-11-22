@@ -1,7 +1,6 @@
 import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
-import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
 test("API testing Cluster Details->Monitoring-> Grafana", { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);

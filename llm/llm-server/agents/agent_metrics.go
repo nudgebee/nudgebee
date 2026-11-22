@@ -114,6 +114,7 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:            ctx,
 		AccountId:      f.accountId,
+		AccountContext: delegatedAccountContext(ctx, query, f.accountId),
 		ConversationId: query.ConversationId,
 		ParentAgentId:  nestedAgentParentID(query),
 		MessageId:      query.MessageId,
@@ -265,6 +266,7 @@ func (m *metricsQueryAgent) Execute(ctx *security.RequestContext, query core.NBA
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:                     ctx,
 		AccountId:               m.accountId,
+		AccountContext:          delegatedAccountContext(ctx, query, m.accountId),
 		ConversationId:          query.ConversationId,
 		ParentAgentId:           nestedAgentParentID(query),
 		MessageId:               query.MessageId,
@@ -411,8 +413,12 @@ func normaliseGeneratedMetricsQuery(provider, raw string) (metricsQueryResult, e
 
 func isSingleDatadogMetricsQuery(query string) bool {
 	query = strings.TrimSpace(query)
-	match := datadogMetricQueryRE.FindStringIndex(query)
-	if match == nil || !isDatadogQueryPrefix(query[:match[0]]) || strings.ContainsAny(query, "\r\n`") {
+	matches := datadogMetricQueryRE.FindAllStringIndex(query, -1)
+	if len(matches) == 0 || !isDatadogQueryPrefix(query[:matches[0][0]]) || strings.ContainsAny(query, "\r\n`") {
+		return false
+	}
+	end := max(matches[len(matches)-1][1], strings.LastIndexAny(query, "})")+1)
+	if datadogTrailingProseRE.MatchString(query[end:]) {
 		return false
 	}
 	return validateDatadogQuery(query) == ""
@@ -496,6 +502,7 @@ func (m MetricsAgentTool) Description() string {
 
 	* Input: Provide a question in natural language to search, filter, troubleshoot, or visualize metrics.
 	* Output: Returns metrics data, summaries, and visualizations based on your query.
+	* Charts: when the user asks for a chart or graph, the result carries a ` + "```nb-chart" + ` block or chart_ref per query. Copy that block into your final answer as-is (you may set "top", "type" or "title" in it); never type chart numbers or draw a chart yourself.
 	`
 }
 
@@ -506,6 +513,10 @@ func (m MetricsAgentTool) InputSchema() toolcore.ToolSchema {
 			"command": {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Metrics Query Question",
+			},
+			"query": {
+				Type:        toolcore.ToolSchemaTypeString,
+				Description: "Optional: a query the user supplied (PromQL, Elasticsearch DSL JSON, …), copied exactly. It is run as given first.",
 			},
 			"output_file": {
 				Type:        toolcore.ToolSchemaTypeString,
@@ -535,6 +546,8 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		// still name the target; tell it the target is already the scope.
 		input.Context = strings.TrimSpace(input.Context + "\n" + target.ScopeNote())
 	}
+
+	input.Command = withUserSuppliedQuery(input.Command, input.Arguments)
 
 	provider, err := tools.GetMetricsProvider(queryAccountId)
 	if target != nil {
@@ -612,12 +625,38 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		// this the `metrics` sub-agent drops its evidence at the tool boundary.
 		subAgentEvidence := core.BuildSubAgentEvidenceForTool(nbRequestContext.Ctx, MetricsAgentName, resp.AgentStepResponse)
 
+		// Return the backend agent's answer (inline, or the saved-file note above that
+		// carries it), not its newest raw tool step. The raw step dropped the agent's
+		// conclusion and the query it ran, so the caller could not tell whether its
+		// question was answered and asked again: 4–8 metrics calls per question on
+		// Elasticsearch, 1.8 per conversation on Prometheus (#39201).
+		if strings.TrimSpace(resp.Response[0]) != "" {
+			data, status, lastRaw := metricsAnswer(resp, metricData)
+			if lastRaw != "" {
+				name := fmt.Sprintf("metrics_raw_%d.json", time.Now().UnixNano())
+				if err := workspace.NewWorkspaceManager().SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, name, lastRaw); err != nil {
+					nbRequestContext.Ctx.GetLogger().Warn("metrics: failed to save the last raw query result", "error", err)
+				} else {
+					references = append(references, toolcore.NBToolResponseReference{Text: "Raw result of the last successful metrics query", Url: name, Type: "file", Description: "Raw result of the last successful metrics query"})
+					data += "\nRaw result of the last successful query: file_ref " + name
+				}
+			}
+			return toolcore.NBToolResponse{
+				Data:              data,
+				Type:              toolcore.NBToolResponseTypeText,
+				Status:            status,
+				References:        append(references, core.FileReferences(resp.References)...),
+				SubAgentEvidence:  subAgentEvidence,
+				AdditionalDetails: additionalDetails,
+			}, nil
+		}
+
 		if _, ok := agent.(core.NBAgentReActPlannerSummaryToolProvider); ok {
 			return toolcore.NBToolResponse{
 				Data:              metricData,
 				Type:              toolcore.NBToolResponseTypeText,
 				Status:            toolcore.NBToolResponseStatusSuccess,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -634,7 +673,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 				Data:              content,
 				Type:              respType,
 				Status:            status,
-				References:        references,
+				References:        append(references, core.FileReferences(resp.References)...),
 				SubAgentEvidence:  subAgentEvidence,
 				AdditionalDetails: additionalDetails,
 			}, nil
@@ -643,7 +682,7 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 			Data:              metricData,
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
-			References:        references,
+			References:        append(references, core.FileReferences(resp.References)...),
 			SubAgentEvidence:  subAgentEvidence,
 			AdditionalDetails: additionalDetails,
 		}, nil
@@ -665,4 +704,108 @@ func newestMetricsStep(steps []core.ToolInvocation) (string, toolcore.NBToolResp
 		return steps[i].Response.Content, toolcore.NBToolResponseStatusSuccess, true
 	}
 	return "", "", false
+}
+
+// metricsDataTools are the tools that run a backend's actual metric queries; the
+// "queries used" note names only these, not field listings, charts or shell reads.
+var metricsDataTools = map[string]bool{
+	tools.ToolESMetricsQuery: true, "prometheus_execute": true, "splunk_metrics_query": true,
+	"datadog_metrics_execute": true, "aws_execute": true, "gcloud_execute": true, "azure_execute": true,
+}
+
+// metricsAnswer builds the metrics tool's result from the backend agent's answer: the
+// answer, the chart_refs of charts its queries saved that the answer does not carry,
+// and the last two data queries it ran (tool, status, arguments, saved-data note). It also returns the
+// newest successful query's raw output when that output was not already saved to a
+// file, so the caller can keep it for follow-up work. The status is Error when the
+// agent failed, or when it ran data queries and none of them succeeded (#36633).
+func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.NBToolResponseStatus, string) {
+	data := answer
+	agentAnswer := ""
+	if len(resp.Response) > 0 {
+		agentAnswer = resp.Response[0]
+	}
+	var used []string
+	var charts []string
+	lastRaw := ""
+	ran, succeeded, sawOK := false, false, false
+	for i := len(resp.AgentStepResponse) - 1; i >= 0; i-- {
+		st := resp.AgentStepResponse[i]
+		if st.Call.FunctionCall == nil || !metricsDataTools[st.Call.FunctionCall.Name] {
+			continue
+		}
+		ran = true
+		succeeded = succeeded || !st.Failed
+		for _, ref := range toolcore.MetricChartRefs(st.Response.Content) {
+			// Newest first; the answer may already carry the block.
+			if len(charts) < 3 && !strings.Contains(agentAnswer, ref) {
+				charts = append(charts, toolcore.MetricChartNote(ref, ""))
+			}
+		}
+		j := strings.Index(st.Response.Content, "file_ref")
+		// Only the newest successful query's output, even when it is older than the
+		// listed queries: a later success's output would be mislabelled.
+		if !st.Failed && !sawOK {
+			sawOK = true
+			if j < 0 && strings.TrimSpace(st.Response.Content) != "" {
+				lastRaw = st.Response.Content
+			}
+		}
+		if len(used) == 2 {
+			continue
+		}
+		state := "ok"
+		if st.Failed {
+			state = "failed"
+		}
+		line := st.Call.FunctionCall.Name + " (" + state + ") " + truncateRunes(st.Call.FunctionCall.Arguments, 500)
+		if j >= 0 {
+			line += " — " + truncateRunes(st.Response.Content[j:], 120)
+		}
+		used = append(used, line)
+	}
+	if len(charts) > 0 {
+		data += "\n\nCharts of the queries below (newest first):\n- " + strings.Join(charts, "\n- ")
+	}
+	if len(used) > 0 {
+		data += "\n\nQueries used (newest first):\n- " + strings.Join(used, "\n- ")
+	}
+	status := toolcore.NBToolResponseStatusSuccess
+	if resp.Status == core.ConversationStatusFailed || (ran && !succeeded) {
+		status = toolcore.NBToolResponseStatusError
+	}
+	return data, status, lastRaw
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// withUserSuppliedQuery appends a query the user gave, verbatim, to the command the
+// provider agent receives. Passed only as a paraphrased question, a pasted query or
+// field path was rewritten on the way and never run as given (#39201).
+//
+// The wording "Run the following query" is what explicitMetricsQuery
+// (agents/core/metrics_explicit_query.go) recognises, so on react4 a complete DSL
+// body with a named index is then executed first deterministically.
+func withUserSuppliedQuery(command string, args map[string]any) string {
+	var query string
+	switch q := args["query"].(type) {
+	case string:
+		query = q
+	case nil:
+	default:
+		// A model may pass a DSL body as a JSON object rather than a string.
+		if b, err := json.Marshal(q); err == nil {
+			query = string(b)
+		}
+	}
+	if strings.TrimSpace(query) == "" {
+		return command
+	}
+	return command + "\n\nThe user supplied a query. Run the following query exactly as given first; change it only if it fails or returns nothing, and say what you changed:\n" + query
 }

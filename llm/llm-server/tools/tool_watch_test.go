@@ -6,12 +6,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/watch"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -365,4 +367,73 @@ func TestWatchResourceTool_PrimingDisabled_SkipsTheProbe(t *testing.T) {
 		"probe must not run when priming is disabled")
 	assert.Contains(t, resp.Data, "failed to register watch",
 		"the call should have proceeded past priming to Create")
+}
+
+// watch_status and watch_cancel look a watch up by tenant, so the watch's
+// account decides who may see or cancel it: the same rule as the UI's cancel
+// (api/watches.go). An admin of one account gets nothing of another's.
+func TestWatchLifecycle_AccessFollowsTheWatchesAccount(t *testing.T) {
+	own, other := uuid.New(), uuid.New()
+	nbCtx := core.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin(uuid.NewString(), "user", []string{own.String()})}
+
+	mine := &watch.Watch{AccountID: own}
+	assert.True(t, canAccessWatchAccount(nbCtx, mine, security.SecurityAccessTypeRead))
+	assert.True(t, canAccessWatchAccount(nbCtx, mine, security.SecurityAccessTypeUpdate))
+
+	theirs := &watch.Watch{AccountID: other}
+	assert.False(t, canAccessWatchAccount(nbCtx, theirs, security.SecurityAccessTypeRead), "another account's watch is not visible")
+	assert.False(t, canAccessWatchAccount(nbCtx, theirs, security.SecurityAccessTypeUpdate), "another account's watch cannot be cancelled")
+
+	assert.False(t, canAccessWatchAccount(core.NbToolContext{}, mine, security.SecurityAccessTypeRead), "no caller, no access")
+
+	// A custom-role user with the ai_misc grant keeps what the UI gives them.
+	var custom security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"`+uuid.NewString()+`","UserId":"user-2","AccountIds":["`+own.String()+`"],"Roles":[],"CustomPermissions":{"ai_misc:Execute":true}}`), &custom))
+	require.False(t, custom.HasAccountAccess(own.String(), security.SecurityAccessTypeUpdate), "no built-in role: only the grant can let it through")
+	customCtx := core.NbToolContext{Ctx: security.NewRequestContext(context.Background(), &custom, nil, nil, nil)}
+	assert.True(t, canAccessWatchAccount(customCtx, mine, security.SecurityAccessTypeUpdate), "custom role with ai_misc Execute may cancel")
+	assert.False(t, canAccessWatchAccount(customCtx, theirs, security.SecurityAccessTypeUpdate), "but not on an account outside its tenant scope")
+}
+
+// TestWatchSource_RealClassifiersRefuseWritesTheDenyListMissed (#42460): the
+// deny-list only sees a verb right after the executable, so these writes got
+// past it. The watch source now asks the real tool's classifier first, and
+// priming refuses them as a config rejection, before anything runs.
+func TestWatchSource_RealClassifiersRefuseWritesTheDenyListMissed(t *testing.T) {
+	nbCtx := validToolCtx(t)
+	for _, tc := range []struct{ tool, command string }{
+		{ToolExecuteKubectlCommand, "kubectl -n demo delete pod x"},
+		{ToolExecuteKubectlCommand, "kubectl --context prod delete pod x"},
+		{ToolExecuteKubectlCommand, "kubectl -n demo scale deployment web --replicas=0"},
+		{"aws_execute", "aws --region us-east-1 ec2 terminate-instances --instance-ids i-0123456789abcdef0"},
+		{"github_execute", "gh api -X DELETE repos/example/repo/git/refs/heads/main"},
+		{"shell_execute", `sh -c "kubectl -n demo delete pod x"`},
+	} {
+		t.Run(tc.tool+": "+tc.command, func(t *testing.T) {
+			cfg, err := json.Marshal(map[string]any{"tool_name": tc.tool, "tool_input": map[string]any{"command": tc.command}})
+			require.NoError(t, err)
+			out := watch.Prime(nbCtx.Ctx, watch.CreateInput{
+				AccountID:     uuid.MustParse(nbCtx.AccountId),
+				TenantID:      uuid.MustParse("11111111-1111-1111-1111-111111111111"),
+				SourceKind:    watch.SourceKindTool,
+				SourceConfig:  cfg,
+				PredicateKind: watch.PredicateKindSubstring,
+				PredicateExpr: "deleted",
+			}, 5*time.Second)
+			require.ErrorIs(t, out.Err, watch.ErrNotReadOnly)
+			assert.Equal(t, watch.PrimePhaseValidate, out.Phase)
+		})
+	}
+}
+
+// A timer is NudgeBee's own kind of wait (#42461): a chat cannot set one up through watch_resource.
+func TestWatchResourceTool_RefusesTimerWatches(t *testing.T) {
+	for _, args := range []map[string]any{
+		{"source_kind": "timer", "source_config": map[string]any{}, "predicate_kind": "regex", "predicate_expr": "x", "poll_interval_sec": 60, "max_duration_sec": 600},
+		{"source_kind": "tool", "source_config": map[string]any{"tool_name": "kubectl_execute"}, "predicate_kind": "never", "predicate_expr": "-", "poll_interval_sec": 60, "max_duration_sec": 600},
+	} {
+		_, err := parseWatchInput(args)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `source_kind must be "tool" or "sql"`)
+	}
 }

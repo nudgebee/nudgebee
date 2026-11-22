@@ -1,7 +1,7 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import ImportDashboardModal from '../ImportDashboardModal';
-import apiDashboards, { type AccountOption, type Dashboard } from '@api1/dashboards';
+import apiDashboards, { type AccountOption } from '@api1/dashboards';
 import { snackbar } from '@ui/Toast';
 
 /*
@@ -30,6 +30,7 @@ const DASHBOARD = JSON.stringify({ title: 'From a file', definition: { panels: [
 /** A file whose one panel is scoped to an account that exists here, so the modal prefills the mapping and Import is enabled. */
 const IMPORTABLE = JSON.stringify({
   title: 'CPU dashboard',
+  tags: ['cpu'],
   definition: {
     panels: [
       {
@@ -45,7 +46,7 @@ const IMPORTABLE = JSON.stringify({
   },
 });
 
-const renderModal = () => render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onImported={jest.fn()} />);
+const renderModal = () => render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onDraft={jest.fn()} />);
 
 const upload = (file: File) => {
   fireEvent.change(screen.getByTestId('import-json-file-input'), { target: { files: [file] } });
@@ -86,7 +87,7 @@ describe('ImportDashboardModal — file upload', () => {
   // FileReader always finishes at least a tick after the pick, and the modal
   // stays mounted between openings, so a late read could re-fill a cleared form.
   it('drops a read that lands after the modal was cancelled', async () => {
-    render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onImported={jest.fn()} />);
+    render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onDraft={jest.fn()} />);
     upload(new File([DASHBOARD], 'stale.json', { type: 'application/json' }));
     fireEvent.click(screen.getByText('Cancel'));
 
@@ -108,28 +109,27 @@ describe('ImportDashboardModal — file upload', () => {
   });
 });
 
-describe('ImportDashboardModal — import in progress', () => {
+describe('ImportDashboardModal — import', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  // The save is a round trip to the server, and the modal stays open while it
-  // runs — without a progress signal a slow import looks like a dead button.
-  it('shows the modal loader while the dashboard is being saved, and clears it after', async () => {
-    let finish: (res: unknown) => void = () => {};
-    (apiDashboards.saveDashboard as jest.Mock).mockReturnValue(new Promise((resolve) => (finish = resolve)));
-    const onImported = jest.fn();
-    render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onImported={onImported} />);
+  // Saving here left a dashboard in the list even when the author then backed
+  // out of the editor and chose Discard. The editor's Save is what creates it.
+  it('hands over an unsaved draft and writes nothing', async () => {
+    const onDraft = jest.fn();
+    render(<ImportDashboardModal open accountOptions={accounts} onClose={jest.fn()} onDraft={onDraft} />);
 
     upload(new File([IMPORTABLE], 'cpu.json', { type: 'application/json' }));
     await waitFor(() => expect(screen.getByTestId('import-dashboard-btn')).toBeEnabled());
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
-
     fireEvent.click(screen.getByTestId('import-dashboard-btn'));
-    await waitFor(() => expect(screen.getByRole('progressbar')).toBeInTheDocument());
 
-    await act(async () => {
-      finish({ data: { id: 7, title: 'CPU dashboard' } as unknown as Dashboard });
-    });
-    await waitFor(() => expect(onImported).toHaveBeenCalled());
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(apiDashboards.saveDashboard).not.toHaveBeenCalled();
+    expect(onDraft).toHaveBeenCalledTimes(1);
+    const draft = onDraft.mock.calls[0][0];
+    expect(draft.id).toBe('');
+    expect(draft.title).toBe('CPU dashboard');
+    expect(draft.tags).toEqual(['cpu']);
+    expect(draft.definition.panels).toHaveLength(1);
+    // The form is cleared for the next opening, as Cancel clears it.
+    expect(editor().value).toBe('');
   });
 });

@@ -163,3 +163,73 @@ func TestLookupApp(t *testing.T) {
 		})
 	}
 }
+
+// TestTracesFlowSource_BuildGraphFromServiceMap_NoCrossNamespaceNameMatch is the
+// H2 repro (nb-39546): payments is traced in demo, the account has no
+// demo/payments workload but does have shop/payments, and demo is a real
+// namespace (demo/frontend lives there). Strategy 2 used to bind the traced
+// service to shop/payments by name alone, giving demo/frontend -> shop/payments
+// -> demo/ledger. The traced service must instead get its own namespaced node,
+// the way ledger does.
+func TestTracesFlowSource_BuildGraphFromServiceMap_NoCrossNamespaceNameMatch(t *testing.T) {
+	const acct = "acct-1"
+	source := NewTracesFlowSource(slog.Default())
+
+	frontend := nsWorkloadNode("node-frontend", "frontend", "demo", acct)
+	shopPayments := nsWorkloadNode("node-shop-payments", "payments", "shop", acct)
+	source.InitializeNodeMatcher([]*core.DbNode{frontend, shopPayments})
+
+	serviceMap := &traces.ServiceMap{
+		Applications: []traces.ServiceApplication{
+			nsApp("Service", "demo", "frontend", []traces.UpstreamLink{
+				{Id: "demo:Service:payments", RequestCount: 10},
+			}),
+			nsApp("Service", "demo", "payments", []traces.UpstreamLink{
+				{Id: "demo:Service:ledger", RequestCount: 10},
+			}),
+			nsApp("Service", "demo", "ledger", nil),
+		},
+	}
+
+	edges, newNodes := source.BuildGraphFromServiceMap(
+		serviceMap,
+		&core.FlowSourceBuildRequest{TenantID: "tenant-1"},
+		core.K8sAccount{CloudAccountID: acct, Tenant: "tenant-1"},
+		nil, nil, nil,
+	)
+
+	byName := map[string]*core.DbNode{}
+	for _, n := range newNodes {
+		byName[n.Properties["name"].(string)] = n
+	}
+	demoPayments, ok := byName["payments"]
+	if !ok {
+		t.Fatalf("no new node minted for demo/payments; new nodes: %v", byName)
+	}
+	if demoPayments.NodeType != core.NodeTypeService || demoPayments.Properties["namespace"] != "demo" {
+		t.Fatalf("minted payments node = %s in %v, want Service in demo", demoPayments.NodeType, demoPayments.Properties["namespace"])
+	}
+	ledger, ok := byName["ledger"]
+	if !ok {
+		t.Fatalf("no new node minted for demo/ledger; new nodes: %v", byName)
+	}
+
+	got := map[[2]string]bool{}
+	for _, e := range edges {
+		if e.RelationshipType != core.RelationshipCalls {
+			continue
+		}
+		if e.SourceNodeID == shopPayments.ID || e.DestinationNodeID == shopPayments.ID {
+			t.Errorf("CALLS edge %s -> %s touches shop/payments", e.SourceNodeID, e.DestinationNodeID)
+		}
+		got[[2]string{e.SourceNodeID, e.DestinationNodeID}] = true
+	}
+	for _, want := range [][2]string{
+		{frontend.ID, demoPayments.ID},
+		{demoPayments.ID, ledger.ID},
+	} {
+		if !got[want] {
+			t.Errorf("missing CALLS edge %s -> %s; got %v", want[0], want[1], got)
+		}
+	}
+}

@@ -48,3 +48,23 @@ func TestOpenObserveClusterQuery_UsesTheCappedRateWindow(t *testing.T) {
 		"OpenObserve rates over the capped window, not the caller's day-long step")
 	assert.NotContains(t, query, "[86400s]")
 }
+
+// The workload latency p99 rates over the request's window, not a fixed 5m. The anomaly
+// detector asks for 7 days at a 10m step; at a 5m window that query read every sample
+// of a high-cardinality histogram 2.5 times and, at the old 2m step, held 8M samples in
+// memory for one workload — the hourly burst OOM-killed Prometheus (#43354). A chart
+// with no explicit step must keep the 5m window it has always had.
+func TestWorkloadHTTPLatencyP99_RatesOverTheRequestWindow(t *testing.T) {
+	const hour = 3600 * 1000
+	latency := func(startMs, endMs int64, step int) string {
+		meta := RequestMetadata{Kind: "deployment", Name: "web", Namespace: "shop"}
+		meta.RangeWindow, meta.Step, meta.RateWindow = resolveAggWindows(startMs, endMs, step)
+		return buildPrometheusWorkloadQueries(meta, []string{string(KeyWorkloadHTTPLatencyP99)})[string(KeyWorkloadHTTPLatencyP99)]
+	}
+
+	anomaly := latency(0, 7*24*hour, 600)
+	assert.Contains(t, anomaly, "[600s]", "the detector's 10m step is the rate window")
+	assert.NotContains(t, anomaly, "[5m]")
+
+	assert.Contains(t, latency(0, hour, 0), "[300s]", "an evidence chart keeps its 5m window")
+}

@@ -128,6 +128,70 @@ class TestDiscoveryCleanupScoping(unittest.TestCase):
         self.assertEqual(kwargs["metadata"]["resource_type"], "Pod")
 
 
+class TestJobKindScoping(unittest.TestCase):
+    """Jobs and CronJobs arrive in the job snapshot, never in the service snapshot.
+
+    The workload reconcile diffs against the service snapshot, so it must leave
+    both kinds alone; the Job reconcile is the one that owns them, CronJobs included.
+    """
+
+    def _statements(self, resource_type, total, active):
+        queries = []
+
+        def _dispatch(query, values=None, cursor_factory=None):
+            text = " ".join(str(query).split())
+            queries.append(text)
+            return active if "FROM active_resources" in text else []
+
+        with mock.patch.object(dh.database, "run_query", side_effect=_dispatch), mock.patch.object(
+            dh, "close_events_with_history"
+        ):
+            dh.handle_active_resources_deletion(ACCOUNT, TENANT, resource_type, total_resources_count=total)
+        return [q for q in queries if q.startswith("UPDATE")]
+
+    def _both_paths(self, resource_type):
+        """Statements from the active-set diff and from the zero-count bulk pass."""
+        return [
+            self._statements(resource_type, 1, [(LIVE_RESOURCE, "ns/Deployment/live")]),
+            self._statements(resource_type, 0, []),
+        ]
+
+    def test_workload_reconcile_skips_jobs_and_cronjobs(self):
+        for updates in self._both_paths("workload"):
+            cloud = [q for q in updates if q.startswith("UPDATE cloud_resourses")]
+            workloads = [q for q in updates if q.startswith("UPDATE k8s_workloads")]
+            self.assertEqual(len(cloud), 1)
+            self.assertEqual(len(workloads), 1)
+            self.assertIn("'Job', 'CronJob')", cloud[0])
+            self.assertIn("AND kind NOT IN ('Job', 'CronJob')", workloads[0])
+
+    def test_job_reconcile_covers_cronjobs(self):
+        for updates in self._both_paths("Job"):
+            cloud = [q for q in updates if q.startswith("UPDATE cloud_resourses")]
+            workloads = [q for q in updates if q.startswith("UPDATE k8s_workloads")]
+            self.assertEqual(len(cloud), 1)
+            self.assertEqual(len(workloads), 1)
+            self.assertIn("type IN ('Job', 'CronJob')", cloud[0])
+            self.assertIn("kind IN ('Job', 'CronJob')", workloads[0])
+
+    def test_job_reconcile_reports_deactivated_workloads_to_the_graph(self):
+        """CronJob deletions now land in the Job pass, so it must hand them to the graph."""
+        returned = [(GONE_RESOURCE, "CronJob")]
+        for total, active in ((1, [(LIVE_RESOURCE, "ns/Job/live")]), (0, [])):
+
+            def _dispatch(query, values=None, cursor_factory=None):
+                text = " ".join(str(query).split())
+                if "FROM active_resources" in text:
+                    return active
+                return returned if text.startswith("UPDATE k8s_workloads") else []
+
+            with mock.patch.object(dh.database, "run_query", side_effect=_dispatch), mock.patch.object(
+                dh, "close_events_with_history"
+            ), mock.patch.object(dh, "record_deleted_workloads") as recorder:
+                dh.handle_active_resources_deletion(ACCOUNT, TENANT, "Job", total_resources_count=total)
+            recorder.assert_called_once_with(returned)
+
+
 # utc_from_epoch_millis() returns NAIVE UTC and WorkloadDetails.last_seen carries
 # its .isoformat(), so naive is the shape production actually delivers.
 OBSERVED_AT = datetime(2026, 8, 19, 8, 30)

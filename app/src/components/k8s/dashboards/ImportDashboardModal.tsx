@@ -10,7 +10,7 @@ import { snackbar } from '@ui/Toast';
 import { Form } from '@shared/forms/Form';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { ds } from '@utils/colors';
-import apiDashboards, { type AccountOption, type Dashboard } from '@api1/dashboards';
+import type { AccountOption, Dashboard } from '@api1/dashboards';
 import { panelScope } from './panelAccounts';
 import { convertGrafanaDashboard, parseGrafanaJson, type GrafanaImportResult } from './grafanaImport';
 import { collectSourceScopes, convertNativeDashboard, isNativeDashboard, parseImportJson, type ScopeMapping } from './nativeImport';
@@ -20,7 +20,8 @@ interface Props {
   /** Every account the importer may scope the imported panels to. */
   accountOptions: AccountOption[];
   onClose: () => void;
-  onImported: (dashboard: Dashboard) => void;
+  /** Receives the converted dashboard unsaved (no id) — the editor's Save is what creates it. */
+  onDraft: (dashboard: Dashboard) => void;
 }
 
 /**
@@ -53,12 +54,11 @@ const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
  * the import is the difference between a deliberate choice and a silently
  * truncated dashboard.
  */
-const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, onImported }) => {
+const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, onDraft }) => {
   const [json, setJson] = useState('');
   const [format, setFormat] = useState<ImportFormat>('nudgebee');
   const [accountType, setAccountType] = useState('');
   const [accountIds, setAccountIds] = useState<string[]>([]);
-  const [saving, setSaving] = useState(false);
   /** Source scope key → chosen target, as the encoded value of the row's Select. */
   const [mappingChoice, setMappingChoice] = useState<Record<string, string>>({});
   /** Name of the file the editor was last filled from, so a mis-pick is visible. */
@@ -258,7 +258,7 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
    */
   const everyScopeMapped = sourceScopes.length > 0 && sourceScopes.every((scope) => mappings[scope.key]);
   const hasDefaultScope = Boolean(accountType || accountIds.length > 0);
-  const canImport = Boolean(preview && panelCount > 0 && (hasDefaultScope || everyScopeMapped) && !saving);
+  const canImport = Boolean(preview && panelCount > 0 && (hasDefaultScope || everyScopeMapped));
 
   /**
    * Why Import is disabled, shown beside the button.
@@ -268,38 +268,19 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
    * it was waiting on.
    */
   const blockedReason = (() => {
-    if (!json.trim() || parseError || !preview || saving) return '';
+    if (!json.trim() || parseError || !preview) return '';
     if (panelCount === 0) return 'No panel in this file can be imported.';
     if (!hasDefaultScope && !everyScopeMapped) return 'Choose an account type below — every panel must name one.';
     return '';
   })();
 
-  const handleImport = async () => {
+  const handleImport = () => {
     if (!preview) return;
-    setSaving(true);
-    try {
-      const res = await apiDashboards.saveDashboard({
-        title: preview.title,
-        description: preview.description,
-        definition: preview.definition,
-        tags: preview.tags,
-      });
-      // The gateway reports handler failures in `errors` rather than throwing, so
-      // the server's message is the one worth showing — it names the panel that
-      // failed validation.
-      if (res.errors || !res.data) {
-        const message = Array.isArray(res.errors) ? (res.errors[0] as any)?.message : null;
-        snackbar.error(message || 'Could not import that dashboard.');
-        return;
-      }
-      snackbar.success(`Imported ${panelCount} panel${panelCount === 1 ? '' : 's'}`);
-      reset();
-      onImported(res.data);
-    } finally {
-      // Guarantees the modal unlocks on every exit, including the early return
-      // a rejected import takes.
-      setSaving(false);
-    }
+    // No id: this is a draft, exactly as a template is. Writing it here left a
+    // dashboard behind even when the author then discarded the editor; the
+    // editor's Save is what creates it, and reports the server's rejection.
+    onDraft({ id: '', title: preview.title, description: preview.description, definition: preview.definition, tags: preview.tags });
+    reset();
   };
 
   return (
@@ -309,7 +290,6 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
       title='Import dashboard'
       width='md'
       backdropClickClose={false}
-      loader={saving}
       actionButtons={
         // Full width so the reason can sit left of the buttons — DialogActions
         // right-aligns its single child.
@@ -317,11 +297,11 @@ const ImportDashboardModal: React.FC<Props> = ({ open, accountOptions, onClose, 
           <Typography variant='caption' sx={{ color: ds.amber[600], mr: 'auto' }} data-testid='import-blocked-reason'>
             {blockedReason}
           </Typography>
-          <Button tone='secondary' onClick={close} disabled={saving} id='import-cancel-btn'>
+          <Button tone='secondary' onClick={close} id='import-cancel-btn'>
             Cancel
           </Button>
           <Button onClick={handleImport} disabled={!canImport} id='import-dashboard-btn' data-testid='import-dashboard-btn'>
-            {saving ? 'Importing…' : 'Import'}
+            Import
           </Button>
         </Stack>
       }

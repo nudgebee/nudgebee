@@ -42,6 +42,11 @@ func ExecuteRelayJob(requestContext *security.RequestContext, accountId string, 
 	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobOracle, RelayJobClickhouse, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
 		return nil, errors.New("module not supported")
 	}
+	if module == RelayJobKubectl {
+		if err := checkKubectlSecretAccess(query); err != nil {
+			return nil, err
+		}
+	}
 
 	var integrationConfig integrations.IntegrationConfig
 	if integrationId == "" && module != RelayJobKubectl && module != RelayJobShell {
@@ -413,14 +418,7 @@ EOF`, oracleService, safeQuery)
 			}
 			return convertCsvToJsonString(requestContext, raw, rune(',')), nil
 		default:
-			outputformat := map[string]string{
-				"stdout": responseAny.(string),
-			}
-			outputformatBytes, err := common.MarshalJson(outputformat)
-			if err != nil {
-				return nil, err
-			}
-			return string(outputformatBytes), nil
+			return commandOutputJSON(responseAny, responseParsed)
 		}
 	}
 	responseParsedbytes, err := common.MarshalJson(responseParsed)
@@ -552,25 +550,15 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 func buildArgoCDFlags(configValues []integrations.IntegrationConfigValue) string {
 	var flags []string
 
-	insecure := true
 	grpcWeb := false
-	timeout := "30"
 	configFilePath := ""
 
 	// Parse configuration values
 	for _, cfg := range configValues {
 		switch cfg.Name {
-		case "insecure":
-			if strings.ToLower(cfg.Value) == "true" {
-				insecure = true
-			}
 		case "grpc_web":
 			if strings.ToLower(cfg.Value) == "true" {
 				grpcWeb = true
-			}
-		case "timeout":
-			if cfg.Value != "" {
-				timeout = cfg.Value
 			}
 		case "config_file_path":
 			if cfg.Value != "" {
@@ -585,17 +573,13 @@ func buildArgoCDFlags(configValues []integrations.IntegrationConfigValue) string
 	// Add authentication token (ArgoCD CLI only supports token auth via flags)
 	flags = append(flags, "--auth-token $ARGOCD_AUTH_TOKEN")
 
-	// Add optional flags
-	if insecure {
-		flags = append(flags, "--insecure")
-	}
+	// Certificates are not verified yet: servers with self-signed certificates
+	// would fail, and the integration has no way to supply their CA.
+	flags = append(flags, "--insecure")
 
+	// Add optional flags
 	if grpcWeb {
 		flags = append(flags, "--grpc-web")
-	}
-
-	if timeout != "30" {
-		flags = append(flags, "--request-timeout", timeout+"s")
 	}
 
 	if configFilePath != "" {

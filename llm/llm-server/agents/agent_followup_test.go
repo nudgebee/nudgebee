@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
@@ -286,4 +287,15 @@ func TestExtractOptionsFromText(t *testing.T) {
 			assert.Equal(t, tc.expected, result)
 		})
 	}
+}
+
+// Nobody answers a question in an automatic alert investigation, so the tool
+// refuses instead of pausing the run until the waiting expiry.
+func TestFollowupAgentDoesNotAskInReadOnlyRun(t *testing.T) {
+	ctx := toolcore.NbToolContext{Ctx: core.WithReadOnlyRun(security.NewRequestContextForSuperAdmin()), ToolCallId: "test-tool-id"}
+	resp, err := FollowupAgent{}.Call(ctx, toolcore.NBToolCallRequest{Command: "Which namespace should I check?"})
+	assert.NoError(t, err)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
+	assert.Equal(t, core.ReadOnlyQuestionRefusal, resp.Data)
+	assert.Nil(t, resp.AdditionalDetails["followup_request"])
 }

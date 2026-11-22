@@ -383,7 +383,8 @@ jobs:
           # name here is what caused the rc.3 customer's ImagePullBackOff.
           REPO="${REGISTRY}/${NS}/migrations" VERSION="$VERSION" yq -i '
             .postgres_migrations.image.repository = strenv(REPO) |
-            .postgres_migrations.image.tag = strenv(VERSION)
+            .postgres_migrations.image.tag = strenv(VERSION) |
+            .chartDefaultsVersion = strenv(VERSION)
           ' deploy/kubernetes/nudgebee/values.yaml
 
           first_party=(

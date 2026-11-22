@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
@@ -421,13 +423,6 @@ type ActionNode struct {
 	Result       NBAgentPlannerToolActionStep
 }
 
-type ActionGraph struct {
-	Nodes     map[string]*ActionNode // Map of toolID to node
-	Ready     chan *ActionNode       // Channel for nodes ready to execute
-	Results   chan *ActionNode       // Channel for completed nodes
-	ErrorChan chan error             // Channel for errors
-}
-
 type plannerExecutor struct {
 	ctx                 *security.RequestContext
 	agentPlanner        NBAgentPlanner
@@ -452,6 +447,13 @@ type plannerExecutor struct {
 	// maps. doIterationParallel runs several actions against this one executor, and
 	// every one of them resolves its tool's config through the same maps.
 	configMu sync.Mutex
+	// readOnlyRefusals counts writes refused in a read-only run; parallel
+	// actions refuse concurrently, hence the lock.
+	readOnlyMu       sync.Mutex
+	readOnlyRefusals int
+	// stopReason says why a loop brake ended the run before it finished, for
+	// the summary to tell the reader; empty when no brake fired (#40199).
+	stopReason string
 }
 
 func (e *plannerExecutor) GetInputKeys() []string {
@@ -517,6 +519,20 @@ func (e *plannerExecutor) accumulateSteps(steps []NBAgentPlannerToolActionStep) 
 	return upgraded
 }
 
+// reuseCachedStep turns a turn-cache hit into a step for the new action. The
+// step takes the new action's ToolID and DisplayID, because that is the call
+// and the number the model sees; SourceToolID keeps the ToolID of the step
+// that actually ran, since a cache hit writes no tool-call row of its own and a
+// citation of it has to open that earlier row. A cached step that was itself a
+// cache hit keeps the SourceToolID it already carries.
+func reuseCachedStep(cached *NBAgentPlannerToolActionStep, action NBAgentPlannerToolAction) {
+	if cached.Action.SourceToolID == "" {
+		cached.Action.SourceToolID = cached.Action.ToolID
+	}
+	cached.Action.ToolID = action.ToolID
+	cached.Action.DisplayID = action.DisplayID
+}
+
 func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, _ ...chains.ChainCallOption) (map[string]any, error) {
 	defer func() {
 		hits, misses, entries := e.toolCallCache.Stats()
@@ -534,9 +550,23 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 
 	consecutiveFailedIters := 0
 	consecutiveDuplicateIters := 0
+	e.stopReason = ""
+	// Whether the run ended on a cap rather than a finish; see the end.
+	budgetStopped := false
+	var budgetUsed, budgetLimit int64
+	// A resumed run already at its turn cap runs no iteration at all.
+	ranOutOfTurns := e.currentIteration >= e.maxIterations
 	for i := e.currentIteration; i < e.maxIterations; i++ {
 		if ctx.Err() != nil {
 			e.ctx.GetLogger().Warn("plannerexecutor: context deadline exceeded, breaking loop", "agent", e.agent.GetName(), "iteration", i)
+			break
+		}
+		// A run over the token budget its policy set calls no more tools and
+		// answers with what it has, the same way as when it runs out of turns.
+		if used, limit, spent := policyFor(e.ctx).BudgetSpent(e.ctx); spent {
+			e.ctx.GetLogger().Warn("plannerexecutor: run token budget reached, stopping tools and answering with what it has",
+				"agent", e.agent.GetName(), "iteration", i, "tokens_used", used, "token_budget", limit)
+			budgetStopped, budgetUsed, budgetLimit = true, used, limit
 			break
 		}
 		e.currentIteration = i
@@ -560,6 +590,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			consecutiveDuplicateIters++
 			if consecutiveDuplicateIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive duplicate-action iterations (LLM looping on completed work)", "agent", e.agent.GetName(), "iteration", i)
+				e.stopReason = stopReasonDuplicateActions
 				break
 			}
 		} else {
@@ -568,8 +599,14 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		e.finish = finish
 		if finish != nil {
 			e.ctx.GetLogger().Debug("plannerexecutor: finishing execution", "status", finish.Status, "data", finish.Data)
+			output := common.XmlExtractCDATA(finish.Data)
+			// A run paused on a question has not answered yet.
+			if finish.Status != ConversationStatusWaiting && finish.Status != ConversationStatusWaitingForClientTool {
+				used, limit, _ := policyFor(e.ctx).BudgetSpent(e.ctx)
+				output = policyFor(e.ctx).FinishAnswer(e.ctx, e.agent, output, used, limit, false, false)
+			}
 			return map[string]any{
-				"output": common.XmlExtractCDATA(finish.Data),
+				"output": output,
 			}, err
 		}
 
@@ -580,6 +617,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			// its inner iterations or returning ErrAgentNoReturn after max attempts.
 			if len(e.steps) > 0 {
 				e.ctx.GetLogger().Warn("plannerexecutor: iteration returned error but steps exist, falling through to summarization", "error", err, "stepsCount", len(e.steps))
+				e.stopReason = stopReasonPlanFailed
 				break
 			}
 			return nil, err
@@ -592,6 +630,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 			consecutiveFailedIters++
 			if consecutiveFailedIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive iterations with no usable actions", "agent", e.agent.GetName(), "iteration", i)
+				e.stopReason = stopReasonNoUsableActions
 				break
 			}
 		} else {
@@ -622,13 +661,25 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 				}
 			}
 			if stuck {
+				e.stopReason = stopReasonNoProgress
 				break
 			}
 		}
+		// Reached only when no break above fired.
+		ranOutOfTurns = i == e.maxIterations-1
 	}
 
 	result, err := e.summarizeConversation()
 	if err == nil && result != nil && len(result) > 0 {
+		e.recordUncritiquedSummary(inputs["input"], result)
+		// The run policy sees every final answer, and may mark one a cap cut short.
+		if output, ok := result["output"].(string); ok {
+			cutShort := budgetStopped || ranOutOfTurns
+			if !budgetStopped {
+				budgetUsed, budgetLimit, _ = policyFor(e.ctx).BudgetSpent(e.ctx)
+			}
+			result["output"] = policyFor(e.ctx).FinishAnswer(e.ctx, e.agent, output, budgetUsed, budgetLimit, cutShort, budgetStopped)
+		}
 		return result, err
 	} else if err != nil {
 		e.ctx.GetLogger().Error("plannerexecutor: unable to summarize conversation", "error", err)
@@ -636,6 +687,47 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	}
 
 	return map[string]any{"output": agents.ErrNotFinished.Error()}, agents.ErrNotFinished
+}
+
+// isTopLevel reports whether this executor runs the conversation's own agent
+// rather than a delegated sub-agent.
+func (e *plannerExecutor) isTopLevel() bool {
+	return e.agentRequest.ParentAgentId == "" || e.agentRequest.ParentAgentId == e.agentRequest.AgentId
+}
+
+// critiqueApplies mirrors the planners' gate for critiquing a final answer:
+// requested explicitly, or a top-level investigation, unless the agent opts out.
+// Only those runs get the finish-now note and the fallback record: other runs
+// lose nothing to the fallback summary, and agents with a small iteration cap
+// would otherwise be told to stop almost at once.
+func (e *plannerExecutor) critiqueApplies() bool {
+	allowed := e.agentRequest.EnableCritique || (e.isTopLevel() && IsInvestigationRequestTask(e.agentRequest.Query))
+	if agent, ok := e.agent.(NBAgentReActPlannerCritiqueSupport); ok {
+		allowed = allowed && agent.CritiqueEnabled()
+	}
+	return allowed
+}
+
+// recordUncritiquedSummary marks an answer the fallback summary wrote for a run
+// whose finish would have been critiqued: the run ended without a finish (the
+// iteration cap, a brake or the agent timeout), so no critique ran. Without
+// this the case is indistinguishable from an accepted answer (#40774).
+func (e *plannerExecutor) recordUncritiquedSummary(input string, result map[string]any) {
+	if !e.critiqueApplies() {
+		return
+	}
+	planner := "react3"
+	if _, ok := e.agentPlanner.(*NBReActPlanner4); ok {
+		planner = "react4"
+	}
+	notebook := ""
+	if p, ok := e.agentPlanner.(NBAgentNotebookProvider); ok {
+		notebook = p.GetNotebook()
+	}
+	answer, _ := result["output"].(string)
+	e.ctx.GetLogger().Warn("plannerexecutor: final answer came from the fallback summary and was not critiqued",
+		"agent", e.agent.GetName(), "iteration", e.currentIteration, "maxIterations", e.maxIterations, "steps", len(e.steps))
+	captureClaimStop(e.ctx, e.agentRequest, planner, e.agent.GetName(), claimStatusFallbackSummary, input, answer, notebook, e.steps)
 }
 
 // shouldCountFailedIteration reports whether an iteration should advance the
@@ -776,23 +868,38 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 			"\n  2. Under a '**Recommended Next Steps**' section, provide specific CLI commands or manual steps the user can run to gather the missing information." +
 			"\n  3. Do NOT fabricate findings for the missing data."
 	}
+	if e.stopReason != "" {
+		summarizationPrompt += "\n\nIMPORTANT: This run was stopped early, before it finished, because " + e.stopReason + "." +
+			" Begin the answer by saying that it stopped early and why, then give what was found and clearly state what was NOT completed."
+	}
+	// This summary is the final answer when the run stops on a cap, so it
+	// carries the run policy's answer instructions too.
+	if format := policyFor(e.ctx).AnswerInstructions(e.ctx, e.agent); format != "" {
+		summarizationPrompt += "\n\n" + format
+	}
 	mclist = append(mclist, llms.MessageContent{
 		Role:  llms.ChatMessageTypeHuman,
 		Parts: []llms.ContentPart{llms.TextContent{Text: summarizationPrompt}},
 	})
+	// This call writes the agent's answer when it runs out of steps, without
+	// the agent's system prompt — carry its always-on instructions (#40899) so
+	// answer rules ("report latency in ms") still apply.
+	if block := AgentInstructionsBlock(e.agentRequest); block != "" {
+		mclist = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, mclist...)
+	}
 
 	// Use Lite model for summarization to improve performance.
 	// WithoutCancel ensures summarization completes even if the parent context
 	// (HTTP request or agent timeout) has expired — this is critical for the
 	// deadline-exceeded partial-result path.
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithoutCancel(e.ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(context.WithoutCancel(e.ctx.GetContext()), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
 		e.ctx.GetMeter(),
 	)
-	response, err := GenerateAndTrackLLMContent(summaryCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.ParentAgentId, true, mclist, true, WithThinkingLevel(ThinkingLevelFastTask))
+	response, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.ParentAgentId, true, mclist, true, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		// Propagate rather than swallow: a caller that sees (nil, nil) here falls
 		// through to the generic agents.ErrNotFinished ("agent not finished before
@@ -804,12 +911,40 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		return nil, err
 	}
 	if response != nil && len(response.Choices) > 0 {
-		return map[string]any{
-			"output": sanitizeSummaryOutput(response.Choices[0].Content),
-		}, nil
+		output := sanitizeSummaryOutput(response.Choices[0].Content)
+		// Last answer, no retry behind it #39704: drop text tool calls & keep the answer around them;
+		// a summary that is only a call would ship undone work as the answer, so it fails.
+		if containsTextToolCall(output, nil) {
+			rest := stripTextToolCalls(output)
+			if len(rest) < minSummaryAnswerBytes || containsTextToolCall(rest, nil) {
+				e.ctx.GetLogger().Warn("plannerexecutor: summary wrote a tool call as text; failing the run instead of returning it",
+					"text", common.TruncateHead(output, textToolCallLogBytes))
+				return nil, errSummaryTextToolCall
+			}
+			e.ctx.GetLogger().Warn("plannerexecutor: summary held a tool call written as text; returning the answer without it",
+				"removedBytes", len(output)-len(rest))
+			output = rest
+		}
+		return map[string]any{"output": output}, nil
 	}
 	return nil, nil
 }
+
+// Why a loop brake stopped the run, worded for the summary to pass on (#40199).
+const (
+	stopReasonDuplicateActions = "it repeated steps it had already completed twice in a row"
+	stopReasonNoUsableActions  = "two steps in a row produced no usable action"
+	stopReasonNoProgress       = "a tool kept returning errors, empty or identical results"
+	stopReasonPlanFailed       = "it could not plan its next step"
+)
+
+// ponytail: length heuristic for "a real answer is left"; on test, call-only summaries leave
+// <= 93 bytes & answers around a call >= 675. Revisit if a short real answer is failed.
+const minSummaryAnswerBytes = 200
+
+// errSummaryTextToolCall: the fallback summary was a text tool call. Users see
+// runStoppedEarlyMessage (sanitizeErrorForUser); this text is for logs.
+var errSummaryTextToolCall = errors.New("the investigation stopped before it finished: the model described its next steps instead of running them. Please retry")
 
 // evaluateConditions checks if an action should be executed based on its conditions.
 // It returns true if the action should be executed, false otherwise.
@@ -914,9 +1049,9 @@ func (e *plannerExecutor) evaluateConditions(action NBAgentPlannerToolAction, av
 			e.ctx.GetTracer(),
 			e.ctx.GetMeter(),
 		)
-		llmResponse, err := GenerateAndTrackLLMContent(conditionCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, formattedPrompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+		llmResponse, err := llmruntime.GenerateAndTrackLLMContent(conditionCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, formattedPrompt)}, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
-			e.ctx.GetLogger().Error("plannerexecutor: LLM call for condition failed or returned no content", "prompt", formattedPrompt, "error", err)
+			e.ctx.GetLogger().Error("plannerexecutor: LLM call for condition failed or returned no content", "prompt", egressfilter.RedactForLog(formattedPrompt), "error", err)
 			return false, fmt.Errorf("LLM condition call failed or returned no content: %w", err)
 		}
 
@@ -980,7 +1115,11 @@ func (e *plannerExecutor) doIteration(
 		_, span = e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Plan")
 		e.ctx.GetLogger().Info("plannerexecutor: generating plan", "agent", e.agent.GetName(), "iteration", e.currentIteration)
 		planStart := time.Now()
-		actions, finish, err = e.agentPlanner.Plan(ctx, previousIterationSteps, input["input"])
+		planCtx := ctx
+		if e.critiqueApplies() {
+			planCtx = context.WithValue(ctx, llmruntime.ContextKeyIterationsLeft, e.maxIterations-e.currentIteration)
+		}
+		actions, finish, err = e.agentPlanner.Plan(planCtx, previousIterationSteps, input["input"])
 		span.End() // End plan span immediately after planning
 		e.ctx.GetLogger().Info("plannerexecutor: plan generation complete", "duration", time.Since(planStart).String(), "actions", len(actions), "hasFinish", finish != nil)
 
@@ -1087,6 +1226,9 @@ func (e *plannerExecutor) doIteration(
 				continue
 			}
 			if strings.EqualFold(action.Tool, toolcore.ToolExecuteShellCommand) {
+				if !shellTargetUnresolved(tool, action) {
+					continue
+				}
 				needsSequential = true
 				sequentialFallbackReason = "unresolved_shell_target"
 				break
@@ -1955,6 +2097,10 @@ func stepIsStuck(step *NBAgentPlannerToolActionStep, threshold int) bool {
 // column the UI reads remains byte-for-byte what the tool produced.
 // Nil metadata returns "" so steps without telemetry (legacy rows, terminal
 // payloads, waiting prompts) render unchanged.
+// When Metadata.Truncated is set (truncateToolResponse cut the output before
+// persistence), the footer says so and gives the pre-truncation byte length —
+// previously this was computed and stored but never surfaced, so the planner
+// had no way to know it was reasoning from a partial tool response.
 func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string {
 	if metadata == nil {
 		return ""
@@ -1963,7 +2109,25 @@ func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string 
 	if ms < 0 {
 		ms = 0
 	}
-	return fmt.Sprintf("\n[exitStatus: %d | executionDuration: %dms]", metadata.ExitStatus, ms)
+	footer := fmt.Sprintf("\n[exitStatus: %d | executionDuration: %dms", metadata.ExitStatus, ms)
+	if note := truncationNote(metadata); note != "" {
+		footer += " | " + note
+	}
+	return footer + "]"
+}
+
+// truncationNote is the planner-visible marker for an output cut by
+// truncateToolResponse; "" when the output was not truncated.
+func truncationNote(metadata *toolcore.NBToolResponseMetadata) string {
+	if metadata == nil || !metadata.Truncated {
+		return ""
+	}
+	if strings.HasPrefix(metadata.SavedOutputNote, "[workspace file ") {
+		// The full output was saved: point at the file named before the
+		// observation instead of telling the model to re-query.
+		return fmt.Sprintf("truncated: output cut from %d bytes, full output in the workspace file named above", metadata.OriginalLen)
+	}
+	return fmt.Sprintf("truncated: output cut from %d bytes, narrow the query for full detail", metadata.OriginalLen)
 }
 
 // renderObservationWithMetadata is the single entry point the prompt-assembly
@@ -1971,7 +2135,7 @@ func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string 
 // materialize the planner-visible observation text. Centralizing it keeps the
 // sites from drifting on footer format.
 func renderObservationWithMetadata(observation string, metadata *toolcore.NBToolResponseMetadata) string {
-	return observation + formatToolMetadataFooter(metadata)
+	return withSavedOutputNote(observation, metadata) + formatToolMetadataFooter(metadata)
 }
 
 // truncateToolResponse caps a tool's observation at a configured byte budget
@@ -1999,7 +2163,7 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 		return data, originalLen
 	}
 
-	truncated := SmartTruncateToolOutput(data, maxLen)
+	truncated := llmruntime.SmartTruncateToolOutput(data, maxLen)
 	if ctx != nil {
 		ctx.GetLogger().Info("plannerexecutor: tool output truncated at source",
 			"tool", toolName,
@@ -2032,6 +2196,35 @@ func (e *plannerExecutor) recordFailedActionStep(action NBAgentPlannerToolAction
 		Observation: observation,
 		Status:      ToolStatusFailure,
 	}
+}
+
+// shellTargetUnresolved reports whether a shell call may stop to ask which
+// target to run on. A command that names its own target (`kubectl --context x`)
+// never asks: followupForMultipleToolConfigs resolves it or refuses the call.
+func shellTargetUnresolved(owner toolcore.NBTool, action NBAgentPlannerToolAction) bool {
+	requested, err := actionRequestedTarget(owner, action)
+	return err != nil || requested == ""
+}
+
+// recordRefusedCall writes the tool-call row for a call refused before it ran
+// (no target named in an unattended run, an ambiguous or unsupported target, a
+// run-policy refusal). The planner sees the refusal as an observation; without
+// the row the transcript showed nothing, so the model's retry looked like its
+// first attempt.
+//
+// The row is final: SaveConversationToolCall does not update a row already in
+// 'error'. A single-call tool id is a hash of tool and arguments, so if the
+// identical call later runs in the same message its result is not saved over
+// this row. Retries normally change the call (adding --context), so this is rare.
+func (e *plannerExecutor) recordRefusedCall(step NBAgentPlannerToolActionStep) {
+	if e.toolCallbackHandler == nil || step.Action.ToolID == "" {
+		return
+	}
+	e.toolCallbackHandler.BeforeToolCall(step.Action)
+	e.toolCallbackHandler.AfterToolCallResponse(step.Action, toolcore.NBToolResponse{
+		Data:   step.Observation,
+		Status: toolcore.NBToolResponseStatusError,
+	})
 }
 
 // confirmationKeyForAction returns the key a write-confirmation is recorded and
@@ -2228,6 +2421,17 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}, nil, nil
 	}
 
+	// --- Guard: native args that aren't a JSON object don't run. Else callNbTool passes the raw
+	// text as the command & an optional-only tool "succeeds" #39704. react_3 (no native args) skipped.
+	if err := nativeArgumentsError(action.NativeToolInput); err != nil {
+		e.ctx.GetLogger().Warn("plannerexecutor: native tool arguments are not a JSON object, not running the tool", "tool", action.Tool, "toolId", action.ToolID, "error", err)
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: fmt.Sprintf("%s did not run: the arguments of this call were not a valid JSON object (%v). Call it again with complete JSON arguments if you still need it.", action.Tool, err),
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
+
 	// --- Safety Check: Ensure we don't re-execute if we already have a success result in our own history
 	for _, s := range e.steps {
 		if s.Action.ToolID == action.ToolID && s.Status == ToolStatusSuccess {
@@ -2238,10 +2442,16 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	// --- Turn Cache Check: Prevent redundant calls with identical or near-identical inputs.
 	// Uses normalized keys (collapsed whitespace, sorted JSON keys) to catch duplicates
 	// across plan regeneration and critique cycles within the same conversation turn.
-	if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
+	// Skipped for tools whose result can change between calls (MCP: a page re-read
+	// after a click must show the new page, #39635).
+	resultCanChange := toolcore.ResultCanChange(nameToTool[strings.ToUpper(action.Tool)])
+	if resultCanChange {
+		e.ctx.GetLogger().Debug("plannerexecutor: tool result can change, not using the turn cache",
+			"tool", action.Tool, "toolId", action.ToolID)
+	} else if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 		e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 			"tool", action.Tool, "toolId", action.ToolID, "phase", "pre-rewrite")
-		cachedStep.Action.ToolID = action.ToolID
+		reuseCachedStep(&cachedStep, action)
 		cachedStep.IsDuplicateCacheHit = !cachedStep.IsTerminal
 		return cachedStep, nil, nil
 	}
@@ -2265,11 +2475,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 		// Post-rewrite cache check: different original inputs may produce the same
 		// rewritten input. Check again to avoid redundant tool execution.
-		if action.ToolInput != originalInput {
+		if action.ToolInput != originalInput && !resultCanChange {
 			if cachedStep, found := e.toolCallCache.Get(action.Tool, action.ToolInput); found {
 				e.ctx.GetLogger().Info("plannerexecutor: returning cached result for duplicate tool call",
 					"tool", action.Tool, "toolId", action.ToolID, "phase", "post-rewrite")
-				cachedStep.Action.ToolID = action.ToolID
+				reuseCachedStep(&cachedStep, action)
 				// Also cache under original input for future pre-rewrite hits. Cache the
 				// step BEFORE flagging it, so the stored entry stays a clean result.
 				e.toolCallCache.Put(action.Tool, originalInput, cachedStep)
@@ -2301,8 +2511,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var tool toolcore.NBTool
 	var ok bool
 
+	// The run policy may limit a run to the tools its agent was given (its
+	// planner's tool set): no client tool from the request, no registry or
+	// custom-agent fallback for other names.
+	ownToolsOnly := policyFor(e.ctx).OwnToolsOnly(e.ctx)
+
 	// check if it's a client tool first
-	for _, ct := range e.agentRequest.ClientTools {
+	for _, ct := range lo.Ternary(ownToolsOnly, nil, e.agentRequest.ClientTools) {
 		if strings.EqualFold(ct.Name, action.Tool) {
 			tool = toolcore.NewClientToolWrapper(ct)
 			ok = true
@@ -2314,7 +2529,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	actionCtx := e.ctx
 	if strings.EqualFold(action.Tool, "LLM") {
 		actionCtx = security.NewRequestContext(
-			context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+			context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 			e.ctx.GetSecurityContext(),
 			e.ctx.GetLogger(),
 			e.ctx.GetTracer(),
@@ -2325,9 +2540,12 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if !ok {
 		tool, ok = nameToTool[strings.ToUpper(action.Tool)]
 	}
+	if !ok && ownToolsOnly {
+		tool, ok = nameToTool[strings.ToUpper(toolcore.ResolveNBToolAlias(action.Tool))]
+	}
 
 	// Handle common aliases and prioritize system tools over custom agents/tools
-	if !ok {
+	if !ok && !ownToolsOnly {
 		resolvedToolName := toolcore.ResolveNBToolAlias(action.Tool)
 		if strings.EqualFold(resolvedToolName, "shell") {
 			resolvedToolName = toolcore.ToolExecuteShellCommand
@@ -2404,11 +2622,13 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var targetErr error
 	action, targetErr = prepareDelegatedActionInput(tool, e.agentRequest.QueryConfig.DelegatedTarget, e.agentRequest.AccountId, action)
 	if targetErr != nil {
-		return NBAgentPlannerToolActionStep{
+		step := NBAgentPlannerToolActionStep{
 			Action:      action,
 			Observation: targetErr.Error(),
 			Status:      ToolStatusFailure,
-		}, nil, nil
+		}
+		e.recordRefusedCall(step)
+		return step, nil, nil
 	}
 	// validate user access
 	implType := toolcore.ImplTypeFor(tool)
@@ -2418,6 +2638,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	finish2, requestType, err2 := authorizeToolRequest(e.ctx, e.agent, e.agentRequest, action, func() []string {
 		return writeAccountOf(e.agentRequest.AccountId, e.writeTargetOf(tool, action), config.Config.LlmServerTargetWriteAccess)
 	})
+	var refused *ToolRefusedError
+	if errors.As(err2, &refused) {
+		// Refused as a step, before the write-confirmation branch below, which
+		// a call with no request type would skip.
+		e.ctx.GetLogger().Info("plannerexecutor: run policy refused an unclassified tool call", "tool", action.Tool, "toolId", action.ToolID, "agent", e.agent.GetName())
+		common.MetricsToolOperationsTotal(implType, toolName, "read_only_refused", accountID)
+		step := NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: refused.Observation,
+			Status:      ToolStatusFailure,
+		}
+		e.recordRefusedCall(step)
+		return step, nil, nil
+	}
 	if err2 != nil {
 		// Metrics: record fail
 		common.MetricsToolOperationsTotal(implType, toolName, "fail", accountID)
@@ -2433,14 +2667,16 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if e.agentRequest.QueryConfig.DelegatedTarget != nil && requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
 		if validator, ok := tool.(toolcore.WriteTargetInputValidator); ok {
 			if err := validator.ValidateWriteTargetInput(action.ToolInput); err != nil {
-				return NBAgentPlannerToolActionStep{Action: action, Observation: err.Error(), Status: ToolStatusFailure}, nil, nil
+				step := NBAgentPlannerToolActionStep{Action: action, Observation: err.Error(), Status: ToolStatusFailure}
+				e.recordRefusedCall(step)
+				return step, nil, nil
 			}
 		}
 	}
 
 	toolResolveDur := time.Since(start)
 	e.ctx.GetLogger().Info("plannerexecutor: tool resolved", "tool", action.Tool, "resolve_duration", toolResolveDur.String())
-	e.ctx.GetLogger().Debug("plannerexecutor: identified request-type", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
+	e.ctx.GetLogger().Debug("plannerexecutor: identified request-type", logRequestType, requestType, "request", egressfilter.LazyRedact(action.ToolInput), "tool", action.Tool)
 
 	// Shell targets resolve before execution/confirmation; preserve action identity for resume.
 	if strings.EqualFold(tool.Name(), toolcore.ToolExecuteShellCommand) {
@@ -2455,12 +2691,17 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				if len(steps) > 0 {
 					step = steps[0]
 				}
+				if finish == nil {
+					e.recordRefusedCall(step)
+				}
 				return step, finish, nil
 			}
 			if requestType != nil && *requestType != toolcore.ToolRequestTypeRead {
 				selected, resolveErr := e.shellWriteTarget(owner, action)
 				if errors.Is(resolveErr, tools.ErrAmbiguousShellTarget) {
-					return NBAgentPlannerToolActionStep{Action: action, Observation: resolveErr.Error(), Status: ToolStatusFailure}, nil, nil
+					step := NBAgentPlannerToolActionStep{Action: action, Observation: resolveErr.Error(), Status: ToolStatusFailure}
+					e.recordRefusedCall(step)
+					return step, nil, nil
 				}
 				if resolveErr != nil {
 					return NBAgentPlannerToolActionStep{}, nil, resolveErr
@@ -2515,18 +2756,56 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 				Status: ConversationStatusFailed,
 			}, nil
 		}
-		if followupFinish != nil {
-			e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", tool.Name(), "followup", slog.AnyValue(followupFinish))
+		// A step without a finish is a refusal (no target matches the subject,
+		// or a read-only run that cannot ask): the call must not run. Only the
+		// shell branch above honoured it; here it was dropped and the tool ran
+		// with no target chosen.
+		if followupFinish != nil || len(followupSteps) > 0 {
+			e.ctx.GetLogger().Info("plannerexecutor: generated followup for multiple tool configs", "tool", tool.Name(), "followup", slog.AnyValue(followupFinish), "steps", len(followupSteps))
 			var fupStep NBAgentPlannerToolActionStep
 			if len(followupSteps) > 0 {
 				fupStep = followupSteps[0]
+			}
+			if followupFinish == nil {
+				e.recordRefusedCall(fupStep)
 			}
 			return fupStep, followupFinish, nil
 		}
 	}
 
+	// Set when an approval rule waived this call's confirmation; recorded on
+	// the step so the conversation shows it ran without asking.
+	var approvedByRule map[string]any
+	// The run policy decides first, before any recorded approval or approval
+	// rule is consulted below: it may refuse the call, or let it run without
+	// the approval prompt and the read-only refusal.
+	verdict := ToolVerdict{}
+	if tool.GetType() == toolcore.NBToolTypeTool && requestType != nil {
+		verdict = policyFor(e.ctx).CheckTool(e.ctx, toolCallOf(e.agent, e.agentRequest, tool, action, *requestType))
+	}
+	switch verdict.Kind {
+	case ToolCallRefuse, ToolCallRefuseReadOnly:
+		observation := verdict.Observation
+		refusals := 0
+		if verdict.Kind == ToolCallRefuseReadOnly || observation == "" {
+			refusals = e.countReadOnlyRefusal()
+			observation = readOnlyRefusal(*requestType, refusals)
+		}
+		e.ctx.GetLogger().Info("plannerexecutor: run policy refused a tool call", "tool", action.Tool, "toolId", action.ToolID, logRequestType, requestType, "refusals", refusals)
+		common.MetricsToolOperationsTotal(toolcore.ImplTypeFor(tool), tool.Name(), "read_only_refused", e.agentRequest.AccountId)
+		return NBAgentPlannerToolActionStep{
+			Action:      action,
+			Observation: observation,
+			Status:      ToolStatusFailure,
+		}, nil, nil
+	}
+	// Set when a person's recorded approval lets this write run: the call is
+	// recorded under that approval before it runs (ApprovedWriteRecorder), and
+	// reask asks the person again when that approval cannot be used for it.
+	var approved *ApprovedWrite
+	var reask func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error)
 	// confirmation if tehre is write operation
-	if tool.GetType() == toolcore.NBToolTypeTool {
+	if tool.GetType() == toolcore.NBToolTypeTool && verdict.Kind != ToolCallRun && verdict.Kind != ToolCallDecideAtCall {
 		if writeConfirmationRequired(tool, requestType, action) {
 			// A write on another account is approved for that account; every
 			// write's card says where it lands.
@@ -2536,7 +2815,25 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			// default rendering shows the raw tool input, which for id-driven
 			// tools describes nothing the approver can judge.
 			destination := e.destinationOf(tool, action, target)
-			confirmationQuestion := confirmationQuestionWithTarget(confirmationQuestionForAction(tool, action), action, *requestType, destination)
+			question := confirmationQuestionForAction(tool, action)
+			if question == "" && runsSkillCode(e.agentRequest.AccountId, e.agentRequest.ConversationId, action.Tool, action.ToolInput) {
+				// Asked only because the conversation holds a skill's scripts:
+				// "update resources on cluster X" would mislead.
+				question = tools.SkillConversationQuestion(action.ToolInput)
+			}
+			confirmationQuestion := confirmationQuestionWithTarget(question, action, *requestType, destination)
+			// The card a person approves this write on, and the approval it is
+			// recorded under once they did.
+			write := e.approvedWriteFor(tool, action, confirmationKey, target, destination)
+			cardWrite := write
+			cardQuestion := func() string {
+				if ApprovalCardQuestion != nil {
+					if q := ApprovalCardQuestion(e.ctx, cardWrite); q != "" {
+						return q
+					}
+				}
+				return confirmationQuestion
+			}
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[confirmationKey]; exists {
@@ -2549,14 +2846,74 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 							Status:      ToolStatusFailure,
 						}, nil, nil
 					}
+					// An approval counts only from a signed-in person: a request
+					// with no user (an unlinked Slack user, an API call without
+					// x-user-id, a background run picking up an earlier "yes")
+					// leaves no record of who approved the change.
+					if !approvedByPerson(e.ctx) {
+						e.ctx.GetLogger().Warn("plannerexecutor: approval refused, no signed-in person approved it", "tool", action.Tool, "toolId", action.ToolID, "confirmationKey", confirmationKey)
+						return NBAgentPlannerToolActionStep{
+							Action:      action,
+							Observation: "This action was approved without a signed-in user, so it was not executed. A person must approve it from their own Nudgebee login (link your chat account if you approved from Slack or Teams). Continue with other work or summarize.",
+							Status:      ToolStatusFailure,
+						}, nil, nil
+					}
+					write.Ref = e.agentRequest.QueryConfig.ToolConfirmationRefs[confirmationKey]
+					approved = &write
+					askAction, askType, askTarget, crossAccount := action, *requestType, destination.followupTarget(), target != nil
+					reask = func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+						return e.followupForToolOperationConfirmation(askAction, askType, confirmationKey, cardQuestion(), askTarget, crossAccount)
+					}
+				}
+			}
+
+			// No person can answer an approval in a read-only run (an automatic
+			// alert investigation): refuse the write now rather than wait on a
+			// prompt nobody sees, and tell the model how to carry on. An answer
+			// already recorded above is used as before.
+			if !isFollowupFound && IsReadOnlyRun(e.ctx) {
+				refusals := e.countReadOnlyRefusal()
+				e.ctx.GetLogger().Info("plannerexecutor: write refused in read-only run", "tool", action.Tool, "toolId", action.ToolID, logRequestType, requestType, "refusals", refusals)
+				common.MetricsToolOperationsTotal(toolcore.ImplTypeFor(tool), tool.Name(), "read_only_refused", e.agentRequest.AccountId)
+				step := NBAgentPlannerToolActionStep{
+					Action:      action,
+					Observation: readOnlyRefusal(*requestType, refusals),
+					Status:      ToolStatusFailure,
+				}
+				e.recordRefusedCall(step)
+				return step, nil, nil
+			}
+
+			// Read-only runs refuse writes above, before any rule is consulted:
+			// a rule only removes the prompt, it never permits a write in a run
+			// that must not change anything.
+			if !isFollowupFound && config.Config.LlmServerToolApprovalPolicyEnabled {
+				// Policy matching and its audit fingerprint use the same normalized
+				// payload Call() will receive. Keep action.ToolInput unchanged here:
+				// manual confirmation keys intentionally use the original input so
+				// historical resumes do not re-prompt after scalar-array repair.
+				policyInput, _ := toolcore.CoerceScalarArrays(tool, action.ToolInput)
+				policyTarget := e.toolApprovalTarget(tool, action)
+				if match := matchToolApprovalRule(e, action, tool.Name(), policyInput, policyTarget); match != nil {
+					isFollowupFound = true
+					approvedByRule = policyApprovalMetadata(match)
+					e.ctx.GetLogger().Info("plannerexecutor: confirmation waived by tool approval policy", "tool", action.Tool, "policy_rule", policyApprovalLogValue(match))
+					// Recorded like a person's approval, under the rule's own decision for this call; a
+					// write the recorder cannot take under it is asked of a person.
+					write.Rule = &RuleApproval{RuleID: match.RuleID.String(), RuleName: match.RuleName, Revision: match.Revision, ToolCallID: action.ToolID}
+					approved = &write
+					askAction, askType, askTarget, crossAccount := action, *requestType, destination.followupTarget(), target != nil
+					reask = func() ([]NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
+						return e.followupForToolOperationConfirmation(askAction, askType, confirmationKey, cardQuestion(), askTarget, crossAccount)
+					}
 				}
 			}
 
 			if !isFollowupFound {
-				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool)
-				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, confirmationQuestion, destination.followupTarget(), target != nil)
+				e.ctx.GetLogger().Info("plannerexecutor: generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool)
+				followupSteps, followupFinish, err := e.followupForToolOperationConfirmation(action, *requestType, confirmationKey, cardQuestion(), destination.followupTarget(), target != nil)
 				if err != nil {
-					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", action.ToolInput, "tool", action.Tool, "error", err)
+					e.ctx.GetLogger().Info("plannerexecutor: error in generating followup for confirmation", logRequestType, requestType, "request", egressfilter.RedactForLog(action.ToolInput), "tool", action.Tool, "error", err)
 					return NBAgentPlannerToolActionStep{}, nil, err
 				}
 				if followupFinish != nil {
@@ -2637,10 +2994,11 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		e.toolCallbackHandler.BeforeToolCall(action)
 	}
 
-	// Enhanced Task Delegation: when calling agent-type sub-tools without explicit
-	// dependency context (e.g. react_3 actions), auto-inject previous step observations
-	// so the sub-agent has investigation context from earlier steps.
-	if queryContext == "" && tool != nil && tool.GetType() == toolcore.NBToolTypeAgent && len(e.steps) > 0 {
+	// Summarizer fallback: agent-type summarizers called without explicit dependency
+	// context (e.g. react_3 actions, which never declare Dependency) get the previous
+	// step observations as their source material. Other sub-agents only see what the
+	// action's own input and declared dependencies give them.
+	if queryContext == "" && tool != nil && tool.GetType() == toolcore.NBToolTypeAgent && len(e.steps) > 0 && e.consumesPriorObservations(tool) {
 		var ctxBuilder strings.Builder
 		for _, s := range e.steps {
 			if s.Status != ToolStatusSuccess || s.Observation == "" {
@@ -2658,7 +3016,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		}
 		if ctxBuilder.Len() > 0 {
 			queryContext = ctxBuilder.String()
-			e.ctx.GetLogger().Info("plannerexecutor: injected previous observations as context for agent tool", "tool", action.Tool, "context_len", len(queryContext))
+			e.ctx.GetLogger().Info("plannerexecutor: injected previous observations as summarizer fallback context", "tool", action.Tool, "context_len", len(queryContext))
 		}
 	}
 
@@ -2680,7 +3038,34 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			err = summaryErr
 		}
 	} else {
-		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer)
+		if verdict.Kind == ToolCallDecideAtCall {
+			// The policy decides at the call, on where the call lands.
+			account := e.agentRequest.AccountId
+			if target := e.writeTargetOf(tool, action); target != nil && target.Target.AccountID != "" {
+				account = target.Target.AccountID
+			}
+			actionCtx = withDecidedAtCall(actionCtx, &decidedAtCall{call: toolCallOf(e.agent, e.agentRequest, tool, action, lo.FromPtr(requestType)), account: account})
+		}
+		if approved != nil {
+			// Recorded with the input the tool receives.
+			approved.Input = action.ToolInput
+			actionCtx = withApprovedWrite(actionCtx, approved)
+		}
+		observation, err = callNbTool(actionCtx, e.agentRequest, e.agent.GetName(), tool, action.ToolInput, nil, queryContext, action.ToolID, action.FollowupAnswer, lo.FromPtr(requestType))
+		if err == nil && reask != nil && needsReask(observation) {
+			// The approval was already used by another write, or which approval
+			// it was is not known: this write gets its own.
+			e.ctx.GetLogger().Info("plannerexecutor: asking again for an approved write's confirmation", "tool", action.Tool, "toolId", action.ToolID)
+			followupSteps, followupFinish, ferr := reask()
+			if ferr != nil {
+				return NBAgentPlannerToolActionStep{}, nil, ferr
+			}
+			var fupStep NBAgentPlannerToolActionStep
+			if len(followupSteps) > 0 {
+				fupStep = followupSteps[0]
+			}
+			return fupStep, followupFinish, nil
+		}
 	}
 	var dt []string
 	if val, ok := observation.AdditionalDetails["discovered_tools"]; ok && val != nil {
@@ -2729,7 +3114,21 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		observation.Status != toolcore.NBToolResponseStatusWaiting &&
 		observation.Status != toolcore.NBToolResponseStatusWaitingForClient {
 		var originalLen int
+		full := observation.Data
 		observation.Data, originalLen = truncateToolResponse(e.ctx, observation.Data, status, toolName)
+		// Decided before the note below is appended: a cut output just over the
+		// cap plus the note can be longer than the original.
+		truncated := len(observation.Data) < originalLen
+		var savedOutputNote string
+		if status == ToolStatusSuccess && truncated {
+			_, canReadFiles := nameToTool[strings.ToUpper(toolcore.ToolExecuteShellCommand)] // getNameToTool keys are upper-cased
+			note, ref := saveTruncatedToolOutput(e.ctx, e.agentRequest.AccountId, e.agentRequest.ConversationId, toolName, full, observation.References, canReadFiles)
+			savedOutputNote = note
+			if ref != nil {
+				// Clip: never write into spare capacity of a slice the tool may share.
+				observation.References = append(slices.Clip(observation.References), *ref)
+			}
+		}
 		// Populate Metadata for the prompt-assembly seam (footer is rendered
 		// from this at scratchpad-build time, not appended to Data here).
 		// Preserve any tool-set fields like Metadata.Stderr (kubectl).
@@ -2742,13 +3141,20 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 			ms = 0
 		}
 		observation.Metadata.ExecutionDurationMs = ms
-		if len(observation.Data) < originalLen {
+		if truncated {
 			observation.Metadata.Truncated = true
 			observation.Metadata.OriginalLen = originalLen
+			observation.Metadata.SavedOutputNote = savedOutputNote
 		}
 	}
 
 	if e.toolCallbackHandler != nil {
+		if approvedByRule != nil {
+			if observation.AdditionalDetails == nil {
+				observation.AdditionalDetails = map[string]any{}
+			}
+			observation.AdditionalDetails[toolcore.MetadataApprovedByRule] = approvedByRule
+		}
 		e.toolCallbackHandler.AfterToolCallResponse(action, observation)
 	}
 
@@ -2816,6 +3222,8 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	metricStatus := "success"
 	if observation.IsCircuitOpen {
 		metricStatus = "circuit_open"
+	} else if status == ToolStatusFailure && observation.IsBadInput {
+		metricStatus = "fail_validation"
 	} else if status == ToolStatusFailure {
 		metricStatus = "fail"
 	}
@@ -2854,7 +3262,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	}
 
 	// Cache successful results under both original and rewritten inputs
-	if status == ToolStatusSuccess || status == ToolStatusEmptyResult {
+	if (status == ToolStatusSuccess || status == ToolStatusEmptyResult) && !resultCanChange {
 		e.toolCallCache.Put(action.Tool, originalInput, result)
 		if action.ToolInput != originalInput {
 			e.toolCallCache.Put(action.Tool, action.ToolInput, result)
@@ -3131,7 +3539,7 @@ func (e *plannerExecutor) selectConfigUsingLLM(userQuery string, configs []toolc
 		"configCount", len(configs))
 
 	// Call LLM
-	resp, err := GenerateAndTrackLLMContent(
+	resp, err := llmruntime.GenerateAndTrackLLMContent(
 		e.ctx,
 		e.agentRequest.UserId,
 		e.agentRequest.AccountId,
@@ -3654,6 +4062,14 @@ func (e *plannerExecutor) followupForMultipleToolConfigs(tool toolcore.NBTool, a
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(followupRequest.Question) > 0 && IsReadOnlyRun(e.ctx) {
+		e.ctx.GetLogger().Info("plannerexecutor: configuration choice not asked in read-only run", "tool", tool.Name(), "options", len(followupRequest.FollowupOptions))
+		return []NBAgentPlannerToolActionStep{{
+			Action:      action,
+			Observation: ReadOnlyChoiceRefusal("configuration of "+tool.Name(), followupRequest.FollowupOptions),
+			Status:      ToolStatusFailure,
+		}}, nil, nil
+	}
 	if len(followupRequest.Question) > 0 {
 		followupId, err := GenerateFollowup(e.ctx, e.agentRequest, followupRequest)
 		if err != nil {
@@ -3708,6 +4124,14 @@ func (e *plannerExecutor) followupForTargetIntegration(tool toolcore.NBTool, act
 	if len(names) < 2 {
 		return nil, nil, nil
 	}
+	if IsReadOnlyRun(e.ctx) {
+		e.ctx.GetLogger().Info("plannerexecutor: target integration choice not asked in read-only run", "tool", tool.Name(), "options", len(names))
+		return []NBAgentPlannerToolActionStep{{
+			Action:      action,
+			Observation: ReadOnlyChoiceRefusal(fmt.Sprintf("%s integration for %s %s", tool.Name(), target.Kind(), target.Name), names),
+			Status:      ToolStatusFailure,
+		}}, nil, nil
+	}
 	followupRequest := FollowupRequest{
 		Question:        fmt.Sprintf("%s %s has several integrations for %s. Which one should be used?", target.Kind(), target.Name, tool.Name()),
 		FollowupType:    FollowupTypeToolConfig,
@@ -3754,6 +4178,25 @@ func isToolConfigResolved(toolConfigs map[string]string, toolName string) bool {
 		return true
 	}
 	return false
+}
+
+// approvedByPerson reports whether the request answering a write approval
+// belongs to a person: a user id that is neither empty nor the system user.
+func approvedByPerson(ctx *security.RequestContext) bool {
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return false
+	}
+	userId := strings.TrimSpace(ctx.GetSecurityContext().GetUserId())
+	return userId != "" && userId != security.GetSystemUserId()
+}
+
+// countReadOnlyRefusal records one more write refused in this read-only run
+// and returns the total so far.
+func (e *plannerExecutor) countReadOnlyRefusal() int {
+	e.readOnlyMu.Lock()
+	defer e.readOnlyMu.Unlock()
+	e.readOnlyRefusals++
+	return e.readOnlyRefusals
 }
 
 // isToolConfirmationApproved reports whether a write-confirmation for toolName was
@@ -3884,9 +4327,11 @@ func (e *plannerExecutor) GetToolInvocations() []ToolInvocation {
 				Name:       call.Tool,
 				Content:    response,
 			},
-			Log:        call.Log,
-			References: step.References,
-			Failed:     step.Status == ToolStatusFailure,
+			Log:          call.Log,
+			References:   step.References,
+			Failed:       step.Status == ToolStatusFailure,
+			DisplayID:    call.DisplayID,
+			SourceToolID: call.SourceToolID,
 		})
 	}
 
@@ -4071,8 +4516,11 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				// parallel batch is split into separate assistant messages, which
 				// strips the signature from every sibling but the first. Losing
 				// either turns an approved write into a dead conversation.
-				DisplayID: toString(getVal(actionData, "display_id")),
-				TurnID:    toString(getVal(actionData, "turn_id")),
+				// SourceToolID lets a citation of a cache-hit step resolve to the
+				// row of the step that actually ran.
+				DisplayID:    toString(getVal(actionData, "display_id")),
+				SourceToolID: toString(getVal(actionData, "source_tool_id")),
+				TurnID:       toString(getVal(actionData, "turn_id")),
 			}
 			// []byte marshals to a base64 STRING, so it has to be decoded back or the
 			// signature survives serialization as unusable text.
@@ -4130,6 +4578,7 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				IsTerminal:  isTerminal,
 				References:  references,
 				Followup:    restoredFollowup,
+				Metadata:    restoreStepMetadata(getVal(stepMap, "metadata")),
 			}
 			e.steps = append(e.steps, step)
 		}
@@ -4190,6 +4639,7 @@ func (e *plannerExecutor) Unmarshal(previousState []byte) error {
 				Dependency:      dependencies,
 				Condition:       actionCondition,
 				DisplayID:       toString(getVal(actionMap, "display_id")),
+				SourceToolID:    toString(getVal(actionMap, "source_tool_id")),
 				TurnID:          toString(getVal(actionMap, "turn_id")),
 			}
 			// currentAction is the source of truth for a WAITING tool when resume
@@ -4334,6 +4784,22 @@ func inputsToString(inputValues map[string]any) (map[string]string, error) {
 	return inputs, nil
 }
 
+// nativeArgumentsError: nil for a JSON object or empty args (no-arg call). "null" is refused:
+// it unmarshals into a nil map without error -> the tool would get the command "null".
+func nativeArgumentsError(args string) error {
+	if strings.TrimSpace(args) == "" {
+		return nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil {
+		return err
+	}
+	if obj == nil {
+		return errors.New("arguments are null")
+	}
+	return nil
+}
+
 // validateToolInput checks that every required field in the tool's InputSchema is
 // present in the parsed request before invoking tool.Call(). "command" maps to
 // request.Command; all other required fields are looked up in request.Arguments.
@@ -4402,25 +4868,7 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 	return &resp
 }
 
-// delegationSkillScope returns the skill-mapping names a sub-agent should inherit
-// from its delegating parent: the parent's own inherited chain with the parent's name
-// appended. It always returns a fresh slice (never aliases parentInherited) so a
-// caller mutating the result can't write into the parent's backing array. An empty
-// parentAgentName is a no-op that still returns a copy.
-func delegationSkillScope(parentInherited []string, parentAgentName string) []string {
-	if parentAgentName == "" {
-		if len(parentInherited) == 0 {
-			return nil
-		}
-		return append([]string(nil), parentInherited...)
-	}
-	scope := make([]string, 0, len(parentInherited)+1)
-	scope = append(scope, parentInherited...)
-	scope = append(scope, parentAgentName)
-	return scope
-}
-
-func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string) (resp toolcore.NBToolResponse, err error) {
+func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentRequest, parentAgentName string, tool toolcore.NBTool, input string, previousHistory []llms.MessageContent, queryContext string, toolId string, followupAnswer string, requestType toolcore.ToolRequestType) (resp toolcore.NBToolResponse, err error) {
 	// Recover from panics and convert to proper error responses
 	defer func() {
 		if r := recover(); r != nil {
@@ -4469,6 +4917,7 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	toolContext.OriginalQuery = agentRequest.OriginalQuery
 	toolContext.OriginalQueryFromUser = agentRequest.OriginalQueryFromUser
 	toolContext.FollowupAnswer = followupAnswer
+	toolContext.RequestType = requestType
 
 	// Every delegated agent performs its own account-wide search using the original
 	// question plus its delegated task. Agent mappings therefore do not need to be
@@ -4505,7 +4954,7 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	if _, ok := tool.(toolcore.NBMultiCommandTool); ok {
 		err := common.UnmarshalJson([]byte(input), &request)
 		if err != nil {
-			nbRequestContext.GetLogger().Error("plannerexecutor: invalid input format for tool", "error", err, "data", input, "tool", tool.Name())
+			nbRequestContext.GetLogger().Error("plannerexecutor: invalid input format for tool", "error", err, "data", egressfilter.RedactForLog(input), "tool", tool.Name())
 			return toolcore.NBToolResponse{}, err
 		}
 	} else {
@@ -4567,6 +5016,36 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: targetErr.Error()}, nil
 	}
 
+	// A run that acts only through its grants (a bee's) uses an integration
+	// only with a grant for its type, checked on the integration the call
+	// resolved. A call nothing classified counts as a change, unless it is an
+	// MCP tool its server marks read-only.
+	// CheckIntegrationUse decides whether the run is grant-checked on the account
+	// (a bee, or a person without a built-in role there); anyone else passes.
+	if toolcore.UsesIntegration(nbRequestContext, tool) {
+		account := toolContext.AccountId
+		if toolContext.TargetAccountId != "" {
+			account = toolContext.TargetAccountId
+		}
+		write := requestType != toolcore.ToolRequestTypeRead
+		if hinter, ok := tool.(toolcore.MCPReadOnlyHinter); ok && requestType == "" && hinter.MCPReadOnlyHint() {
+			write = false
+		}
+		if useErr := security.CheckIntegrationUse(nbRequestContext, account, toolcore.BoundIntegrationType(tool, toolContext.ToolConfig), write); useErr != nil {
+			nbRequestContext.GetLogger().Info("plannerexecutor: integration use refused", "tool", tool.Name(), "account_id", account, "error", useErr)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: useErr.Error() + ". Do not retry this call; answer with what you have, or list what you could not check."}, nil
+		}
+	}
+
+	// A read that resolved to another account is held to the tool's module grant
+	// there too (the dispatch check saw only the conversation's account).
+	if requestType == toolcore.ToolRequestTypeRead {
+		if missing := TargetReadGrantMissing(nbRequestContext, tool, toolContext.AccountId, toolContext.TargetAccountId); missing != "" {
+			nbRequestContext.GetLogger().Info("plannerexecutor: read on target refused", "tool", tool.Name(), "account_id", toolContext.TargetAccountId, "missing", missing)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: fmt.Sprintf("permission denied: this needs %s on account %s. Do not retry this call; answer with what you have, or list what you could not check.", missing, toolContext.TargetAccountId)}, nil
+		}
+	}
+
 	// Circuit-breaker pre-check. A tool opts in by implementing
 	// CircuitBreakerKeyer; tools that don't implement it never touch the
 	// breaker. When the circuit is open we short-circuit before the
@@ -4586,6 +5065,35 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 		}
 	}
 
+	// A call the run policy decides at the call (ToolCallDecideAtCall) is
+	// decided here, once, after every access check above and right before the tool runs, on the account the
+	// call lands on. The mark is cleared so nothing the tool calls inherits it.
+	if pending := decidedAtCallOf(nbRequestContext, tool); pending != nil {
+		nbRequestContext = withDecidedAtCall(nbRequestContext, nil)
+		toolContext.Ctx = withDecidedAtCall(toolContext.Ctx, nil)
+		account := pending.account
+		if toolContext.TargetAccountId != "" && toolContext.TargetAccountId != toolContext.AccountId {
+			account = toolContext.TargetAccountId
+		}
+		pending.call.BoundIntegrationType = toolcore.BoundIntegrationType(tool, toolContext.ToolConfig)
+		if start := policyFor(nbRequestContext).StartToolCall(nbRequestContext, pending.call, account); !start.Run {
+			nbRequestContext.GetLogger().Info("plannerexecutor: run policy did not run the call", "tool", tool.Name(), "account_id", account)
+			return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError, Data: start.Observation}, nil
+		}
+	}
+
+	// A write a person approved is recorded before it runs, and settled after.
+	// The tool itself sees which approval its call runs under (CallApproval).
+	if w := approvedWriteOf(toolContext.Ctx, tool); w != nil {
+		toolContext.Ctx = WithCallApproval(withApprovedWrite(toolContext.Ctx, nil), *w)
+	}
+	var settleApproved func(toolcore.NBToolResponse, error)
+	var notRun *toolcore.NBToolResponse
+	nbRequestContext, notRun, settleApproved = claimApprovedWrite(nbRequestContext, tool)
+	if notRun != nil {
+		return *notRun, nil
+	}
+
 	t0 := time.Now()
 	// OTEL: Start ToolExecution Span
 	_, span := nbRequestContext.GetTracer().Start(nbRequestContext.GetContext(), fmt.Sprintf("Agent:ToolExecution:%s", tool.Name()))
@@ -4600,8 +5108,11 @@ func callNbTool(nbRequestContext *security.RequestContext, agentRequest NBAgentR
 	// connection string) must not reach the model, the stored conversation or
 	// later commands built from them. Governed by the egress filter settings.
 	data.Data = egressfilter.RedactToolOutput(nbRequestContext, parentAgentName, tool.Name(), data.Data)
+	if settleApproved != nil {
+		settleApproved(data, err)
+	}
 	latency := time.Since(t0).Seconds()
-	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", input)
+	nbRequestContext.GetLogger().Info("tool execution time", "tool", tool.Name(), "time", latency, "input", egressfilter.RedactForLog(input))
 	// Record tool latency metric
 	// Use context.Background() for metrics, as security.RequestContext does not expose context.Context
 	common.MetricsToolLatencySeconds(implType, tool.Name(), agentRequest.AccountId, latency)
@@ -4688,6 +5199,12 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 
 	ctx.GetLogger().Info("agentexecutor: making Run call to agent", "agent", agent.GetName())
 	maxIter := resolveMaxIterations(agent, request)
+	// The run's investigation depth sets the default budget (#41806).
+	maxIter = depthMaxIterations(ctx, agent, request, maxIter)
+	// The run's policy may cap the agent lower still.
+	if policyMax := policyFor(ctx).MaxTurns(ctx, agent); policyMax > 0 && policyMax < maxIter {
+		maxIter = policyMax
+	}
 	ctx.GetLogger().Info("agentexecutor: resolved max iterations", "agent", agent.GetName(), "maxIterations", maxIter)
 	executor := newPlannerExecutor(ctx, nbAgentPlanner, agent, request, maxIter)
 	if previousState != "" {
@@ -4930,6 +5447,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			// comma-ok on result["output"]: a summary map without a string
 			// "output" key must not panic the timeout-recovery path.
 			if summary, ok := result["output"].(string); sumErr == nil && ok {
+				executor.recordUncritiquedSummary(plannerQuery, result)
 				return NBAgentPlannerExecutorResponse{
 					Status:      AgentExecutionStatusSuccess,
 					Response:    summary,
@@ -5019,7 +5537,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) run
 	// on a throwaway conversation and produce a bare label, not an investigation
 	// worth remembering — skip the memory_extractor / session-memory LLM calls.
-	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm && !isSingleShotClassifier(agent) {
+	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != llmruntime.ToolLlm && !isSingleShotClassifier(agent) {
 		bgCtx := security.NewRequestContext(
 			context.Background(),
 			ctx.GetSecurityContext(),
@@ -5060,8 +5578,9 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 		if worthRemembering {
 			ctx.GetLogger().Info("agentexecutor: triggering long-term memory extraction", "notebook_len", len(notebook), "has_notebook", notebook != "")
 
+			toolCallCount, wroteMemory := len(toolInvocations), memoryWriteSucceeded(toolInvocations)
 			err := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
-				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, len(toolInvocations))
+				_ = extractLongTermMemory(bgCtx, agent, request, response, notebook, toolCallCount, wroteMemory)
 			})
 			if err != nil {
 				ctx.GetLogger().Error("agentexecutor: failed to submit memory extraction task", "error", err)
@@ -5079,6 +5598,16 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			extractSessionWorkingMemory(bgCtx, request, response, notebook)
 		}); serr != nil {
 			ctx.GetLogger().Error("agentexecutor: failed to submit session-extractor task", "error", serr)
+		}
+
+		// The saver reads the turn the user sees, not each sub-agent's.
+		if request.ParentAgentId == "" || request.ParentAgentId == request.AgentId {
+			invocations, wroteMemory := toolInvocations, memoryWriteSucceeded(toolInvocations)
+			if serr := conversationAsyncTaskWorkerPool.Submit(submissionCtx, func() {
+				SaveMemoriesFn(bgCtx, request, response, invocations, wroteMemory)
+			}); serr != nil {
+				ctx.GetLogger().Error("agentexecutor: failed to submit memory saver task", "error", serr)
+			}
 		}
 	} else {
 		ctx.GetLogger().Info("agentexecutor: skipping memory extraction - conditions not met",
@@ -5134,24 +5663,41 @@ func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, quer
 	// Tool-input rewrite is a retrieval-oriented sub-operation; tag the context
 	// so it resolves the Retrieval-tier model regardless of the host agent.
 	rewriteCtx := security.NewRequestContext(
-		context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierRetrieval),
+		context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
 		e.ctx.GetMeter(),
 	)
 
-	llmResponse, err := GenerateAndTrackLLMContent(rewriteCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	llmResponse, err := llmruntime.GenerateAndTrackLLMContent(rewriteCtx, e.agentRequest.UserId, e.agentRequest.AccountId, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AgentId, true, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil || len(llmResponse.Choices) == 0 || llmResponse.Choices[0].Content == "" {
-		e.ctx.GetLogger().Error("plannerexecutor: LLM call for rewriting tool input failed", "prompt", prompt, "error", err)
+		e.ctx.GetLogger().Error("plannerexecutor: LLM call for rewriting tool input failed", "prompt", egressfilter.RedactForLog(prompt), "error", err)
 		// Fallback to original input if rewriting fails
 		return action.ToolInput, err
 	}
 
 	rewrittenInput := strings.TrimSpace(llmResponse.Choices[0].Content)
-	e.ctx.GetLogger().Info("plannerexecutor: Rewrote tool input", "original", action.ToolInput, "rewritten", rewrittenInput)
+	e.ctx.GetLogger().Info("plannerexecutor: Rewrote tool input", "original", egressfilter.RedactForLog(action.ToolInput), "rewritten", egressfilter.RedactForLog(rewrittenInput))
 
 	return rewrittenInput, nil
+}
+
+// consumesPriorObservations reports whether an agent-type tool reads QueryContext
+// as the observations it should summarize or answer from: this agent's summary
+// tool, or a tool whose agent implements PriorObservationsConsumer (LLM,
+// clarification). Specialists (logs, metrics, traces, ...) do not; their
+// QueryContext is scope, and the whole investigation history there is noise
+// (and, for events_report, a format).
+func (e *plannerExecutor) consumesPriorObservations(tool toolcore.NBTool) bool {
+	if e.summaryToolName != "" && strings.EqualFold(tool.Name(), e.summaryToolName) {
+		return true
+	}
+	if agentTool, ok := tool.(*nbAgentTool); ok {
+		return agentTool.consumesPriorObservations(e.ctx)
+	}
+	_, ok := tool.(PriorObservationsConsumer)
+	return ok
 }
 
 func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, queryContext string) (string, error) {
@@ -5167,7 +5713,7 @@ func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, que
 
 	// Use Lite model for summarization
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(e.ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(e.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		e.ctx.GetSecurityContext(),
 		e.ctx.GetLogger(),
 		e.ctx.GetTracer(),
@@ -5179,7 +5725,7 @@ func (e *plannerExecutor) fastSummarizeTool(action NBAgentPlannerToolAction, que
 	agentId := uuid.New()
 
 	start := time.Now()
-	completion, err := GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		summaryCtx,
 		e.agentRequest.UserId,
 		e.agentRequest.AccountId,
@@ -5259,7 +5805,7 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 	// args — passing them dumped the full raw response into the prompt as a
 	// "%!(EXTRA ...)" overflow, inflating summary inputs past 200k tokens. The
 	// response is also capped, since a one-sentence summary needs only the gist.
-	truncatedResponse := SmartTruncateToolOutput(response, maxSummaryInputBytes)
+	truncatedResponse := llmruntime.SmartTruncateToolOutput(response, maxSummaryInputBytes)
 	// Fail safe rather than silently: this function has no error return, and summarizing
 	// under an empty instruction yields a bare "User request: ..." blob that reads like a
 	// real summary. Skipping the async summary is the honest outcome.
@@ -5276,14 +5822,14 @@ func generateAsyncAgentSummary(ctx *security.RequestContext, request NBAgentRequ
 
 	// Use Lite model for summarization
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	summaryCompletion, err := GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "summary_agent", false, summaryMessages, true, llms.WithTemperature(0.2), WithThinkingLevel(ThinkingLevelFastTask))
+	summaryCompletion, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "summary_agent", false, summaryMessages, true, llms.WithTemperature(0.2), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: failed to generate summary for agent response", "error", err)
 		return

@@ -2,6 +2,7 @@
 refused."""
 
 import asyncio
+import dataclasses
 
 from types import SimpleNamespace
 from unittest import mock
@@ -9,7 +10,6 @@ from unittest import mock
 import pytest
 from msrest.exceptions import HttpOperationError
 
-from notifications_server.configs import settings
 from notifications_server.services import common as common_module
 from notifications_server.services import message as message_module
 from notifications_server.services.common import CommonService
@@ -45,10 +45,6 @@ def _sender_with(connector):
 
 
 # ------------------------------- sender -------------------------------
-
-
-def test_connect_asks_only_for_the_signed_in_profile():
-    assert settings.ms_teams.scopes == ["User.Read"]
 
 
 def test_send_returns_the_teams_message_id():
@@ -141,7 +137,7 @@ def test_a_refusal_is_not_retried():
     with pytest.raises(bs.TeamsBotError) as exc:
         _sender_with(connector).send(SERVICE_URL, "c", bs.card_activity({"type": "AdaptiveCard"}))
     assert exc.value.status == 403
-    assert str(exc.value) == bs.CHANNEL_FORBIDDEN, "a refused post says what to check"
+    assert str(exc.value) == bs._branded(bs.CHANNEL_FORBIDDEN), "a refused post says what to check"
     assert connector.conversations.send_to_conversation.call_count == 1
 
 
@@ -196,9 +192,21 @@ def test_channels_are_listed_once_and_cached():
     sender._teams_connector = lambda service_url: client
     first = sender.list_channels(TEAM)
     second = sender.list_channels(TEAM)
-    assert first == [{"id": "19:general@thread.tacv2", "name": "General"}, {"id": "19:ops", "name": "Ops"}]
+    assert first == [
+        {"id": "19:general@thread.tacv2", "name": "General (default channel)"},
+        {"id": "19:ops", "name": "Ops"},
+    ]
     assert second == first
     assert client.teams.get_teams_channels.call_count == 1
+
+
+def test_the_team_name_is_read_from_microsoft():
+    client = mock.Mock()
+    client.teams.get_team_details.return_value = SimpleNamespace(name="Platform")
+    sender = _sender_with(mock.Mock())
+    sender._teams_connector = lambda service_url: client
+    assert sender.team_name(TEAM) == "Platform"
+    client.teams.get_team_details.assert_called_once_with("19:general@thread.tacv2")
 
 
 # ------------------------------- alert sends -------------------------------
@@ -238,7 +246,8 @@ def test_a_template_goes_to_the_mapped_channel_as_the_bot():
 def test_a_team_without_the_app_fails_visibly():
     with mock.patch.object(message_module, "load_team_async", mock.AsyncMock(return_value=None)):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and response["reason"] == bs.APP_NOT_IN_TEAM
+    assert response["status"] == "failed" and response["reason"] == "not_in_channel"
+    assert response["retryable"] is False
 
 
 def test_a_403_is_reported_and_the_team_is_left_alone():
@@ -249,7 +258,8 @@ def test_a_403_is_reported_and_the_team_is_left_alone():
         mock.patch.object(message_module, "get_sender", return_value=sender),
     ):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and "403" in response["reason"]
+    assert response["status"] == "failed" and response["reason"] == "permission_denied"
+    assert response["error_code"] == "403" and response["retryable"] is False
 
 
 def test_only_the_first_mapped_channel_gets_the_card():
@@ -287,7 +297,7 @@ def test_a_finding_without_a_mapped_channel_is_not_sent():
     ip = SimpleNamespace(tenant_id="nb-tenant", to_channel={"team_id": "group-1", "channels": []}, team_id="t")
     with mock.patch.object(message_module, "get_ms_teams_finding_message_template", return_value={}):
         response, sent = asyncio.run(_message_service()._send_finding_to_teams(None, "nb-tenant", ip, {}, None))
-    assert response["status"] == "failed" and response["reason"] == "No Microsoft Teams channel is mapped"
+    assert response["status"] == "failed" and response["reason"] == "not_configured"
     assert sent is None
 
 
@@ -323,10 +333,60 @@ def test_a_team_whose_channels_fail_still_appears(svc):
     assert result["data"][0]["channels"] == []
 
 
+def _picker_with(svc, team, sender):
+    with (
+        mock.patch.object(common_module, "load_teams", return_value=[team]),
+        mock.patch.object(common_module, "get_sender", return_value=sender),
+        mock.patch.object(common_module, "store_team_name") as store,
+    ):
+        return svc.get_ms_teams_channels(SimpleNamespace(tenant_id="nb-tenant")), store
+
+
+def test_the_picker_reads_and_keeps_a_missing_team_name(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = [{"id": "19:ops", "name": "Ops"}]
+    sender.team_name.return_value = "Platform"
+    result, store = _picker_with(svc, dataclasses.replace(TEAM, name=""), sender)
+    assert result["data"][0]["name"] == "Platform"
+    store.assert_called_once_with(svc.session, "int-1", "Platform")
+
+
+def test_a_stored_team_name_is_not_read_again(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = []
+    result, store = _picker_with(svc, TEAM, sender)
+    assert result["data"][0]["name"] == "Platform"
+    sender.team_name.assert_not_called()
+    store.assert_not_called()
+
+
+def test_a_team_name_that_cant_be_read_leaves_the_picker_working(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = [{"id": "19:ops", "name": "Ops"}]
+    sender.team_name.side_effect = bs.TeamsBotError("Microsoft Teams returned 502", status=502)
+    result, store = _picker_with(svc, dataclasses.replace(TEAM, name=""), sender)
+    assert result["data"] == [{"name": "", "id": "group-1", "channels": [{"id": "19:ops", "name": "Ops"}]}]
+    store.assert_not_called()
+
+
+def test_a_team_name_that_cant_be_saved_is_still_shown(svc):
+    sender = mock.Mock()
+    sender.list_channels.return_value = []
+    sender.team_name.return_value = "Platform"
+    with (
+        mock.patch.object(common_module, "load_teams", return_value=[dataclasses.replace(TEAM, name="")]),
+        mock.patch.object(common_module, "get_sender", return_value=sender),
+        mock.patch.object(common_module, "store_team_name", side_effect=RuntimeError("db down")),
+    ):
+        result = svc.get_ms_teams_channels(SimpleNamespace(tenant_id="nb-tenant"))
+    assert result["data"][0]["name"] == "Platform"
+    svc.session.rollback.assert_called_once()
+
+
 def test_the_test_send_needs_the_app_in_the_team(svc):
     with mock.patch.object(common_module, "load_teams", return_value=[]):
         result = svc._send_test_ms_teams(SimpleNamespace(tenant_id="nb"), "19:ops", "group-1", "hello", "nb")
-    assert result == {"success": False, "platform": "ms_teams", "error": bs.APP_NOT_IN_TEAM}
+    assert result == {"success": False, "platform": "ms_teams", "error": bs._branded(bs.APP_NOT_IN_TEAM)}
 
 
 def test_graph_only_actions_are_refused(svc):
@@ -359,25 +419,50 @@ def test_members_are_looked_up_in_the_team_not_the_thread():
 
 
 # ------------------------------- storage -------------------------------
-def test_connect_stores_no_graph_token():
-    from notifications_server.services.ms_teams import ms_teams as ms_teams_module
+def test_saving_a_messaging_connection_clears_the_cached_installs_after_commit():
+    import uuid
 
-    service = ms_teams_module.MsTeamsService.__new__(ms_teams_module.MsTeamsService)
-    service.session = mock.Mock()
-    result = {"id_token_claims": {"tid": "tenant-a", "preferred_username": "admin@example.com"}}
-    account = {"home_account_id": "object-1.tenant-a", "local_account_id": "object-1"}
-    with (
-        mock.patch.object(ms_teams_module, "upsert_messaging_integration") as upsert,
-        mock.patch.object(ms_teams_module, "get_user_id_by_email", return_value=None),
-        mock.patch.object(ms_teams_module, "create_audit_request"),
-    ):
-        service.save_teams_installation("app-1", "nb-tenant", result, account, "admin@example.com")
-    config = upsert.call_args.kwargs["config"]
-    assert not {"access_token", "refresh_token", "token_expires_at"} & set(config), "earlier tokens are left alone"
-    assert upsert.call_args.kwargs["name"] == "tenant-a"
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    seen_in_db = []
+
+    def cleared(tenant_id):
+        # Another session must already see the row, or a reader could re-cache the old list.
+        with Session(engine) as other:
+            seen_in_db.append(other.query(Integration).filter(Integration.tenant_id == tenant).count())
+
+    with Session(engine) as session, mock.patch.object(mi, "Cache") as cache:
+        cache.return_value.delete_cached_installations.side_effect = cleared
+        mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+    cache.return_value.delete_cached_installations.assert_called_once_with(tenant)
+    assert seen_in_db == [1]
 
 
-def test_load_teams_returns_only_enabled_teams_of_the_tenant():
+def test_a_cache_failure_doesnt_fail_saving_the_connection():
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from notifications_server.models.models import Base, Integration, IntegrationConfigValue
+    from notifications_server.services import messaging_installations as mi
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[Integration.__table__, IntegrationConfigValue.__table__])
+    tenant = uuid.UUID("aaaaaaaa-1111-4111-8111-111111111111")
+    with Session(engine) as session, mock.patch.object(mi, "Cache", side_effect=RuntimeError("redis down")):
+        integ = mi.upsert_messaging_integration(session, tenant, "ms_teams", "tenant-a", {"client_id": "object-1"})
+        assert integ.name == "tenant-a"
+
+
+def test_load_teams_returns_only_bound_teams_of_the_tenant():
     import uuid
 
     from sqlalchemy import create_engine
@@ -401,7 +486,11 @@ def test_load_teams_returns_only_enabled_teams_of_the_tenant():
 
     with Session(engine) as session:
         session.add_all(
-            team(nb, "group-b") + team(nb, "group-a") + team(nb, "group-off", "disabled") + team(other, "group-x")
+            team(nb, "group-b")
+            + team(nb, "group-a")
+            + team(nb, "group-off", "disabled")
+            + team(nb, "group-gone", "released")
+            + team(other, "group-x")
         )
         session.commit()
         teams = bs.load_teams(session, nb)
@@ -454,9 +543,7 @@ def test_a_failed_or_emailless_lookup_is_not_cached():
 
 def test_nubi_identifies_the_sender_through_the_bot(svc):
     with (
-        mock.patch.object(
-            common_module, "load_ms_teams_installation_by_aad_tenant", return_value=SimpleNamespace(tenant_id="nb")
-        ),
+        mock.patch.object(common_module, "eligible", return_value={"nb"}),
         mock.patch.object(common_module, "sender_email", mock.AsyncMock(return_value="dana@example.com")),
     ):
         svc.session.query.return_value.filter.return_value.first.return_value = None
@@ -491,30 +578,30 @@ def test_a_channel_outside_the_team_is_refused():
     sender, _ = _sender_listing(["19:ops"], ["19:ops"])
     with pytest.raises(bs.TeamsBotError) as exc:
         sender.check_channel(TEAM, "19:another-customers-channel")
-    assert str(exc.value) == bs.CHANNEL_NOT_IN_TEAM
+    assert str(exc.value) == bs._branded(bs.CHANNEL_NOT_IN_TEAM)
 
 
 def test_an_alert_to_a_channel_outside_the_team_is_not_sent():
     sender = mock.Mock()
-    sender.check_channel.side_effect = bs.TeamsBotError(bs.CHANNEL_NOT_IN_TEAM)
+    sender.check_channel.side_effect = bs.ChannelNotInTeamError()
     with (
         mock.patch.object(message_module, "load_team_async", mock.AsyncMock(return_value=TEAM)),
         mock.patch.object(message_module, "get_sender", return_value=sender),
     ):
         response = asyncio.run(_message_service().send_teams_template_notification(_ip(), lambda _: {}, {}, None, "t"))
-    assert response["status"] == "failed" and bs.CHANNEL_NOT_IN_TEAM in response["reason"]
+    assert response["status"] == "failed" and response["reason"] == "channel_not_found"
     sender.send.assert_not_called()
 
 
 def test_a_test_send_to_a_channel_outside_the_team_is_not_sent(svc):
     sender = mock.Mock()
-    sender.check_channel.side_effect = bs.TeamsBotError(bs.CHANNEL_NOT_IN_TEAM)
+    sender.check_channel.side_effect = bs.ChannelNotInTeamError()
     with (
         mock.patch.object(common_module, "load_teams", return_value=[TEAM]),
         mock.patch.object(common_module, "get_sender", return_value=sender),
     ):
         result = svc._send_test_ms_teams(SimpleNamespace(tenant_id="nb"), "19:elsewhere", "group-1", "hello", "nb")
-    assert result == {"success": False, "platform": "ms_teams", "error": bs.CHANNEL_NOT_IN_TEAM}
+    assert result == {"success": False, "platform": "ms_teams", "error": bs._branded(bs.CHANNEL_NOT_IN_TEAM)}
     sender.send.assert_not_called()
 
 
@@ -526,7 +613,7 @@ def test_a_failed_alert_keeps_its_reason():
         mock.patch.object(message_module, "get_ms_teams_finding_message_template", return_value={}),
     ):
         response, _ = asyncio.run(_message_service()._send_finding_to_teams(None, "nb-tenant", _ip(), {}, None))
-    assert response["status"] == "failed" and response["reason"] == bs.APP_NOT_IN_TEAM
+    assert response["status"] == "failed" and response["reason"] == "not_in_channel"
 
 
 class _CountingServer:
@@ -571,6 +658,8 @@ def _sender_over_http():
     return sender
 
 
+# The stand-in is a local http server, so it isn't a Bot Connector host.
+@mock.patch.object(bs, "require_bot_connector_url", mock.Mock())
 def test_a_send_that_gets_a_gateway_error_reaches_teams_once():
     server = _CountingServer(502)
     try:
@@ -581,6 +670,7 @@ def test_a_send_that_gets_a_gateway_error_reaches_teams_once():
     assert server.requests == ["POST"]
 
 
+@mock.patch.object(bs, "require_bot_connector_url", mock.Mock())
 def test_reads_are_retried_by_us_alone():
     server = _CountingServer(502)
     team = bs.TeamRef("int-1", "nb", "group-1", "19:general@thread.tacv2", "Platform", server.url)
@@ -590,3 +680,18 @@ def test_reads_are_retried_by_us_alone():
     finally:
         server.close()
     assert server.requests == ["GET"] * bs.MAX_ATTEMPTS
+
+
+@pytest.mark.parametrize("method", ["teams_reply", "teams_reply_with_card"])
+def test_a_reply_to_a_service_url_outside_the_bot_connector_is_refused(method):
+    service = CommonService.__new__(CommonService)
+    service.teams_adapter = mock.Mock(continue_conversation=mock.AsyncMock())
+    activity = SimpleNamespace(service_url="https://attacker.example/")
+    content = "hi" if method == "teams_reply" else {"type": "AdaptiveCard"}
+    with (
+        mock.patch.object(common_module.TurnContext, "get_conversation_reference", return_value=mock.Mock()),
+        mock.patch.object(common_module.MicrosoftAppCredentials, "trust_service_url") as trust,
+    ):
+        assert asyncio.run(getattr(service, method)(activity, content, "aad")) is False
+    trust.assert_not_called()
+    service.teams_adapter.continue_conversation.assert_not_called()

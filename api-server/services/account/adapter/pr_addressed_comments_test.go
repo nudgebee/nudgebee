@@ -161,7 +161,7 @@ func TestBuildPRFollowupChatRequestAddressedComments(t *testing.T) {
 			// compact jsonb.
 			json.RawMessage("  []  "), json.RawMessage("\n[]\n"), json.RawMessage(" null "),
 		} {
-			req := buildPRFollowupChatRequest(meta, "tok", "prompt", "", empty)
+			req := buildPRFollowupChatRequest(meta, "prompt", "", empty)
 			require.NotContainsf(t, req.Query, "addressed_comments",
 				"a fresh PR's payload must be unchanged for %q", string(empty))
 		}
@@ -169,7 +169,7 @@ func TestBuildPRFollowupChatRequestAddressedComments(t *testing.T) {
 
 	t.Run("embedded as an array when present", func(t *testing.T) {
 		raw := json.RawMessage(`[{"source":"inline","comment_id":3,"action":"fixed"}]`)
-		req := buildPRFollowupChatRequest(meta, "tok", "prompt", "", raw)
+		req := buildPRFollowupChatRequest(meta, "prompt", "", raw)
 		require.Contains(t, req.Query, "addressed_comments")
 		// As an array, not a JSON-quoted string — a quoted string would arrive at
 		// code-analysis as an unparseable scalar.

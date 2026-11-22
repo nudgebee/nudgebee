@@ -203,3 +203,101 @@ func TestNestedHandoffKeepsTargetIdentity(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "k8s-new-id", target.AccountID)
 }
+
+// Stubs the tenant's connected clusters and AWS accounts for handoff tests.
+func stubHandoffAccounts(t *testing.T) {
+	t.Helper()
+	previous := tools.TenantAccountLister
+	tools.TenantAccountLister = func(_ *security.RequestContext, tool toolcore.NBTool) ([]toolcore.ToolConfig, error) {
+		switch tool.Name() {
+		case tools.ToolExecuteKubectlCommand:
+			return []toolcore.ToolConfig{{Name: "k8s-prod", Values: []toolcore.ToolConfigValue{{Name: "id", Value: "k8s-id"}}}}, nil
+		case tools.ToolExecuteAwsCliCommand:
+			return []toolcore.ToolConfig{
+				{Name: "aws-origin", Values: []toolcore.ToolConfigValue{{Name: "id", Value: "origin-id"}}},
+				{Name: "aws-prod", Values: []toolcore.ToolConfigValue{{Name: "id", Value: "aws-id"}}},
+			}, nil
+		}
+		return nil, nil
+	}
+	t.Cleanup(func() { tools.TenantAccountLister = previous })
+}
+
+type awsBoundTestAgent struct{ handoffTargetTestAgent }
+
+func (awsBoundTestAgent) GetName() string        { return "aws_logs_test" }
+func (awsBoundTestAgent) TargetProvider() string { return "aws" }
+
+func targetRequest(provider, name string) toolcore.NBToolCallRequest {
+	return toolcore.NBToolCallRequest{Arguments: map[string]any{"target": map[string]any{"provider": provider, "name": name}}}
+}
+
+// Seen on dev: an investigation on gcp-dev asked logs about gcp-dev itself
+// and was refused. Naming the conversation's own account is no handoff, even
+// for a target-blind agent.
+func TestTargetNamingTheConversationsOwnAccountIsNoHandoff(t *testing.T) {
+	stubHandoffAccounts(t)
+	ctx := toolcore.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"origin-id", "aws-id", "k8s-id"}), AccountId: "origin-id"}
+
+	target, err := childAgentTarget(ctx, handoffCustomTestAgent{}, targetRequest("aws", "aws-origin"))
+	require.NoError(t, err)
+	require.Nil(t, target, "a target-blind agent runs on its own account")
+	target, err = childAgentTarget(ctx, handoffTargetTestAgent{}, targetRequest("aws", "aws-origin"))
+	require.NoError(t, err)
+	require.Nil(t, target, "a target-aware agent too")
+
+	_, err = childAgentTarget(ctx, handoffCustomTestAgent{}, targetRequest("aws", "aws-prod"))
+	require.ErrorContains(t, err, "does not support a delegated execution target", "another account still needs target support")
+}
+
+// A provider-bound agent (aws_logs runs the aws CLI) takes another account
+// of its own kind, and refuses any other kind instead of answering from the
+// conversation's own account.
+func TestProviderBoundAgentTakesOnlyItsOwnKindOfTarget(t *testing.T) {
+	stubHandoffAccounts(t)
+	ctx := toolcore.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"origin-id", "aws-id", "k8s-id"}), AccountId: "origin-id"}
+
+	target, err := childAgentTarget(ctx, awsBoundTestAgent{}, targetRequest("aws", "aws-prod"))
+	require.NoError(t, err)
+	require.Equal(t, "aws-id", target.AccountID)
+
+	_, err = childAgentTarget(ctx, awsBoundTestAgent{}, targetRequest("kubernetes", "k8s-prod"))
+	require.ErrorContains(t, err, `aws_logs_test reads aws accounts only; Kubernetes cluster "k8s-prod" is not one`)
+}
+
+type accountTestAgent struct {
+	handoffTargetTestAgent
+	accountID string
+}
+
+func (a accountTestAgent) GetName() string { return "routed_test_" + a.accountID }
+
+// Seen on dev: an AWS conversation asked logs about k8s-prod and got the
+// AWS logs agent, built for the conversation's account. A tool routed by
+// target gets the agent its factory builds for the target account.
+func TestTargetRoutedToolBuildsTheTargetsAgent(t *testing.T) {
+	stubHandoffAccounts(t)
+	RegisterTargetRoutedNBAgentFactoryAndTool("routed_test", func(accountId string) (NBAgent, error) {
+		return accountTestAgent{accountID: accountId}, nil
+	}, "", "", "")
+	tool := &nbAgentTool{name: "routed_test", accountId: "origin-id", targetSupported: true, routedByTarget: true}
+	ctx := toolcore.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"origin-id", "aws-id", "k8s-id"}), AccountId: "origin-id"}
+
+	agent, err := tool.agentForCall(ctx, targetRequest("kubernetes", "k8s-prod"))
+	require.NoError(t, err)
+	require.Equal(t, "routed_test_k8s-id", agent.GetName(), "built for the target")
+
+	agent, err = tool.agentForCall(ctx, toolcore.NBToolCallRequest{Command: "errors in the last hour"})
+	require.NoError(t, err)
+	require.Equal(t, "routed_test_origin-id", agent.GetName(), "no target: the conversation's account")
+
+	ctx.QueryConfig.DelegatedTarget = &toolcore.ExecutionTarget{Provider: "aws", Name: "aws-prod", AccountID: "aws-id"}
+	agent, err = tool.agentForCall(ctx, toolcore.NBToolCallRequest{Command: "errors in the last hour"})
+	require.NoError(t, err)
+	require.Equal(t, "routed_test_aws-id", agent.GetName(), "a handed target routes too")
+
+	plain := &nbAgentTool{name: "events", agent: accountTestAgent{accountID: "origin-id"}, targetSupported: true}
+	agent, err = plain.agentForCall(ctx, targetRequest("kubernetes", "k8s-prod"))
+	require.NoError(t, err)
+	require.Equal(t, "routed_test_origin-id", agent.GetName(), "tools not routed by target are unchanged")
+}

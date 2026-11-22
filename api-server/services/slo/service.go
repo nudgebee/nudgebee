@@ -1,6 +1,7 @@
 package slo
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -20,24 +21,62 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// mqPublish is common.MqPublish. A variable so tests can read what the package
+// publishes without a broker.
+var mqPublish = common.MqPublish
+
 func Execute() error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err
 	}
+	// One run at a time across all pods (see executeLockKey).
+	unlock, ok, err := tryExecuteLock(context.Background(), dbms.Db)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		slog.Warn("slo: previous run still in progress, skipping this one")
+		return nil
+	}
+	defer unlock()
 	var sloConfigs []string
 	if err = dbms.Db.Select(&sloConfigs, `SELECT distinct s.cloud_account_id FROM public.slo_config s inner join agent a on s.cloud_account_id = a.cloud_account_id  where s.enabled = true and a.status = 'CONNECTED'`); err != nil {
 		return err
 	}
-	for _, accountId := range sloConfigs {
-		err := ExecuteSLO(accountId)
-		if err != nil {
-			slog.Error("slo: error running slo config", "error", err, "cloud account id", accountId)
+	// Two passes: every account's classic SLOs first, then the CPU SLO forecasts. A
+	// forecast fetches three days of samples, so evaluating it in the same pass would
+	// delay the next account's availability and latency SLOs behind it.
+	for _, forecasts := range []bool{false, true} {
+		for _, accountId := range sloConfigs {
+			if err := executeAccountSLOs(accountId, forecasts); err != nil {
+				slog.Error("slo: error running slo config", "error", err, "cloud account id", accountId, "forecasts", forecasts)
+			}
 		}
 	}
 	return nil
 }
+
+// ExecuteSLO evaluates every enabled SLO of one account, classic SLOs before forecasts.
 func ExecuteSLO(accountId string) error {
+	if accountId == "" {
+		return fmt.Errorf("slo: ExecuteSLO called with empty accountId")
+	}
+	return errors.Join(executeAccountSLOs(accountId, false), executeAccountSLOs(accountId, true))
+}
+
+// configsOfPass picks the configs one pass evaluates: the forecast (CPU) SLOs, or the rest.
+func configsOfPass(configs []DBSLOConfig, forecasts bool) []DBSLOConfig {
+	out := make([]DBSLOConfig, 0, len(configs))
+	for _, c := range configs {
+		if isForecastConfig(c) == forecasts {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func executeAccountSLOs(accountId string, forecasts bool) error {
 	if accountId == "" {
 		return fmt.Errorf("slo: ExecuteSLO called with empty accountId")
 	}
@@ -49,11 +88,11 @@ func ExecuteSLO(accountId string) error {
 	sloConfigs := make([]DBSLOConfig, 0)
 	if err = dbms.Db.Select(&sloConfigs, `SELECT id, "name", description, "window", goal, schedule, created_by, updated_by, "method",
 			histogram_query, filter_good_query, filter_bad_query, threshold, created_at, updated_at,
-			cloud_account_id, tenant_id, enabled, workload_name, workload_namespace
+			cloud_account_id, tenant_id, enabled, workload_name, workload_namespace, container
 		FROM public.slo_config WHERE cloud_account_id=$1 AND enabled = true`, accountId); err != nil {
 		return err
 	}
-	for _, config := range sloConfigs {
+	for _, config := range configsOfPass(sloConfigs, forecasts) {
 		err := executeSLOConfig(config, accountId, dbms)
 		if err != nil {
 			slog.Error("slo: error running slo config", "error", err, "configId", config.Id, "accountId", accountId)
@@ -63,6 +102,9 @@ func ExecuteSLO(accountId string) error {
 }
 
 func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.DatabaseManager) error {
+	if isForecastConfig(config) {
+		return executeForecastConfig(config, accountId, dbms)
+	}
 	reports, err := executeSlo(config, accountId)
 	if err != nil {
 		slog.Error("slo: error executing slo", "error", err, "configId", config.Id, "accountId", accountId)
@@ -157,7 +199,7 @@ func executeSLOConfig(config DBSLOConfig, accountId string, dbms *database.Datab
 			slog.Error("slo: error generating event", "error", err, "configId", config.Id, "accountId", accountId)
 		}
 	} else {
-		closeSLOEventIfRecovered(dbms, config, reports)
+		closeSLOEventIfRecovered(dbms, config, reports, accountName)
 	}
 	return nil
 }
@@ -357,7 +399,7 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(sloConfigRequest.AccountId, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().CanAccessAccount(sloConfigRequest.AccountId, security.SecurityAccessTypeCreate) {
 		return data, fmt.Errorf("unauthorized")
 	}
 
@@ -372,6 +414,8 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 		method := ""
 		histogramQuery := ""
 		window := 60 * 60
+		var container *string
+		previousContainer := ""
 		if strings.ToLower(config.Name) == "latency" {
 			histogramQuery = LatencyHistogramQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "distribution_cut"
@@ -379,27 +423,58 @@ func CreateOrUpdateSLOConfig(context *security.RequestContext, sloConfigRequest 
 			filterGoodQuery = AvailabilityGoodQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			filterBadQuery = AvailabilityBadQuery(sloConfigRequest.Namespace, sloConfigRequest.WorkloadName)
 			method = "good_bad_ratio"
+		} else if isForecastType(config.Name) {
+			if err := validateForecastConfig(context, sloConfigRequest, config); err != nil {
+				return data, err
+			}
+			// goal and window are written explicitly: DBSLOConfig scans them into
+			// non-nullable fields, and one NULL row would fail ExecuteSLO for every
+			// SLO on the account. The threshold is a percent.
+			config.Name = strings.ToLower(config.Name)
+			config.Goal = 0
+			method = forecastMethod
+			if isContainerScoped(config.Name) {
+				// Read before the upsert overwrites it: a changed container leaves the
+				// old one's alerts with no evaluator (closed below; the hourly run also
+				// repairs any it misses).
+				previousContainer = storedContainer(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest, config.Name)
+				// A request that names no container (a disable sent without it) keeps the
+				// stored one, so the close below still finds that container's alerts.
+				c := strings.TrimSpace(config.Container)
+				if c == "" {
+					c = previousContainer
+				}
+				container = &c
+			}
 		} else {
 			return data, fmt.Errorf("invalid config provided %s", config.Name)
 		}
-		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal) 
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) 
+		query := `INSERT INTO slo_config ("name", schedule, description, created_by, updated_by, filter_good_query, filter_bad_query, threshold, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, enabled, goal, container) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) 
 			ON CONFLICT (tenant_id, cloud_account_id, workload_name, workload_namespace, name)
 			DO UPDATE SET threshold = EXCLUDED.threshold,
 				goal = EXCLUDED.goal,
 				enabled = EXCLUDED.enabled,
+				container = EXCLUDED.container,
 				updated_by = EXCLUDED.updated_by,
 				updated_at = now()`
-		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal)
+		_, err = dbms.Db.Exec(query, config.Name, "", "", context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetUserId(), filterGoodQuery, filterBadQuery, config.Threshold, method, histogramQuery, sloConfigRequest.AccountId, context.GetSecurityContext().GetTenantId(), window, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, config.Enabled, config.Goal, container)
 		if err != nil {
 			return data, err
+		}
+		if previousContainer != "" && container != nil && previousContainer != *container {
+			closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, previousContainer)
 		}
 		if !config.Enabled {
 			// A disabled config never evaluates again, so it never has another
 			// chance to close its own event — same failure class as delete (see
 			// DeleteSLOConfig).
-			fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
-			closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
+			if isForecastType(config.Name) {
+				closeForecastEvents(context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace, common.StrVal(container))
+			} else {
+				fingerprint := sloFingerprint(sloConfigRequest.AccountId, config.Name, sloConfigRequest.WorkloadName, sloConfigRequest.Namespace)
+				closeSLOEventByFingerprint(dbms, context.GetSecurityContext().GetTenantId(), sloConfigRequest.AccountId, fingerprint)
+			}
 		}
 		data["success"] = true
 	}
@@ -416,7 +491,7 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	if sc.GetUserId() == "" || sc.GetTenantId() == "" {
 		return data, fmt.Errorf("unauthorized")
 	}
-	if !sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeDelete) {
+	if !context.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeDelete) {
 		return data, fmt.Errorf("unauthorized")
 	}
 	if request.WorkloadName == "" || request.Namespace == "" {
@@ -445,8 +520,11 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 	// events can be closed afterward — a deleted config never runs again, so
 	// without this a still-open SLOViolation event it owns has no evaluator
 	// left to ever resolve it (same failure class this whole change fixes).
-	var deletedConfigNames []string
-	if err = tx.Select(&deletedConfigNames, fmt.Sprintf(`SELECT "name" FROM slo_config
+	var deletedConfigs []struct {
+		Name      string  `db:"name"`
+		Container *string `db:"container"`
+	}
+	if err = tx.Select(&deletedConfigs, fmt.Sprintf(`SELECT "name", container FROM slo_config
 		WHERE tenant_id=$1 AND cloud_account_id=$2 AND workload_name=$3 AND workload_namespace=$4%s`, nameFilter), args...); err != nil {
 		return data, err
 	}
@@ -467,7 +545,12 @@ func DeleteSLOConfig(context *security.RequestContext, request SLODeleteRequest)
 		return data, err
 	}
 
-	for _, name := range deletedConfigNames {
+	for _, cfg := range deletedConfigs {
+		name := cfg.Name
+		if isForecastType(name) {
+			closeForecastEvents(sc.GetTenantId(), request.AccountId, name, request.WorkloadName, request.Namespace, common.StrVal(cfg.Container))
+			continue
+		}
 		fingerprint := sloFingerprint(request.AccountId, name, request.WorkloadName, request.Namespace)
 		closeSLOEventByFingerprint(dbms, sc.GetTenantId(), request.AccountId, fingerprint)
 	}
@@ -489,7 +572,7 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 		return nil, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(sloListRequest.AccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(sloListRequest.AccountId, security.SecurityAccessTypeRead) {
 		return nil, fmt.Errorf("unauthorized")
 	}
 
@@ -503,7 +586,7 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 		return nil, err
 	}
 
-	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled FROM public.slo_config where %s`, whereClause)
+	query := fmt.Sprintf(`SELECT id, "name", description, schedule, created_by, updated_by, filter_good_query, filter_bad_query, threshold, created_at, updated_at, "method", histogram_query, cloud_account_id, tenant_id, "window", workload_name, workload_namespace, goal, enabled, last_forecast, container FROM public.slo_config where %s`, whereClause)
 	// Use sqlx.In to handle slice arguments and prevent SQL injection
 	query, args, err = sqlx.In(query, args...)
 	if err != nil {
@@ -520,12 +603,12 @@ func GetSLOConfig(context *security.RequestContext, sloListRequest SLOListReques
 	for _, config := range sloConfigs {
 		configKey := fmt.Sprintf("%s-%s-%s", config.Name, config.WorkloadName, config.Namespace)
 		if response, ok := sloResponseMap[configKey]; ok {
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast), Container: common.StrVal(config.Container)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		} else {
 			response := SLOResponse{Id: config.Id, AccountId: config.CloudAccountId, WorkloadName: config.WorkloadName, Namespace: config.Namespace, Config: make([]SLOConfigResponse, 0)}
-			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled}
+			configResponse := SLOConfigResponse{Id: config.Id, Name: config.Name, Goal: config.Goal, Threshold: config.ThresholdBucket, Enabled: config.Enabled, LastForecast: lastForecastJSON(config.LastForecast), Container: common.StrVal(config.Container)}
 			response.Config = append(response.Config, configResponse)
 			sloResponseMap[configKey] = response
 		}
@@ -586,6 +669,9 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 		burnRateWindow = br.LongWindow
 		burnRateThreshold = br.Threshold
 	}
+	// finding_id is the SLO event's finding id (see GenerateSLOEvent). The digest
+	// keeps one line per finding, so an hourly repeat and the resolve that follows
+	// it (triggerResolvedNotification) show as one SLO.
 	message := map[string]any{
 		"kind":      "notification",
 		"source":    "slo",
@@ -599,6 +685,7 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 			"slo_name":               sloConfig.Name,
 			"slo_type":               sloConfig.Name,
 			"status":                 "FIRING",
+			"finding_id":             sloFingerprint(sloConfig.CloudAccountId, sloConfig.Name, sloConfig.WorkloadName, sloConfig.Namespace),
 			"slo_target":             sloConfig.Goal,
 			"current_value":          currentGap,
 			"firing_since":           failingSince,
@@ -621,13 +708,55 @@ func triggerNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName
 	}
 	slog.Info(fmt.Sprintf("SLO Notification - %s", string(messageJson)))
 
-	err = common.MqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
+	err = mqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message)
 	if err != nil {
 		slog.Error("slo: error publishing message to queue", "error", err)
 		return err
 	}
 
 	return nil
+}
+
+// triggerResolvedNotification queues a recovered SLO for the SLO digest: the item
+// triggerNotification publishes while the SLO is firing, as RESOLVED and under
+// the same finding_id, so notifications-server lists it once, under "Resolved".
+//
+// It carries every field that digest's model requires, not only the ones a
+// resolved line shows: one item failing validation fails the whole channel's
+// digest, and a notifications-server that predates the Resolved section renders
+// the item as a firing line. firing_since is one of those; nothing here knows
+// when the breach began, so it is this report's hour, triggerNotification's own
+// fallback. ends_at is the recovery.
+func triggerResolvedNotification(sloConfig DBSLOConfig, sloReport SLOReport, accountName string, fingerprint string) error {
+	slog.Info("slo: publishing resolved slo notification", "configId", sloConfig.Id, "finding_id", fingerprint)
+	message := map[string]any{
+		"kind":      "notification",
+		"source":    "slo",
+		"type":      "slo_alert",
+		"tenant_id": sloConfig.TenantId,
+
+		"parameters": map[string]any{
+			"account_id":       sloConfig.CloudAccountId,
+			"namespace":        sloConfig.Namespace,
+			"workload":         sloConfig.WorkloadName,
+			"slo_name":         sloConfig.Name,
+			"slo_type":         sloConfig.Name,
+			"status":           "RESOLVED",
+			"finding_id":       fingerprint,
+			"slo_target":       sloConfig.Goal,
+			"current_value":    fmt.Sprintf("%.2f", sloReport.Gap),
+			"firing_since":     timestampToPostgresFormat(sloReport.EndTime),
+			"ends_at":          time.Now().UTC().Format(time.RFC3339),
+			"account_name":     accountName,
+			"threshold":        sloConfig.ThresholdBucket,
+			"bad_event_count":  sloReport.BadEventsCount,
+			"good_event_count": sloReport.GoodEventsCount,
+		},
+	}
+	// Retried in the background: a firing item is published again every run, but
+	// a recovery is published once, and later runs find no row left to close.
+	return mqPublish(config.Config.RabbitMqNotificationsExchange, config.Config.RabbitMqNotificationsQueue, message,
+		common.MqPublishWithBackgroundRetry())
 }
 
 func getPreviousSLOReport(configId string, workload string, namespace string) (DBSLOReport, error) {
@@ -718,7 +847,7 @@ func GenerateSLOEvent(dbms *database.DatabaseManager, sloConfig DBSLOConfig, acc
 		Fingerprint:      fingerprint,
 		Cluster:          accountName,
 	}
-	_, err = event.InsertEvent(eventObj, "")
+	_, err = event.InsertEvent(eventObj, "", event.ScheduledDetection())
 	if err != nil {
 		slog.Error("slo: error inserting event", "error", err)
 		return err
@@ -756,27 +885,41 @@ func sloFingerprint(accountId, configName, workloadName, namespace string) strin
 // which looks identical to "no violation" from here but isn't a real recovery
 // signal — closing on that would false-resolve a violation that's still
 // ongoing during a connectivity blip.
-func closeSLOEventIfRecovered(dbms *database.DatabaseManager, sloConfig DBSLOConfig, reports []SLOReport) {
-	recovered := false
-	for _, report := range reports {
-		if statusForReport(report) == SLOStatusOK {
-			recovered = true
+//
+// The recovery is also announced in the SLO digest (FeatureSLOResolvedDigestEnabled),
+// from here and nowhere else: the other callers of closeSLOEventByFingerprint
+// close the event of an SLO that was disabled or deleted, which did not recover.
+// And only when the close changed a FIRING row — a healthy SLO reports OK on
+// every run, and all but the first of those runs find nothing to close.
+func closeSLOEventIfRecovered(dbms *database.DatabaseManager, sloConfig DBSLOConfig, reports []SLOReport, accountName string) {
+	var recovered *SLOReport
+	for i := range reports {
+		if statusForReport(reports[i]) == SLOStatusOK {
+			recovered = &reports[i]
 			break
 		}
 	}
-	if !recovered {
+	if recovered == nil {
 		return
 	}
 
 	fingerprint := sloFingerprint(sloConfig.CloudAccountId, sloConfig.Name, sloConfig.WorkloadName, sloConfig.Namespace)
-	closeSLOEventByFingerprint(dbms, sloConfig.TenantId, sloConfig.CloudAccountId, fingerprint)
+	if !closeSLOEventByFingerprint(dbms, sloConfig.TenantId, sloConfig.CloudAccountId, fingerprint) {
+		return
+	}
+	if config.Config.FeatureSLOResolvedDigestEnabled {
+		if err := triggerResolvedNotification(sloConfig, *recovered, accountName, fingerprint); err != nil {
+			slog.Error("slo: error triggering resolved notification", "error", err, "configId", sloConfig.Id, "accountId", sloConfig.CloudAccountId)
+		}
+	}
 }
 
 // closeSLOEventByFingerprint resolves the FIRING SLOViolation event matching
 // fingerprint, if any, and delivers the resolved notification the same way
 // webhook-driven resolves do (integrations/core/integration_webhook.go
-// resolveEvent). A no-op when nothing is open for this fingerprint.
-func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accountId, fingerprint string) {
+// resolveEvent). A no-op when nothing is open for this fingerprint. Reports
+// whether it closed an event.
+func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accountId, fingerprint string) bool {
 	var id string
 	err := dbms.Db.QueryRowx(
 		// events.ends_at is `timestamp` with no timezone (see V175); binding an
@@ -790,19 +933,20 @@ func closeSLOEventByFingerprint(dbms *database.DatabaseManager, tenantId, accoun
 	).Scan(&id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return
+			return false
 		}
 		slog.Error("slo: failed to close recovered slo event", "error", err, "fingerprint", fingerprint)
-		return
+		return false
 	}
 
-	_ = common.MqPublish(
+	_ = mqPublish(
 		config.Config.RabbitMqEventPostProcessExchange,
 		config.Config.RabbitMqEventPostProcessQueue,
 		map[string]any{"event_id": id, "notify_resolved": true},
 		common.MqPublishWithExpiration(1*time.Hour),
 		common.MqPublishWithBackgroundRetry(),
 	)
+	return true
 }
 
 // resolveSubjectType returns the workload's real kind, lower-cased to match the

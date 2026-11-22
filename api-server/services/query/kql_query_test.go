@@ -209,3 +209,17 @@ func TestGenerateKqlQuery(t *testing.T) {
 		t.Errorf("FullQuery: got %s, want %s", got, want)
 	}
 }
+
+func TestGenerateKqlWhereClause_LikeTrimsSQLWildcards(t *testing.T) {
+	tableDef := TableDefinition{Def: "T", Columns: map[string]ColumnDefinition{"resource": {Type: "string"}}}
+	for _, v := range []string{"%orders-api%", "orders-api%", "%orders-api", "orders-api"} {
+		where := QueryWhereClause{Binary: map[string]map[BinaryWhereClauseType]any{"resource": {Like: v}}}
+		got, err := KqlGenerator{}.generateKqlWhereClause(where, tableDef)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "where resource contains 'orders-api'"; got != want {
+			t.Errorf("%q: got %s, want %s", v, got, want)
+		}
+	}
+}

@@ -155,7 +155,10 @@ nohup.out
 **/__debug*
 testresults
 
-.nudgebee
+# Local developer state. The one tracked file is this repository's setup script
+# for the code agent (see llm/code-analysis/CLAUDE.md).
+**/.nudgebee/*
+!/.nudgebee/setup.sh
 
 # exe files
 **/*.exe

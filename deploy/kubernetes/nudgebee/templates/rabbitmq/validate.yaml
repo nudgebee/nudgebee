@@ -1,0 +1,25 @@
+{{- /*
+RabbitMQ features the Bitnami subchart offered and this chart does not render.
+Fails on install AND upgrade: an operator who turned one of these on would
+otherwise lose it without a word, which is worse than an upgrade that stops
+and says what to change. A default install sets none of them.
+*/ -}}
+{{- if .Values.rabbitmq.enabled }}
+  {{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+  {{- $u := list }}
+  {{- if ((($r.auth | default (dict)).tls | default (dict)).enabled) }}{{- $u = append $u "rabbitmq.auth.tls.enabled" }}{{- end }}
+  {{- if (($r.ldap | default (dict)).enabled) }}{{- $u = append $u "rabbitmq.ldap.enabled" }}{{- end }}
+  {{- if (($r.ingress | default (dict)).enabled) }}{{- $u = append $u "rabbitmq.ingress.enabled" }}{{- end }}
+  {{- if (($r.networkPolicy | default (dict)).enabled) }}{{- $u = append $u "rabbitmq.networkPolicy.enabled" }}{{- end }}
+  {{- if (($r.serviceBindings | default (dict)).enabled) }}{{- $u = append $u "rabbitmq.serviceBindings.enabled" }}{{- end }}
+  {{- if $r.clustering.forceBoot }}{{- $u = append $u "rabbitmq.clustering.forceBoot" }}{{- end }}
+  {{- range $k := list "communityPlugins" "initScripts" "initScriptsCM" "initScriptsSecret" "extraSecrets" "extraDeploy" "extraConfigurationExistingSecret" "command" "args" }}
+    {{- if (get $r $k) }}{{- $u = append $u (printf "rabbitmq.%s" $k) }}{{- end }}
+  {{- end }}
+  {{- if and $r.memoryHighWatermark.enabled (not ((($r.resources | default (dict)).limits | default (dict)).memory)) }}
+    {{- $u = append $u "rabbitmq.memoryHighWatermark.enabled without rabbitmq.resources.limits.memory" }}
+  {{- end }}
+  {{- if $u }}
+    {{- fail (printf "\n\n[ERROR] Unsupported RabbitMQ settings: %s\n\nThis chart now deploys the official RabbitMQ image itself instead of the Bitnami rabbitmq subchart, and does not render these features.\n\nRemove these keys from your values, or set rabbitmq.enabled=false and point nudgebee_secret.RABBIT_MQ_HOST at a RabbitMQ you run yourself.\n" (join ", " $u)) }}
+  {{- end }}
+{{- end }}

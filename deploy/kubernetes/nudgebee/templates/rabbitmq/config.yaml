@@ -1,0 +1,91 @@
+{{- if .Values.rabbitmq.enabled }}
+{{- $r := include "nudgebee.rabbitmq.values" . | fromYaml }}
+{{- $fullname := include "nudgebee.rabbitmq.fullname" . }}
+{{- $headless := include "nudgebee.rabbitmq.headlessName" . }}
+{{- if or (empty $r.configurationExistingSecret) $r.advancedConfiguration }}
+{{- /*
+Same rabbitmq.conf the Bitnami chart generated from its default
+`configuration` (Secret <fullname>-config), for every setting it rendered by
+default plus the opt-in blocks this chart supports. A custom
+`rabbitmq.configuration` is rendered instead, against the rabbitmq block.
+*/}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ printf "%s-config" $fullname }}
+  namespace: {{ include "nudgebee.rabbitmq.namespace" . | quote }}
+  labels:
+    {{- include "nudgebee.rabbitmq.labels" (dict "custom" $r.commonLabels "root" $) | nindent 4 }}
+  {{- with $r.commonAnnotations }}
+  annotations:
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+type: Opaque
+stringData:
+  {{- if empty $r.configurationExistingSecret }}
+  rabbitmq.conf: |-
+    {{- if $r.configuration }}
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" $r.configuration "root" $) | nindent 4 }}
+    {{- else }}
+    ## Username and password
+    ##
+    default_user = {{ $r.auth.username }}
+    {{- if and (not $r.auth.securePassword) $r.auth.password }}
+    default_pass = {{ $r.auth.password }}
+    {{- end }}
+    {{- if $r.clustering.enabled }}
+    ## Clustering
+    ##
+    cluster_name = {{ default $fullname $r.clustering.name }}
+    cluster_formation.peer_discovery_backend  = rabbit_peer_discovery_k8s
+    cluster_formation.k8s.host = kubernetes.default
+    cluster_formation.k8s.address_type = {{ $r.clustering.addressType }}
+    cluster_formation.k8s.service_name = {{ $headless }}
+    cluster_formation.k8s.hostname_suffix = .{{ $headless }}.{{ include "nudgebee.rabbitmq.namespace" . }}.svc.{{ $r.clusterDomain }}
+    cluster_formation.node_cleanup.interval = 10
+    cluster_formation.node_cleanup.only_log_warning = true
+    cluster_partition_handling = {{ $r.clustering.partitionHandling }}
+    {{- end }}
+    {{- if and $r.clustering.enabled $r.loadDefinition.enabled }}
+    cluster_formation.target_cluster_size_hint = {{ $r.replicaCount }}
+    {{- end }}
+    {{- if $r.loadDefinition.enabled }}
+    load_definitions = {{ $r.loadDefinition.file }}
+    {{- end }}
+    # queue master locator
+    queue_master_locator = min-masters
+    # enable loopback user
+    {{- if not (empty $r.auth.username) }}
+    loopback_users.{{ $r.auth.username }} = {{ $r.auth.enableLoopbackUser }}
+    {{- else }}
+    loopback_users.guest = {{ $r.auth.enableLoopbackUser }}
+    {{- end }}
+    {{- with $r.extraConfiguration }}
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+    {{- end }}
+    {{- if $r.metrics.enabled }}
+    ## Prometheus metrics
+    ##
+    prometheus.tcp.port = {{ $r.containerPorts.metrics }}
+    {{- end }}
+    {{- if $r.memoryHighWatermark.enabled }}
+    ## Memory Threshold
+    ##
+    total_memory_available_override_value = {{ include "nudgebee.rabbitmq.toBytes" $r.resources.limits.memory }}
+    vm_memory_high_watermark.{{ $r.memoryHighWatermark.type }} = {{ $r.memoryHighWatermark.value }}
+    ## TCP Listen Options
+    ##
+    tcp_listen_options.backlog = {{ $r.tcpListenOptions.backlog }}
+    tcp_listen_options.nodelay = {{ $r.tcpListenOptions.nodelay }}
+    tcp_listen_options.linger.on      = {{ $r.tcpListenOptions.linger.lingerOn }}
+    tcp_listen_options.linger.timeout = {{ $r.tcpListenOptions.linger.timeout }}
+    tcp_listen_options.keepalive = {{ $r.tcpListenOptions.keepalive }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- with $r.advancedConfiguration }}
+  advanced.config: |-
+    {{- include "nudgebee.rabbitmq.tpl" (dict "value" . "root" $) | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

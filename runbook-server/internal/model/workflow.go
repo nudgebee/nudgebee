@@ -4,8 +4,9 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/runbook/internal/gonjasafe"
+
 	"github.com/go-playground/validator/v10"
-	"github.com/nikolalohinski/gonja/v2"
 )
 
 type WorkflowDefinition struct {
@@ -30,6 +31,12 @@ type WorkflowDefinition struct {
 	// content: it snapshots with a published version, so the AI sees what is live
 	// rather than a half-finished draft.
 	LLMDescription string `yaml:"llm_description,omitempty" json:"llm_description,omitempty"`
+	// MaxTier is the highest step tier (tasks.TierRead = 1 to TierUnrestricted
+	// = 3) a run of this automation may execute; 0 means no ceiling. It is set
+	// from the tier the automation's steps were checked at, so a step that only
+	// appears at run time — rendered from a template or an earlier step's
+	// output — is refused instead of run.
+	MaxTier int `yaml:"max_tier,omitempty" json:"max_tier,omitempty" validate:"min=0,max=3"`
 	// Presentation-only canvas layout (per-task coords live on Task.Layout / Trigger.Layout).
 	Layout *WorkflowDefinitionLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
@@ -85,7 +92,10 @@ type Workflow struct {
 	LastExecutionStatusMessage *string                 `json:"last_execution_status_message,omitempty" yaml:"last_execution_status_message,omitempty"`
 	LastExecutionTime          *time.Time              `json:"last_execution_time,omitempty" yaml:"last_execution_time,omitempty"`
 	LastExecutionVersion       *int                    `json:"last_execution_version,omitempty" yaml:"last_execution_version,omitempty"`
-	Name                       string                  `json:"name" yaml:"name" validate:"required,workflowname"`
+	// LastExecutionFailedStepCount is derived from the status message of a
+	// completed last run whose continue-on-failure steps failed.
+	LastExecutionFailedStepCount int    `json:"last_execution_failed_step_count,omitempty" yaml:"-"`
+	Name                         string `json:"name" yaml:"name" validate:"required,workflowname"`
 	// Description is the human-facing workflow description. Workflow YAML has
 	// always accepted a top-level `description:` key; before this field existed
 	// yaml.v3 silently discarded it.
@@ -136,6 +146,29 @@ type Workflow struct {
 	// Identifies the user who triggered this run (manual/retrigger). Empty for
 	// scheduled/webhook/event-rule triggers.
 	TriggeredByUser *WorkflowUser `json:"triggered_by_user,omitempty" yaml:"triggered_by_user,omitempty"`
+	// RunAsUserID (workflows.run_as_user_id) is the owner unattended runs
+	// (schedule, event, webhook) act as, returned for display. Set server-side
+	// on create and make-live; never trusted from a request body — run starts
+	// read the owner from the store.
+	RunAsUserID string `json:"run_as_user_id,omitempty" yaml:"-"`
+	// Binding (workflows.bee) is set when the workflow is bound to an agent.
+	// Returned for display; set only by an install path, never from a request
+	// body.
+	Binding *WorkflowBinding `json:"bee,omitempty" yaml:"-"`
+	// PrincipalUserID is a transient field set when a run starts: whose rights
+	// every step of this run is checked against. The requester for manual and
+	// AI runs, RunAsUserID otherwise. Carried in the Temporal input, so it must
+	// serialize.
+	PrincipalUserID string `json:"principal_user_id,omitempty" yaml:"-"`
+	// ApprovalGate is a transient field set when a run starts with an approval
+	// in front of its own steps (ApprovalGateTaskID): the gate's reference,
+	// which only an approval made through the run gate's own decision carries.
+	// Set only by the run tail, never trusted from a stored row or a request.
+	ApprovalGate string `json:"approval_gate,omitempty" yaml:"-"`
+	// ApprovalGatePassed is set during a gated run, in the run's own memory,
+	// once its approval gate accepted an approval. Never serialized, so no
+	// input can set it.
+	ApprovalGatePassed bool `json:"-" yaml:"-"`
 	// RestrictToAccountConfigs is set when the triggering user lacks tenant read
 	// access. When true, FetchWorkflowConfigsActivity drops tenant-scoped configs
 	// from the run so a `{{ Configs.<tenant_key> }}` reference cannot resolve.
@@ -347,6 +380,31 @@ type Trigger struct {
 	Layout   *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
 }
 
+// EventTypes returns an event trigger's params.event_type, which is stored as a single
+// string or a list (what the builder saves). Empty means a wildcard rule.
+func (t Trigger) EventTypes() []string {
+	var types []string
+	switch v := t.Params["event_type"].(type) {
+	case string:
+		if v != "" {
+			types = []string{v}
+		}
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				types = append(types, s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s != "" {
+				types = append(types, s)
+			}
+		}
+	}
+	return types
+}
+
 // ListenAccounts returns the accounts whose events fire this trigger: params.accounts
 // (event) or params.clusters (optimization), else the workflow's own account.
 func (t Trigger) ListenAccounts(ownAccountID string) []string {
@@ -407,6 +465,26 @@ func (d WorkflowDefinition) HasManualTrigger() bool {
 // settings UI does when the preconditions stop holding.
 func (d WorkflowDefinition) SupportsAIInvocation() bool {
 	return strings.TrimSpace(d.LLMDescription) != "" && d.HasManualTrigger()
+}
+
+const optimizationNeedsFilterMsg = "Optimization trigger needs at least one filter: Cluster, Category or Rule Name"
+
+// optimizationParamsHaveFilter reports whether params would build a non-empty event filter.
+func optimizationParamsHaveFilter(params map[string]any) bool {
+	for _, key := range []string{"categories", "rule_names", "clusters"} {
+		arr, _ := params[key].([]any)
+		for _, item := range arr {
+			if s, ok := item.(string); ok && s != "" {
+				return true
+			}
+		}
+	}
+	if s, ok := params["filter"].(string); ok {
+		s = strings.TrimSpace(s)
+		s = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(s, "{{"), "}}"))
+		return s != ""
+	}
+	return false
 }
 
 // Validate performs struct-level validation for Trigger.
@@ -503,7 +581,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if filterStr != "" {
-				if _, err := gonja.FromString(filterStr); err != nil {
+				if _, err := gonjasafe.FromString(filterStr); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
@@ -590,7 +668,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if s != "" {
-				if _, err := gonja.FromString(s); err != nil {
+				if _, err := gonjasafe.FromString(s); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
@@ -606,7 +684,7 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 		// Manual trigger accepts optional input parameters
 	case WorkflowTriggerOptimization:
 		if len(t.Params) == 0 {
-			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", "Optimization trigger requires params with at least one of: categories, rule_names, clusters, filter")
+			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", optimizationNeedsFilterMsg)
 			return
 		}
 		// Check for unsupported parameters
@@ -622,7 +700,6 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 		}
-
 		// Validate that array params contain strings
 		for _, arrayParam := range []string{"categories", "rule_names", "clusters"} {
 			if val, ok := t.Params[arrayParam]; ok {
@@ -648,11 +725,17 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 				return
 			}
 			if filterStr != "" {
-				if _, err := gonja.FromString(filterStr); err != nil {
+				if _, err := gonjasafe.FromString(filterStr); err != nil {
 					sl.ReportError(t.Params, "params", "Params", "filter_invalid_syntax", "Invalid Jinja (Gonja) filter: "+err.Error())
 					return
 				}
 			}
+		}
+
+		// Empty lists build no filter and the trigger loader drops unfiltered
+		// optimization rules (storage.BuildOptimizationFilter), so it would never fire.
+		if !optimizationParamsHaveFilter(t.Params) {
+			sl.ReportError(t.Params, "params", "Params", "optimization_trigger_needs_params", optimizationNeedsFilterMsg)
 		}
 	}
 }
@@ -682,6 +765,9 @@ type Task struct {
 	// the frontend on a single canonical shape and migrating saved workflows.
 	PrevEdges any                 `yaml:"_prev_edges,omitempty" json:"_prev_edges,omitempty"`
 	Layout    *WorkflowTaskLayout `yaml:"layout,omitempty" json:"layout,omitempty"`
+	// OriginalID is the pre-rename ID of a task hydrated into an inline child
+	// scope as "<parent>-<id>". Runtime only, never serialized.
+	OriginalID string `yaml:"-" json:"-"`
 }
 
 // SetVarConfig is a helper struct for validating the polymorphic set_vars field.
@@ -762,6 +848,9 @@ type ListWorkflowResponse struct {
 // distraction in a chat turn.
 type AIWorkflowCandidate struct {
 	ID string `json:"id"`
+	// AccountID is the account the automation belongs to and runs on. A search
+	// across the caller's other accounts returns automations from several.
+	AccountID string `json:"account_id,omitempty"`
 	// Name is the human name, useful both for matching and for naming the
 	// automation back to the user before running it.
 	Name string `json:"name"`
@@ -775,20 +864,66 @@ type AIWorkflowCandidate struct {
 	// AutoApprove says the author has allowed the assistant to run this
 	// automation without asking the user to confirm first.
 	AutoApprove bool `json:"auto_approve,omitempty"`
+	// HasApprovalStep: the live definition contains a core.approval task, so a
+	// run can stop and wait for a person partway.
+	HasApprovalStep bool `json:"has_approval_step,omitempty"`
+	// Version is the live version's id, so a caller can tell the automation
+	// changed since it last read it. Empty where it is not read.
+	Version string `json:"version,omitempty"`
 }
 
 // AIInvocableWorkflow pairs a workflow's identity with the definition that would
 // actually run — the live version snapshot, not the draft.
 type AIInvocableWorkflow struct {
 	ID          string
+	AccountID   string
 	Name        string
 	Description string
 	// AutoApprove mirrors Workflow.AIAutoApprove. It travels with the candidate
 	// because llm-server decides whether to show a confirmation card at the
 	// moment it synthesises the tool, and has no other route to this column.
 	AutoApprove bool
+	// Version is the live version's id (workflows.live_version_id); empty where
+	// it is not read.
+	Version string
 	// Definition is the LIVE version's definition.
 	Definition WorkflowDefinition
+}
+
+// AIToolCandidate is an automation that is, or could be, offered to the AI
+// assistant as a tool: not an agent's, and either opted in or carrying an AI
+// description in its draft. Live is the published version's definition, nil
+// when nothing is published.
+type AIToolCandidate struct {
+	ID            string
+	Name          string
+	Description   string
+	AccountID     string
+	Status        WorkflowStatus
+	AIInvocable   bool
+	AIAutoApprove bool
+	CreatedBy     *WorkflowUser
+	Live          *WorkflowDefinition
+}
+
+// AIToolSetting is one row of the AI settings list: an automation's two AI
+// flags and whether the assistant is offered it right now, with the reason
+// when it is not (see workflow.aiOfferReason for the codes).
+type AIToolSetting struct {
+	ID               string         `json:"id"`
+	Name             string         `json:"name"`
+	AccountID        string         `json:"account_id"`
+	Status           WorkflowStatus `json:"status"`
+	AIInvocable      bool           `json:"ai_invocable"`
+	AIAutoApprove    bool           `json:"ai_auto_approve"`
+	Offered          bool           `json:"offered"`
+	NotOfferedReason string         `json:"not_offered_reason,omitempty"`
+	CreatedByUser    *WorkflowUser  `json:"created_by_user,omitempty"`
+}
+
+// ListAIToolSettingsResponse is the AI settings list.
+type ListAIToolSettingsResponse struct {
+	Workflows []AIToolSetting `json:"workflows"`
 }
 
 // AIWorkflowSearchResponse is the AI search result set.
@@ -862,6 +997,7 @@ type WorkflowExecutionDetails struct {
 	WorkflowResult   any                     `json:"workflow_result"` // New field for overall workflow result
 	Error            string                  `json:"error,omitempty"` // Failure reason if the workflow failed
 	Tasks            []TaskExecutionDetails  `json:"tasks"`           // Details for each task
+	FailedSteps
 	// Definition is the workflow definition snapshot captured when this run started,
 	// reconstructed from the Temporal WORKFLOW_EXECUTION_STARTED event input. This may
 	// differ from the current saved definition if the workflow was edited after the run.
@@ -902,6 +1038,15 @@ type WorkflowExecutionSummary struct {
 	WorkflowName       string                  `json:"workflow_name,omitempty"`
 	Version            *int                    `json:"version,omitempty"`
 	VersionNumber      *int                    `json:"version_number,omitempty"`
+	FailedSteps
+}
+
+// FailedSteps marks a completed run whose continue-on-failure steps failed;
+// zero on a clean run. Read back from the run's Memo.
+type FailedSteps struct {
+	FailedStepCount      int    `json:"failed_step_count,omitempty"`
+	FirstFailedStep      string `json:"first_failed_step,omitempty"`
+	FirstFailedStepError string `json:"first_failed_step_error,omitempty"`
 }
 
 // ListWorkflowExecutionResponse contains a list of workflow executions.

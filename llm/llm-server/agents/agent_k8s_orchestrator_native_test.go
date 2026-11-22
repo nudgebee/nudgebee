@@ -6,6 +6,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -20,8 +21,8 @@ func TestK8sNativeAgent_Identity(t *testing.T) {
 	a := newK8sNativeAgentNamed("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", AgentK8sOrchestratorNativeName)
 	assert.Equal(t, AgentK8sOrchestratorNativeName, a.GetName())
 	assert.Equal(t, core.AgentPlannerTypeOrchestrating, a.GetPlannerType())
-	assert.Equal(t, core.ModelTierReasoning, a.GetModelCategory())
-	assert.Equal(t, core.CacheScopeAccount, a.GetCacheScope())
+	assert.Equal(t, llmruntime.ModelTierReasoning, a.GetModelCategory())
+	assert.Equal(t, llmruntime.CacheScopeAccount, a.GetCacheScope())
 	assert.False(t, a.IsWatchCapable(), "watch tools are not in native allowlist")
 }
 
@@ -60,7 +61,6 @@ func TestK8sNativeAgent_GetSupportedTools_Allowlist(t *testing.T) {
 	wantAll := []string{
 		tools.ToolExecuteKubectlCommand,
 		tools.ToolExecuteHelmCommand,
-		tools.ToolStandardDiagnosticGrep,
 		MetricsAgentName,
 		TracesAgentName,
 		toolcore.ToolExecuteShellCommand,
@@ -111,10 +111,7 @@ func TestK8sNativeAgent_GetSystemPrompt_NoDroppedSubAgentRefs(t *testing.T) {
 	}
 
 	// And these MUST be present — they are the K8s-native flow's core tools
-	// named at the orchestrator level. `standard_diagnostic_grep` intentionally
-	// is NOT asserted here — the prompt was rewritten to speak at the
-	// principle level (categorized error-pattern search) and let each tool's
-	// own description name the mechanic.
+	// named at the orchestrator level.
 	mustHave := []string{
 		"kubectl_execute",
 		"shell_execute",
@@ -149,5 +146,28 @@ func TestK8sNativeAgent_GetSystemPrompt_NoDroppedSubAgentRefs(t *testing.T) {
 	for _, r := range surfaceCompleteness {
 		assert.Contains(t, body, r,
 			"native prompt must retain surface-completeness language: %q", r)
+	}
+}
+
+// TestK8sOrchestratorsDoNotCondenseLogs pins the removal of the error-line
+// condenser (#40196). It cut a `kubectl logs` observation down to error lines
+// and replaced the JSON envelope with bare text, so the tool's own coverage
+// note was discarded with the envelope and the planner saw a slice of one
+// pod's log with no sign anything else had been read. Passing the envelope
+// through untouched is what carries that note; a response handler on either
+// orchestrator would start cutting again.
+func TestK8sOrchestratorsDoNotCondenseLogs(t *testing.T) {
+	const accountId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	for _, tc := range []struct {
+		name  string
+		agent any
+	}{
+		{"lean", newK8sLeanAgentNamed(accountId, AgentK8sOrchestratorName)},
+		{"native", newK8sNativeAgentNamed(accountId, AgentK8sOrchestratorNativeName)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, condenses := tc.agent.(core.NBAgentExecutorToolResponseHandler)
+			assert.False(t, condenses, "kubectl output must reach the planner whole, envelope included")
+		})
 	}
 }

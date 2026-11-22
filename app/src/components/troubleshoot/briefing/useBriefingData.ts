@@ -4,7 +4,7 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import apiTriage from '@api1/triage';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import { getLast24Hrs } from '@lib/datetime';
-import { resolveBriefing, type BriefingModel, type BriefingPayload } from './resolveBriefing';
+import { issuesBySeverityAndRank, resolveBriefing, type BriefingModel, type BriefingPayload } from './resolveBriefing';
 
 const DAY_MS = 86400000;
 const BAND_DAYS = 30;
@@ -94,7 +94,7 @@ export const useBriefingData = (): BriefingState => {
     // It also makes total and completed share one population, so the "running"
     // figure below can no longer be computed across mismatched denominators.
     const investigations = apiAskNudgebee
-      .getConversationTimeAggregates({ startDate, endDate, sources: ['Investigation'], eventScoped: true })
+      .getConversationTimeAggregates({ accountIds, startDate, endDate, sources: ['Investigation'], eventScoped: true })
       .then((aggregates: any) => ({
         total: aggregates?.total_count ?? 0,
         completed: aggregates?.completed_count ?? 0,
@@ -105,13 +105,14 @@ export const useBriefingData = (): BriefingState => {
       .then(([aggregatesResponse, thresholdSuggestions, investigationCounts]: any[]) => {
         if (cancelled) return;
         const data = aggregatesResponse?.data?.data ?? {};
+        const bySeverityAndRank = issuesBySeverityAndRank(rowsOf(data.disagreement));
 
         const payload: BriefingPayload = {
           windowTotals: firstRow(data.window_totals),
           windowIssues: firstRow(data.window_issues)?.event_count ?? 0,
-          byRank: rowsOf(data.by_rank),
+          byRank: bySeverityAndRank,
           byRank30d: rowsOf(data.by_rank_30d),
-          disagreement: rowsOf(data.disagreement),
+          disagreement: bySeverityAndRank,
           bySignalClass: rowsOf(data.by_signal_class),
           firingNow: firstRow(data.firing_now)?.event_count ?? 0,
           thresholdSuggestions,

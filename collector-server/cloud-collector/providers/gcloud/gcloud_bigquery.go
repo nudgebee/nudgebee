@@ -224,7 +224,7 @@ func (s *bigQueryService) datasetToResource(datasetId string, metadata *bigquery
 		Arn:         selfLink, // Full path for ARN
 		ServiceName: ServiceNameBigQuery,
 		Status:      status,
-		Region:      metadata.Location,
+		Region:      normalizeGCPLocation(metadata.Location),
 		Tags:        tags,
 		Meta:        meta,
 		CreatedAt:   createdAt,
@@ -285,7 +285,7 @@ func (s *bigQueryService) tableToResource(datasetId, tableId string, metadata *b
 		Arn:         resourceId,
 		ServiceName: ServiceNameBigQuery,
 		Status:      status,
-		Region:      location,
+		Region:      normalizeGCPLocation(location),
 		Tags:        tags,
 		Meta:        meta,
 		CreatedAt:   createdAt,

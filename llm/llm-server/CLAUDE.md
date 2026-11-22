@@ -97,7 +97,7 @@ return "", fmt.Errorf("GetTenantIdFromAccountId: failed to get database manager:
 return "", err
 ```
 
-Sentinel errors live in `agents/core/errors.go`. Combine via `errors.Join()` or `fmt.Errorf("%w: %s", sentinel, detail)`. Custom HTTP error types in `common/errors.go`.
+Sentinel errors live in `agents/core/errors.go`; the LLM-call ones (`ErrLLMRateLimited`, `ErrLlmUnableToGenerate`, …) in `llms/runtime/llm_errors.go`. Combine via `errors.Join()` or `fmt.Errorf("%w: %s", sentinel, detail)`. Custom HTTP error types in `common/errors.go`.
 
 ### Logging
 
@@ -133,18 +133,25 @@ Not strictly enforced (no `.golangci.yml` config). Follow stdlib → external �
 
 - **`cmd/`** — application entry point, server initialization
 - **`api/`** — HTTP API handlers (conversations, agents, tools, RAG, events)
+- **`analytics/`** — AI Cost Analyser and cost-report reads plus their HTTP handlers, including the per-conversation usage reports (token usage, time breakdown, tool-call stats) on its `Store` and the conversation cost optimizer behind "export & analyze" (imports `agents/core`, never the reverse)
+- **`memory/`** — the legacy long-term memory store (`llm_conversation_memory`): `memory.GetStore()` / `SetStore` and the TTL cleanup job. The extraction and prompt logic that uses it stays in `agents/core/memory.go`; memory-v2 is `ee/memory/`. Imports neither `agents/core` nor `api`
+- **`attachments/`** — image attachments: validation, encoding into LLM messages, storage (`GetAttachmentDAO`) and retention. Describing images with the vision model stays in `agents/core/image_context.go`
+- **`knowledge/`** — knowledge bases and skills: CRUD, integration sync, documents, RAG client, global context, skill selection (imports `tools/core`; `tools/core` never imports it)
 - **`agents/`** — autonomous agent implementations (190+ agent files)
 - **`agents/core/`** — agent framework: planner, executor, critiquer logic
+- **`llms/runtime/`** — the LLM runtime every agent calls through: model config and tier resolution, model construction, the generate/track call path, prompt caching, circuit breaker, token counting and usage recording. Imported as `llmruntime`. It owns its data (token-usage rows, model pricing and cost, the image-support catalog, cache lifecycle rows) through `UsageStore` in `llm_store.go`, and never imports `agents/core`: what it needs from the conversation (agent name and thought, live status, conversation model overrides, the run budget) comes through `ConversationPort`, which `agents/core` implements and installs from `init()` (`agents/core/runtime_install.go`)
+- **`llms/classify/`** — `Classify`: answers a fixed-choice question (a label from a set of options) with the configured LLM (strict label matching, corrective retries) or, when one is configured per decision, a dedicated decision model (`llms/decision`) used as primary or in shadow. Imported by `agents/core` (e.g. `ClassificationPlanner`), never the reverse
 - **`prompts/`** — all system prompts as YAML under `prompts/default/v1/` (Go-embedded via `prompts/loader.go`)
 - **`tools/`** — tool implementations for external system integrations
-- **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.)
+- **`llms/`** — LLM provider clients (Bedrock, Azure, OpenAI, Vertex AI, etc.), forked from langchaingo. A client applies fixes for how its own provider's API behaves inside its own `GenerateContent`, not as wrappers (e.g. the Anthropic client puts the content choice first, the OpenAI client drops our internal thinking keys from `metadata` and merges system messages when built `WithMergedSystemMessages()`); anything that reads our config, capability tables or services stays in `llms/runtime`
 - **`config/`** — service configuration management
 - **`common/`** — shared utilities, MQ handling, schedulers, worker pools
 - **`security/`** — authentication, authorization, RequestContext. Outbound LLM payload inspection (credential gate, future redact / tokenize) is the egressfilter package — see [docs/llm-egress-filter.md](docs/llm-egress-filter.md).
 - **`workflows/`** — workflow/automation service integration
 - **`relay/`** — relay server communication for Kubernetes operations
+- **`ee/`** — enterprise-only extensions, stripped from the OSS build. Each fills an exported hook in `agents/core` from `init()` and is blank-imported from `cmd/imports_enterprise.go` (e.g. `ee/memory/corebridge` installs memory-v2 into `agents/core/memory.go`'s hooks, and `ee/memory/httpapi` registers the memory-v2 routes through `api.HandleMemoryV2ApisFn`)
 
-Import graph is clean: `agents/core/` → `tools/core/` (one-way). No circular dependencies.
+Import graph is clean: `agents/core/` → `llms/classify/` → `llms/runtime/` → `tools/core/` (one-way). No circular dependencies.
 
 ### Agent Architecture
 
@@ -211,7 +218,7 @@ llm_conversations (id PK)
   └── llm_conversation_token_usage (conversation_id FK, message_id FK, agent_id FK)
 ```
 
-Supporting tables: `llm_functions`, `llm_knowledgebases`, `llm_budget_config`, `llm_model_pricing`.
+Supporting tables: `llm_knowledgebases`, `llm_budget_config`, `llm_model_pricing`.
 
 ### Migrations
 
@@ -257,9 +264,10 @@ For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
 | Planner runtime | `planner_react_3.go` | `planner_react_4.go` | ReAct4 by default; ReAct3 fallback |
-| Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
 The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and use the same ReAct4-default/ReAct3-fallback routing. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
+
+Tickets v1 (`agent_tickets.go`, `tool_tickets.go`) is retired: `agent_tickets_V2.go` (`tickets_v2`, tool `ticket_master_v2`) is the only ticket agent, and the old names `tickets` and `ticket_master` are registered as aliases so stored history and configs keep resolving.
 
 **Rule: new planner behavior must account for both ReAct4 and the ReAct3 rollback/capability fallback. There is no v1/v2 planner choice to make.**
 

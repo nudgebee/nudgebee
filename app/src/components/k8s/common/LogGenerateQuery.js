@@ -1,4 +1,28 @@
-export const generateQuery = (logProvider, chips, operations, metricName = '', aggregator, aggregatorBy, providerType = '') => {
+// Providers that share the PromQL/MetricsQL `{label="value"}` selector syntax, where
+// a label name can only appear once per selector (see the chips-by-label merge in the
+// branch below). Exported so the query builder UI can apply the same constraint when
+// deciding whether a new chip would make the generated selector invalid.
+export const isPromQLFamilyProvider = (logProvider, providerType) =>
+  logProvider === 'prometheus' ||
+  logProvider === 'chronosphere' ||
+  logProvider === 'victoria-metrics' ||
+  (logProvider === 'openobserve' && providerType === 'metrics') ||
+  (logProvider === 'cubeapm' && providerType === 'metrics') ||
+  (logProvider === 'newrelic' && providerType === 'traces');
+
+// `logTextField` is the field line filters target. Resolved per provider from the
+// backend's advertised vocabulary and threaded down from KubernetesLogs (#39573);
+// defaults to the legacy 'content' so the other callers of this helper are unchanged.
+export const generateQuery = (
+  logProvider,
+  chips,
+  operations,
+  metricName = '',
+  aggregator,
+  aggregatorBy,
+  providerType = '',
+  logTextField = 'content'
+) => {
   const isLogsProvider =
     logProvider === 'loggly' ||
     logProvider === 'observe' ||
@@ -10,7 +34,8 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     logProvider === 'ES' ||
     (logProvider === 'solarwinds' && providerType === 'logs') ||
     (logProvider === 'openobserve' && providerType === 'logs') ||
-    (logProvider === 'cubeapm' && providerType === 'logs');
+    (logProvider === 'cubeapm' && providerType === 'logs') ||
+    (logProvider === 'otel_clickhouse' && providerType === 'logs');
 
   const hasValidOperations = isLogsProvider && operations?.some((op) => op.value && op.value.trim() !== '');
 
@@ -148,15 +173,8 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
       nrql += ` WHERE ${whereExprs.join(' AND ')}`;
     }
     return nrql;
-  } else if (
-    logProvider == 'prometheus' ||
-    logProvider == 'chronosphere' ||
-    logProvider == 'victoria-metrics' ||
-    (logProvider === 'openobserve' && providerType === 'metrics') ||
-    (logProvider === 'cubeapm' && providerType === 'metrics') ||
-    (logProvider === 'newrelic' && providerType === 'traces')
-  ) {
-    const promFilters = chips.map((chip) => {
+  } else if (isPromQLFamilyProvider(logProvider, providerType)) {
+    const renderPromFilter = (chip) => {
       const value = chip.value;
       switch (chip.operator) {
         case '=':
@@ -173,6 +191,36 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
           return `${chip.label}!~"${value}"`;
         default:
           return `${chip.label}="${value}"`;
+      }
+    };
+    const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    // Multiple chips on the same label (e.g. two `namespace=` selections) mean OR in
+    // the UI, which a repeated `=` matcher can't express in PromQL/MetricsQL --
+    // `{namespace="a",namespace="b"}` ANDs to zero series instead of matching either.
+    // Collapse same-label equality chips into one regex-alternation matcher, and
+    // same-label `!=` chips (AND of negatives -- "exclude this set") into one
+    // not-regex matcher. Other operator combos on a repeated label (e.g. mixing `=`
+    // and `!=`) have no single valid matcher and render as before (unchanged
+    // behavior) -- the chip builder UI blocks creating those combos in the first
+    // place, see describeChipConflict in LogQueryBuilderAutocomplete.jsx.
+    const chipsByLabel = new Map();
+    chips.forEach((chip) => {
+      if (!chipsByLabel.has(chip.label)) chipsByLabel.set(chip.label, []);
+      chipsByLabel.get(chip.label).push(chip);
+    });
+    const promFilters = [];
+    chipsByLabel.forEach((labelChips) => {
+      const isEquality = (op) => op === '=' || op === '_eq';
+      const isNotEquality = (op) => op === '!=' || op === '_neq';
+      if (labelChips.length > 1 && labelChips.every((c) => isEquality(c.operator))) {
+        const pattern = labelChips.map((c) => escapeRegex(c.value)).join('|');
+        promFilters.push(`${labelChips[0].label}=~"${pattern}"`);
+      } else if (labelChips.length > 1 && labelChips.every((c) => isNotEquality(c.operator))) {
+        const pattern = labelChips.map((c) => escapeRegex(c.value)).join('|');
+        promFilters.push(`${labelChips[0].label}!~"${pattern}"`);
+      } else {
+        labelChips.forEach((c) => promFilters.push(renderPromFilter(c)));
       }
     });
     const baseMetric = metricName?.trim() || 'up';
@@ -225,7 +273,8 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
     logProvider === 'ES' ||
     (logProvider === 'solarwinds' && providerType == 'logs') ||
     (logProvider === 'openobserve' && providerType == 'logs') ||
-    (logProvider === 'cubeapm' && providerType == 'logs')
+    (logProvider === 'cubeapm' && providerType == 'logs') ||
+    (logProvider === 'otel_clickhouse' && providerType === 'logs')
   ) {
     const operatorMap = {
       // Legacy UI values (kept for persisted state + providers still emitting them)
@@ -323,7 +372,7 @@ export const generateQuery = (logProvider, chips, operations, metricName = '', a
           if (apiOperator) {
             whereClauses.push({
               _binary: {
-                content: {
+                [logTextField]: {
                   [apiOperator]: op.value,
                 },
               },

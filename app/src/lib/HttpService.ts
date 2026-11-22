@@ -2,10 +2,28 @@ import axios, { type AxiosInstance } from 'axios';
 import { getGqlString } from '@lib/datetime';
 import { reportAccessDeniedForOperation } from '@lib/accessDenied';
 import { reportClientError } from '@lib/clientErrorReporter';
+import { getTabTenantId, isTenantChangedResponse, reportSessionTenant, TAB_TENANT_HEADER, tenantFromChangedResponse } from '@lib/tabTenant';
 import crypto from 'crypto';
 //import { loadProgressBar } from 'axios-progress-bar';
 
 const Axios: AxiosInstance = axios.create();
+
+// Every browser request carries the tenant this tab pinned, so the gateway can
+// refuse one from a tab whose tenant was switched away in another tab (see
+// @lib/tabTenant). A refusal raises the tab's "reload" banner.
+if (typeof window !== 'undefined') {
+  Axios.interceptors.request.use((config) => {
+    const tabTenantId = getTabTenantId();
+    if (tabTenantId) config.headers.set(TAB_TENANT_HEADER, tabTenantId);
+    return config;
+  });
+  Axios.interceptors.response.use(undefined, (error) => {
+    if (isTenantChangedResponse(error?.response?.status, error?.response?.data)) {
+      reportSessionTenant(tenantFromChangedResponse(error.response.data));
+    }
+    return Promise.reject(error);
+  });
+}
 
 export const getClient = () => Axios;
 
@@ -207,7 +225,9 @@ export const queryGraphQL = async (
     // Report genuine breaks (network failures, 4xx, 5xx) to Loki — 4xx like 403/422
     // are strong signals in real sessions (permission gaps, schema mismatches).
     // Skip 401 — that's the expected auth-expiry redirect below, not a failure.
-    if (!isServer() && status !== 401) {
+    // Skip a stale-tab refusal too: the tab's banner handles it, and a stale tab
+    // left polling would otherwise file one report per poll.
+    if (!isServer() && status !== 401 && !isTenantChangedResponse(status, e?.response?.data)) {
       reportClientError({
         kind: 'api-failure',
         message: e?.message ?? 'api call failed',
@@ -226,6 +246,9 @@ export const queryGraphQL = async (
       if (e.response?.data?.errors && e.response?.data?.errors[0].extensions && e.response?.data?.errors[0].extensions.code == 'invalid-jwt') {
         window.location.href = '/api/auth/signin';
       }
+      // Hand the 500 back like any other failure, so the caller shows its message
+      // rather than "no response" from an undefined result.
+      return e.response;
     } else {
       return e.response || e.request;
     }
@@ -442,6 +465,10 @@ export const splitAndParallelQuery = async (
   return queryGraphQLParallel(queries);
 };
 
+// GraphQL Name production: /[_A-Za-z][_0-9A-Za-z]*/ (covers Hasura operators
+// like `_eq`, which lead with `_`). Keys outside it cannot be inlined.
+const GRAPHQL_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
+
 export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''): string {
   if (typeof obj_from_json !== 'object') {
     if (enums && enums.indexOf(pkey) >= 0) {
@@ -475,6 +502,17 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
   ];
   const props = Object.keys(obj_from_json || {})
     .map((key) => {
+      // Inlining emits `key:value` as a GraphQL object literal, whose keys must
+      // be valid GraphQL Name tokens. A map keyed by something like
+      // `app.kubernetes.io/name` produces invalid syntax and makes the gateway
+      // reject the whole operation with a cryptic parse error (#40696). Such a
+      // map belongs in a GraphQL *variable*, not inlined — fail loud in dev/test
+      // so the next caller catches it here instead of as a 502 in production.
+      if (process.env.NODE_ENV !== 'production' && !GRAPHQL_NAME.test(key)) {
+        throw new Error(
+          `gqlStringify: "${key}" is not a valid GraphQL object-literal key. ` + `Pass this object as a GraphQL variable instead of inlining it.`
+        );
+      }
       if (ops.indexOf(key) >= 0) {
         return `${key}:${gqlStringify(obj_from_json[key], enums, pkey)}`;
       }
@@ -484,26 +522,11 @@ export function gqlStringify(obj_from_json: any, enums: string[] = [], pkey = ''
   return `{${props}}`;
 }
 
-export const hitRelayServer = async (data: any, type = '') => {
-  try {
-    let headerObject = getTraceHeaders();
-    let pathVariable = '/request';
-    if (type && type == 'grafana') {
-      headerObject = {
-        ...headerObject,
-        'X-NB-ACCOUNT-ID': data.accountId,
-        'X-NB-REQUEST-ID': crypto.randomUUID(),
-        'X-SECRET-KEY': '',
-        'X-REQUEST-TYPE': 'grafana',
-      };
-      pathVariable = '/grafana';
-    }
-    const result = await getClient().post(getRelayServerEndpoint() + pathVariable, data, {
-      headers: headerObject,
-    });
-    return result;
-  } catch (error: any) {
-    console.error('error on external api call', error?.response?.status ?? error?.code ?? 'unknown', error?.message);
-    return error?.response;
-  }
-};
+// Escape a user-typed search term so SQL LIKE/ILIKE matches it literally instead of
+// treating it as a pattern. `%`, `_` and the escape char `\` are special to ILIKE, so a
+// typed `%` wrapped as `%…%` becomes `%%%` and matches every row (#40558). Callers wrap
+// the result with their own `%…%`; this only escapes the literal part. Escaping `\` first
+// (it is the escape char) is handled by the single-pass regex over the source string.
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, '\\$&');
+}

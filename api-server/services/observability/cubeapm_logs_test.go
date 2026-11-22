@@ -9,6 +9,20 @@ import (
 	"nudgebee/services/query"
 )
 
+// A JSON-number operand decodes to float64, which %v prints in exponent form. Log
+// filters must render it the same way the trace path does.
+func TestBuildCubeAPMConditionsRendersJSONNumbersAsDecimals(t *testing.T) {
+	got, err := buildCubeAPMConditions(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"latency_ms": {query.Gte: float64(5000000)}},
+	}, cubeAPMLogLabelMapping)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(got, `latency_ms:>=5000000`) {
+		t.Errorf("conditions %q do not render the bound as a plain decimal", got)
+	}
+}
+
 func TestCubeAPMQuote(t *testing.T) {
 	tests := []struct {
 		name string
@@ -569,7 +583,7 @@ func TestBuildCubeAPMLogGroupQuery(t *testing.T) {
 			`NOT k8s.container.name:="istio-proxy"`,
 			`| format "<_msg>" as cube_message | format if (msg:*) "<msg>" as cube_message`,
 			`| format "<level>" as cube_level | format if (log.level:*) "<log.level>" as cube_level`,
-			`| stats by (cube_message, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, k8s.container.name, cube_level, service) count() as cube_count`,
+			`| stats by (cube_message, k8s.namespace.name, k8s.pod.name, k8s.deployment.name, k8s.container.name, cube_level, service) count() as cube_count, max(_time) as last_time`,
 			`| sort ("cube_count" desc)`,
 			`| limit 50`,
 		} {
@@ -643,7 +657,7 @@ func TestCubeAPMLogGroupQueryFollowsLabelMapping(t *testing.T) {
 		`format if (body_text:*) "<body_text>" as cube_message | format "<`,
 		`format if (severity_text:*) "<severity_text>" as cube_level`,
 		`kubernetes.namespace:="payments"`,
-		`| stats by (cube_message, kubernetes.namespace, k8s.pod.name, k8s.deployment.name, k8s.container.name, cube_level, service) count() as cube_count`,
+		`| stats by (cube_message, kubernetes.namespace, k8s.pod.name, k8s.deployment.name, k8s.container.name, cube_level, service) count() as cube_count, max(_time) as last_time`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("query missing %q\ngot: %s", want, got)
@@ -755,6 +769,38 @@ func TestConvertCubeAPMLogGroups(t *testing.T) {
 	}
 	if len(g.Values) != 1 || g.Values[0] != 42 {
 		t.Errorf("Values = %v", g.Values)
+	}
+}
+
+// Each group must carry its own last-seen time, not one value shared by every
+// group — the symptom was every row in Log Groups reading the same "Ns ago".
+func TestConvertCubeAPMLogGroupsUsesPerRowLastTime(t *testing.T) {
+	rows := []map[string]any{
+		{"cube_message": "upstream timeout", "cube_count": "7", "last_time": "2026-10-05T10:00:00Z"},
+		{"cube_message": "boom", "cube_count": "3", "last_time": "2026-10-05T09:30:00Z"},
+		// Missing/unparseable last_time falls back to the query-window end.
+		{"cube_message": "no timestamp", "cube_count": "1", "last_time": ""},
+		{"cube_message": "bad timestamp", "cube_count": "1", "last_time": "not-a-time"},
+	}
+
+	out := convertCubeAPMLogGroups(cubeAPMLogGroupFields, rows, 1788489360)
+	if len(out.Groups) != 4 {
+		t.Fatalf("got %d groups, want 4", len(out.Groups))
+	}
+
+	want := []int64{
+		time.Date(2026, 10, 5, 10, 0, 0, 0, time.UTC).Unix(),
+		time.Date(2026, 10, 5, 9, 30, 0, 0, time.UTC).Unix(),
+		1788489360,
+		1788489360,
+	}
+	for i, g := range out.Groups {
+		if len(g.Timestamps) != 1 || g.Timestamps[0] != want[i] {
+			t.Errorf("group %d Timestamps = %v, want [%d]", i, g.Timestamps, want[i])
+		}
+	}
+	if out.Groups[0].Timestamps[0] == out.Groups[1].Timestamps[0] {
+		t.Error("distinct last_time values must not collapse onto the same Timestamps value")
 	}
 }
 

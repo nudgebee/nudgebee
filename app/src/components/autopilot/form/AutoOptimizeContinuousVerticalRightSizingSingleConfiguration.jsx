@@ -1,14 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography } from '@mui/material';
+import { Box } from '@mui/material';
 import apiAutoPlaybook from '@api1/autoPlaybook';
 import apiAccount from '@api1/account';
 import k8sApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
-import { Textarea } from '@components/k8s/common/TextArea';
-import apiAutoPilot from '@api1/autoPilot';
-import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 import RunbookTargetResource from '@components/runbooks/RunbookTargetResource';
 import { snackbar } from '@shared/snackbarService';
@@ -25,7 +22,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   listAutoPilot,
   setIsLoading,
   reviewAutoOptimize = false,
-  approvalData = {},
   accountOptions = /** @type {{value: string, label: string}[]} */ ([]),
   defaultAccountId = '',
 }) => {
@@ -56,7 +52,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
     gitops: {
       message: '',
     },
-    reviewComment: '',
   });
   const [selectedApplications, setSelectedApplications] = useState([]);
   const [selectedNamespaces, setSelectedNamespaces] = useState([]);
@@ -77,7 +72,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
     // clobbered by a re-render in which the parent recreates the prop object.
   }, [autoOptimizeData?.id]);
 
-  const [reviewComment, setReviewComment] = useState('');
   // Account picked in this modal only (K8s-only, matching the outer Auto
   // Optimize tab's own account filter) — fixed to the existing resource's
   // account when editing/reviewing, otherwise editable and defaulted from
@@ -105,10 +99,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   };
 
   useEffect(() => {
-    if (approvalData?.reviewer_comments) {
-      setReviewComment(approvalData.reviewer_comments);
-    }
-
     const fetchSlackChannels = async () => {
       setIsLoadingSlackChannels(true);
       try {
@@ -167,44 +157,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
 
     setDisplayErrorsDesc(validate);
     return valid;
-  };
-
-  const handleReviewAction = (status) => {
-    if (status == 'REJECTED') {
-      if (!reviewComment) {
-        setDisplayErrorsDesc({ ...displayErrorsDesc, reviewComment: 'Please add a review comment if you wish to reject the runbook' });
-        return;
-      }
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId || autoOptimizeData?.account_id || selectedCluster?.value,
-          reviewComment,
-          'REJECTED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true, 'REJECTED');
-          } else {
-            snackbar.error(`Failed to reject Auto Optimize !`);
-          }
-        });
-    } else if (status == 'APPROVED') {
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId || autoOptimizeData?.account_id || selectedCluster?.value,
-          reviewComment,
-          'APPROVED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true, 'APPROVED');
-          } else {
-            snackbar.error(`Failed to approve Auto Optimize !`);
-          }
-        });
-    }
   };
 
   const handleCreateAutoPilotRule = () => {
@@ -346,20 +298,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
     },
   ];
 
-  if (reviewAutoOptimize && hasWriteAccess(autoOptimizeData?.accountId || autoOptimizeData?.account_id || selectedCluster?.value)) {
-    autoPilotSingleConfigButton.push({
-      label: 'Reject',
-      isDisabled: !Object.keys(approvalData).length || ['REJECTED', 'APPROVED'].includes(approvalData.status),
-      backgroundColor: ds.blue[500],
-      onClick: () => handleReviewAction('REJECTED'),
-    });
-    autoPilotSingleConfigButton.push({
-      isDisabled: !Object.keys(approvalData).length || ['REJECTED', 'APPROVED'].includes(approvalData.status),
-      label: 'Approve',
-      backgroundColor: ds.blue[500],
-      onClick: () => handleReviewAction('APPROVED'),
-    });
-  } else {
+  if (!reviewAutoOptimize) {
     autoPilotSingleConfigButton.push({
       label: !autoOptimizeData.id ? 'Create Auto Optimize Rule' : 'Update Auto Optimize Rule',
       backgroundColor: ds.blue[500],
@@ -469,23 +408,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
             />
           </Box>
         </Box>
-        {reviewAutoOptimize && (
-          <Box sx={{ display: 'flex', flexDirection: 'column', marginTop: ds.space[4] }}>
-            <Textarea
-              value={reviewComment}
-              placeholder='Please comment if you wish to reject this PR'
-              onChange={(e) => setReviewComment(e.target.value)}
-              minRows={2}
-              maxRows={4}
-              maxLength={250}
-            />
-            <Box>
-              {displayErrorsDesc.reviewComment ? (
-                <Typography sx={{ color: ds.red[500], fontSize: ds.text.body, marginTop: ds.space[1] }}>{displayErrorsDesc.reviewComment}</Typography>
-              ) : null}
-            </Box>
-          </Box>
-        )}
 
         <ActionButtons buttons={autoPilotSingleConfigButton} activeButton={activeButton} setActiveButton={setActiveButton} />
       </Box>

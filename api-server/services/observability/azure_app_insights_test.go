@@ -52,3 +52,17 @@ func TestAzureLabelValuesFromResponse(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// node-agent emits the destination zone under a misspelled key ("availablity"); the converter
+// has to accept it, and the correct spelling for an agent that later fixes it (#40498).
+func TestConvertAzureTraceReadsDestinationZoneUnderBothSpellings(t *testing.T) {
+	for _, key := range []string{"destination.cloud.availablity_zone", "destination.cloud.availability_zone"} {
+		t.Run(key, func(t *testing.T) {
+			row := map[string]any{"customDimensions": `{"` + key + `":"eastus-1"}`}
+			trace := (&AzureAppInsightsTraceSource{}).convertAzureTraceToOpenteleMetry(row, []Column{{Name: "customDimensions"}})
+			if got := trace.ResourceAttributes["cloud.availability_zone"]; got != "eastus-1" {
+				t.Fatalf("cloud.availability_zone = %q, want %q", got, "eastus-1")
+			}
+		})
+	}
+}

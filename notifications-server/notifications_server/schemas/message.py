@@ -18,6 +18,10 @@ class ChannelMapping(BaseModel):
     slack: Optional[List[ChannelInfo]] = Field(None, description="Slack channels")
     ms_teams: Optional[List[ChannelInfo]] = Field(None, description="MS Teams channels", alias="ms_teams")
     google_chat: Optional[List[ChannelInfo]] = Field(None, description="Google Chat spaces", alias="google_chat")
+    # A webhook target is its integration; `id` is the integration id.
+    slack_webhook: Optional[List[ChannelInfo]] = Field(None, description="Slack webhook targets")
+    ms_teams_webhook: Optional[List[ChannelInfo]] = Field(None, description="MS Teams webhook targets")
+    google_chat_webhook: Optional[List[ChannelInfo]] = Field(None, description="Google Chat webhook targets")
 
 
 class GenericParameters(BaseModel):
@@ -155,9 +159,18 @@ class PlatformResponse(BaseModel):
     message_ts: Optional[str] = Field(None, description="Message timestamp/ID")
     status: str = Field(
         ...,
-        description="Send status (success, failed, suppressed, snoozed, batch_delivery, queued, no_platform)",
+        description="Send status (success, failed, not_sent, suppressed, snoozed, queued, dropped, severity_gated)",
     )
-    reason: Optional[str] = Field(None, description="Additional information about the status")
+    reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why it was not delivered. A failed or not_sent result carries one of the codes in "
+            "services/delivery_errors.py; a suppressed or snoozed one names the rule"
+        ),
+    )
+    error_code: Optional[str] = Field(None, description="The platform's own error code or HTTP status on a failure")
+    retryable: Optional[bool] = Field(None, description="Whether sending a failed message again may succeed")
+    destination_id: Optional[str] = Field(None, description="Installation or webhook target the result is about")
     rule_management_url: Optional[str] = Field(
         None,
         description="Notification Rules page link; set when status is 'suppressed' due to a matching rule",

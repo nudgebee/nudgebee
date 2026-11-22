@@ -26,6 +26,11 @@ class Config(pd.BaseModel):
     # Performance settings
     max_recommendations_per_batch: Optional[int] = pd.Field(None, ge=1)  # Optional limit - None means process all
     metrics_fetch_timeout: int = pd.Field(45, ge=5)  # Timeout for metrics fetching in seconds
+    max_consecutive_timed_out_batches: int = pd.Field(
+        10, ge=1
+    )  # Abort after this many timed-out, empty batches in a row
+    scan_seconds_per_workload: int = pd.Field(10, ge=1)  # Scan deadline per workload
+    min_scan_deadline_seconds: int = pd.Field(1800, ge=1)  # Floor for the scan deadline
 
     # Logging Settings
     strategy: str

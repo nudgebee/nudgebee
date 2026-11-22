@@ -48,6 +48,39 @@ def test_calculate_cpu_proposal_mixed_empty_and_populated():
     assert result["p99"] == 4.0
 
 
+def test_calculate_cpu_proposal_ignores_nan_samples():
+    # Prometheus serialises a scrape gap as "NaN". np.max would propagate it and void
+    # the whole percentile recommendation, discarding valid data from the other samples.
+    data = {"p99": {"pod1": np.array([[0, np.nan], [1, 3.0], [2, 2.0]])}}
+    result = _settings().calculate_cpu_proposal(data)
+    assert result["p99"] == 3.0
+
+
+def test_calculate_cpu_proposal_all_nan_pod_does_not_poison_valid_pods():
+    # A pod with only NaN contributes nothing; pods with valid data still drive the max.
+    data = {
+        "p99": {
+            "pod1": np.array([[0, np.nan], [1, np.nan]]),
+            "pod2": np.array([[0, 4.0], [1, 2.0]]),
+        }
+    }
+    result = _settings().calculate_cpu_proposal(data)
+    assert result["p99"] == 4.0
+
+
+def test_calculate_cpu_proposal_is_nan_when_every_pod_is_all_nan():
+    # All-invalid is the expected undefined result: NaN reads as "no recommendation"
+    # downstream (round_resource_value maps it to None).
+    data = {
+        "p99": {
+            "pod1": np.array([[0, np.nan]]),
+            "pod2": np.array([[0, np.nan]]),
+        }
+    }
+    result = _settings().calculate_cpu_proposal(data)
+    assert math.isnan(result["p99"])
+
+
 def _history(max_ws: float, max_usage: float | None, points: int = 100) -> dict:
     """Minimal history_data for NudgebeeStrategy.run() with a single pod."""
     pod = "pod1"

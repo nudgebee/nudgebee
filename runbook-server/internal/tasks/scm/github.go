@@ -108,7 +108,7 @@ func (t *GithubCliTask) Execute(taskCtx types.TaskContext, params map[string]any
 		Env: map[string]string{
 			"GITHUB_TOKEN": githubToken,
 		},
-		K8sImage:     "ghcr.io/supportpal/github-gh-cli:latest",
+		K8sImage:     config.Config.ScriptExecutorGithubCliImage,
 		K8sNamespace: &namespace,
 	}
 

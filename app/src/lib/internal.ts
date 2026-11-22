@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as jose from 'jose';
 import * as bcrypt from 'bcrypt';
 import { pickDefaultRole } from '@lib/rolePriority';
+import { stripSuperAdminRoles } from '@lib/superAdminRoles';
 import { isSessionRevoked } from '@lib/sessionRevocation';
 
 const NUDGEBEE_ENCRYPTION_KEY_HEX = process.env.NUDGEBEE_ENCRYPTION_KEY || '';
@@ -34,6 +35,10 @@ import { resolveNextAuthSecret } from '@lib/authSecret';
 const JWT_SECRET = new TextEncoder().encode(resolveNextAuthSecret());
 
 export async function encodeSessionJWT(user: any, claims: any, exp: number, iat: number): Promise<string> {
+  // The allowed_roles claim below never carries a super-admin role read from a
+  // tenant-scoped row (see @lib/superAdminRoles). Reassigned on `user`
+  // because callers read user.roles back (the tenant_usage marker below).
+  if (user?.roles) user.roles = stripSuperAdminRoles(user.roles);
   const roles = user?.roles ?? [];
   if (user) {
     //marker role, for sceanrio where user has no roles

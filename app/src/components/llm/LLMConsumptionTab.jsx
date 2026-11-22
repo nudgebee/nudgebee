@@ -1138,6 +1138,7 @@ const LLMConsumptionTab = ({ accountId, readOnly = false, cardElevation = 'raise
   // sections that operators can still act on.
   const isTenantWide = !accountId;
   const { assistantName, baseTitle } = useTenantBranding();
+  const moduleLabels = useMemo(() => getModuleLabels(assistantName), [assistantName]);
   const [loading, setLoading] = useState(true);
   const [budgetData, setBudgetData] = useState(null);
   const [error, setError] = useState(null);
@@ -1608,7 +1609,7 @@ const LLMConsumptionTab = ({ accountId, readOnly = false, cardElevation = 'raise
         </Box>
       )}
 
-      {isAdmin && <BudgetHistoryTable accountId={accountId} isTenantWide={isTenantWide} />}
+      {isAdmin && <BudgetHistoryTable accountId={accountId} isTenantWide={isTenantWide} moduleLabels={moduleLabels} />}
 
       <Modal
         open={!!deleteConfirm}

@@ -32,7 +32,7 @@ var k8sPVSchema = core.SpecificTypeSchema{
 		{Name: "azure_disk"},
 		{Name: "gce_pd"},
 		{Name: "uid"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 		{Name: "creation_timestamp"},
 		{Name: "status_message"},
 	},

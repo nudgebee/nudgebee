@@ -11,5 +11,9 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    - port: {{ .Values.service.workspaceProxyTlsPort }}
+      targetPort: workspace-proxy
+      protocol: TCP
+      name: workspace-proxy
   selector:
     {{- include "llm-server.selectorLabels" . | nindent 4 }}

@@ -70,6 +70,15 @@ func TestListRequestsFilter(t *testing.T) {
 		assert.Equal(t, []any{"t1", start, end, "u1"}, args)
 	})
 
+	t.Run("api key filter composes with the user scope", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		req.APIKeyID = "k1"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4 AND g.api_key_id = $5")
+		assert.Equal(t, []any{"t1", start, end, "u1", "k1"}, args)
+	})
+
 	t.Run("providers and models get numbered IN placeholders", func(t *testing.T) {
 		req := base
 		req.Providers = []string{"anthropic", "openai"}
@@ -234,4 +243,56 @@ func TestAggregate_ValidatesRequest(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, post(r, "secret", "t1", env(`{"start_date":"nope","end_date":"nope"}`)).Code)
 	// Direct/flat body (no envelope) is also accepted and reaches parsing → 400.
 	assert.Equal(t, http.StatusBadRequest, post(r, "secret", "t1", `{"start_date":"nope","end_date":"nope"}`).Code)
+}
+
+func TestRedactUserBreakdown(t *testing.T) {
+	m := &Metrics{Breakdowns: map[string][]GroupRow{"user": {{ID: "u1"}}, "model": {{ID: "m"}}}}
+	redactUserBreakdown(m, false)
+	assert.Empty(t, m.Breakdowns["user"])
+	assert.Len(t, m.Breakdowns["model"], 1)
+
+	m = &Metrics{Breakdowns: map[string][]GroupRow{"user": {{ID: "u1"}}}}
+	redactUserBreakdown(m, true)
+	assert.Len(t, m.Breakdowns["user"], 1)
+}
+
+func TestScopeToCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name, asked, caller string
+		viewer              bool
+		want                string
+		ok                  bool
+	}{
+		{"admin, all users", "", "me", true, "", true},
+		{"admin, someone else", "bob", "me", true, "bob", true},
+		{"non-admin, no filter → own rows", "", "me", false, "me", true},
+		{"non-admin, own rows", "me", "me", false, "me", true},
+		{"non-admin, someone else", "bob", "me", false, "", false},
+		{"non-admin without caller id", "", "", false, "", false},
+	} {
+		got, ok := scopeToCaller(tc.asked, tc.caller, tc.viewer)
+		assert.Equal(t, tc.ok, ok, tc.name)
+		assert.Equal(t, tc.want, got, tc.name)
+	}
+}
+
+func TestAggregate_ScopesNonAdminToCaller(t *testing.T) {
+	r := newRouter("secret")
+	call := func(roles, userID string) int {
+		req := httptest.NewRequest(http.MethodPost, "/rpc/usage/aggregate", strings.NewReader(`{"start_date":"nope","end_date":"nope"}`))
+		req.Header.Set("X-ACTION-TOKEN", "secret")
+		req.Header.Set("x-tenant-id", "t1")
+		req.Header.Set("x-user-roles", roles)
+		if userID != "" {
+			req.Header.Set("x-user-id", userID)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	// A non-admin with no caller id has nothing to scope to → 403 before any query.
+	assert.Equal(t, http.StatusForbidden, call("account_admin", ""))
+	// With a caller id the scope check passes and the request reaches date parsing (400).
+	assert.Equal(t, http.StatusBadRequest, call("account_admin", "u1"))
+	assert.Equal(t, http.StatusBadRequest, call("tenant_admin", ""))
 }

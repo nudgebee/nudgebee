@@ -1,7 +1,10 @@
+import { AI_TOOLS_MODULES } from '@components/llm/admin/aiToolsModules';
 import { useSession } from 'next-auth/react';
 import { useCallback, useEffect, useRef } from 'react';
 import { queryGraphQL } from '@lib/HttpService';
+import { pinTabTenant, reportSessionTenant, type TenantRef } from '@lib/tabTenant';
 import Loader from '@shared/Loader';
+import { providerGrantModule } from '@lib/integrationProviderGrants';
 
 // AUTHORIZATION MODEL — front-end vs back-end
 //
@@ -164,11 +167,22 @@ export function withAuth(Component: React.ComponentType<any | string>) {
       }
     }, [status]);
 
+    // The session refetches on focus and every 5 minutes; a tenant that moved
+    // since this tab loaded means another tab switched it (see @lib/tabTenant).
+    const sessionTenantId = (data as { tenant?: TenantRef } | null)?.tenant?.id;
+    const sessionTenantName = (data as { tenant?: TenantRef } | null)?.tenant?.name;
+    useEffect(() => {
+      reportSessionTenant({ id: sessionTenantId, name: sessionTenantName });
+    }, [sessionTenantId, sessionTenantName]);
+
     if (status === 'loading') {
       return <Loader />;
     }
 
     userData = data;
+    // Pinned during render, not in an effect: children's effects run before
+    // ours, and their first requests must already carry the pin. Set-once.
+    pinTabTenant(sessionTenantId);
 
     return <Component {...props} />;
   };
@@ -314,15 +328,17 @@ export function hasWriteAccess(accountId?: string, namespace?: string): boolean 
   if (userData?.roles?.includes('tenant_admin')) {
     return true;
   }
-  if (userData?.roles?.includes('tenant_admin_readonly')) {
-    return false;
-  }
+  // A read-only tenant admin who is also an admin of this account (directly or
+  // through a group) may write here: roles add up, as the RPC gateway allows.
+  // With no account grant, tenant_admin_readonly still falls through to false.
   if (userData?.accountIds?.includes(accountId)) {
     return true;
   }
   if (accountId && namespace) {
-    const allowedNamespaces = getAllowedNamespaces(accountId) ?? [];
-    if (userData?.namespacedAccountIds?.includes(accountId) && allowedNamespaces != null && allowedNamespaces.includes(namespace)) {
+    // The namespaces this user administers on the account. Not getAllowedNamespaces:
+    // it returns null (all namespaces, read) for a read-only tenant admin.
+    const allowedNamespaces = userData?.k8sNamespaces?.[accountId] ?? [];
+    if (userData?.namespacedAccountIds?.includes(accountId) && allowedNamespaces.includes(namespace)) {
       return true;
     }
   }
@@ -334,6 +350,25 @@ export function hasDeleteAccess(accountId?: string): boolean {
     return true;
   }
   return false;
+}
+
+// Per-user AI Gateway access and usage (#38963): tenant admins manage, read-only tenant admins view.
+export function canManageGatewayUserAccess(): boolean {
+  return isTenantAdmin() || isSuperAdmin();
+}
+
+export function canViewGatewayUserAccess(): boolean {
+  return canManageGatewayUserAccess() || !!userData?.roles?.includes('tenant_admin_readonly');
+}
+
+// Can the user open Admin → AI & Tools → Gateway? That tab is adminOnly
+// (aiToolsConfig.js): no grant opens it, only the roles the Admin page treats as admin.
+export function canOpenGatewayConfig(): boolean {
+  if (!isUiFeatureEnabled('llmGateway')) {
+    return false;
+  }
+  const roles: string[] = userData?.roles ?? [];
+  return roles.includes('tenant_admin') || roles.includes('tenant_admin_readonly') || isSuperAdmin();
 }
 
 export function isTenantAdmin(): boolean {
@@ -356,6 +391,43 @@ export function hasPermission(module: string, permissionClass: 'Read' | 'Write' 
     return false;
   }
   return userData?.permissions?.includes(`${module}:${permissionClass}`) ?? false;
+}
+
+// Modules whose UI surfaces a grant bound to an account fully reaches: each
+// action they call is a /rpc/query read or flagged `account_enforced` in
+// actions.yaml. A bound grant on any other module opens only its /rpc/query
+// reads, so its surfaces keep gating on tenant-wide grants until its custom
+// handlers are verified and flagged.
+const ACCOUNT_BOUND_MODULES = new Set(['slo', 'metrics']);
+
+// Dynamic-RBAC: does the current user hold (module, class) on accountId — a
+// tenant-wide grant, or one bound to that account (session.boundGrants)? Write
+// implies Read, as at the gateway. UI-gating helper only; the gateway and the
+// handler decide.
+export function hasGrantOnAccount(module: string, permissionClass: 'Read' | 'Write' | 'Execute', accountId?: string): boolean {
+  const holds = (keys: string[] | undefined) =>
+    !!keys?.includes(`${module}:${permissionClass}`) || (permissionClass === 'Read' && !!keys?.includes(`${module}:Write`));
+  if (!isCustomRolesEnabled()) return false;
+  if (holds(userData?.permissions)) return true;
+  if (!accountId || !ACCOUNT_BOUND_MODULES.has(module)) return false;
+  return holds(userData?.boundGrants?.[accountId]);
+}
+
+// May the current user do `permissionClass` on `module` for accountId: their
+// built-in role on the account (hasReadAccess / hasWriteAccess) or a custom grant
+// that applies to it (hasGrantOnAccount).
+export function canOnAccount(module: string, permissionClass: 'Read' | 'Write', accountId?: string, namespace?: string): boolean {
+  const builtIn = permissionClass === 'Read' ? hasReadAccess(accountId, namespace) : hasWriteAccess(accountId, namespace);
+  return builtIn || hasGrantOnAccount(module, permissionClass, accountId);
+}
+
+// Backend `tickets_create` (app/src/lib/actions.yaml) authorizes every *_readonly
+// role, not just write roles — so gate the Create Ticket affordance on read access
+// to the row's account, not write. A tickets:Write custom-role grant still covers
+// holders who lack even read access to that account. One rule for every listing
+// that offers Create Ticket (#40211) — don't re-derive this per component.
+export function canCreateTicket(accountId?: string): boolean {
+  return hasReadAccess(accountId) || hasPermission('tickets', 'Write');
 }
 
 // Dynamic-RBAC: may the current user READ the tenant's custom roles? Mirrors
@@ -384,10 +456,8 @@ export function missingPermissionMessage(permission: string): string {
 
 // Modules backing the sections of the Admin page (/user-management): Users,
 // Groups, Audits, Notifications, Integrations, Ownership, the EE Roles &
-// Permissions tab, Tenant Settings, and AI & Tools (Agents/Tools & MCP/
-// Functions/Budgets & Limits/Memory Policy/RCA Format share `ai`; Providers
-// reuses `integrations`; Gateway reuses `llm`; Egress Filter is
-// `egressfilter`). Kept in sync with baseFilters in
+// Permissions tab, Tenant Settings, and AI & Tools (each sub-tab's modules, from
+// components/llm/admin/aiToolsModules.js). Kept in sync with baseFilters in
 // app/src/pages/user-management/index.jsx.
 // Cross-tenant super admin (full, not the read-only flavor). Kept distinct from
 // isTenantWideRole() because destructive / write gates must not accept
@@ -406,6 +476,16 @@ export function isSuperAdmin(): boolean {
 // actions that would 403.
 export function canManage(module: string, permissionClass: 'Read' | 'Write' | 'Execute'): boolean {
   return isTenantAdmin() || isSuperAdmin() || hasPermission(module, permissionClass);
+}
+
+// Write gate for one integration type: canManage('integrations','Write'), or a
+// per-provider grant (`integrations.<type>:Write`) for an observability
+// provider. Mirrors canRunIntegrationAction in
+// api-server/services/api/actions_integration_authz.go.
+export function canManageIntegration(integrationType: string | null | undefined): boolean {
+  if (canManage('integrations', 'Write')) return true;
+  const module = providerGrantModule(integrationType);
+  return module !== null && hasPermission(module, 'Write');
 }
 
 // EDIT gate for the Tenant Settings Admin tab — mirrors CanManage("tenants","Write") in
@@ -437,9 +517,8 @@ const ADMIN_SURFACE_MODULES = [
   'customroles',
   'roles',
   'tenants',
-  'ai',
-  'llm',
-  'egressfilter',
+  // AI & Tools sub-tabs (components/llm/admin/aiToolsConfig.js)
+  ...AI_TOOLS_MODULES,
 ];
 
 // Should the Admin sidebar tab / route be reachable for the current user?

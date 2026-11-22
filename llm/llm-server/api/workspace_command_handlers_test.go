@@ -200,3 +200,57 @@ func TestHelmWorkspaceTargetUsesSelectedCluster(t *testing.T) {
 	_, err = workspaceRelayTarget(toolCtx, tools.RelayJobHelm, "unknown", "helm list -A")
 	require.Error(t, err)
 }
+
+// TestAwsWorkspaceHandlerPrefersConfigNameOverOwnAccount reproduces #40647:
+// the shim forwards the account aws_execute chose only as ConfigName, and the
+// resolver used to return whichever of "own account" or "ConfigName" sorted
+// first — so a conversation on Demo123 asking for dev-aws ran on Demo123 and
+// the proxy refused it (the token is bound to dev-aws). Cases mirror the dev
+// data: the result must not depend on name order.
+func TestAwsWorkspaceHandlerPrefersConfigNameOverOwnAccount(t *testing.T) {
+	targets := []core.ToolConfig{ // name-sorted, as ListAccountTargets returns them
+		awsTarget("aws-demo", "aws-demo-id", "333333333333", "us-east-1"),
+		awsTarget("aws-prod", "aws-prod-id", "444444444444", "us-east-1"),
+		awsTarget("Demo123", "demo123-id", "555555555555", "us-east-1"),
+		awsTarget("dev-aws", "dev-aws-id", "555555555555", "us-east-1"),
+	}
+	cases := []struct{ ownAccount, configName, want string }{
+		{"demo123-id", "dev-aws", "dev-aws-id"},    // own sorts first: was demo123-id
+		{"aws-demo-id", "dev-aws", "dev-aws-id"},   // own sorts first: was aws-demo-id
+		{"aws-demo-id", "aws-prod", "aws-prod-id"}, // own sorts first: was aws-demo-id
+		{"dev-aws-id", "Demo123", "demo123-id"},    // requested sorts first: always worked
+		{"demo123-id", "", "demo123-id"},           // no ConfigName: own account
+		{"demo123-id", "Demo123", "demo123-id"},    // ConfigName is the own account
+		{"demo123-id", "no-such", "demo123-id"},    // unknown ConfigName: own account, as before
+	}
+	for _, c := range cases {
+		t.Run(c.ownAccount+"->"+c.configName, func(t *testing.T) {
+			stubAwsWorkspaceTargets(t, targets)
+			ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"aws-demo-id", "aws-prod-id", "demo123-id", "dev-aws-id"})
+			plan, err := (awsWorkspaceCommandHandler{}).Prepare(ctx, core.NbToolContext{}, WorkspaceExecuteRequest{
+				AccountId:  c.ownAccount,
+				ConfigName: c.configName,
+				Command:    "aws lambda get-function --function-name x --region us-east-1",
+			})
+			require.NoError(t, err)
+			assert.Equal(t, c.want, plan.TargetAccountID)
+		})
+	}
+}
+
+// An explicit --profile still decides the account; ConfigName does not override it.
+func TestAwsWorkspaceHandlerProfileWinsOverConfigName(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"demo123-id", "dev-aws-id"})
+	stubAwsWorkspaceTargets(t, []core.ToolConfig{
+		awsTarget("Demo123", "demo123-id", "555555555555", "us-east-1"),
+		awsTarget("dev-aws", "dev-aws-id", "555555555555", "us-east-1"),
+	})
+
+	plan, err := (awsWorkspaceCommandHandler{}).Prepare(ctx, core.NbToolContext{}, WorkspaceExecuteRequest{
+		AccountId:  "demo123-id",
+		ConfigName: "dev-aws",
+		Command:    "aws s3 ls --profile Demo123",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "demo123-id", plan.TargetAccountID)
+}

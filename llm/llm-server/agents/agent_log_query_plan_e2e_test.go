@@ -44,6 +44,7 @@ func newLogQueryPlanProbeRun(t *testing.T) *logQueryPlanProbeRun {
 		"", "Logs query planner and execution probe", core.ConversationStatusInProgress,
 		core.ConversationSourceUserInvestigation,
 		config.Config.LlmProvider, config.Config.LlmModel, nil, "",
+		nil,
 	)
 	require.NoError(t, err, "create persisted probe conversation")
 

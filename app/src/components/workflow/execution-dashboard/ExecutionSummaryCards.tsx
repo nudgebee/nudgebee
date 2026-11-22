@@ -18,7 +18,7 @@ interface ShareRowProps {
   label: string;
   count: number;
   total: number;
-  tone: 'success' | 'warning';
+  tone: 'success' | 'warning' | 'critical' | 'neutral';
   approximate?: boolean;
   id: string;
 }
@@ -26,6 +26,8 @@ interface ShareRowProps {
 const TONE_INK: Record<ShareRowProps['tone'], string> = {
   success: 'var(--ds-green-700)',
   warning: 'var(--ds-amber-700)',
+  critical: 'var(--ds-red-700)',
+  neutral: 'var(--ds-gray-700)',
 };
 
 /**
@@ -62,7 +64,8 @@ const ShareRow: React.FC<ShareRowProps> = ({ label, count, total, tone, approxim
 
 /**
  * The window's failure headline: how many runs failed, out of how many, and how
- * the rest of the window split.
+ * the rest of the window split. Each closed run is on exactly one line of the
+ * card, so the lines add up to the total whenever nothing is running.
  *
  * These counts are deliberately static — one unfiltered call on page load that
  * does not move when the table below is filtered. The "of N total · last N
@@ -82,7 +85,15 @@ const ExecutionSummaryCards: React.FC<ExecutionSummaryCardsProps> = ({ aggregate
 
   const approximate = !!aggregate?.counts_are_approximate;
   const total = aggregate?.total ?? 0;
-  const failed = aggregate?.failed ?? 0;
+  const timedOut = aggregate?.timed_out ?? 0;
+  // Undefined from a server that predates these counts. Their lines are then
+  // left out rather than shown as a zero the server never reported.
+  const terminated = aggregate?.terminated;
+  const canceled = aggregate?.canceled;
+  // `failed` on the wire is every run that did not succeed. The headline is the
+  // FAILED status alone, the same runs the table's Status = Failed lists, so
+  // the runs that have a line of their own below are taken out of it.
+  const failed = Math.max(0, (aggregate?.failed ?? 0) - timedOut - (terminated ?? 0));
   const prefix = approximate ? '≈ ' : '';
   // Zero means the retention could not be read; say nothing rather than guess.
   const windowLabel = retentionDays > 0 ? ` · last ${retentionDays} days` : '';
@@ -113,7 +124,10 @@ const ExecutionSummaryCards: React.FC<ExecutionSummaryCardsProps> = ({ aggregate
           </Box>
         }
         sub={`of ${prefix}${total.toLocaleString()} total${windowLabel}`}
-        info={{ tooltip: 'Counts runs that failed, were terminated, or timed out. Cancelled runs are excluded.' }}
+        info={{
+          tooltip:
+            'Runs whose status is Failed, the same runs listed under Status = Failed. Timed-out, terminated and cancelled runs each have their own line below. "Where the failures are" ranks failed, timed-out and terminated runs together.',
+        }}
       />
 
       <Box sx={{ margin: 'var(--ds-space-4) 0 0', flex: 1, display: 'flex', alignItems: 'flex-end' }}>
@@ -129,16 +143,38 @@ const ExecutionSummaryCards: React.FC<ExecutionSummaryCardsProps> = ({ aggregate
           tone='success'
           approximate={approximate}
         />
-        {/* A subset of the failed count, not a peer of it: a run that ran too
-            long is a different fix from one that threw. */}
+        {/* Not inside the headline: a run that ran too long is a different fix
+            from one that threw. */}
         <ShareRow
           id='execution-dashboard-share-timed-out'
           label='Timed out'
-          count={aggregate?.timed_out ?? 0}
+          count={timedOut}
           total={total}
           tone='warning'
           approximate={approximate}
         />
+        {/* Stopped from outside: a cancel that had to force the stop, a
+            schedule's overlap policy, or a parent run closing. */}
+        {terminated !== undefined && (
+          <ShareRow
+            id='execution-dashboard-share-terminated'
+            label='Terminated'
+            count={terminated}
+            total={total}
+            tone='critical'
+            approximate={approximate}
+          />
+        )}
+        {canceled !== undefined && (
+          <ShareRow
+            id='execution-dashboard-share-canceled'
+            label='Cancelled'
+            count={canceled}
+            total={total}
+            tone='neutral'
+            approximate={approximate}
+          />
+        )}
       </Box>
     </Card>
   );

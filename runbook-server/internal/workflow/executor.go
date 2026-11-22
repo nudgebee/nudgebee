@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/logsafe"
@@ -126,6 +127,12 @@ func extractEventIDFromInputs(inputs map[string]any) string {
 		return id
 	}
 	return ""
+}
+
+func newWorkflowTemplateContext(ctx workflow.Context, inputs []model.Input, runtimeInputs map[string]any) *TemplateContext {
+	tplCtx := NewTemplateContext(inputs, runtimeInputs)
+	tplCtx.timeSource = func() time.Time { return workflow.Now(ctx) }
+	return tplCtx
 }
 
 const (
@@ -319,7 +326,7 @@ func createActivityCtxForAction(ctx workflow.Context) workflow.Context {
 	return ctxWithOptions
 }
 
-func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool) error {
+func handleTaskCompletion(ctx workflow.Context, wf *model.Workflow, workflowID string, taskID string, future workflow.Future, globalContext *TemplateContext, taskMap map[string]model.Task, isDryRun bool) error {
 	logger := workflow.GetLogger(ctx)
 	var result any
 	err := future.Get(ctx, &result)
@@ -330,6 +337,15 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 		if err := json.Unmarshal([]byte(resultStr), &resultMap); err == nil {
 			result = resultMap
 		}
+	}
+
+	// A run's approval gate lets it go on only on an approval made in the app.
+	if gateErr := checkApprovalGateAnswer(wf, taskID, result, err); gateErr != nil {
+		logger.Warn("Run stopped at its approval gate", "taskID", taskID, "error", gateErr)
+		return gateErr
+	}
+	if wf != nil && wf.ApprovalGate != "" && taskID == model.ApprovalGateTaskID {
+		wf.ApprovalGatePassed = true
 	}
 
 	currentTask, ok := taskMap[taskID]
@@ -350,12 +366,12 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	if err != nil {
 		// Libraries put the failing request in the message — a URL carrying an
 		// api_key, say — so credential values are scrubbed before it goes anywhere.
-		errText := ScrubSecretValues(err.Error(), SecretValues(globalContext.Secrets))
+		errText := logsafe.ScrubSecretValues(err.Error(), logsafe.SecretValues(globalContext.Secrets))
 		logger.Error("Activity failed", "taskID", taskID, "error", errText, "params", globalContext.Tasks[taskID])
 		// find task to run on_failure
 		if currentTask.Hooks != nil && len(currentTask.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
-			hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext)
+			hookErr := executeSimpleActions(onFailureCtx, currentTask.Hooks.Failure, globalContext, wf)
 			if hookErr != nil {
 				logger.Error("OnFailure hook failed", "taskID", taskID, "error", hookErr)
 				return hookErr
@@ -489,7 +505,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	// find task to run on_success
 	if currentTask.Hooks != nil && len(currentTask.Hooks.Success) > 0 {
 		onSuccessCtx := createActivityCtxForAction(ctx)
-		hookErr := executeSimpleActions(onSuccessCtx, currentTask.Hooks.Success, globalContext)
+		hookErr := executeSimpleActions(onSuccessCtx, currentTask.Hooks.Success, globalContext, wf)
 		if hookErr != nil {
 			logger.Error("OnSuccess hook failed", "taskID", taskID, "error", hookErr)
 			return hookErr
@@ -499,7 +515,7 @@ func handleTaskCompletion(ctx workflow.Context, workflowID string, taskID string
 	// find task to run finally
 	if currentTask.Hooks != nil && len(currentTask.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
-		hookErr := executeSimpleActions(onFinalCtx, currentTask.Hooks.Always, globalContext)
+		hookErr := executeSimpleActions(onFinalCtx, currentTask.Hooks.Always, globalContext, wf)
 		if hookErr != nil {
 			logger.Error("Finally hook failed", "taskID", taskID, "error", hookErr)
 			return hookErr
@@ -573,7 +589,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 			// the failure path below: a called run records status, not the callee's hooks.
 			panicErr := temporal.NewApplicationError("workflow panic", "panic", panicMessage)
 			if !isChildWorkflow {
-				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr, secretValues)
+				updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, panicErr, secretValues, "")
 			} else if !wf.DryRun {
 				setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusFailed, panicErr.Error(), logger)
 			}
@@ -619,7 +635,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 
 	// Evaluate and upsert Execution Tags
 	if len(wf.Definition.SetExecutionTags) > 0 {
-		initialTplCtx := NewTemplateContext(wf.Definition.Inputs, inputs)
+		initialTplCtx := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 		for _, input := range wf.Definition.Inputs {
 			initialTplCtx.Inputs[input.ID] = input.Default
 		}
@@ -735,7 +751,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	}
 
 	// Initialize Template Context
-	templateContext := NewTemplateContext(wf.Definition.Inputs, inputs)
+	templateContext := newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs)
 	if workflowState != nil {
 		templateContext.State = workflowState
 	}
@@ -745,7 +761,7 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	for k, v := range configsResponse.Secrets {
 		templateContext.Secrets[k] = v
 	}
-	secretValues = SecretValues(templateContext.Secrets)
+	secretValues = logsafe.SecretValues(templateContext.Secrets)
 
 	// Run Tasks using the recursive loop function
 	taskRegistry := tasks.NewInitializedTaskRegistry()
@@ -761,9 +777,9 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 	_, executionTrace, workflowError := processTaskLoop(ctx, wf.Definition.Tasks, templateContext, logger, pendingApprovalTokens, approvalTokenSignalChan, workflow.GetSignalChannel(ctx, "update-workflow-inputs"), wf, info.WorkflowExecution.ID, taskRegistry, e.GetClient(), e.GetConverter(), e.GetStore(), e.ExecuteWorkflowInternal)
 
 	if workflowError != nil {
-		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", ScrubSecretValues(workflowError.Error(), secretValues))
+		logger.Info("Workflow execution failed because of error", "workflowId", wf.ID, "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if !isChildWorkflow {
-			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError, secretValues)
+			updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, workflowError, secretValues, "")
 		} else if !wf.DryRun {
 			// A called run records status on the callee's row, but not its hooks or tags.
 			childStatus, childMessage := terminalStatusFor(workflowError)
@@ -828,6 +844,18 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 		}
 	}
 
+	// A step that failed under failure_policy "continue" leaves the run COMPLETED;
+	// record it on the run's Memo so run lists can mark the run (#40461).
+	var failedSteps model.FailedSteps
+	if templateContext != nil {
+		failedSteps = collectFailedSteps(wf.Definition.Tasks, templateContext.Tasks)
+	}
+	if failedSteps.FailedStepCount > 0 {
+		if err := workflow.UpsertMemo(ctx, failedStepsMemo(failedSteps)); err != nil {
+			logger.Error("Failed to upsert failed-steps memo", "error", err)
+		}
+	}
+
 	if !isChildWorkflow {
 		// --- Persist workflow_last_execution_time state (Success Only) ---
 		if !wf.DryRun {
@@ -882,10 +910,10 @@ func (e *WorkflowExecutor) ExecuteWorkflowInternal(ctx workflow.Context, wf *mod
 				}
 			}
 		}
-		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil, secretValues)
+		updateFinalWorkflowStatusAndExecuteHooks(ctx, wf, lastExecTarget, inputs, logger, nil, secretValues, failedStepsStatusMessage(failedSteps))
 	} else if !wf.DryRun {
 		// As on the failure path: status on the callee's row, no hooks or tags.
-		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, "", logger)
+		setLastExecutionStatus(ctx, wf, lastExecTarget, model.WorkflowExecutionStatusCompleted, failedStepsStatusMessage(failedSteps), logger)
 	}
 
 	logger.Info("Workflow execution completed", "workflowId", wf.ID, "result", logsafe.Shape(workflowResult))
@@ -1225,7 +1253,7 @@ func processTaskLoop(
 						tempTplCtx := templateContext.Clone()
 						tempTplCtx.Matrix = combo
 
-						processedParams, err := ProcessValue(expandedTask.Params, tempTplCtx)
+						processedParams, err := ProcessTaskParams(expandedTask.Type, expandedTask.Params, tempTplCtx)
 						if err != nil {
 							logger.Error("Failed to process params for expanded matrix task", "taskID", expandedTask.ID, "error", err)
 							return completedTasks, nil, fmt.Errorf("failed to process params for expanded matrix task %s: %w", expandedTask.ID, err)
@@ -1286,6 +1314,14 @@ func processTaskLoop(
 				// that depend on loop variables not yet available in the current context.
 				paramsToProcess := task.Params
 				preservedParams := make(map[string]any)
+				// The run's approval gate is built by the engine and quotes what
+				// the run was asked to do; its text is shown, never rendered.
+				if task.ID == model.ApprovalGateTaskID && wf.ApprovalGate != "" {
+					for k, v := range task.Params {
+						preservedParams[k] = v
+					}
+					paramsToProcess = nil
+				}
 
 				if impl, err := taskRegistry.GetTask(task.Type); err == nil {
 					if _, isLoop := impl.(types.TaskLoop); isLoop {
@@ -1305,7 +1341,7 @@ func processTaskLoop(
 					}
 				}
 
-				processedParams, err := ProcessValue(paramsToProcess, tplCtx)
+				processedParams, err := ProcessTaskParams(task.Type, paramsToProcess, tplCtx)
 				if err != nil {
 					logger.Error("Failed to process params for task", "taskID", task.ID, "error", err)
 					return completedTasks, nil, fmt.Errorf("failed to process params for task %s: %w", task.ID, err)
@@ -1323,14 +1359,12 @@ func processTaskLoop(
 					paramMap[k] = v
 				}
 
-				paramMap[tasks.ParamTenantID] = wf.TenantID
-				paramMap[tasks.ParamAccountID] = wf.AccountID
-				paramMap[tasks.ParamWorkflowID] = wf.ID
 				eventID := extractEventIDFromInputs(tplCtx.Inputs)
-				if eventID != "" {
-					paramMap[tasks.ParamEventID] = eventID
+				setInternalTaskParams(paramMap, wf, eventID)
+				// And only the run's own approval gate is marked as one.
+				if task.ID == model.ApprovalGateTaskID && wf.ApprovalGate != "" {
+					paramMap[tasks.ParamApprovalGate] = wf.ApprovalGate
 				}
-				paramMap[tasks.ParamUserID] = wf.UpdatedBy
 				// Intentionally do NOT attach the full template Vars (tplCtx.Vars) to the
 				// activity input. Params are already rendered above via ProcessValue, and
 				// TaskWrapper strips ParamVars before Execute, so no task ever reads it.
@@ -1338,15 +1372,19 @@ func processTaskLoop(
 				// push payload) into EVERY activity input; a matrix/foreach fan-out then
 				// multiplied that past Temporal's 4MB gRPC limit, so RespondWorkflowTaskCompleted
 				// failed with ResourceExhausted and zero activities were ever committed.
-				paramMap[tasks.ParamWorkflowName] = wf.Name
-				if displayName := getUserDisplayName(wf); displayName != "" {
-					paramMap[tasks.ParamUserDisplayName] = displayName
-				}
-
 				// Check if task is an inline workflow (e.g. group, switch)
 				taskImpl, err := taskRegistry.GetTask(task.Type)
 				if err == nil {
 					if inlineTask, ok := taskImpl.(types.TaskInlineWorkflow); ok {
+						// An inline step never reaches the task wrapper, so the
+						// run's tier ceiling is checked for it here.
+						if ceiling := wf.Definition.MaxTier; ceiling > 0 {
+							if tier, _ := tasks.TierFor(task.Type); tier > ceiling {
+								return completedTasks, nil, temporal.NewNonRetryableApplicationError(
+									fmt.Sprintf("step %s is tier %d, above this automation's tier %d", task.Type, tier, ceiling),
+									"StepTierExceeded", nil)
+							}
+						}
 						// Determine execution strategy
 						executeAsChild := false
 						if strategy, ok := taskImpl.(types.TaskExecutionStrategy); ok {
@@ -1428,7 +1466,12 @@ func processTaskLoop(
 								Status:              model.WorkflowStatusActive,
 								CreatedBy:           wf.UpdatedBy,
 								UpdatedBy:           wf.UpdatedBy,
+								PrincipalUserID:     wf.PrincipalUserID,
 								LastExecutionStatus: model.WorkflowExecutionStatusRunning,
+							}
+							// A child never runs with a looser tier ceiling than its parent.
+							if ceiling := wf.Definition.MaxTier; ceiling > 0 && (childWf.Definition.MaxTier == 0 || childWf.Definition.MaxTier > ceiling) {
+								childWf.Definition.MaxTier = ceiling
 							}
 
 							childMemo := map[string]interface{}{
@@ -1505,6 +1548,9 @@ func processTaskLoop(
 										taskCopy := fullTask
 										// Uniquify ID to avoid duplicate activity scheduling if the task is also in the main loop
 										taskCopy.ID = fmt.Sprintf("%s-%s", task.ID, fullTask.ID)
+										taskCopy.OriginalID = fullTask.ID
+										// The step running this body already waited on the run's approval gate.
+										taskCopy.DependsOn = withoutApprovalGate(taskCopy.DependsOn)
 										hydratedTasks = append(hydratedTasks, taskCopy)
 										originalToRenamedID[t.ID] = taskCopy.ID
 									} else {
@@ -1517,24 +1563,16 @@ func processTaskLoop(
 									// Also uniquify IDs for explicitly defined inline tasks to ensure uniqueness in this execution scope
 									tCopy := t
 									tCopy.ID = fmt.Sprintf("%s-%s", task.ID, t.ID)
+									tCopy.OriginalID = t.ID
 									hydratedTasks = append(hydratedTasks, tCopy)
 									originalToRenamedID[t.ID] = tCopy.ID
 								}
 							}
 
-							// Update dependencies to point to new unique IDs
+							// Point dependencies at the renamed IDs and drop the ones the child
+							// scope cannot see but are already satisfied (#41250).
 							for i := range hydratedTasks {
-								if len(hydratedTasks[i].DependsOn) > 0 {
-									var newDependsOn []string
-									for _, dep := range hydratedTasks[i].DependsOn {
-										if newID, ok := originalToRenamedID[dep]; ok {
-											newDependsOn = append(newDependsOn, newID)
-										} else {
-											newDependsOn = append(newDependsOn, dep)
-										}
-									}
-									hydratedTasks[i].DependsOn = newDependsOn
-								}
+								hydratedTasks[i].DependsOn = scopeInlineDeps(hydratedTasks[i].DependsOn, originalToRenamedID, task.ID, task.OriginalID, completedTasks, switchBranchDone)
 							}
 
 							// Start sub-routine
@@ -1859,7 +1897,7 @@ func processTaskLoop(
 							return
 						}
 
-						err := handleTaskCompletion(ctx, wf.ID, id, f, templateContext, taskMap, wf.DryRun)
+						err := handleTaskCompletion(ctx, wf, wf.ID, id, f, templateContext, taskMap, wf.DryRun)
 						if err != nil {
 							logger.Error("Task completion error", "taskID", id, "error", err)
 							workflowError = err
@@ -1896,7 +1934,9 @@ func processTaskLoop(
 	return completedTasks, executionTrace, nil
 }
 
-func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error, secretValues []string) {
+// completedMessage is the status message recorded when the run completed (it
+// names failed continue-on-failure steps); a failed run records its error.
+func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Workflow, targetWorkflowID string, inputs map[string]any, logger temporalLog.Logger, workflowError error, secretValues []string, completedMessage string) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Error("Panic recovered in workflow deferred cleanup hooks", "panic", r)
@@ -1919,6 +1959,9 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 	statusUpdateCtx := workflow.WithActivityOptions(ctx, activityOptions)
 
 	finalStatus, statusMessage := terminalStatusFor(workflowError)
+	if workflowError == nil {
+		statusMessage = completedMessage
+	}
 	canceled := finalStatus == model.WorkflowExecutionStatusCanceled
 
 	if !wf.DryRun {
@@ -1934,15 +1977,21 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		}
 	}
 
+	// A gated run that ended before its approval gate passed (rejected,
+	// expired, canceled, or broken before the gate answered) was not approved
+	// to run any step, and hooks are steps.
+	gateStopped := stoppedAtApprovalGate(workflowError) || (wf != nil && wf.ApprovalGate != "" && !wf.ApprovalGatePassed)
 	if canceled {
 		// On.Failure is for a run that broke, not for one the user stopped; only
 		// On.Always (below) is owed to a cancel.
 		logger.Info("Workflow canceled")
+	} else if gateStopped {
+		logger.Info("Workflow stopped at its approval gate; hooks skipped", "error", fmt.Sprint(workflowError))
 	} else if workflowError != nil {
-		logger.Error("Workflow failed", "error", ScrubSecretValues(workflowError.Error(), secretValues))
+		logger.Error("Workflow failed", "error", logsafe.ScrubSecretValues(workflowError.Error(), secretValues))
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Failure) > 0 {
 			onFailureCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+			if err := executeSimpleActions(onFailureCtx, wf.Definition.Hooks.Failure, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Failure hook failed", "error", err)
 			}
 		}
@@ -1950,20 +1999,56 @@ func updateFinalWorkflowStatusAndExecuteHooks(ctx workflow.Context, wf *model.Wo
 		logger.Info("Workflow completed successfully")
 		if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Success) > 0 {
 			onSuccessCtx := createActivityCtxForAction(ctx)
-			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+			if err := executeSimpleActions(onSuccessCtx, wf.Definition.Hooks.Success, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 				logger.Error("On.Success hook failed", "error", err)
 			}
 		}
 	}
-	if wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
+	if !gateStopped && wf != nil && wf.Definition.Hooks != nil && len(wf.Definition.Hooks.Always) > 0 {
 		onFinalCtx := createActivityCtxForAction(ctx)
-		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, NewTemplateContext(wf.Definition.Inputs, inputs)); err != nil {
+		if err := executeSimpleActions(onFinalCtx, wf.Definition.Hooks.Always, newWorkflowTemplateContext(ctx, wf.Definition.Inputs, inputs), wf); err != nil {
 			logger.Error("On.Always hook failed", "error", err)
 		}
 	}
 }
 
-func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *TemplateContext) error {
+func setInternalTaskParams(params map[string]any, wf *model.Workflow, eventID string) {
+	params[tasks.ParamTenantID] = wf.TenantID
+	params[tasks.ParamAccountID] = wf.AccountID
+	params[tasks.ParamWorkflowID] = wf.ID
+	params[tasks.ParamUserID] = wf.UpdatedBy
+	params[tasks.ParamWorkflowName] = wf.Name
+	// Only the run sets the principal: a step's own params must never
+	// name whose rights it acts with (e.g. an admin or a bee account).
+	if wf.PrincipalUserID != "" {
+		params[tasks.ParamRunAsUserID] = wf.PrincipalUserID
+	} else {
+		delete(params, tasks.ParamRunAsUserID)
+	}
+	// Only the run's own approval gate is marked as one; a step sets it after this.
+	delete(params, tasks.ParamApprovalGate)
+	// Likewise the tier ceiling comes from the definition only.
+	delete(params, tasks.ParamMaxTier)
+	if wf.Definition.MaxTier > 0 {
+		params[tasks.ParamMaxTier] = wf.Definition.MaxTier
+	}
+
+	if eventID != "" {
+		params[tasks.ParamEventID] = eventID
+	} else {
+		delete(params, tasks.ParamEventID)
+	}
+	if displayName := getUserDisplayName(wf); displayName != "" {
+		params[tasks.ParamUserDisplayName] = displayName
+	} else {
+		delete(params, tasks.ParamUserDisplayName)
+	}
+}
+
+// executeSimpleActions runs hook actions. wf supplies the run's identity
+// (tenant, account, workflow, principal): hooks are activities like any step and
+// pass the same per-step authorization, so they need the same metadata.
+func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *TemplateContext, wf *model.Workflow) error {
 	logger := workflow.GetLogger(ctx)
 	activityOptions := workflow.GetActivityOptions(ctx)
 	if activityOptions.StartToCloseTimeout == 0 && activityOptions.ScheduleToCloseTimeout == 0 {
@@ -1983,6 +2068,10 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 	if actions == nil || tplCtx == nil {
 		return nil
 	}
+	if wf == nil {
+		return fmt.Errorf("workflow metadata is required to execute hook actions")
+	}
+	eventID := extractEventIDFromInputs(tplCtx.Inputs)
 
 	selector := workflow.NewSelector(ctx)
 	futures := make([]workflow.Future, 0, len(actions))
@@ -1997,17 +2086,9 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 		if params == nil {
 			params = make(map[string]any)
 		}
-		if v, ok := tplCtx.Inputs[tasks.ParamTenantID]; ok {
-			params[tasks.ParamTenantID] = v
-		}
-		if v, ok := tplCtx.Inputs[tasks.ParamAccountID]; ok {
-			params[tasks.ParamAccountID] = v
-		}
-		if v, ok := tplCtx.Inputs[tasks.ParamWorkflowID]; ok {
-			params[tasks.ParamWorkflowID] = v
-		}
-		if eventID := extractEventIDFromInputs(tplCtx.Inputs); eventID != "" {
-			params[tasks.ParamEventID] = eventID
+		setInternalTaskParams(params, wf, eventID)
+		if wf.DryRun {
+			params[tasks.ParamDryRun] = true
 		}
 
 		future := workflow.ExecuteActivity(ctx, action.Type, params)
@@ -2024,6 +2105,13 @@ func executeSimpleActions(ctx workflow.Context, actions []model.Action, tplCtx *
 	for _, f := range futures {
 		var result any
 		if err := f.Get(ctx, &result); err != nil {
+			// A hook's message that wasn't delivered is reported, not a
+			// failure of the task the hook belongs to.
+			var appErr *temporal.ApplicationError
+			if errors.As(err, &appErr) && appErr.Type() == types.ErrTypeNotificationNotDelivered {
+				logger.Warn("Hook message was not delivered", "error", err)
+				continue
+			}
 			logger.Error("Hook activity failed deterministically", "error", err)
 			if finalHookErr == nil {
 				finalHookErr = err

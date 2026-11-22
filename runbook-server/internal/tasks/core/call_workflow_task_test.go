@@ -267,3 +267,19 @@ func TestCallWorkflowResolvesPinnedCalleeVersion(t *testing.T) {
 	}
 	assert.Equal(t, "v1-task", resolved.Definition.Tasks[0].ID)
 }
+
+// A called automation keeps its own tier ceiling; dropping it would let a call
+// from an automation without one run steps the callee itself would refuse.
+func TestCallWorkflowKeepsTheCalleesTierCeiling(t *testing.T) {
+	store := &liveVersionStore{
+		MockWorkflowStore: &testutils.MockWorkflowStore{},
+		draftDef:          model.WorkflowDefinition{Tasks: []model.Task{{ID: "draft-task", Type: "k8s.workload_restart"}}},
+		liveDef:           model.WorkflowDefinition{MaxTier: 1, Tasks: []model.Task{{ID: "live-task", Type: "k8s.workload_restart"}}},
+	}
+	ctx := newTestContext().(*testutils.MockTaskContext)
+	ctx.WfStore = store
+
+	resolved, err := (&CallWorkflowTask{}).ResolveChildWorkflow(ctx, map[string]any{"workflow_name": "child"})
+	assert.NoError(t, err)
+	assert.Equal(t, 1, resolved.Definition.MaxTier)
+}

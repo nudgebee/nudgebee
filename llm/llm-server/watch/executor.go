@@ -2,6 +2,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -40,6 +41,10 @@ func getSecurityContextBuilder() SecurityContextBuilder {
 	defer securityContextBuilderMu.RUnlock()
 	return securityContextBuilder
 }
+
+// ErrOwnerAccessRevoked ends a watch whose owner lost access to its account. The SecurityContextBuilder returns it:
+// a poll runs with its owner's own context, so building that context is the owner check.
+var ErrOwnerAccessRevoked = errors.New("watch: owner no longer has access to this account")
 
 // managerWriteTimeout bounds each metastore write the executor performs
 // (UpdatePollResult / IncFailures / MarkTerminal). RunOnePoll is submitted
@@ -121,9 +126,26 @@ func (e *Executor) RunOnePoll(parent context.Context, w Watch) {
 	}()
 
 	rctx, err := e.buildRequestContext(parent, w)
+	if errors.Is(err, errNoSecurityContextBuilder) {
+		slog.Error("watch.executor: failed to build request context", "watch_id", w.ID.String(), "error", err)
+		return
+	}
 	if err != nil {
-		slog.Error("watch.executor: failed to build request context",
-			"watch_id", w.ID.String(), "error", err)
+		// The poll's context is the owner's own, so building it is also the owner's access check: a revoked owner
+		// ends the watch, and a check that could not run counts as a failed poll. Either way the watch is closed
+		// out under NudgeBee's context limited to its account, since the owner's is not available.
+		fallback, fbErr := accountScopedRequestContext(parent, w)
+		if fbErr != nil {
+			slog.Error("watch.executor: failed to build request context",
+				"watch_id", w.ID.String(), "error", errors.Join(err, fbErr))
+			return
+		}
+		logger := fallback.GetLogger().With(slog.String("watch_id", w.ID.String()))
+		if errors.Is(err, ErrOwnerAccessRevoked) {
+			e.terminate(fallback, logger, w, TerminalUpdate{Status: StatusFailed, ErrMsg: "the person who set up this watch no longer has access to this account"})
+			return
+		}
+		e.recordFailure(fallback, logger, w, fmt.Sprintf("owner access check failed: %v", err), nil, pollPhaseObserve)
 		return
 	}
 	logger := rctx.GetLogger().With(
@@ -143,6 +165,11 @@ func (e *Executor) RunOnePoll(parent context.Context, w Watch) {
 	pollRctx := security.NewRequestContext(pollCtx, rctx.GetSecurityContext(), logger, rctx.GetTracer(), rctx.GetMeter())
 
 	obs, obsErr := src.Observe(pollRctx, w)
+	if errors.Is(obsErr, ErrNotReadOnly) {
+		// Nothing ran, and no later poll would run it either: end the watch now.
+		e.terminate(rctx, logger, w, TerminalUpdate{Status: StatusFailed, ErrMsg: obsErr.Error()})
+		return
+	}
 	if obsErr != nil {
 		e.recordFailure(rctx, logger, w, fmt.Sprintf("observe failed: %v", obsErr), nil, pollPhaseObserve)
 		return
@@ -272,6 +299,13 @@ func (e *Executor) terminate(rctx *security.RequestContext, logger *slog.Logger,
 	}
 	recordTerminalTransition(rctx.GetContext(), status)
 
+	// NudgeBee's own watch (a remediation wait) ends without a chat message: the feature that owns it reads the
+	// terminal row and its agent's next turn is the answer (#42461).
+	if w.IsNudgeBees() {
+		logger.Info("watch.executor: NudgeBee's own watch ended; no summary or chat update", "status", string(status), "origin", *w.Origin)
+		return
+	}
+
 	// Generate the user-facing follow-up via the LLM summarizer (when wired)
 	// so the message in the chat thread reads naturally and references the
 	// original action. Falls back to the raw `summary` (matched-evidence
@@ -336,10 +370,24 @@ func (e *Executor) terminate(rctx *security.RequestContext, logger *slog.Logger,
 // Crucially the conversation_id is NOT injected — polls run in an
 // isolated session so they do not pollute the user's conversation
 // history. Only the terminal notification touches the conversation.
+// errNoSecurityContextBuilder: the watch package was not wired (bootstrap skipped); a poll then bails untouched.
+var errNoSecurityContextBuilder = errors.New("watch: no security context builder registered")
+
+// accountScopedRequestContext is NudgeBee's context limited to the watch's account, for closing out a watch whose
+// owner's context could not be built.
+func accountScopedRequestContext(parent context.Context, w Watch) (*security.RequestContext, error) {
+	sc := security.NewSecurityContextForTenantAccountAdmin(w.TenantID.String(), security.GetSystemUserId(), []string{w.AccountID.String()})
+	if sc == nil {
+		return nil, fmt.Errorf("watch: build account context for tenant %s", w.TenantID.String())
+	}
+	logger := slog.Default().With(slog.String("watch_id", w.ID.String()), slog.String("account_id", w.AccountID.String()))
+	return security.NewRequestContext(parent, sc, logger, otel.GetTracerProvider().Tracer("nudgebee-watch"), nil), nil
+}
+
 func (e *Executor) buildRequestContext(parent context.Context, w Watch) (*security.RequestContext, error) {
 	builder := getSecurityContextBuilder()
 	if builder == nil {
-		return nil, fmt.Errorf("watch: no security context builder registered")
+		return nil, errNoSecurityContextBuilder
 	}
 	sc, err := builder(w)
 	if err != nil {

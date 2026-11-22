@@ -27,6 +27,12 @@ export type RpcRoute = {
   // `users_list_tenants`) and the platform-wide reads every signed-in user gets
   // (e.g. `product_updates_list`) — see the gate in forwardAction (rpcGateway.ts).
   tenantAgnostic: boolean;
+  // actions.yaml `account_enforced: true`. The upstream handler checks every
+  // account it reads or writes against the caller's grant, so the gateway may
+  // admit an account-bound (`scoped:`) grant for it although it is not a
+  // /rpc/query read — see actionHasCustomGrant (rpcGateway.ts). Set it only in
+  // the change that verifies the handler and adds its bound-grant test case.
+  accountEnforced: boolean;
   // Per-action upstream headers from actions.yaml `headers:` block.
   // Each entry maps a header name to an env-var name; the gateway looks up
   // process.env[valueFromEnv] at request time. Used to pick the right
@@ -54,6 +60,7 @@ type ActionsYaml = {
       handler?: string;
       forward_client_headers?: boolean;
       tenant_agnostic?: boolean;
+      account_enforced?: boolean;
       headers?: Array<{ name?: string; value_from_env?: string }>;
     };
     permissions?: Array<{ role?: string }>;
@@ -112,6 +119,7 @@ export function loadRpcRoutes(): Record<string, RpcRoute> {
       forwardClientHeaders: !!action.definition.forward_client_headers,
       allowedRoles,
       tenantAgnostic: !!action.definition.tenant_agnostic,
+      accountEnforced: !!action.definition.account_enforced,
       headers,
       permission: classification ? permissionKey(classification.module, classification.class) : undefined,
       comment: typeof action.comment === 'string' && action.comment.trim() ? action.comment.trim() : undefined,

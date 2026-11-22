@@ -205,7 +205,10 @@ const lbMeta = `{
   "LoadBalancerArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/web/abc123",
   "DNSName": "web-123456.us-east-1.elb.amazonaws.com",
   "TargetGroups": [
-    {"TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/web/def456", "TargetGroupName": "web", "TargetType": "ip", "Port": 8080}
+    {"TargetGroupArn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:targetgroup/web/def456", "TargetGroupName": "web", "TargetType": "ip", "Port": 8080,
+     "TargetHealthDescriptions": [
+       {"Target": {"Id": "10.0.1.23", "Port": 8080}, "TargetHealth": {"State": "healthy"}}
+     ]}
   ]
 }`
 
@@ -233,6 +236,33 @@ func TestTargetGroupsForLB(t *testing.T) {
 
 	if _, hit := store.TargetGroupsForLB("arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/other/zzz"); hit {
 		t.Error("an unknown ARN must miss")
+	}
+}
+
+// TestTargetGroupsForLBCarriesMembership pins the nested membership callers now
+// read in place of a live describe-target-health call. If the store ever stopped
+// round-tripping TargetHealthDescriptions, every load balancer would silently fall
+// back to the CLI and the saving would vanish without a failing test.
+func TestTargetGroupsForLBCarriesMembership(t *testing.T) {
+	store := newTestStore(row(testAccountA, "application_loadbalancer", "web", lbARN, lbMeta))
+
+	groups, hit := store.TargetGroupsForLB(lbARN)
+	if !hit {
+		t.Fatal("expected a hit")
+	}
+
+	var tg struct {
+		TargetHealthDescriptions []struct {
+			Target struct {
+				Id string `json:"Id"`
+			} `json:"Target"`
+		} `json:"TargetHealthDescriptions"`
+	}
+	if err := json.Unmarshal(groups[0], &tg); err != nil {
+		t.Fatalf("stored target group does not decode: %v", err)
+	}
+	if len(tg.TargetHealthDescriptions) != 1 || tg.TargetHealthDescriptions[0].Target.Id != "10.0.1.23" {
+		t.Errorf("stored membership = %+v, want one target 10.0.1.23", tg.TargetHealthDescriptions)
 	}
 }
 

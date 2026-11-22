@@ -6,6 +6,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/jmoiron/sqlx"
+
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/knowledge_graph/core"
@@ -87,60 +89,65 @@ func (d *Detector) Run(reqCtx *security.RequestContext) {
 	reqCtx = security.NewRequestContext(ctx, reqCtx.GetSecurityContext(), reqCtx.GetLogger(), nil, nil)
 	start := time.Now()
 
-	tx, err := d.dbManager.BeginTx()
-	if err != nil {
-		d.logger.Error("kg_detector: failed to begin transaction", "error", err)
-		return
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			database.LogRollback(tx, d.logger)
-		}
-	}()
-
-	if exists, err := marksTableExists(ctx, tx); err != nil || !exists {
-		d.logger.Warn("kg_detector: inventory marks table not available yet, skipping run", "error", err)
-		return
-	}
-	if locked, err := tryLock(ctx, tx); err != nil || !locked {
-		d.logger.Info("kg_detector: skipping run", "reason", errNoLock, "error", err)
-		return
-	}
-
 	scopes, err := d.tenantScopes(reqCtx)
 	if err != nil {
 		d.logger.Error("kg_detector: failed to list tenants", "error", err)
 		return
 	}
+	tenantIDs := sortedKeys(scopes)
 
-	repo := &repository{ctx: ctx, tx: tx}
+	// Each tenant is probed in a short transaction of its own, under that
+	// tenant's detector lock. One transaction for the whole pass sat idle in
+	// transaction across every tenant's probes and publishes, holding read locks
+	// on the inventory tables that a migration then queued behind (#41195).
+	var probedAt map[string]time.Time
+	ready := false
+	_, err = d.dbManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if exists, err := marksTableExists(ctx, tx); err != nil || !exists {
+			return nil, err
+		}
+		ready = true
+		// Visit the tenants whose accounts were probed longest ago first. A run that
+		// hits its time budget leaves the rest with older marks, so the next run
+		// starts with them: every tenant is reached in turn, however many there are.
+		probed, err := (&repository{ctx: ctx, tx: tx}).tenantsProbedAt(tenantIDs)
+		if err != nil {
+			d.logger.Warn("kg_detector: failed to load probe order, using tenant id order", "error", err)
+			return nil, nil
+		}
+		probedAt = probed
+		return nil, nil
+	})
+	if err != nil || !ready {
+		d.logger.Warn("kg_detector: inventory marks table not available yet, skipping run", "error", err)
+		return
+	}
+
 	kgService := core.NewService(reqCtx, d.logger, d.dbManager)
 	stats := runStats{}
-
-	// Visit the tenants whose accounts were probed longest ago first. A run that
-	// hits its time budget leaves the rest with older marks, so the next run
-	// starts with them: every tenant is reached in turn, however many there are.
-	tenantIDs := sortedKeys(scopes)
-	probedAt, err := repo.tenantsProbedAt(tenantIDs)
-	if err != nil {
-		d.logger.Warn("kg_detector: failed to load probe order, using tenant id order", "error", err)
-		probedAt = nil
-	}
 	for _, tenantID := range leastRecentlyProbedFirst(tenantIDs, probedAt) {
 		if ctx.Err() != nil {
 			d.logger.Warn("kg_detector: run timed out, remaining tenants wait for the next run")
 			break
 		}
 		stats.tenants++
-		d.runTenant(ctx, reqCtx, repo, kgService, tenantID, scopes[tenantID], &stats)
+		if _, err := d.dbManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+			locked, err := tryLock(ctx, tx, tenantID)
+			if err != nil {
+				return nil, err
+			}
+			if !locked {
+				d.logger.Info("kg_detector: skipping tenant", "tenant_id", tenantID, "reason", errNoLock)
+				return nil, nil
+			}
+			d.runTenant(ctx, reqCtx, &repository{ctx: ctx, tx: tx}, kgService, tenantID, scopes[tenantID], &stats)
+			return nil, nil
+		}); err != nil {
+			d.logger.Error("kg_detector: failed to probe tenant", "tenant_id", tenantID, "error", err)
+			stats.errors++
+		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		d.logger.Error("kg_detector: failed to commit marks", "error", err)
-		return
-	}
-	committed = true
 	d.logger.Info("kg_detector: run complete",
 		"tenants", stats.tenants,
 		"accounts", stats.accounts,

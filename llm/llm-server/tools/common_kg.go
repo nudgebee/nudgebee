@@ -377,6 +377,60 @@ func accountDisplay(accountId string, nameMap map[string]string) string {
 	return accountId
 }
 
+// kgNodeRoleValues is the closed list of roles a node can act as: what it
+// does, as opposed to its type (what it is). Mirrors NodeRoles in
+// api-server/services/knowledge_graph/core/node_roles.go;
+// TestKGNodeRolesMatchAPIServer keeps the two lists in step.
+var kgNodeRoleValues = []string{
+	"database", "cache", "messagequeue", "search", "objectstorage",
+	"loadbalancer", "proxy", "apigateway", "scheduler", "monitoring", "auth",
+}
+
+func isKGNodeRole(role string) bool {
+	for _, r := range kgNodeRoleValues {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
+func kgNodeRoleValuesAny() []any {
+	out := make([]any, len(kgNodeRoleValues))
+	for i, r := range kgNodeRoleValues {
+		out[i] = r
+	}
+	return out
+}
+
+// kgRoleText renders the role a node acts as, with its engine: "cache (redis)".
+// A value outside the vocabulary (a custom kind's free "core-switch") is not a
+// role and renders as "".
+func kgRoleText(role, engine string) string {
+	if !isKGNodeRole(role) {
+		return ""
+	}
+	if engine != "" {
+		return role + " (" + engine + ")"
+	}
+	return role
+}
+
+// kgRoleBookkeepingKeys record where a node's role came from. They are folded
+// into the node's Role line, so the model reads one role, not three.
+var kgRoleBookkeepingKeys = map[string]bool{"role_source": true, "detected_role": true, "detected_engine": true}
+
+// kgNodeTypeDisplay renders a node's type column: the ontology type, plus a
+// user-declared node's own kind, e.g. "CloudResource (NetworkSwitch)" for a
+// switch declared as a custom kind. Collected nodes keep the bare type, the
+// value node_types filters take.
+func kgNodeTypeDisplay(nodeType, specificType, source string) string {
+	if source != "manual" || specificType == "" || specificType == nodeType {
+		return nodeType
+	}
+	return nodeType + " (" + specificType + ")"
+}
+
 // formatKGSearchResponse formats kg_search_nodes results as a concise markdown
 // table. Node IDs are preserved so the LLM can chain into kg_traverse.
 //
@@ -404,18 +458,21 @@ func formatKGSearchResponse(data map[string]any, accountNames map[string]string)
 	} else {
 		fmt.Fprintf(&b, "Found %d nodes:\n\n", len(nodesRaw))
 	}
-	b.WriteString("| ID | Name | Type | Namespace | Source | Account |\n")
-	b.WriteString("|----|------|------|-----------|--------|---------|\n")
+	// Role is its own column: Type stays the exact value node_types takes.
+	b.WriteString("| ID | Name | Type | Role | Namespace | Source | Account |\n")
+	b.WriteString("|----|------|------|------|-----------|--------|---------|\n")
 
 	for _, n := range nodesRaw {
 		node, ok := n.(map[string]any)
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
+		props, _ := node["properties"].(map[string]any)
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s |\n",
 			stringFromAny(node["id"]),
 			stringFromAny(node["name"]),
-			stringFromAny(node["node_type"]),
+			kgNodeTypeDisplay(stringFromAny(node["node_type"]), stringFromAny(node["specific_type"]), stringFromAny(node["source"])),
+			kgRoleText(stringFromAny(props["role"]), stringFromAny(props["engine"])),
 			stringFromAny(node["namespace"]),
 			stringFromAny(node["source"]),
 			accountDisplay(stringFromAny(node["cloud_account_id"]), accountNames),
@@ -474,7 +531,7 @@ func formatKGTraverseResponse(data map[string]any, appliedExcludeTypes []string,
 		id := stringFromAny(s)
 		if node, ok := nodeByID[id]; ok {
 			seedNames = append(seedNames, fmt.Sprintf("%s [id: %s] (%s)",
-				stringFromAny(node["name"]), id, stringFromAny(node["kind"])))
+				stringFromAny(node["name"]), id, kindWithRole(node)))
 		} else {
 			seedNames = append(seedNames, fmt.Sprintf("[id: %s]", id))
 		}
@@ -549,9 +606,20 @@ func nameKindFor(nodeByID map[string]map[string]any, id string) (name, kind stri
 		return "?", "?"
 	}
 	if node, ok := nodeByID[id]; ok {
-		return stringFromAny(node["name"]), stringFromAny(node["kind"])
+		return stringFromAny(node["name"]), kindWithRole(node)
 	}
 	return "?", "?"
+}
+
+// kindWithRole renders a traversal node's type with the role it acts as:
+// "Workload, acts as cache (redis)". A data dependency then reads as one
+// whether it is an RDS Database or an in-cluster redis.
+func kindWithRole(node map[string]any) string {
+	kind := stringFromAny(node["kind"])
+	if role := kgRoleText(stringFromAny(node["role"]), stringFromAny(node["engine"])); role != "" {
+		return kind + ", acts as " + role
+	}
+	return kind
 }
 
 func stringFromAny(v any) string {
@@ -594,13 +662,52 @@ func formatKGGetNodeResponse(node map[string]any) string {
 	var b strings.Builder
 	writeKGNodeHeader(&b, node, id)
 	writeKGNodeMetadata(&b, node)
+	writeKGNodeRole(&b, node)
 	if writeKGNodeMap(&b, "Labels", node["labels"], stringFromAny) {
 		return b.String()
 	}
-	if writeKGNodeMap(&b, "Properties", node["properties"], formatPropertyValue) {
+	if writeKGNodeMap(&b, "Properties", propertiesWithoutRoleBookkeeping(node["properties"]), formatPropertyValue) {
 		return b.String()
 	}
 	return b.String()
+}
+
+// writeKGNodeRole states the role a node acts as and where it came from: set
+// by a user (which wins), or detected from the workload's runtime protocol.
+func writeKGNodeRole(b *strings.Builder, node map[string]any) {
+	props, _ := node["properties"].(map[string]any)
+	role := kgRoleText(stringFromAny(props["role"]), stringFromAny(props["engine"]))
+	if role == "" {
+		return
+	}
+	if stringFromAny(props["role_source"]) != "user" {
+		fmt.Fprintf(b, kgKVLineFmt, "Role", role+", detected")
+		return
+	}
+	text := role + ", set by a user"
+	if detected := kgRoleText(stringFromAny(props["detected_role"]), stringFromAny(props["detected_engine"])); detected != "" && detected != role {
+		text += "; detected: " + detected
+	}
+	fmt.Fprintf(b, kgKVLineFmt, "Role", text)
+}
+
+// propertiesWithoutRoleBookkeeping drops the keys the Role line already shows:
+// the bookkeeping keys always, and role/engine when they form a vocabulary role.
+// A custom kind's free role (e.g. "core-switch") is not a role and stays.
+func propertiesWithoutRoleBookkeeping(raw any) any {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return raw
+	}
+	roleShown := isKGNodeRole(stringFromAny(m["role"]))
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if kgRoleBookkeepingKeys[k] || (roleShown && (k == "role" || k == "engine")) {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 func writeKGNodeHeader(b *strings.Builder, node map[string]any, id string) {

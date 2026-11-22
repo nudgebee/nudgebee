@@ -30,6 +30,10 @@ interface FilterDropdownProps {
   popoverAlign?: 'left' | 'right';
   /** Icon-only trigger: a 24px square showing just this icon; `label` becomes its aria-label. */
   icon?: React.ReactNode;
+  /** Controlled search text; kept when the panel closes and always shows the search box. */
+  searchValue?: string;
+  /** Fires with the search text as the user types. */
+  onSearchChange?: (search: string) => void;
 }
 
 declare const FilterDropdown: React.FC<FilterDropdownProps>;

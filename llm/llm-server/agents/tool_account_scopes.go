@@ -19,15 +19,17 @@ func init() {
 	)
 	toolcore.DeclareAccountScope(toolcore.AccountScopeIndependent,
 		"loganalysis",
-		"ask_clarification", "github", "gitlab", "prompt_refinement", "search_tools", "tickets",
+		"ask_clarification", "github", "gitlab", "prompt_refinement", "search_tools",
 		"tickets_v2", "visualizer", "websearch",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,
 		"automation", "automation_builder", "remediation",
 	)
-	toolcore.DeclareOriginBound(toolcore.OriginBoundIntegration,
+	// The Datadog agents' execute tools pick the target account's own Datadog
+	// integration (tools/tool_account_scopes.go).
+	toolcore.DeclareAccountScope(toolcore.AccountScopeFollowsTarget,
 		"datadog_containers", "datadog_containers_query", "datadog_events", "datadog_hosts",
-		"datadog_incident", "datadog_log_query", "datadog_logs", "datadog_metrics",
+		"datadog_incident", "datadog_metrics",
 		"datadog_metrics_query", "datadog_orchestrator", "datadog_service", "datadog_software_catalog",
 		"datadog_traces",
 	)

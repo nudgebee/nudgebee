@@ -6,17 +6,130 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"nudgebee/services/common"
 	"nudgebee/services/internal/database/models"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
+
+// triageSourceGroups maps the Source filter's dropdown value (TriageRuleModal.tsx:
+// kubernetes/prometheus/pagerduty/datadog) to the raw values nudgebee writes to
+// events.source for that platform. Before this (NB-40110), a rule's match_source
+// was compared to events.source literally, so only "prometheus" ever matched -
+// events are recorded under vendor/webhook-specific values like
+// "kubernetes_api_server" or "pagerduty_webhook", never the friendly group name.
+// The prometheus group also covers the webhook/legacy sources that carry the
+// same alert (same grouping eventrule.MuteEventSources uses for mute targeting).
+var triageSourceGroups = map[string][]string{
+	"kubernetes": {"kubernetes_api_server"},
+	"prometheus": {"prometheus", "prometheus_alertmanager_webhook", "nudgebee", "prometheus_user"},
+	"pagerduty":  {"pagerduty_webhook"},
+	"datadog":    {"datadog_webhook"},
+	// Pushed CloudWatch alarms were stored as AWS_EventBridge before they were
+	// stored as AWS_CloudWatch_Alarm; a rule or mute written then still covers them.
+	"AWS_EventBridge": {"AWS_EventBridge", "AWS_CloudWatch_Alarm"},
+	// Azure alerts arrive as Azure_Monitor_Alert (collector) or azure_monitor_webhook (integration).
+	"azure_monitor_webhook": {"azure_monitor_webhook", "Azure_Monitor_Alert"},
+}
+
+// triageMatchSources expands a rule's Source filter value into the raw event
+// sources it should match. A value with no known group (e.g. a suppression rule
+// that stores a raw source directly, like "AWS_CloudWatch_Alarm") still matches
+// literally.
+func triageMatchSources(matchSource string) []string {
+	if sources, ok := triageSourceGroups[matchSource]; ok {
+		return sources
+	}
+	return []string{matchSource}
+}
+
+// TriageSource is one selectable Source option for the Create/Edit Triage Rule form. Value is
+// saved to a rule's match_source; Provider scopes it to one platform (empty = cross-platform).
+type TriageSource struct {
+	Label    string `json:"label"`
+	Value    string `json:"value"`
+	Provider string `json:"provider"`
+}
+
+// triageSourceCatalog maps known raw event sources to their friendly, grouped dropdown option. It is
+// the label/grouping overlay for ListTriageSources, and the fallback when there is no account. Values
+// line up with triageMatchSources.
+var triageSourceCatalog = []TriageSource{
+	{Label: "Kubernetes", Value: "kubernetes", Provider: "K8s"},
+	{Label: "Prometheus", Value: "prometheus", Provider: "K8s"},
+	{Label: "AWS CloudWatch & EventBridge", Value: "AWS_EventBridge", Provider: "AWS"},
+	{Label: "GCP Metric Alert", Value: "GCP_Metric_Alert", Provider: "GCP"},
+	{Label: "Azure Monitor", Value: "azure_monitor_webhook", Provider: "Azure"},
+	{Label: "PagerDuty", Value: "pagerduty"},
+	{Label: "Datadog", Value: "datadog"},
+}
+
+func catalogForProvider(provider string) []TriageSource {
+	if provider == "" {
+		return triageSourceCatalog
+	}
+	out := make([]TriageSource, 0, len(triageSourceCatalog))
+	for _, s := range triageSourceCatalog {
+		if s.Provider == "" || strings.EqualFold(s.Provider, provider) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// ListTriageSources builds the Source options from the account's own event sources: each raw source
+// collapses into its curated grouped option, or shows title-cased if uncurated. No accountSources
+// (multi-account / unknown) falls back to the curated catalog for the provider.
+func ListTriageSources(provider string, accountSources []string) []TriageSource {
+	if len(accountSources) == 0 {
+		return catalogForProvider(provider)
+	}
+
+	// Reverse index: each raw events.source -> the curated option that groups/labels it.
+	byRaw := map[string]TriageSource{}
+	for _, s := range triageSourceCatalog {
+		for _, raw := range triageMatchSources(s.Value) {
+			byRaw[raw] = s
+		}
+	}
+
+	out := []TriageSource{}
+	added := map[string]bool{}
+	for _, raw := range accountSources {
+		if raw == "" {
+			continue
+		}
+		opt, known := byRaw[raw]
+		if !known {
+			opt = TriageSource{Label: titleCaseSource(raw), Value: raw}
+		}
+		if added[opt.Value] {
+			continue
+		}
+		added[opt.Value] = true
+		out = append(out, opt)
+	}
+	return out
+}
+
+// titleCaseSource: "Azure_Monitor_Alert" -> "Azure Monitor Alert".
+func titleCaseSource(s string) string {
+	parts := strings.Split(s, "_")
+	for i, p := range parts {
+		if p != "" {
+			parts[i] = strings.ToUpper(p[:1]) + p[1:]
+		}
+	}
+	return strings.Join(parts, " ")
+}
 
 // CheckTriageRules evaluates all matching rules for an event and returns the result
 func CheckTriageRules(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int) (*TriageRuleResult, error) {
@@ -165,12 +278,39 @@ var (
 	triageRulesTTL     = 60 * time.Second
 )
 
-// ClearTriageRulesCache invalidates the entire triage rules cache
-// This should be called whenever rules are created, updated, or deleted
-func ClearTriageRulesCache() {
-	triageRulesCacheMu.Lock()
-	triageRulesCache = make(map[string]triageRulesCacheEntry)
-	triageRulesCacheMu.Unlock()
+func init() {
+	common.OnReplicaBroadcast(common.ChangeTriageRules, common.ReplicaHandler{
+		OnKeys: func(tenantIDs []string) {
+			triageRulesCacheMu.Lock()
+			defer triageRulesCacheMu.Unlock()
+			for key := range triageRulesCache {
+				for _, tenantID := range tenantIDs {
+					if strings.HasPrefix(key, tenantID+":") {
+						delete(triageRulesCache, key)
+						break
+					}
+				}
+			}
+		},
+		OnAll: func() {
+			triageRulesCacheMu.Lock()
+			defer triageRulesCacheMu.Unlock()
+			triageRulesCache = make(map[string]triageRulesCacheEntry)
+		},
+	})
+}
+
+// ClearTriageRulesCache drops the tenant's cached rules on every replica. Call
+// it after rules, mutes, overrides or classifications change. Rules are cached
+// per tenant:account, and a tenant-wide rule applies to all of the tenant's
+// accounts, so the whole tenant is dropped; an empty tenantID (a system rule)
+// drops every tenant.
+func ClearTriageRulesCache(tenantID string) {
+	if tenantID == "" {
+		common.ReplicaBroadcastAll(context.Background(), common.ChangeTriageRules)
+		return
+	}
+	common.ReplicaBroadcast(context.Background(), common.ChangeTriageRules, tenantID)
 }
 
 // LoadMatchingRules loads all enabled rules for the given tenant/account
@@ -380,9 +520,18 @@ func MatchesRuleWithOccurrence(event *models.Event, rule *TriageRule, occurrence
 		}
 	}
 
-	// Check source (exact match)
+	// Check source (event.Source must be one of the raw sources the rule's Source group covers).
+	// Checks the map directly rather than calling triageMatchSources, which would allocate a
+	// throwaway slice for every unmapped source on this per-event hot path.
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		if event.Source == nil || *event.Source != *rule.MatchSource {
+		if event.Source == nil {
+			return false
+		}
+		if sources, ok := triageSourceGroups[*rule.MatchSource]; ok {
+			if !slices.Contains(sources, *event.Source) {
+				return false
+			}
+		} else if *rule.MatchSource != *event.Source {
 			return false
 		}
 	}
@@ -965,13 +1114,47 @@ func validateJSONBField(value *string, fieldName string) error {
 	return nil
 }
 
+// validateRegexField checks that a string pointer, if set, compiles as a regex.
+// Matched against matchesRegex at match time — an invalid pattern there silently
+// never matches rather than erroring, so this is the only point an invalid
+// pattern is ever reported back to the caller.
+func validateRegexField(value *string, fieldName string) error {
+	if value == nil || *value == "" {
+		return nil
+	}
+	if _, err := regexp.Compile(*value); err != nil {
+		return &ValidationError{Message: fmt.Sprintf("%s must be a valid regular expression: %s", fieldName, err.Error())}
+	}
+	return nil
+}
+
+// validateNameField checks that a rule name is present and non-blank. The API
+// handler already enforces this for its own entry point, but entry points that
+// call CreateTriageRule/UpdateTriageRule directly (background jobs, migrations,
+// tests) go through neither handler, so it's enforced here too.
+func validateNameField(value *string) error {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return &ValidationError{Message: "name is required"}
+	}
+	return nil
+}
+
 // CreateTriageRule creates a new triage rule
 func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequest, cloudAccountID, tenantID, userID string) (*TriageRule, error) {
+	if err := validateNameField(req.Name); err != nil {
+		return nil, err
+	}
 	// Validate JSONB fields before insertion
 	if err := validateJSONBField(req.MatchLabels, "match_labels"); err != nil {
 		return nil, err
 	}
 	if err := validateJSONBField(req.ActionValue, "action_value"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchAlertname, "match_alertname"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchService, "match_service"); err != nil {
 		return nil, err
 	}
 
@@ -1030,8 +1213,6 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 		return nil, err
 	}
 
-	ClearTriageRulesCache()
-
 	// Record provenance for a class-level pin (append-only; best-effort — never fail rule creation
 	// on a logging error). Per-event corrections are logged atomically in ClassifyEvent instead.
 	if rule.RuleType == RuleTypePriorityPin {
@@ -1054,7 +1235,7 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 
 	// Invalidate the in-process LoadMatchingRules cache so the new rule is visible to
 	// CheckTriageRules on the very next event without waiting for the TTL refresh.
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 	return rule, nil
 }
 
@@ -1217,8 +1398,8 @@ func PreviewTriageRule(ctx context.Context, db *sqlx.DB, req RulePreviewRequest,
 	}
 
 	if req.MatchSource != nil && *req.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *req.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*req.MatchSource)))
 		argIndex++
 	}
 
@@ -1334,8 +1515,8 @@ func ApplyRuleToExistingEvents(ctx context.Context, db *sqlx.DB, rule *TriageRul
 	}
 
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		query += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		query += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 
@@ -1427,8 +1608,8 @@ func applyScoreAdjustmentToExistingEvents(ctx context.Context, db *sqlx.DB, rule
 	}
 
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 
@@ -1543,8 +1724,8 @@ func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *Tr
 		argIndex++
 	}
 	if rule.MatchSource != nil && *rule.MatchSource != "" {
-		conditions += fmt.Sprintf(" AND source = $%d", argIndex)
-		args = append(args, *rule.MatchSource)
+		conditions += fmt.Sprintf(" AND source = ANY($%d)", argIndex)
+		args = append(args, pq.Array(triageMatchSources(*rule.MatchSource)))
 		argIndex++
 	}
 	if rule.MatchPriority != nil && *rule.MatchPriority != "" {
@@ -1616,11 +1797,20 @@ func applyPriorityPinToExistingEvents(ctx context.Context, db *sqlx.DB, rule *Tr
 
 // UpdateTriageRule updates an existing triage rule
 func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequest, cloudAccountID, tenantID, userID string) (*TriageRule, error) {
+	if err := validateNameField(req.Name); err != nil {
+		return nil, err
+	}
 	// Validate JSONB fields before update
 	if err := validateJSONBField(req.MatchLabels, "match_labels"); err != nil {
 		return nil, err
 	}
 	if err := validateJSONBField(req.ActionValue, "action_value"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchAlertname, "match_alertname"); err != nil {
+		return nil, err
+	}
+	if err := validateRegexField(req.MatchService, "match_service"); err != nil {
 		return nil, err
 	}
 
@@ -1665,8 +1855,9 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		    description = $15,
 		    updated_by = $16,
 		    apply_to_existing = $17,
+		    enabled = COALESCE($18, enabled),
 		    updated_at = NOW()
-		WHERE id = $18 AND account_id = $19 AND is_editable = TRUE
+		WHERE id = $19 AND account_id = $20 AND is_editable = TRUE
 		RETURNING id, tenant_id, account_id, rule_type,
 			match_source, match_alertname, match_namespace, match_service,
 			match_fingerprint, match_labels, match_priority, match_finding_type,
@@ -1706,6 +1897,7 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		req.Description,
 		userID,
 		req.ApplyToExisting,
+		req.Enabled,
 		req.RuleID,
 		cloudAccountID,
 	)
@@ -1713,7 +1905,7 @@ func UpdateTriageRule(ctx context.Context, db *sqlx.DB, req UpdateTriageRuleRequ
 		return nil, fmt.Errorf("failed to update rule: %w", err)
 	}
 
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 	return &updatedRule, nil
 }
 
@@ -1728,7 +1920,7 @@ func DeleteTriageRule(ctx context.Context, db *sqlx.DB, ruleID string, hardDelet
 		`
 		_, err := db.ExecContext(ctx, query, ruleID, cloudAccountID)
 		if err == nil {
-			ClearTriageRulesCache()
+			ClearTriageRulesCache(tenantID)
 		}
 		return err
 	}
@@ -1744,7 +1936,7 @@ func DeleteTriageRule(ctx context.Context, db *sqlx.DB, ruleID string, hardDelet
 	`
 	_, err := db.ExecContext(ctx, query, ruleID, cloudAccountID)
 	if err == nil {
-		ClearTriageRulesCache()
+		ClearTriageRulesCache(tenantID)
 	}
 	return err
 }
@@ -1798,7 +1990,7 @@ func ToggleSystemRuleOverride(ctx context.Context, db *sqlx.DB, req ToggleSystem
 		"disabled", req.Disabled,
 	)
 
-	ClearTriageRulesCache()
+	ClearTriageRulesCache(tenantID)
 
 	return &ToggleSystemRuleOverrideResponse{
 		Success:      true,

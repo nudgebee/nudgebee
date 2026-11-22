@@ -49,19 +49,23 @@ class ResizeObserver {
 
 global.ResizeObserver = ResizeObserver;
 
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: jest.fn().mockImplementation((query) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: jest.fn(),
-    removeListener: jest.fn(),
-    addEventListener: jest.fn(),
-    removeEventListener: jest.fn(),
-    dispatchEvent: jest.fn(),
-  })),
-});
+// window and Element exist only under jsdom; API-route tests that run under
+// `@jest-environment node` skip these DOM stubs.
+if (typeof window !== 'undefined') {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: jest.fn().mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: jest.fn(),
+      removeListener: jest.fn(),
+      addEventListener: jest.fn(),
+      removeEventListener: jest.fn(),
+      dispatchEvent: jest.fn(),
+    })),
+  });
+}
 
 global.fetch = jest.fn(() =>
   Promise.resolve({
@@ -74,4 +78,6 @@ global.fetch = jest.fn(() =>
 // jsdom doesn't implement layout, so scrollIntoView is left unimplemented —
 // stub it so components that call it (e.g. scrolling a keyboard-highlighted
 // row into view) don't throw in tests.
-Element.prototype.scrollIntoView = jest.fn();
+if (typeof Element !== 'undefined') {
+  Element.prototype.scrollIntoView = jest.fn();
+}

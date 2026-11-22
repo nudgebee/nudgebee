@@ -22,6 +22,7 @@ const (
 	DiscordConfigTeamName           = "team_name"
 	DiscordConfigDefaultChannelId   = "default_channel_id"
 	DiscordConfigDefaultChannelName = "default_channel_name"
+	DiscordConfigThreadRepeats      = "thread_repeats"
 )
 
 // Discord connects a Discord bot (one per tenant, code-enforced at install in
@@ -57,6 +58,9 @@ func (Discord) ConfigSchema() core.IntegrationSchema {
 			DiscordConfigTeamName:           {Type: core.ToolSchemaTypeString, Description: "Discord bot display name", Hidden: true},
 			DiscordConfigDefaultChannelId:   {Type: core.ToolSchemaTypeString, Description: "Default Discord channel ID for notifications"},
 			DiscordConfigDefaultChannelName: {Type: core.ToolSchemaTypeString, Description: "Cached display name of the default Discord channel", Hidden: true},
+			// No Default: applySchemaDefaults would write it back on every save that
+			// omits it, undoing a stored "false". Absent means threading stays on.
+			DiscordConfigThreadRepeats: {Type: core.ToolSchemaTypeBoolean, Description: "Reply to repeat alerts in the original thread", Hidden: true},
 		},
 	}
 }

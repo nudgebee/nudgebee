@@ -25,7 +25,6 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 )
 
@@ -59,12 +58,13 @@ func Reconcile(ctx context.Context, logger *slog.Logger) error {
 
 	// cloud_accounts.created_by/updated_by are NOT NULL FKs to users(id), so the
 	// account needs an owner. Any member of the tenant satisfies the constraint;
-	// the oldest is the closest thing to "whoever set this up".
+	// the oldest person is the closest thing to "whoever set this up" (a bee
+	// account never sets anything up).
 	var userID string
 	err = dbms.Db.QueryRowContext(ctx, `
 		SELECT u.id::text FROM users u
 		JOIN tenant_users tu ON tu."user" = u.id
-		WHERE tu.tenant = $1
+		WHERE tu.tenant = $1 AND u.kind = 'person'
 		ORDER BY u.created_at LIMIT 1`, tenantID).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		logger.Info("local agent: tenant has no users yet, deferring registration to first login", "tenant", tenantID)
@@ -235,12 +235,6 @@ func reconcile(ctx context.Context, logger *slog.Logger, dbms *database.Database
 		return fmt.Errorf("local agent: failed to commit: %w", err)
 	}
 	committed = true
-
-	if created {
-		if err := llm.AttachTenantDefaultLLMProvider(ctx, dbms, tenantID, accountID); err != nil {
-			logger.Error("local agent: registered, but failed to attach the default LLM provider", "error", err, "account", accountID, "tenant", tenantID)
-		}
-	}
 
 	// The security context caches the tenant's account ids in Redis for 30
 	// minutes, and Redis outlives a services-server restart. Without this the

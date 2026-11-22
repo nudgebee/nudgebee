@@ -1,7 +1,10 @@
 package ownership
 
 import (
+	"context"
 	"testing"
+
+	"nudgebee/services/security"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -336,5 +339,89 @@ func TestResolveCloudResource(t *testing.T) {
 		f := fakeDeps{cloudRes: map[string]*cloudResourceMeta{id: activeEc2()}}
 		got := resolveOne(f.deps(), ResourceTypeCloudResource, id)
 		assert.False(t, got.Found)
+	})
+}
+
+// NoActiveResource is what lets a caller tell "an owner assigned here would stay
+// hidden" from "nobody owns this yet". Both are found=false, and a UI that could not
+// tell them apart offered an assign that saved and changed nothing.
+func TestResolveOne_NoActiveResource(t *testing.T) {
+	live := fakeDeps{
+		workloads: map[string]*workloadMeta{"wl1": activeApiWorkload()},
+		cloudRes:  map[string]*cloudResourceMeta{"cr1": {Account: "acct1", Type: "ec2"}},
+		activeNs:  map[string]bool{"acct1/payments": true},
+	}
+
+	t.Run("flagged when nothing active has the key", func(t *testing.T) {
+		for _, c := range []struct{ resType, key string }{
+			{ResourceTypeWorkload, "gone"},
+			{ResourceTypeCloudResource, "gone"},
+			{ResourceTypeNamespace, "acct1/gone"},
+		} {
+			got := resolveOne(live.deps(), c.resType, c.key)
+			assert.False(t, got.Found, c.resType)
+			assert.True(t, got.NoActiveResource, c.resType)
+		}
+	})
+
+	t.Run("not flagged for an active resource nobody owns", func(t *testing.T) {
+		for _, c := range []struct{ resType, key string }{
+			{ResourceTypeWorkload, "wl1"},
+			{ResourceTypeCloudResource, "cr1"},
+			{ResourceTypeNamespace, "acct1/payments"},
+		} {
+			got := resolveOne(live.deps(), c.resType, c.key)
+			assert.False(t, got.Found, c.resType)
+			assert.False(t, got.NoActiveResource, c.resType)
+		}
+	})
+
+	t.Run("flagged by type: a live cloud resource is not an active workload", func(t *testing.T) {
+		// An event on a k8s account can carry the id of a node, which is a cloud
+		// resource row and not a workload. Asked for as a workload it has no owner to
+		// find, and an owner assigned to it as a workload would never show.
+		got := resolveOne(live.deps(), ResourceTypeWorkload, "cr1")
+		assert.True(t, got.NoActiveResource)
+	})
+
+	t.Run("an owner stored on a gone resource stays hidden, and is flagged", func(t *testing.T) {
+		f := fakeDeps{owners: map[string]*ResourceOwnerRow{ownerKey(ResourceTypeWorkload, "gone"): ownerRow(OwnerTypeUser, "u1")}}
+		got := resolveOne(f.deps(), ResourceTypeWorkload, "gone")
+		assert.False(t, got.Found)
+		assert.True(t, got.NoActiveResource)
+	})
+
+	t.Run("never flagged for types with no existence check", func(t *testing.T) {
+		assert.False(t, resolveOne(fakeDeps{}.deps(), ResourceTypeCloudAccount, "acct1").NoActiveResource)
+		assert.False(t, resolveOne(fakeDeps{}.deps(), ResourceTypeService, "svc1").NoActiveResource)
+	})
+}
+
+// A caller who may not assign owners is told only what it was told before.
+func TestHideResourceState(t *testing.T) {
+	results := []OwnerResult{
+		{ResourceType: ResourceTypeWorkload, ResourceKey: "gone", NoActiveResource: true},
+		{ResourceType: ResourceTypeWorkload, ResourceKey: "wl1", Found: true, OwnerType: OwnerTypeUser, OwnerId: "u1"},
+	}
+	hideResourceState(results)
+	assert.False(t, results[0].NoActiveResource)
+	assert.Equal(t, OwnerResult{ResourceType: ResourceTypeWorkload, ResourceKey: "wl1", Found: true, OwnerType: OwnerTypeUser, OwnerId: "u1"}, results[1])
+}
+
+// Reads need only a tenant, so "is this key a live resource" must not reach a caller
+// who could not act on it: that would let any user probe for resources in accounts
+// they cannot see. A tenant admin context needs a database to build, so what is
+// pinned here is the direction that matters — who is NOT told.
+func TestCanSeeResourceState_OnlyThoseWhoMayAssign(t *testing.T) {
+	asCaller := func(sc *security.SecurityContext) *security.RequestContext {
+		return security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+	}
+
+	t.Run("a tenant user with no admin role is not told", func(t *testing.T) {
+		assert.False(t, canSeeResourceState(asCaller(security.NewSecurityContextForAuditRelay("tenant-1", "user-1"))))
+	})
+
+	t.Run("a super admin outside any tenant is not told", func(t *testing.T) {
+		assert.False(t, canSeeResourceState(asCaller(security.NewSecurityContextForSuperAdmin())))
 	})
 }

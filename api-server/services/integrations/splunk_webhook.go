@@ -30,6 +30,26 @@ func (m SplunkWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels ProcessEventWebook builds. Update it with the parser.
+func (m SplunkWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "A fixed set of fields from the alert and its first result row.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "search_name", Source: "search_name"},
+			{Label: "app", Source: "app"},
+			{Label: "owner", Source: "owner"},
+			{Label: "host", Source: "result.host"},
+			{Label: "source", Source: "result.source"},
+			{Label: "index", Source: "result.index"},
+			{Label: "sourcetype", Source: "result.sourcetype"},
+		},
+		Notes: []string{
+			"Other columns of the search result are not labels.",
+			"When the search returns several rows, the first row is used.",
+		},
+	}
+}
+
 func (m SplunkWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

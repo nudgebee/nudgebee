@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
@@ -15,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 )
@@ -34,12 +37,13 @@ func mockMetastore(t *testing.T) (*sqlx.DB, sqlmock.Sqlmock) {
 }
 
 // expectToolQuery expects one tool query as sqlExecuteQuery runs it: prepared
-// inside a read-only transaction that sets its timeout and work_mem, rolled
-// back after.
+// inside a read-only transaction that sets its timeout and work_mem and
+// switches to the scoped role, rolled back after.
 func expectToolQuery(mock sqlmock.Sqlmock, sqlRegex string) *sqlmock.ExpectedQuery {
 	mock.ExpectBegin()
 	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(`SET LOCAL work_mem`).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectScope(mock, true)
 	query := mock.ExpectPrepare(sqlRegex).WillBeClosed().ExpectQuery()
 	mock.ExpectRollback()
 	return query
@@ -51,95 +55,135 @@ func TestBuildLimitedQuery(t *testing.T) {
 		query    string
 		limit    int
 		expected string
+		rowCap   int
 	}{
 		{
 			name:     "Plain SELECT gets subquery limit wrapping",
 			query:    "select * from events where status = 'error'",
 			limit:    100,
-			expected: "select * from (select * from events where status = 'error') as ql limit 100;",
+			expected: "select * from (select * from events where status = 'error') as ql limit 101;",
+			rowCap:   100,
 		},
 		{
 			name:     "DISTINCT query gets subquery limit wrapping",
 			query:    "select distinct service_name from events",
 			limit:    100,
-			expected: "select * from (select distinct service_name from events) as ql limit 100;",
+			expected: "select * from (select distinct service_name from events) as ql limit 101;",
+			rowCap:   100,
 		},
 		{
 			name:     "GROUP BY query gets subquery limit wrapping",
 			query:    "select service_name, count(*) from events group by service_name",
 			limit:    100,
-			expected: "select * from (select service_name, count(*) from events group by service_name) as ql limit 100;",
+			expected: "select * from (select service_name, count(*) from events group by service_name) as ql limit 101;",
+			rowCap:   100,
 		},
 		{
-			name:     "Query with existing LIMIT is not re-wrapped",
+			name:     "Query with its own LIMIT is capped at the hard maximum",
 			query:    "select * from events limit 10",
 			limit:    100,
-			expected: "select * from events limit 10;",
+			expected: "select * from (select * from events limit 10) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
 		},
 		{
-			name:     "Query with existing LIMIT and semicolon is unchanged",
-			query:    "select * from events limit 10;",
-			limit:    100,
-			expected: "select * from events limit 10;",
+			name:     "A large LIMIT and a semicolon still stop at the hard maximum",
+			query:    "select * from events order by starts_at desc limit 100000 offset 200;",
+			limit:    10,
+			expected: "select * from (select * from events order by starts_at desc limit 100000 offset 200) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
+		},
+		{
+			name:     "A tool limit above the hard maximum is lowered to it",
+			query:    "select * from events",
+			limit:    5000,
+			expected: "select * from (select * from events) as ql limit 101;",
+			rowCap:   sqlToolMaxRows,
+		},
+		{
+			name:     "A non-positive limit falls back to 5 rows",
+			query:    "select * from events",
+			limit:    0,
+			expected: "select * from (select * from events) as ql limit 6;",
+			rowCap:   5,
 		},
 		{
 			name:     "LIMIT only inside a single-line comment is ignored",
 			query:    "select * from events -- LIMIT 5\nwhere status = 'error'",
 			limit:    100,
-			expected: "select * from (select * from events -- LIMIT 5\nwhere status = 'error') as ql limit 100;",
+			expected: "select * from (select * from events -- LIMIT 5\nwhere status = 'error') as ql limit 101;",
+			rowCap:   100,
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result := buildLimitedQuery(tc.query, tc.limit)
+			result, rowCap := buildLimitedQuery(tc.query, tc.limit)
 			assert.Equal(t, tc.expected, result)
+			assert.Equal(t, tc.rowCap, rowCap)
 		})
 	}
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_InvalidUUID(t *testing.T) {
-	query := "SELECT * FROM recommendation_view WHERE severity = 'high'"
-	_, err := SqlUpdateQueryWithAccountIdFilter(nil, query, "not-a-uuid", "recommendation_view")
-	assert.Error(t, err, "Invalid UUID should return an error")
-	assert.Contains(t, err.Error(), "invalid account_id format")
+func TestSqlBindTable_InvalidUUID(t *testing.T) {
+	_, _, err := sqlBindTable("SELECT * FROM recommendation_view", "not-a-uuid", "recommendation_view", "VIEW")
+	assert.Error(t, err)
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_ValidUUID(t *testing.T) {
-	query := "SELECT * FROM recommendation_view WHERE severity = 'high'"
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "recommendation_view")
-	assert.NoError(t, err)
-	assert.Contains(t, result, validUUID, "Valid UUID should be included in filtered query")
-	assert.Contains(t, result, "cloud_account_id", "Should filter by cloud_account_id")
+func TestSqlBindTable_FiltersViewsByAccount(t *testing.T) {
+	withScopedRole(t, false)
+	q, src, err := sqlBindTable("SELECT id FROM recommendation_view WHERE status = 'Open'", "550e8400-e29b-41d4-a716-446655440000", "recommendation_view", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT id FROM "+sqlTablePlaceholder+" WHERE status = 'Open'", q)
+	assert.Equal(t, "(select * from (VIEW) as tv where cloud_account_id = '550e8400-e29b-41d4-a716-446655440000') as recommendation_view", src)
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_MultipleTableReferences(t *testing.T) {
-	// Self-join: every reference to the table must be wrapped with the tenant
-	// filter, otherwise a multi-table query could bypass tenant isolation.
-	query := "SELECT a.id FROM recommendation_view a JOIN recommendation_view b ON a.id = b.parent_id"
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "recommendation_view")
-	assert.NoError(t, err)
-	// Both occurrences should be replaced and aliases must be unique.
-	assert.Equal(t, 2, strings.Count(result, "cloud_account_id = '"+validUUID+"'"),
-		"both table occurrences must be wrapped with the tenant filter")
-	assert.Contains(t, result, ") q0")
-	assert.Contains(t, result, ") q1")
+// events and anomaly views filter by account themselves.
+func TestSqlBindTable_EventsAndAnomalyUseTheViewAsIs(t *testing.T) {
+	withScopedRole(t, false)
+	for _, table := range []string{"events", "anomaly"} {
+		_, src, err := sqlBindTable("SELECT * FROM "+table, "550e8400-e29b-41d4-a716-446655440000", table, "VIEW")
+		require.NoError(t, err)
+		assert.Equal(t, "(VIEW) as "+table, src)
+	}
 }
 
-func TestSqlUpdateQueryWithAccountIdFilter_SkipsEventsAndAnomaly(t *testing.T) {
-	validUUID := "550e8400-e29b-41d4-a716-446655440000"
+// Only the FROM item is replaced: a literal or a column naming the table is
+// left alone, and the view keeps the table's name so those still resolve.
+func TestSqlBindTable_ReplacesOnlyTheFromItem(t *testing.T) {
+	q, _, err := sqlBindTable("SELECT events.id, row_to_json(events) FROM events WHERE subject_name ILIKE '%payflow-events%'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT events.id, row_to_json(events) FROM "+sqlTablePlaceholder+" WHERE subject_name ILIKE '%payflow-events%'", q)
+}
 
-	query := "SELECT * FROM events WHERE severity = 'high'"
-	result, err := SqlUpdateQueryWithAccountIdFilter(nil, query, validUUID, "events")
-	assert.NoError(t, err)
-	assert.Equal(t, query, result, "events table should skip account filter")
+// A "from" inside a literal before the real FROM is not taken for the keyword.
+func TestSqlBindTable_IgnoresFromInsideLiterals(t *testing.T) {
+	withScopedRole(t, false)
+	q, src, err := sqlBindTable("SELECT 'event from system' AS src, id FROM events WHERE title = 'x where y'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT 'event from system' AS src, id FROM "+sqlTablePlaceholder+" WHERE title = 'x where y'", q)
+	assert.Equal(t, "(VIEW) as events", src)
+}
 
-	query2 := "SELECT * FROM anomaly WHERE severity = 'high'"
-	result2, err := SqlUpdateQueryWithAccountIdFilter(nil, query2, validUUID, "anomaly")
-	assert.NoError(t, err)
-	assert.Equal(t, query2, result2, "anomaly table should skip account filter")
+func TestSqlBindTable_KeepsUserAlias(t *testing.T) {
+	withScopedRole(t, false)
+	q, src, err := sqlBindTable("select e.id from Events e where e.priority = 'HIGH'", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "select e.id from "+sqlTablePlaceholder+" e where e.priority = 'HIGH'", q)
+	assert.Equal(t, "(VIEW)", src)
+}
+
+// With the scoped role on, the view sits behind OFFSET 0, so the model's WHERE
+// stays above it and never runs on rows the views' account filter drops.
+func TestSqlBindTable_FencesTheViewWhenScoped(t *testing.T) {
+	withScopedRole(t, true)
+	q, src, err := sqlBindTable("SELECT id FROM recommendation_view WHERE status = 'Open'", "550e8400-e29b-41d4-a716-446655440000", "recommendation_view", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "SELECT id FROM "+sqlTablePlaceholder+" WHERE status = 'Open'", q)
+	assert.Equal(t, "(select * from (select * from (VIEW) as tv where cloud_account_id = '550e8400-e29b-41d4-a716-446655440000') as tool_view offset 0) as recommendation_view", src)
+
+	_, src, err = sqlBindTable("select e.id from events e", "550e8400-e29b-41d4-a716-446655440000", "events", "VIEW")
+	require.NoError(t, err)
+	assert.Equal(t, "(select * from (VIEW) as tool_view offset 0)", src)
 }
 
 func TestSqlValidateReadOnly(t *testing.T) {
@@ -249,20 +293,22 @@ func TestSqlValidateReadOnly(t *testing.T) {
 			query:        "SELECT * FROM users",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: query only events",
 		},
 		{
+			// A join reads a second table, even when the allowed one comes first (#39880).
 			name:         "SELECT from allowed table with join (allowed table first)",
 			query:        "SELECT e.*, u.name FROM events e JOIN users u ON e.user_id = u.id",
 			allowedTable: "events",
-			expectError:  false,
+			expectError:  true,
+			errorMsg:     "sql: query only events; JOIN, UNION, WITH, TABLE and LATERAL are not allowed (write timestamp with time zone as timestamptz)",
 		},
 		{
-			name:         "SELECT from allowed table with join (allowed table second, not caught)",
+			name:         "SELECT from allowed table with join (allowed table second)",
 			query:        "SELECT u.name, e.* FROM users u JOIN events e ON e.user_id = u.id",
 			allowedTable: "events",
-			expectError:  true, // This should ideally be caught if strict table checking is desired for all parts
-			errorMsg:     "sql: not allowed",
+			expectError:  true,
+			errorMsg:     "sql: query only events; JOIN, UNION, WITH, TABLE and LATERAL are not allowed (write timestamp with time zone as timestamptz)",
 		},
 		{
 			name:         "DELETE from allowed table (should be caught by DML check first)",
@@ -278,24 +324,26 @@ func TestSqlValidateReadOnly(t *testing.T) {
 			expectError:  false,
 		},
 		{
-			name:         "SELECT from allowed table with schema prefix (not supported by current check)",
+			// Never ran: the view substitution produced "public.(view)".
+			name:         "SELECT from allowed table with schema prefix",
 			query:        "SELECT * FROM public.events WHERE id = 1",
-			allowedTable: "events", // The current logic correctly handles "public.events"
-			expectError:  false,    // Expect no error as 'events' is the table after schema
+			allowedTable: "events",
+			expectError:  true,
+			errorMsg:     "sql: query only events",
 		},
 		{
 			name:         "SELECT from allowed table, but table name is a substring of another",
 			query:        "SELECT * FROM allevents WHERE id = 1",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: query only events",
 		},
 		{
 			name:         "SELECT from allowed table, query has table name in comments",
 			query:        "SELECT * -- from events \n FROM real_table WHERE id = 1",
 			allowedTable: "events",
 			expectError:  true,
-			errorMsg:     "sql: not allowed",
+			errorMsg:     "sql: comments and quoted names are not allowed",
 		},
 		{
 			name:         "Valid SELECT query with mixed case table name and FROM keyword",
@@ -396,10 +444,10 @@ func TestSqlExecuteQueryCapsOnTheCallersSQL(t *testing.T) {
 	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
 
 	view := "SELECT e.id FROM events e WHERE e.id = (SELECT id FROM events LIMIT 1)"
-	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as tv\) as ql limit 10;$`).
+	expectToolQuery(mock, `^select \* from \(SELECT id FROM \(.*LIMIT 1.*\) as events\) as ql limit 11;$`).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	_, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)
+	_, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", view, 0)
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
@@ -412,10 +460,67 @@ func TestSqlExecuteQueryRunsReadOnlyWithTimeoutAndWorkMem(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL statement_timeout = 120000")).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("SET LOCAL work_mem = '32MB'")).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectScope(mock, true)
 	mock.ExpectPrepare("select").WillBeClosed().ExpectQuery().WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("evt-1"))
 	mock.ExpectRollback()
 
-	data, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
+	data, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
+	require.NoError(t, err)
+	assert.Len(t, data, 1)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// expectScope expects the switch to the scoped role; available reports whether
+// the database has the role (one row) or not (none).
+func expectScope(mock sqlmock.Sqlmock, available bool) {
+	rows := sqlmock.NewRows([]string{"account", "search_path", "role"})
+	if available {
+		rows.AddRow("550e8400-e29b-41d4-a716-446655440000", sqlToolSchema, sqlToolRole)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(sqlScopeQuery)).WillReturnRows(rows)
+}
+
+func withScopedRole(t *testing.T, enabled bool) {
+	prev := config.Config.LlmServerAgentSqlScopedRole
+	config.Config.LlmServerAgentSqlScopedRole = enabled
+	t.Cleanup(func() { config.Config.LlmServerAgentSqlScopedRole = prev })
+}
+
+// Without the role (V1112 skipped for lack of CREATEROLE) the query is refused
+// and never sent: it must not fall back to llm-server's own database user.
+func TestSqlExecuteQueryRefusesWhenScopedRoleMissing(t *testing.T) {
+	withScopedRole(t, true)
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET LOCAL work_mem`).WillReturnResult(sqlmock.NewResult(0, 0))
+	expectScope(mock, false)
+	mock.ExpectRollback()
+
+	data, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
+	require.ErrorIs(t, err, errSqlScopedRoleUnavailable)
+	assert.Nil(t, data)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// Switched off explicitly, the role is not looked up and the query runs as
+// llm-server's own user: the only way to run without the role.
+func TestSqlExecuteQueryScopedRoleSwitchedOff(t *testing.T) {
+	withScopedRole(t, false)
+	db, mock := mockMetastore(t)
+	defer func() { _ = db.Close() }()
+	ctx := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`SET LOCAL work_mem`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectPrepare("select").WillBeClosed().ExpectQuery().WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("evt-1"))
+	mock.ExpectRollback()
+
+	data, _, err := sqlExecuteQuery(ctx, "SELECT id FROM events", "550e8400-e29b-41d4-a716-446655440000", "events", "", 0)
 	require.NoError(t, err)
 	assert.Len(t, data, 1)
 	assert.NoError(t, mock.ExpectationsWereMet())
@@ -455,4 +560,107 @@ func TestSqlToolCallTimeoutIsAnActionableError(t *testing.T) {
 		assert.NotContains(t, err.Error(), "did not finish")
 		assert.NoError(t, mock.ExpectationsWereMet())
 	})
+}
+
+// A result the row cap or the size budget cut says so, and names the OFFSET
+// for the next page; one that fit stays a plain array (#40194).
+func TestSqlToolCallDisclosesRowCap(t *testing.T) {
+	// Each subtest gets its own mock: a cut cancels its query, and the
+	// connection is released asynchronously after that.
+	newMock := func(t *testing.T) sqlmock.Sqlmock {
+		db, mock := mockMetastore(t)
+		t.Cleanup(func() {
+			// database/sql rolls a cancelled transaction back from its own goroutine.
+			assert.Eventually(t, func() bool { return mock.ExpectationsWereMet() == nil }, time.Second, 5*time.Millisecond)
+			_ = db.Close()
+		})
+		return mock
+	}
+	nbCtx := core.NbToolContext{
+		AccountId: "550e8400-e29b-41d4-a716-446655440000",
+		Ctx:       security.NewRequestContext(context.Background(), nil, nil, nil, nil),
+	}
+	rows := func(n int, value string) *sqlmock.Rows {
+		r := sqlmock.NewRows([]string{"id"})
+		for i := range n {
+			r.AddRow(fmt.Sprintf("evt-%d%s", i, value))
+		}
+		return r
+	}
+	type cutResult struct {
+		Rows     []map[string]any `json:"rows"`
+		Returned int              `json:"returned"`
+		HasMore  bool             `json:"has_more"`
+		Note     string           `json:"note"`
+	}
+	heavy := strings.Repeat("x", 3<<20) // the second row passes the 4 MB budget
+
+	for _, tc := range []struct {
+		name, query, match  string
+		limit, served, want int
+		value               string
+	}{
+		{"tool cap, no LIMIT", "SELECT id FROM events", `as ql limit 3;$`, 2, 3, 2, ""},
+		{"hard max under a large model LIMIT", "SELECT id FROM events ORDER BY id LIMIT 5000", `LIMIT 5000\) as ql limit 101;$`, 10, 101, sqlToolMaxRows, ""},
+		{"size budget", "SELECT id FROM events LIMIT 10", `as ql limit 101;$`, 10, 4, 1, heavy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expectToolQuery(newMock(t), tc.match).WillReturnRows(rows(tc.served, tc.value))
+			resp, data, err := sqlToolCall(nbCtx, tc.query, "events", "", tc.limit, nil)
+			require.NoError(t, err)
+			assert.Len(t, data, tc.want)
+			var got cutResult
+			require.NoError(t, json.Unmarshal([]byte(resp.Data), &got))
+			assert.Len(t, got.Rows, tc.want)
+			assert.Equal(t, tc.want, got.Returned)
+			assert.True(t, got.HasMore)
+			assert.Contains(t, got.Note, "COUNT(*)")
+			assert.Contains(t, got.Note, fmt.Sprintf("OFFSET = your current OFFSET (0 if none) + %d", tc.want))
+			assert.Contains(t, got.Note, "unique column")
+		})
+	}
+
+	for _, tc := range []struct {
+		name, query, match string
+		n                  int
+	}{
+		{"fit", "SELECT id FROM events", `as ql limit 3;$`, 2},
+		{"own limit", "SELECT id FROM events LIMIT 5", `LIMIT 5\) as ql limit 101;$`, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			expectToolQuery(newMock(t), tc.match).WillReturnRows(rows(tc.n, ""))
+			resp, _, err := sqlToolCall(nbCtx, tc.query, "events", "", 2, nil)
+			require.NoError(t, err)
+			var parsed []map[string]any
+			require.NoError(t, json.Unmarshal([]byte(resp.Data), &parsed))
+			assert.Len(t, parsed, tc.n)
+		})
+	}
+}
+
+// The views behind the scoped role are plain views (V1112), so Postgres may run
+// a tool view's conditions on another account's rows before the account filter.
+// A cast of a column value there fails with that value in the error, which the
+// model reads. So no tool view casts a column to a non-text type, except the
+// output columns listed here, which are computed only on rows already filtered.
+var sqlToolViewReviewedCasts = map[string]bool{
+	"r.estimated_savings::numeric":                                                    true,
+	"(r.finops_score_breakdown -> 'impact_summary' ->> 'dependent_count')::int":       true,
+	"(r.finops_score_breakdown -> 'impact_summary' ->> 'production_dependents')::int": true,
+}
+
+var (
+	sqlColumnCast = regexp.MustCompile(`(?i)((?:\([^()']*(?:'[^']*'[^()']*)*\))|[a-z_][a-z0-9_\.]*)\s*::\s*(int|integer|bigint|smallint|numeric|decimal|float|real|double precision|uuid|timestamptz|timestamp|date|time|interval|jsonb|json|inet|bool|boolean)\b`)
+	sqlCastCall   = regexp.MustCompile(`(?i)\bcast\s*\(\s*([^()]+?)\s+as\s+(int|integer|bigint|smallint|numeric|decimal|float|real|double precision|uuid|timestamptz|timestamp|date|time|interval|jsonb|json|inet|bool|boolean)\s*\)`)
+)
+
+func TestSqlToolViewsCastNoColumnValues(t *testing.T) {
+	for _, tc := range scopedToolViewCases("550e8400-e29b-41d4-a716-446655440000") {
+		for _, re := range []*regexp.Regexp{sqlColumnCast, sqlCastCall} {
+			for _, m := range re.FindAllStringSubmatch(tc.view, -1) {
+				expr := strings.Join(strings.Fields(m[0]), " ")
+				assert.True(t, sqlToolViewReviewedCasts[expr], "%s casts a column value: %q; a failing cast would show another account's value", tc.name, expr)
+			}
+		}
+	}
 }

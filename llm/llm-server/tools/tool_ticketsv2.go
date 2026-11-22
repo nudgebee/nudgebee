@@ -26,6 +26,8 @@ func init() {
 	core.RegisterNBToolFactory(TicketMasterToolNameV2, func(accountId string) (core.NBTool, error) {
 		return TicketMasterV2{}, nil
 	})
+	// The retired v1 tool's name, kept so stored history and configs resolve.
+	core.RegisterNBToolAlias("ticket_master", TicketMasterToolNameV2)
 }
 
 const TicketMasterToolNameV2 = "ticket_master_v2"

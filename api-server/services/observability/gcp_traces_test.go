@@ -71,25 +71,9 @@ func TestExtractTraceStringFilterIgnoresNegatedClause(t *testing.T) {
 	}
 }
 
-func TestPushableAsServiceName(t *testing.T) {
-	tests := []struct {
-		workload string
-		want     bool
-	}{
-		{"cartservice", true},
-		{"", false},
-		{alertingInstance, false}, // Cloud SQL instance id — colon breaks LABEL:VALUE
-	}
-	for _, tt := range tests {
-		if got := pushableAsServiceName(tt.workload); got != tt.want {
-			t.Errorf("pushableAsServiceName(%q) = %v, want %v", tt.workload, got, tt.want)
-		}
-	}
-}
-
 // The reported defect: a slow-query incident on one instance carried another instance's
-// queries as evidence, because the unpushable filter left the result set project-wide.
-func TestScopeUnpushedWorkloadDropsOtherInstance(t *testing.T) {
+// queries as evidence, because the filter left the result set project-wide.
+func TestScopeToWorkloadDropsOtherInstance(t *testing.T) {
 	spans := []map[string]any{
 		cloudSQLSpan("t1", "s1", "Cloud SQL Query", alertingInstance),
 		cloudSQLSpan("t1", "s2", "Seq Scan", ""),
@@ -97,7 +81,7 @@ func TestScopeUnpushedWorkloadDropsOtherInstance(t *testing.T) {
 		cloudSQLSpan("t2", "s4", "Aggregate", ""),
 	}
 
-	got := scopeUnpushedWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
+	got := scopeToWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
 
 	if len(got) != 2 {
 		t.Fatalf("kept %d spans, want 2 (both spans of the matching trace only)", len(got))
@@ -111,66 +95,107 @@ func TestScopeUnpushedWorkloadDropsOtherInstance(t *testing.T) {
 
 // Plan-node children carry no instance label of their own; matching span-by-span would
 // strip them off their root and leave a bare timing with no query plan.
-func TestScopeUnpushedWorkloadKeepsPlanChildren(t *testing.T) {
+func TestScopeToWorkloadKeepsPlanChildren(t *testing.T) {
 	spans := []map[string]any{
 		cloudSQLSpan("t1", "s1", "Cloud SQL Query", alertingInstance),
 		cloudSQLSpan("t1", "s2", "Seq Scan", ""),
 		cloudSQLSpan("t1", "s3", "Aggregate", ""),
 	}
 
-	got := scopeUnpushedWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
+	got := scopeToWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
 
 	if len(got) != 3 {
 		t.Fatalf("kept %d spans, want all 3 — the trace must stay whole", len(got))
 	}
 }
 
-func TestScopeUnpushedWorkloadStrictOnNoMatch(t *testing.T) {
+func TestScopeToWorkloadStrictOnNoMatch(t *testing.T) {
 	spans := []map[string]any{
 		cloudSQLSpan("t2", "s3", "Cloud SQL Query", otherInstance),
 	}
 
-	got := scopeUnpushedWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
+	got := scopeToWorkload(spans, nestedWorkloadClause(alertingInstance, "Cloud SQL"))
 
 	if len(got) != 0 {
 		t.Fatalf("kept %d spans, want 0 — returning the project window is the bug being fixed", len(got))
 	}
 }
 
-// Pushed-down filters were already scoped at the source; those paths must be untouched.
-func TestScopeUnpushedWorkloadLeavesPushedDownResults(t *testing.T) {
+// Cloud Trace cannot push service, so a plain (no-colon) service name is now narrowed in
+// memory too — the Service filter's whole point (#41419). Previously these passed through
+// untouched on the assumption Cloud Trace had already scoped them.
+func TestScopeToWorkloadNarrowsPlainServiceName(t *testing.T) {
 	spans := []map[string]any{
 		{"trace_id": "t1", "span_id": "s1", "service_name": "cartservice", "workload_name": "cartservice"},
 		{"trace_id": "t2", "span_id": "s2", "service_name": "frontend", "workload_name": "frontend"},
 	}
 
-	got := scopeUnpushedWorkload(spans, nestedWorkloadClause("cartservice", "otel-demo"))
+	got := scopeToWorkload(spans, nestedWorkloadClause("cartservice", "otel-demo"))
 
-	if len(got) != 2 {
-		t.Fatalf("kept %d spans, want 2 — a pushable workload is scoped by Cloud Trace, not here", len(got))
+	if len(got) != 1 {
+		t.Fatalf("kept %d spans, want 1 — only the cartservice trace", len(got))
+	}
+	if getSpanString(got[0], "trace_id") != "t1" {
+		t.Errorf("kept trace %q, want t1", getSpanString(got[0], "trace_id"))
 	}
 }
 
-func TestBuildCloudTracesRequestSkipsUnpushableServiceName(t *testing.T) {
+// The trace UI sends the Service filter as workload_name:{_in:"nudgebee"} — a scalar,
+// not a list. A list-only type switch read it as "no filter", so the GCP query ran
+// unscoped over the whole project and the Service filter did nothing (#41419).
+func TestTraceFilterScalarHandlesScalarIn(t *testing.T) {
+	ops := map[query.BinaryWhereClauseType]any{query.In: "nudgebee"}
+	if got := traceFilterScalar(ops); got != "nudgebee" {
+		t.Fatalf("traceFilterScalar(scalar _in) = %q, want \"nudgebee\"", got)
+	}
+}
+
+// The scalar _in workload is still extracted (so the in-memory scope can use it), but it is
+// NO LONGER pushed to Cloud Trace — service.name there matches nothing (#41419).
+func TestBuildCloudTracesRequestScalarInNotPushed(t *testing.T) {
+	s := &GcpTraceSource{}
+	where := query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"workload_name": {query.In: "nudgebee"},
+		},
+	}
+
+	if got := requestedWorkload(where); got != "nudgebee" {
+		t.Fatalf("requestedWorkload(scalar _in) = %q, want \"nudgebee\" — needed for in-memory scoping", got)
+	}
+
+	req := s.buildCloudTracesRequest(TracesV3Request{
+		QueryRequest: TracesQueryBuilderRequest{Where: where},
+	})
+	if req.Query.ServiceName != "" {
+		t.Errorf("ServiceName = %q, want \"\" — service is scoped in memory, not pushed", req.Query.ServiceName)
+	}
+	if req.Query.Filter != "" {
+		t.Errorf("Filter = %q, want \"\" — service.name must not be pushed to Cloud Trace", req.Query.Filter)
+	}
+}
+
+// No service/workload is ever pushed to Cloud Trace — neither a Cloud SQL instance id nor a
+// plain service name — because its service.name filter matches nothing. Both are scoped in
+// memory by scopeToWorkload instead.
+func TestBuildCloudTracesRequestNeverPushesService(t *testing.T) {
 	s := &GcpTraceSource{}
 
-	cloudSQL := s.buildCloudTracesRequest(TracesV3Request{
-		QueryRequest: TracesQueryBuilderRequest{Where: nestedWorkloadClause(alertingInstance, "Cloud SQL")},
-	})
-	if cloudSQL.Query.ServiceName != "" {
-		t.Errorf("ServiceName = %q, want \"\" — QueryTracesList would turn it into a service.name filter that matches nothing", cloudSQL.Query.ServiceName)
-	}
-	if cloudSQL.Query.Filter != "" {
-		t.Errorf("Filter = %q, want \"\" — the instance id is not expressible in Cloud Trace's grammar", cloudSQL.Query.Filter)
-	}
-
-	cloudRun := s.buildCloudTracesRequest(TracesV3Request{
-		QueryRequest: TracesQueryBuilderRequest{Where: nestedWorkloadClause("cartservice", "otel-demo")},
-	})
-	if cloudRun.Query.ServiceName != "cartservice" {
-		t.Errorf("ServiceName = %q, want \"cartservice\"", cloudRun.Query.ServiceName)
-	}
-	if cloudRun.Query.Filter != "service.name:cartservice" {
-		t.Errorf("Filter = %q, want \"service.name:cartservice\"", cloudRun.Query.Filter)
+	for _, tc := range []struct {
+		name  string
+		where query.QueryWhereClause
+	}{
+		{"cloud sql instance", nestedWorkloadClause(alertingInstance, "Cloud SQL")},
+		{"plain service name", nestedWorkloadClause("cartservice", "otel-demo")},
+	} {
+		req := s.buildCloudTracesRequest(TracesV3Request{
+			QueryRequest: TracesQueryBuilderRequest{Where: tc.where},
+		})
+		if req.Query.ServiceName != "" {
+			t.Errorf("%s: ServiceName = %q, want \"\" — service is never pushed", tc.name, req.Query.ServiceName)
+		}
+		if req.Query.Filter != "" {
+			t.Errorf("%s: Filter = %q, want \"\" — service.name must not reach Cloud Trace", tc.name, req.Query.Filter)
+		}
 	}
 }

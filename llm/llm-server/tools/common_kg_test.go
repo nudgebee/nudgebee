@@ -112,6 +112,20 @@ func TestFormatKGSearchResponse(t *testing.T) {
 		assert.Contains(t, out, "Found 42 nodes (showing 1)")
 	})
 
+	t.Run("names a declared node's own kind, leaves collected types bare", func(t *testing.T) {
+		data := map[string]any{
+			"nodes": []any{
+				map[string]any{"id": "sw", "name": "sw-core-01", "node_type": "CloudResource", "specific_type": "NetworkSwitch", "source": "manual"},
+				map[string]any{"id": "db", "name": "orders", "node_type": "Database", "specific_type": "RDSInstance", "source": "aws"},
+			},
+			"total_count": 2,
+		}
+		out := formatKGSearchResponse(data, nil)
+		assert.Contains(t, out, "| CloudResource (NetworkSwitch) |")
+		assert.Contains(t, out, "| Database |")
+		assert.NotContains(t, out, "RDSInstance")
+	})
+
 	t.Run("character cap is enforced", func(t *testing.T) {
 		nodes := make([]any, 0, 500)
 		for i := 0; i < 500; i++ {

@@ -22,3 +22,47 @@ export const getAutomationToggleAction = (status?: string): AutomationToggleActi
   if (status === 'PAUSED') return 'activate';
   return null;
 };
+
+/** The saved automation as the list returns it — the parts the checks below read. */
+export interface SavedAutomationSummary {
+  id?: string;
+  name?: string;
+  account_id?: string;
+  status?: string;
+  definition?: { triggers?: { type?: string }[] | null } | null;
+}
+
+export interface AiBuildActions {
+  runNow: boolean;
+  activate: boolean;
+}
+
+/**
+ * Decides what the Generate-with-AI success screen offers for the automation a
+ * build has just saved.
+ *
+ * Run now: the automation can be run by hand (Active or Paused — an Inactive one
+ * is refused by the engine) and a bare manual run means something for it, which
+ * it does for a manual or scheduled automation. An event or webhook automation
+ * expects a payload a manual run does not carry, so its first run would fail for
+ * a reason that says nothing about the automation.
+ *
+ * Activate: the automation is Paused and has a trigger that fires on its own —
+ * a new automation is saved Paused, and such a trigger then never fires until
+ * someone activates it. This is narrower than the row menu on purpose (see
+ * getAutomationToggleAction): the menu is a general status toggle, this is a
+ * prompt for the one case where leaving the automation paused defeats it.
+ */
+export const getAiBuildActions = (saved?: SavedAutomationSummary | null): AiBuildActions => {
+  if (!saved) {
+    return { runNow: false, activate: false };
+  }
+  const triggerTypes = (saved.definition?.triggers ?? []).map((trigger) => trigger?.type).filter(Boolean);
+  const runnableByHand = triggerTypes.length === 0 || triggerTypes.some((type) => type === 'manual' || type === 'schedule');
+  const firesOnItsOwn = triggerTypes.some((type) => type !== 'manual');
+  const canRun = saved.status === 'ACTIVE' || saved.status === 'PAUSED';
+  return {
+    runNow: canRun && runnableByHand,
+    activate: getAutomationToggleAction(saved.status) === 'activate' && firesOnItsOwn,
+  };
+};

@@ -17,6 +17,7 @@ from handlers.alert_rules_handler import handle_alert_rules
 from handlers.kg_update import deletion_scope, record_deleted_nodes, record_deleted_workloads
 from psycopg2 import extras
 from utils.datetime_utils import utc_from_epoch_millis
+from utils.k8s_config_redaction import redact_k8s_config
 
 # Resource version condition: update only if incoming version >= existing version.
 # Used as a WHERE clause on DO UPDATE so the condition is evaluated once per row,
@@ -33,6 +34,12 @@ def _version_where(table_name: str) -> str:
     )
 
 
+# Never SET a column of a cloud_resourses unique index (id, account,
+# external_resource_id, resourse_id, type, region, service_name). Naming one makes
+# ON CONFLICT lock the existing row FOR UPDATE even when the value is unchanged,
+# which blocks the FOR KEY SHARE that every foreign-key insert into
+# cloud_resource_metrics / spends takes, and the two deadlock. resourse_id needs
+# no update anyway: external_resource_id is a uuid5 of it plus the account.
 resources_on_conflict = (
     "ON CONFLICT(account,external_resource_id) DO UPDATE SET "
     "last_seen = EXCLUDED.last_seen, "
@@ -40,8 +47,7 @@ resources_on_conflict = (
     "is_active = EXCLUDED.is_active, "
     "tags = EXCLUDED.tags, "
     "first_seen = EXCLUDED.first_seen, "
-    "status = EXCLUDED.status, "
-    "resourse_id = EXCLUDED.resourse_id "
+    "status = EXCLUDED.status "
     f"WHERE {_version_where('cloud_resourses')}"
 )
 
@@ -274,6 +280,24 @@ def run_async_discovery_handler(content) -> None:
     with acquire_discovery_lock(data["cloud_account_id"], Configs):
         with deletion_scope(data["tenant"], data["cloud_account_id"]):
             _process_discovery(data)
+
+
+# The message types _process_discovery acts on; any other type is a silent no-op.
+# rabbitmq_consumers labels handler metrics with these and collapses the rest, so
+# an agent sending arbitrary types cannot add metric series.
+DISCOVERY_TYPES = frozenset(
+    {
+        "service",
+        "node",
+        "job",
+        "status",
+        "resolved_services",
+        "resolved_node_issue",
+        "resolved_namespace",
+        "namespace",
+        "alert_rules",
+    }
+)
 
 
 def _process_discovery(data) -> None:
@@ -536,7 +560,7 @@ def process_service_discovery(
         "external_resource_id": _id,
     }
     meta = {
-        "config": k8s_data["config"],
+        "config": redact_k8s_config(k8s_data["config"]),
         "controllerKind": k8s_data["type"],
         "namespace": k8s_data["namespace"],
         "status": k8s_data.get("status", "UNKNOWN"),
@@ -892,7 +916,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND external_resource_id != ALL(%s) "
                         "AND is_active IS NOT FALSE "
-                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External', 'Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id, external_ids],
                     )
@@ -903,6 +927,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "SET is_active = false "
                         "WHERE cloud_account_id = %s AND tenant_id = %s "
                         "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true "
+                        "AND kind NOT IN ('Job', 'CronJob') "
                         "RETURNING cloud_resource_id, kind",
                         [cloud_account_id, tenant, external_ids],
                     )
@@ -914,17 +939,21 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND external_resource_id != ALL(%s) "
-                        "AND is_active IS NOT FALSE AND type = 'Job' "
+                        "AND is_active IS NOT FALSE AND type IN ('Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id, external_ids],
                     )
                 ]
-                database.run_query(
-                    "UPDATE k8s_workloads "
-                    "SET is_active = false "
-                    "WHERE cloud_account_id = %s AND tenant_id = %s "
-                    "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true AND kind = 'Job'",
-                    [cloud_account_id, tenant, external_ids],
+                record_deleted_workloads(
+                    database.run_query(
+                        "UPDATE k8s_workloads "
+                        "SET is_active = false "
+                        "WHERE cloud_account_id = %s AND tenant_id = %s "
+                        "AND cloud_resource_id != ALL(%s::uuid[]) AND is_active = true "
+                        "AND kind IN ('Job', 'CronJob') "
+                        "RETURNING cloud_resource_id, kind",
+                        [cloud_account_id, tenant, external_ids],
+                    )
                 )
             elif resource_type == "Namespace":
                 database.run_query(
@@ -1058,7 +1087,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
                         "WHERE account = %s AND is_active IS NOT FALSE "
-                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External') "
+                        "AND type NOT IN ('Pod', 'node', 'Namespace', 'External', 'Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id],
                     )
@@ -1068,6 +1097,7 @@ def handle_active_resources_deletion(  # noqa: C901
                         "UPDATE k8s_workloads "
                         "SET is_active = false "
                         "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true "
+                        "AND kind NOT IN ('Job', 'CronJob') "
                         "RETURNING cloud_resource_id, kind",
                         [cloud_account_id, tenant],
                     )
@@ -1078,16 +1108,20 @@ def handle_active_resources_deletion(  # noqa: C901
                     for r in database.run_query(
                         "UPDATE cloud_resourses "
                         "SET is_active = false, status = 'Inactive' "
-                        "WHERE account = %s AND is_active IS NOT FALSE AND type = 'Job' "
+                        "WHERE account = %s AND is_active IS NOT FALSE AND type IN ('Job', 'CronJob') "
                         "RETURNING id",
                         [cloud_account_id],
                     )
                 ]
-                database.run_query(
-                    "UPDATE k8s_workloads "
-                    "SET is_active = false "
-                    "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true AND kind = 'Job'",
-                    [cloud_account_id, tenant],
+                record_deleted_workloads(
+                    database.run_query(
+                        "UPDATE k8s_workloads "
+                        "SET is_active = false "
+                        "WHERE cloud_account_id = %s AND tenant_id = %s AND is_active = true "
+                        "AND kind IN ('Job', 'CronJob') "
+                        "RETURNING cloud_resource_id, kind",
+                        [cloud_account_id, tenant],
+                    )
                 )
             elif resource_type == "node":
                 deactivated_resource_ids = [
@@ -2133,6 +2167,18 @@ def run_namespace_discovery(
     namespace_resources = []
 
     for k8s_data in data:
+        # A namespace the API server has begun deleting keeps appearing in every
+        # snapshot -- for months, when a finalizer is stuck -- and the agent
+        # hardcodes `deleted: false` for all of them, so `deleted` alone never
+        # retires one. Its contents are already reaped (no default ServiceAccount,
+        # no kube-root-ca.crt ConfigMap), so it is gone for every practical
+        # purpose and must not be offered as a live namespace. The agent has sent
+        # status.phase all along (runner/pkg/discovery/converters.go
+        # convertNamespace) and we simply dropped it. `or "Active"` rather than
+        # a .get() default so a missing key and an explicit null both fall back,
+        # keeping an agent too old to send phase behaving exactly as before.
+        is_live = not k8s_data.get("deleted", False) and (k8s_data.get("phase") or "Active") != "Terminating"
+
         namespace = {
             "name": k8s_data["name"],
             "tenant_id": tenant,
@@ -2140,7 +2186,7 @@ def run_namespace_discovery(
             "creation_time": k8s_data["creation_time"],
             "workload_count": k8s_data["workload_count"],
             "pod_count": k8s_data["pod_count"],
-            "is_active": not k8s_data.get("deleted", False),
+            "is_active": is_live,
         }
 
         # Create a mock resource for active resources tracking
@@ -2151,7 +2197,7 @@ def run_namespace_discovery(
         }
 
         namespaces.append(NamespaceDetails(**namespace))
-        if not k8s_data.get("deleted", False):
+        if is_live:
             namespace_resources.append(namespace_resource)
 
     # Stage + gated reconcile (completeness-based for batched snapshots, see

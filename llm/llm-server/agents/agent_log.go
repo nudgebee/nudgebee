@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/aws"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -38,7 +39,7 @@ func init() {
 	toolInput := "Provide a log question in natural language, preserving the user's wording verbatim: investigation wording (why/root cause/diagnose/troubleshoot), enumeration wording (list/summarize errors), or routine wording (recent/tail logs) — the agent's mode classifier routes off this wording."
 	toolOutput := "Markdown answer with cited log evidence (timestamps, error signatures). Investigations include a 5-Why causality chain and a time-window callout when errors cluster."
 
-	core.RegisterTargetAwareNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetRoutedNBAgentFactoryAndTool(LogsAgentName, func(accountId string) (core.NBAgent, error) {
 		return getLogAgent(security.NewRequestContextForSuperAdmin(), accountId)
 	}, toolDescription, toolInput, toolOutput)
 	toolcore.RegisterNBToolFactory(FetchLogsDirectToolName, func(accountId string) (toolcore.NBTool, error) {
@@ -107,8 +108,8 @@ func (l *LogAgent) GetPlannerType() core.AgentPlannerType {
 }
 
 // GetModelCategory explicitly opts into Retrieval, matching agentModelCategory's default for untagged agents.
-func (l *LogAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (l *LogAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }
 
 func (l *LogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
@@ -212,15 +213,11 @@ func canonicalQueryAuthoringForRoutine(accountId string, provider services_serve
 	var b strings.Builder
 	b.WriteString("**Call fetch_logs_direct with canonical JSON, not a sentence — this is the default for ROUTINE mode once you know namespace + app.** Pass the canonical JSON query as `command`; fetch_logs_direct checks it in its unified query-planning call before execution. Schema: `{\"where\": {\"<field>\": {\"<operator>\": \"<value>\"}}, \"time_range\": \"<string>\", \"limit\": <number>}` (use `_and`/`_or` arrays of filter objects for multiple conditions). Operators: _eq, _neq, _gt, _gte, _lt, _lte, _in, _like, _ilike, _contains, _is_null.\n")
 
-	if len(labelMappings) > 0 {
-		canonical := make([]string, 0, len(labelMappings))
-		for k := range labelMappings {
-			canonical = append(canonical, k)
-		}
-		sort.Strings(canonical)
-		b.WriteString("Canonical fields for this backend (`canonical_name → backend_field` — use the canonical_name, LEFT side):\n")
+	canonical := resolveCanonicalLogFields(provider.Capabilities.CanonicalFields, labelMappings, fields)
+	if len(canonical) > 0 {
+		b.WriteString("Canonical fields for this backend (use these names exactly; the server translates each one to the backend's own field):\n")
 		for _, k := range canonical {
-			fmt.Fprintf(&b, "  - %s → %s\n", k, labelMappings[k])
+			fmt.Fprintf(&b, "  - %s\n", k)
 		}
 		b.WriteString("**HARD RULE:** use ONLY a canonical_name above (or, if none fits, an advertised backend label) — never invent a field name. A namespace-only question filters on the namespace canonical_name ONLY, never the app/workload field — a namespace is not an app name.\n")
 	}
@@ -286,11 +283,9 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 	}
 	hasOp := func(op string) bool { _, ok := opSet[op]; return ok }
 
-	canonical := make([]string, 0, len(labelMappings))
-	for k := range labelMappings {
-		canonical = append(canonical, k)
-	}
-	sort.Strings(canonical)
+	// Prefer what the backend says it will resolve; fall back to the mapping keys,
+	// which is what this prompt used before `canonical_fields` existed (#39573).
+	canonical := resolveCanonicalLogFields(provider.Capabilities.CanonicalFields, labelMappings, fields)
 	useCanonical := len(canonical) > 0
 
 	var b strings.Builder
@@ -303,16 +298,16 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 	fmt.Fprintf(&b, "  - **Operators**: %s\n", strings.Join(supportedOperators, ", "))
 
 	if useCanonical {
-		b.WriteString("\n**Canonical fields for THIS backend — `canonical_name → backend_field`. Use the canonical_name (LEFT side) in your query; the server resolves it to the backend_field automatically:**\n")
+		b.WriteString("\n**Canonical fields for THIS backend. Use these names exactly as written; the server translates each one to this backend's own field automatically:**\n")
 		for _, k := range canonical {
-			fmt.Fprintf(&b, "   - %s → %s\n", k, labelMappings[k])
+			fmt.Fprintf(&b, "   - %s\n", k)
 		}
-		b.WriteString("Map the user's wording to the closest canonical_name above, inferring its meaning from the backend_field it resolves to:\n")
-		b.WriteString("   - a workload / service / app / deployment name → the canonical_name resolving to a deployment/app/service field\n")
-		b.WriteString("   - a pod name → the canonical_name resolving to a pod field\n")
-		b.WriteString("   - a namespace → the canonical_name resolving to a namespace field\n")
-		b.WriteString("   - a container name → the canonical_name resolving to a container field\n")
-		b.WriteString("   - log text / error keywords → the canonical_name resolving to the log body / message / content field\n")
+		b.WriteString("Map the user's wording to the closest canonical_name above:\n")
+		b.WriteString("   - a workload / service / app / deployment name → the workload canonical_name (e.g. `app`)\n")
+		b.WriteString("   - a pod name → the pod canonical_name (e.g. `pod`)\n")
+		b.WriteString("   - a namespace → the namespace canonical_name (e.g. `namespace`)\n")
+		b.WriteString("   - a container name → the container canonical_name (e.g. `container`)\n")
+		b.WriteString("   - log text / error keywords → the log-text canonical_name (e.g. `message`)\n")
 		b.WriteString("ALWAYS prefer a `canonical_name` over a backend label that refers to the SAME concept — a backend label is a fallback ONLY for a concept that has NO matching canonical_name. Use ONLY names that appear in the lists above (a `canonical_name`, or an advertised backend label); never invent or guess a field name.\n")
 		b.WriteString("**Namespace vs workload — do NOT confuse them.** When the question names a NAMESPACE but NO specific workload/app/pod (e.g. \"errors in nudgebee\", \"logs in the demo namespace\", \"401s in nudgebee\", \"anything failing in <ns>\"), filter on the namespace canonical_name ONLY — NEVER put that value in the workload/app/pod field. A bare environment / namespace name (nudgebee, demo, prod, staging, …) is NOT an app name.\n")
 		if len(fields) > 0 {
@@ -320,11 +315,11 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 			fmt.Fprintf(&b, "   %s\n", strings.Join(fields, ", "))
 			b.WriteString(duplicateLabelHeuristicHint)
 		}
-		b.WriteString("**HARD RULE — field names:** Emit ONLY a `canonical_name` from the list above (or, if none fits, a backend label from the line above). NEVER invent a field name. In particular do NOT emit `service_name`, `service.name`, `service`, `pod`, `message`, `namespace`, or `container` unless that exact word is listed above as a canonical_name — if the word is not listed, use the listed canonical_name that maps to the same concept (e.g. for a workload/service name use the canonical_name resolving to the app/deployment field, which is often `app`).\n")
+		b.WriteString("**HARD RULE — field names:** Emit ONLY a `canonical_name` from the list above (or, if none fits, a backend label from the line above). NEVER invent a field name. In particular do NOT emit `service_name`, `service.name`, `service`, `pod`, `message`, `namespace`, or `container` unless that exact word is listed above as a canonical_name — if the word is not listed, use the listed canonical_name for the same concept (e.g. for a workload/service name use the workload canonical_name, which is often `app`).\n")
 	} else {
 		nativeFields := fields
 		if len(nativeFields) == 0 {
-			nativeFields = []string{"_body", "namespace", "pod"}
+			nativeFields = []string{tools.LegacyLogTextToken, "namespace", "pod"}
 		}
 		b.WriteString("AVAILABLE FIELDS for query building\n")
 		fmt.Fprintf(&b, "  - **Fields**: %s\n", strings.Join(nativeFields, ", "))
@@ -399,6 +394,7 @@ func buildCanonicalLogQueryPromptV3(provider services_server.ObservabilityProvid
 // core.ExecuteAgentToolCall — so no second llm_conversation_agent row is
 // created for the fetch step.
 type fetchLogsDirectTool struct {
+	toolcore.ReadOnlyTool
 	accountId string
 }
 
@@ -603,7 +599,7 @@ func (a *FetchLogsAgent) executeCanonicalQueryDirect(ctx *security.RequestContex
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), jsonQuery, nil
 	}
-	if strings.EqualFold(provider.Provider, "loki") {
+	if tools.IsLogQLProvider(provider.Provider) {
 		stepStart = time.Now()
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 		ctx.GetLogger().Info("fetch_logs_direct: step unwrapLokiInnerTimestamps done", "duration", time.Since(stepStart).String())
@@ -617,14 +613,7 @@ func (a *FetchLogsAgent) executeCanonicalQueryDirect(ctx *security.RequestContex
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
 	ctx.GetLogger().Info("fetch_logs_direct: step saveLogsToWorkspace done", "duration", time.Since(stepStart).String(), "file_ref", fileRef)
 
-	stepStart = time.Now()
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-
-	ctx.GetLogger().Info("fetch_logs_direct: step runAutoDiagnosticBundle done", "duration", time.Since(stepStart).String(), "has_error", err != nil, "bundle_signal_empty", bundleSignal == "")
-	if err != nil {
-		return core.NBAgentResponse{}, jsonQuery, err
-	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, jsonQuery), logs, flattened, fileRef, mergeRefs(toolRefs, fileRefs)), jsonQuery, nil
 }
 
 // buildFetchLogsDirectToolResponse shapes FetchLogsAgent.Execute's result

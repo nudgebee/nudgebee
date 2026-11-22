@@ -89,7 +89,9 @@ export const MCP_HEADER_CREATED_BY = "Created By";
 
 // The read-only Banner ToolsAndMCPAdminTab.jsx renders over the MCP sub-view.
 // ds/Banner gives an 'info' tone role="status".
-export const MCP_BANNER_TEXT = "This view is read-only.";
+// Either wording: dev runs main's app until this banner change is deployed,
+// while the suite runs the branch's specs (#40399). Drop the old wording then.
+export const MCP_BANNER_TEXT = /This view is read-only\.|Choose which tools need approval here/;
 export const MCP_BANNER_ACTION = "Manage in Integrations";
 
 // AdminAccountFilter -> AccountSelect passes id='account-select' and, without

@@ -321,7 +321,21 @@ func TestGrafanaTempo_DispatchesAsTraceSourceOnly(t *testing.T) {
 	assert.True(t, caps.SupportsTraceGrouping)
 	assert.True(t, caps.SupportsHeatmap)
 	assert.True(t, caps.SupportsRawQuery)
-	assert.False(t, caps.SupportsServiceMap)
+	assert.True(t, caps.SupportsServiceMap, "every Tempo span carries its own service, namespace and parent id, which is what the service map links")
+}
+
+// The service map asks for spans without a page size and links parents to children, so an
+// unbounded request must fetch enough spans to see whole call chains, not one listing page.
+func TestQueryTempoSpans_NoLimitUsesBulkBudget(t *testing.T) {
+	var calls int32
+	var params map[string]string
+	srv := fakeTempoSearch(t, 10, &calls, &params)
+	defer srv.Close()
+
+	_, _, err := queryTempoSpans(integrations.GrafanaTempoConfig{URL: srv.URL}, tempoReq(0, 0), time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, "500", params["limit"])
+	assert.Equal(t, "100", params["spss"], "spss stays within Tempo's per-trace limit")
 }
 
 func TestQueryTempoSpans_SpssCappedAtTempoLimit(t *testing.T) {

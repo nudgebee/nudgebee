@@ -95,3 +95,27 @@ func propagateSwitchBranchState(
 		resolve(defaultNext, "default")
 	}
 }
+
+// scopeInlineDeps rewrites depends_on for the inline child scope: siblings get
+// renamed IDs; the parent switch and already-finished tasks are dropped (#41250).
+func scopeInlineDeps(deps []string, renamed map[string]string, parentID, parentOrigID string, done ...map[string]bool) []string {
+	var out []string
+deps:
+	for _, dep := range deps {
+		if newID, ok := renamed[dep]; ok {
+			out = append(out, newID)
+			continue
+		}
+		// A nested switch runs as "<outer>-<id>", so its branches still name "<id>".
+		if dep == parentID || (parentOrigID != "" && dep == parentOrigID) {
+			continue
+		}
+		for _, d := range done {
+			if d[dep] {
+				continue deps
+			}
+		}
+		out = append(out, dep)
+	}
+	return out
+}

@@ -314,4 +314,15 @@ func TestGetScopedPermissionKeys(t *testing.T) {
 	if got["notifications:Write"] {
 		t.Errorf("tenant-global grant must not appear in scoped keys")
 	}
+
+	// Per account, as the session serves it to the UI.
+	byAccount := sc.GetScopedPermissionsByAccount()
+	if len(byAccount) != 2 || strings.Join(byAccount["acct-A"], ",") != "events:Read" ||
+		strings.Join(byAccount["acct-B"], ",") != "events:Read,tickets:Write" {
+		t.Errorf("scoped keys by account = %v", byAccount)
+	}
+	var nilSc *SecurityContext
+	if got := nilSc.GetScopedPermissionsByAccount(); len(got) != 0 {
+		t.Errorf("nil context: scoped keys by account = %v, want empty", got)
+	}
 }
