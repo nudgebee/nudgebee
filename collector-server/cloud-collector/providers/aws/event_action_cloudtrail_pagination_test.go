@@ -159,27 +159,46 @@ func TestCloudTrailActionFiltersAndMergesPages(t *testing.T) {
 	require.Equal(t, 4, calls)
 }
 
-func TestCloudTrailActionPreservesEvidenceAfterLaterPageTimeout(t *testing.T) {
-	api := &paginatedCloudTrailProvider{}
-	api.lookup = func(_ providers.CloudProviderContext, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
-		if input.NextToken != nil {
-			return nil, context.DeadlineExceeded
-		}
-		return &cloudtrail.LookupEventsOutput{
-			Events:    []types.Event{{EventId: ptr.String("page-one"), EventName: ptr.String("CreateUser")}},
-			NextToken: ptr.String("page-two"),
-		}, nil
+func TestCloudTrailActionKeepsSuccessfullyFetchedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		cancelOnSuccess bool
+		wantCalls       int
+	}{
+		{"later page times out", false, 2},
+		{"context canceled as a successful page completes", true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			api := &paginatedCloudTrailProvider{}
+			calls := 0
+			api.lookup = func(_ providers.CloudProviderContext, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
+				calls++
+				if input.NextToken != nil {
+					return nil, context.DeadlineExceeded
+				}
+				if tc.cancelOnSuccess {
+					cancel()
+				}
+				return &cloudtrail.LookupEventsOutput{
+					Events:    []types.Event{{EventId: ptr.String("page-one"), EventName: ptr.String("CreateUser")}},
+					NextToken: ptr.String("page-two"),
+				}, nil
+			}
+			processor := NewTemplatedEventBridgeProcessor(EventRuleSet{}, api)
+			result, err := processor.executeAction(providers.NewCloudProviderContext(ctx), providers.Account{}, EventBridgeEvent{Time: time.Now()}, ActionDefinition{
+				Name: "test", Type: "aws_get_cloudtrail_events",
+				Params: map[string]any{
+					"start_time_offset": "-15m", "end_time_offset": "+5m",
+					"lookup_attributes": []any{map[string]any{"AttributeKey": "EventSource", "AttributeValue": "iam.amazonaws.com"}},
+				},
+			}, nil)
+			require.NoError(t, err)
+			events := result.([]types.Event)
+			require.Len(t, events, 1)
+			require.Equal(t, "page-one", *events[0].EventId)
+			require.Equal(t, tc.wantCalls, calls)
+		})
 	}
-	processor := NewTemplatedEventBridgeProcessor(EventRuleSet{}, api)
-	result, err := processor.executeAction(providers.NewCloudProviderContext(context.Background()), providers.Account{}, EventBridgeEvent{Time: time.Now()}, ActionDefinition{
-		Name: "test", Type: "aws_get_cloudtrail_events",
-		Params: map[string]any{
-			"start_time_offset": "-15m", "end_time_offset": "+5m",
-			"lookup_attributes": []any{map[string]any{"AttributeKey": "EventSource", "AttributeValue": "iam.amazonaws.com"}},
-		},
-	}, nil)
-	require.NoError(t, err)
-	events := result.([]types.Event)
-	require.Len(t, events, 1)
-	require.Equal(t, "page-one", *events[0].EventId)
 }

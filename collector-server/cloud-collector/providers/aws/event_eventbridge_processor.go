@@ -1729,9 +1729,6 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 					queryErr = err
 					break
 				}
-				if queryErr = queryCtx.Err(); queryErr != nil {
-					break
-				}
 				if output == nil {
 					queryErr = errors.New("CloudTrail returned no result")
 					break
