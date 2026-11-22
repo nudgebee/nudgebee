@@ -95,6 +95,7 @@ func (t *TicketsTransitionTask) InputSchema() *types.Schema {
 			},
 			"integration_id": {
 				Type:        types.PropertyTypeTicket,
+				SubTypes:    ticketPlatforms,
 				Description: "Ticket integration to use",
 				Required:    true,
 				Order:       2,
@@ -107,9 +108,14 @@ func (t *TicketsTransitionTask) InputSchema() *types.Schema {
 			},
 			"status": {
 				Type:        types.PropertyTypeString,
-				Description: "Target status (e.g. 'In Progress', 'Done' for Jira; 'open'/'closed' for GitHub/GitLab)",
+				Description: "Target status (e.g. 'In Progress', 'Done' for Jira; Project Status or 'open'/'closed' for GitHub; 'open'/'closed' for GitLab)",
 				Required:    true,
 				Order:       4,
+				DependsOn:   []string{"integration_id", "project_key"},
+				OptionsSource: &types.OptionsSource{
+					Type:              "ticket_statuses",
+					DependencyMapping: map[string]string{"integration_id": "integration_id", "project_key": "project_key"},
+				},
 			},
 			"project_key": {
 				Type:        types.PropertyTypeString,

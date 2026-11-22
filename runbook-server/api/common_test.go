@@ -98,7 +98,7 @@ func TestFormatValidationError_TriggerParams(t *testing.T) {
 		{
 			"optimization without params surfaces the reported message",
 			model.Trigger{Type: model.WorkflowTriggerOptimization},
-			"Optimization trigger requires params with at least one of: categories, rule_names, clusters, filter",
+			"Optimization trigger needs at least one filter: Cluster, Category or Rule Name",
 		},
 		{
 			"unsupported webhook param names the offending key",

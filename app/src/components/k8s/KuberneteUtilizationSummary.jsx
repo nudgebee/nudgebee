@@ -3,7 +3,6 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import Chart from '@ui/Chart';
 import DSCard from '@ui/Card';
 import ChartSwitcher from '@shared/widgets/ChartSwitcher';
-import { formatNumber, formatMemory } from '@lib/formatter';
 import { getDateStringFromDateUnit, getLast30Days } from '@lib/datetime';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -12,6 +11,11 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import Heading from '@components/common/Heading';
 import kuberneteApi from '@api1/kubernetes';
 import PropTypes from 'prop-types';
+
+const BYTES_PER_GB = 1024 * 1024 * 1024;
+// Chart data must stay numeric: keep 0, map missing values to null, leave rounding to the chart.
+const toNumber = (value) => (value == null ? null : Number(value));
+const bytesToGb = (value) => (value == null ? null : Number(value) / BYTES_PER_GB);
 
 const BorderedBox = ({ children }) => {
   return (
@@ -198,14 +202,14 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
       const label = getDateStringFromDateUnit(item.timestamp, chartUnit);
 
       if ('avg_cpu_used_node' in item) {
-        cpuUsed.push(formatNumber(item.avg_cpu_used_node));
-        cpuAllocatable.push(formatNumber(item.total_cpu_allocatable));
+        cpuUsed.push(toNumber(item.avg_cpu_used_node));
+        cpuAllocatable.push(toNumber(item.total_cpu_allocatable));
         cpuLabels.push(label);
       }
 
       if ('avg_memory_used_node' in item) {
-        memUsed.push(formatMemory(item.avg_memory_used_node, 'bytes', 'gb', false));
-        memAllocatable.push(formatMemory(item.total_memory_allocatable, 'bytes', 'gb', false));
+        memUsed.push(bytesToGb(item.avg_memory_used_node));
+        memAllocatable.push(bytesToGb(item.total_memory_allocatable));
         memLabels.push(label);
       }
     }
@@ -228,10 +232,10 @@ const GraphSections = ({ accountId, heading = '', id = 'KuberneteUtilizationSumm
     for (const item of networkData) {
       if (!item) continue;
       if (item.metric === 'networkReceiveBytes') {
-        ingressData.push(item.avg_value / (1024 * 1024 * 1024));
+        ingressData.push(bytesToGb(item.avg_value));
         ingressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       } else if (item.metric === 'networkTransferBytes') {
-        egressData.push(item.avg_value / (1024 * 1024 * 1024));
+        egressData.push(bytesToGb(item.avg_value));
         egressLabels.push(getDateStringFromDateUnit(item.timestamp, chartUnit));
       }
     }

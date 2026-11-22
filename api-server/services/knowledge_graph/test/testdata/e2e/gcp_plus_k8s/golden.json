@@ -28,6 +28,7 @@
       "query_attributes": {
         "arn": "",
         "name": "sa@proj-1.iam.gserviceaccount.com",
+        "region": "global",
         "service_name": "GCPIAM",
         "subtype": "GCPServiceAccount"
       },

@@ -14,6 +14,7 @@ import (
 	"github.com/lib/pq"
 
 	"nudgebee/services/internal/database"
+	"nudgebee/services/knowledge_graph/core"
 )
 
 // ManualDependencyDedupeIndex is the partial unique index from migration
@@ -119,8 +120,8 @@ type ManualDependencyRepository struct {
 }
 
 // WithAccountAuthorizer returns the repository with user writes checked
-// against authorize: create, update, delete, pin, single re-resolve and every
-// imported dependency.
+// against authorize: create, update, delete, pin, single and bulk re-resolve
+// and every imported dependency.
 func (r *ManualDependencyRepository) WithAccountAuthorizer(authorize ManualAccountAuthorizer) *ManualDependencyRepository {
 	c := *r
 	c.authorize = authorize
@@ -258,15 +259,212 @@ func NewManualDependencyRepository(dbManager *database.DatabaseManager, logger *
 	}
 }
 
+// ManualRelationshipsAnywhere may link any two nodes.
+var ManualRelationshipsAnywhere = []core.RelationshipType{
+	core.RelationshipCalls, core.RelationshipPublishesTo, core.RelationshipSubscribesTo,
+}
+
+// ManualRelationshipsDeclaredOnly may only link a pair with a node declared
+// outside any account at one end. No collector links such a node, so these
+// edges never meet a collector's on the same pair; between two collected nodes
+// they could replace the collector's edge, because the build keeps one edge
+// per node pair whatever its relationship.
+var ManualRelationshipsDeclaredOnly = []core.RelationshipType{
+	core.RelationshipConnectedTo, core.RelationshipDependsOn, core.RelationshipRunsOn,
+	core.RelationshipHostedOn, core.RelationshipRoutesTo, core.RelationshipBelongsTo,
+}
+
+// ErrManualDependencyNeedsDeclaredNode: a declared-only relationship between
+// two collected nodes.
+var ErrManualDependencyNeedsDeclaredNode = errors.New("needs a node declared outside any account at one end; use CALLS between two discovered resources")
+
+// ErrManualDependencyPairLinked: another declaration already links the same
+// two nodes, and one of them uses a declared-only relationship; the build
+// would draw only one of them.
+var ErrManualDependencyPairLinked = errors.New("these nodes are already linked by another declaration")
+
+// ErrManualDependencySelfLink: both sides of the declaration name one node.
+// A dependency from a resource to itself is a typing or copy-paste mistake,
+// and the build would draw a self-loop that investigations and the KG agents
+// then read as a real dependency.
+var ErrManualDependencySelfLink = errors.New("source and destination must be different nodes")
+
 // ValidateRelationshipType checks against the supported set. Returned error
 // is suitable for surfacing back to the caller.
 func ValidateRelationshipType(rt string) error {
-	switch rt {
-	case "CALLS", "PUBLISHES_TO", "SUBSCRIBES_TO":
+	if relationshipIn(ManualRelationshipsAnywhere, rt) || relationshipIn(ManualRelationshipsDeclaredOnly, rt) {
 		return nil
-	default:
-		return fmt.Errorf("unsupported relationship_type %q (must be one of CALLS, PUBLISHES_TO, SUBSCRIBES_TO)", rt)
 	}
+	names := make([]string, 0, len(ManualRelationshipsAnywhere)+len(ManualRelationshipsDeclaredOnly))
+	for _, t := range append(append([]core.RelationshipType{}, ManualRelationshipsAnywhere...), ManualRelationshipsDeclaredOnly...) {
+		names = append(names, string(t))
+	}
+	return fmt.Errorf("unsupported relationship_type %q (must be one of %s)", rt, strings.Join(names, ", "))
+}
+
+// RequiresDeclaredNode reports whether rt may only link a pair with a node
+// declared outside any account at one end.
+func RequiresDeclaredNode(rt string) bool {
+	return relationshipIn(ManualRelationshipsDeclaredOnly, rt)
+}
+
+func relationshipIn(list []core.RelationshipType, rt string) bool {
+	for _, t := range list {
+		if string(t) == rt {
+			return true
+		}
+	}
+	return false
+}
+
+// translateCustomKinds rewrites an endpoint that names a custom kind
+// (NetworkSwitch) as its type to the kind's category plus the tenant as its
+// account: endpoints always store the category, the column the resolver
+// matches, and the tenant qualifier keeps a same-named collected node in some
+// account out of the candidates. A kind's category is unique per tenant, and
+// name + namespace + category identify a declaration outside any account.
+func (r *ManualDependencyRepository) translateCustomKinds(tenantID string, dep *ManualDependency) error {
+	for _, side := range []struct {
+		nodeType, accountID *string
+	}{{&dep.SourceNodeType, &dep.SourceAccountID}, {&dep.DestNodeType, &dep.DestAccountID}} {
+		kind := strings.TrimSpace(*side.nodeType)
+		if kind == "" || core.IsKnownNodeType(kind) {
+			continue
+		}
+		categories, err := customKindCategories(r.dbManager, tenantID, kind)
+		if err != nil {
+			return err
+		}
+		if len(categories) != 1 {
+			continue // not a kind of this tenant: resolves as unmatched, as before
+		}
+		*side.nodeType = categories[0]
+		if strings.TrimSpace(*side.accountID) == "" {
+			*side.accountID = tenantID
+		}
+	}
+	return nil
+}
+
+// isDeclaredOutsideAccount reports whether a graph node is one a user declared
+// outside any connected account (it is keyed to the tenant).
+func isDeclaredOutsideAccount(n *core.DbNode, tenantID string) bool {
+	return n != nil && n.Source == core.ManualNodeSource && n.CloudAccountID == tenantID
+}
+
+// checkLinkRules applies, before a write, the rules a build would otherwise
+// apply after it (see ManualFlowSource.processRow): the two sides must be
+// different nodes, a declared-only relationship needs a declared node at one
+// end, and a pair linked with one carries no second declaration. srcPin /
+// dstPin are the sides the caller pinned; the others are resolved now.
+// Unresolved sides constrain nothing yet.
+func (r *ManualDependencyRepository) checkLinkRules(ctx context.Context, tenantID string, selfID int64, dep ManualDependency, srcPin, dstPin string) error {
+	// A side resolving to several candidates is one the operator pins next
+	// (the form creates the row from text and pins afterwards), so it is not
+	// yet decided and the endpoint text cannot judge it.
+	resolveSide := func(pin string, e ManualEndpoint) (nodeID string, pinnable bool, err error) {
+		if pin != "" {
+			return pin, false, nil
+		}
+		res, err := r.resolver.Resolve(ctx, tenantID, e)
+		if err != nil {
+			return "", false, err
+		}
+		if res.Status != EndpointStatusResolved {
+			return "", res.Status == EndpointStatusAmbiguous || res.Status == EndpointStatusTooManyMatches, nil
+		}
+		return res.NodeID, false, nil
+	}
+	src, srcPinnable, err := resolveSide(strings.TrimSpace(srcPin), dep.sourceEndpoint())
+	if err != nil {
+		return fmt.Errorf("resolve source endpoint: %w", err)
+	}
+	dst, dstPinnable, err := resolveSide(strings.TrimSpace(dstPin), dep.destEndpoint())
+	if err != nil {
+		return fmt.Errorf("resolve dest endpoint: %w", err)
+	}
+
+	switch {
+	case src != "" && dst != "":
+		// Where both sides are known the node ids settle it, whether they
+		// came from two pins or from two endpoint texts.
+		if src == dst {
+			return ErrManualDependencySelfLink
+		}
+	case srcPinnable || dstPinnable:
+		// Undecided: the same text may yet be pinned to two different nodes
+		// (two same-named nodes in different accounts). Pinning both sides to
+		// one node comes back through here with two ids.
+	case sameManualEndpoint(dep.sourceEndpoint(), dep.destEndpoint()):
+		// Neither side can be pinned, and both name the same thing: the
+		// resolver reads the same text the same way, so this is one node
+		// whether or not it is in the graph yet.
+		return ErrManualDependencySelfLink
+	}
+
+	if src == "" || dst == "" {
+		return nil
+	}
+
+	if RequiresDeclaredNode(dep.RelationshipType) {
+		var declared int
+		if err := r.dbManager.Db.Get(&declared, `SELECT count(*) FROM knowledge_graph_node
+			WHERE tenant_id = $1 AND id = ANY($2::uuid[]) AND is_active = true
+			  AND source = $3 AND cloud_account_id::text = $4`,
+			tenantID, pq.Array(parseNodeIDs([]string{src, dst})), core.ManualNodeSource, tenantID); err != nil {
+			return fmt.Errorf("check declared endpoints: %w", err)
+		}
+		if declared == 0 {
+			return fmt.Errorf("%s %w", dep.RelationshipType, ErrManualDependencyNeedsDeclaredNode)
+		}
+	}
+
+	var others []struct {
+		ID               int64  `db:"id"`
+		RelationshipType string `db:"relationship_type"`
+		SameDirection    bool   `db:"same_direction"`
+	}
+	if err := r.dbManager.Db.Select(&others, `SELECT id, relationship_type, resolved_source_node_id = $4::uuid AS same_direction
+		FROM kg_manual_dependencies
+		WHERE tenant_id = $1 AND is_active = true AND id <> $2 AND resolution_status = $3
+		  AND ((resolved_source_node_id = $4::uuid AND resolved_dest_node_id = $5::uuid)
+		    OR (resolved_source_node_id = $5::uuid AND resolved_dest_node_id = $4::uuid))
+		ORDER BY id`, tenantID, selfID, ManualResolutionResolved, src, dst); err != nil {
+		return fmt.Errorf("check linked pair: %w", err)
+	}
+	for _, o := range others {
+		if pairConflict(dep.RelationshipType, o.RelationshipType, o.SameDirection) {
+			return fmt.Errorf("%w (declaration %d, %s)", ErrManualDependencyPairLinked, o.ID, o.RelationshipType)
+		}
+	}
+	return nil
+}
+
+// sameManualEndpoint reports whether two endpoints name the same thing. Values
+// are compared exactly, the way the resolver matches them against the graph,
+// ignoring only surrounding whitespace.
+func sameManualEndpoint(a, b ManualEndpoint) bool {
+	return strings.TrimSpace(a.NodeType) == strings.TrimSpace(b.NodeType) &&
+		strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+		strings.TrimSpace(a.Namespace) == strings.TrimSpace(b.Namespace) &&
+		strings.TrimSpace(a.Cluster) == strings.TrimSpace(b.Cluster) &&
+		strings.TrimSpace(a.ARN) == strings.TrimSpace(b.ARN) &&
+		strings.TrimSpace(a.AccountID) == strings.TrimSpace(b.AccountID) &&
+		strings.TrimSpace(a.Region) == strings.TrimSpace(b.Region)
+}
+
+// pairConflict reports whether two declarations on the same two nodes cannot
+// both be drawn. Same direction: the build keeps one edge per ordered pair, so
+// a different relationship conflicts when either is declared-only; the same
+// relationship is the same edge, not a conflict (an exact duplicate is left to
+// the dedupe index, so an import reports it as existing). Opposite directions
+// are separate edges, except an undirected link declared both ways, which is
+// one link twice.
+func pairConflict(rt, otherRT string, sameDirection bool) bool {
+	if sameDirection {
+		return rt != otherRT && (RequiresDeclaredNode(rt) || RequiresDeclaredNode(otherRT))
+	}
+	return rt == otherRT && core.IsUndirectedRelationship(core.RelationshipType(rt))
 }
 
 // ValidateEndpoint enforces the loose match contract: node_type + name
@@ -358,6 +556,9 @@ func (r *ManualDependencyRepository) createPinned(ctx context.Context, dep Manua
 	if err := ValidateEndpoint(EndpointSideDest, dep.destEndpoint()); err != nil {
 		return nil, err
 	}
+	if err := r.translateCustomKinds(dep.TenantID, &dep); err != nil {
+		return nil, err
+	}
 	if err := r.checkProposed(ctx, dep.TenantID, dep); err != nil {
 		return nil, err
 	}
@@ -369,6 +570,9 @@ func (r *ManualDependencyRepository) createPinned(ctx context.Context, dep Manua
 		if err := r.checkWrite(dep.TenantID, nil, srcPin, dstPin); err != nil {
 			return nil, err
 		}
+	}
+	if err := r.checkLinkRules(ctx, dep.TenantID, 0, dep, srcPin, dstPin); err != nil {
+		return nil, err
 	}
 
 	insertQuery := `INSERT INTO kg_manual_dependencies (
@@ -467,13 +671,16 @@ func (r *ManualDependencyRepository) Update(ctx context.Context, tenantID string
 	if err := ValidateEndpoint(EndpointSideDest, patch.destEndpoint()); err != nil {
 		return nil, err
 	}
+	if err := r.translateCustomKinds(tenantID, &patch); err != nil {
+		return nil, err
+	}
+	current, err := r.Get(ctx, tenantID, id)
+	if err != nil {
+		return nil, err
+	}
 	// The row as it is and as it would be: an edit may neither reach into an
 	// account the caller does not manage nor take over a row that does.
 	if r.authorize != nil {
-		current, err := r.Get(ctx, tenantID, id)
-		if err != nil {
-			return nil, err
-		}
 		if err := r.checkExisting(current); err != nil {
 			return nil, err
 		}
@@ -481,8 +688,15 @@ func (r *ManualDependencyRepository) Update(ctx context.Context, tenantID string
 			return nil, err
 		}
 	}
+	proposed := patch
+	if proposed.RelationshipType == "" {
+		proposed.RelationshipType = current.RelationshipType
+	}
+	if err := r.checkLinkRules(ctx, tenantID, id, proposed, "", ""); err != nil {
+		return nil, err
+	}
 
-	_, err := r.dbManager.Exec(`UPDATE kg_manual_dependencies SET
+	_, err = r.dbManager.Exec(`UPDATE kg_manual_dependencies SET
 		source_node_type = $1, source_name = $2,
 		source_namespace = $3, source_cluster = $4,
 		source_arn = $5, source_account_id = $6, source_region = $7,
@@ -708,6 +922,9 @@ func (r *ManualDependencyRepository) SetResolvedNodes(ctx context.Context, tenan
 	if err := r.checkWrite(tenantID, nil, srcPick, dstPick); err != nil {
 		return nil, err
 	}
+	if err := r.checkLinkRules(ctx, tenantID, id, *dep, srcPick, dstPick); err != nil {
+		return nil, err
+	}
 
 	// Neither side picked: nothing to pin — fall back to plain re-resolve.
 	if srcPick == "" && dstPick == "" {
@@ -800,7 +1017,9 @@ func (r *ManualDependencyRepository) resolveAndPinPartial(
 // ReresolveAll calls ResolveAndPersist for every row matching the filter,
 // returning per-row results. statusFilter narrows; pass nil for "all
 // active". Errors on individual rows are logged and aggregated; the call
-// returns the per-row outcomes either way.
+// returns the per-row outcomes either way. With an authorizer, a row the
+// caller may not write (checkExisting) is skipped, as a single re-resolve of
+// it would be refused.
 func (r *ManualDependencyRepository) ReresolveAll(ctx context.Context, tenantID string, statusFilter []string) ([]ManualDependency, error) {
 	if tenantID == "" {
 		return nil, ErrTenantIDRequired
@@ -811,7 +1030,15 @@ func (r *ManualDependencyRepository) ReresolveAll(ctx context.Context, tenantID 
 	}
 
 	out := make([]ManualDependency, 0, len(rows))
-	for _, dep := range rows {
+	for i := range rows {
+		dep := &rows[i]
+		if err := r.checkExisting(dep); err != nil {
+			if !errors.Is(err, ErrManualDependencyForbidden) {
+				r.logger.Warn("reresolve row authorization failed",
+					"id", dep.ID, "tenant_id", tenantID, "error", err)
+			}
+			continue
+		}
 		updated, err := r.ResolveAndPersist(ctx, tenantID, dep.ID)
 		if err != nil {
 			r.logger.Warn("reresolve row failed",

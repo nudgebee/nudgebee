@@ -1,7 +1,7 @@
 import React from 'react';
 import { MenuItem, Typography, ListItemAvatar, Avatar, ListItemText } from '@mui/material';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { signOut } from 'next-auth/react';
+import { logout } from '@lib/logout';
 import { getUserSession } from '@lib/auth';
 import { SwitchTenentIconDark, LogoutIconDark, ApiIcon } from '@assets';
 import { ds } from 'src/utils/colors';
@@ -165,7 +165,7 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
           }}
           onClick={() => {
             setAnchorElUser(null);
-            signOut({ callbackUrl: '/' });
+            logout('/');
           }}
         >
           <Typography

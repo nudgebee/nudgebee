@@ -11,6 +11,7 @@ import {
   applyFilterAndSearch,
   clickAlertRowMenu,
   toggleAlert,
+  ensureAlertState,
 } from "./MonitoringAlertManagerHelper";
 
 const ALERT_NAME     = process.env.ALERT_MANAGER_ALERT_NAME || "test-alert";
@@ -133,14 +134,7 @@ test("Cluster Details->Monitoring-> Alert Manager -> Filter by Source", { tag: [
 // ─── TC-07: Filter by Status = Enabled ────────────────────────────────────────
 test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Enabled", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
-  await searchAlert(page, ALERT_NAME);
-  const alertRow = page.locator("tr", { hasText: ALERT_NAME });
-  await expect(alertRow).toBeVisible({ timeout: 30000 });
-  const isDisabled = await alertRow.locator("td").filter({ hasText: /disabled/i })
-    .count().then(n => n > 0).catch(() => false);
-  if (isDisabled) {
-    await toggleAlert(page, "enable", ALERT_NAME, testInfo);
-  }
+  await ensureAlertState(page, "enabled", ALERT_NAME, testInfo);
   await applyFilterAndSearch(page, "k8s-alert-filter-status", "Status", "Enabled", ALERT_NAME, testInfo);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
 });
@@ -209,14 +203,16 @@ test("Cluster Details->Monitoring-> Alert Manager -> Combined Filter Source and 
 // ─── TC-11: Disable Alert ─────────────────────────────────────────────────────
 test("Cluster Details->Monitoring-> Alert Manager -> Disable Alert", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }, testInfo) => {
   await setup(page);
-  await searchAlert(page, ALERT_NAME);
-  await expect(page.getByText(ALERT_NAME)).toBeVisible();
+  // Starts from enabled whatever an earlier run left, so the row offers Disable.
+  await ensureAlertState(page, "enabled", ALERT_NAME, testInfo);
   await toggleAlert(page, "disable", ALERT_NAME, testInfo);
+  await expect(page.locator("tr", { hasText: ALERT_NAME }).locator("td").filter({ hasText: /disabled/i }).first()).toBeVisible({ timeout: 15000 });
 });
 
 // ─── TC-12: Filter by Status = Disabled ───────────────────────────────────────
 test("Cluster Details->Monitoring-> Alert Manager -> Filter by Status Disabled", { tag: ["@dev", "@test", "@oss", "@regression", "@functional", "@search"] }, async ({ page }, testInfo) => {
   await setup(page);
+  await ensureAlertState(page, "disabled", ALERT_NAME, testInfo);
   await applyFilterAndSearch(page, "k8s-alert-filter-status", "Status", "Disabled", ALERT_NAME, testInfo);
   await expect(page.getByText(ALERT_NAME)).toBeVisible();
 });

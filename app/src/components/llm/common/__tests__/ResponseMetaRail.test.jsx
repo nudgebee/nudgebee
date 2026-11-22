@@ -410,7 +410,7 @@ describe('ResponseMetaRail duration tooltip', () => {
 describe('ResponseMetaRail approvals/clarifications pills', () => {
   const none = { count: 0, needsAttention: false };
 
-  it('shows one pill per kind, each opening the drawer', async () => {
+  it('shows one pill per kind, each opening the drawer on its own kind', async () => {
     const user = userEvent.setup();
     const onOpen = jest.fn();
     render(
@@ -425,7 +425,7 @@ describe('ResponseMetaRail approvals/clarifications pills', () => {
     expect(clarifications).toHaveAttribute('data-tone', 'neutral');
     await user.click(approvals);
     await user.click(clarifications);
-    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpen.mock.calls).toEqual([['approvals'], ['clarifications']]);
   });
 
   it('turns only the kind where something did not go ahead amber', () => {

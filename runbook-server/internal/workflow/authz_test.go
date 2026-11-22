@@ -37,8 +37,8 @@ func TestWorkflowGrantHelpers(t *testing.T) {
 		if !canWriteWorkflows(writer, acct) {
 			t.Errorf("workflows:Write should authorize writes on %s", acct)
 		}
-		if !canRunWorkflows(writer, acct) {
-			t.Errorf("workflows:Write should authorize running on %s (Write implies Execute here)", acct)
+		if canRunWorkflows(writer, acct) {
+			t.Errorf("workflows:Write must not authorize running on %s: Write does not imply Execute", acct)
 		}
 		if !canInspectWorkflows(writer, acct) {
 			t.Errorf("workflows:Write should authorize validate on %s", acct)
@@ -96,5 +96,19 @@ func TestWorkflowGrantHelpers(t *testing.T) {
 		"CustomPermissions":{"events:Write":true}}`)
 	if canWriteWorkflows(other, acctA) || canRunWorkflows(other, acctA) {
 		t.Error("events:Write must not authorize workflow operations")
+	}
+}
+
+// Running needs workflows:Execute, and Execute alone does not authorize edits.
+func TestRunWorkflowsNeedsExecute(t *testing.T) {
+	runner := scFromWire(t, `{
+		"TenantId":"t1","UserId":"u1","Roles":[],
+		"AccountIds":["`+acctA+`"],
+		"CustomPermissions":{"workflows:Execute":true}}`)
+	if !canRunWorkflows(runner, acctA) {
+		t.Error("workflows:Execute should authorize running")
+	}
+	if canWriteWorkflows(runner, acctA) {
+		t.Error("workflows:Execute must not authorize edits")
 	}
 }

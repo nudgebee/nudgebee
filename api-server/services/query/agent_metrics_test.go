@@ -53,7 +53,7 @@ func TestProcessAgentMetricsDecodedInFiltersPassToCloud(t *testing.T) {
 		return cloud.QueryMetricsResponse{}, nil
 	})
 
-	response, err := processAgentMetrices(request, security.NewRequestContextForSuperAdmin(nil, nil, nil), time.Now())
+	response, err := processAgentMetrices(request, security.NewRequestContextForSuperAdmin(nil, nil, nil), time.Now(), "cloud")
 	require.NoError(t, err)
 	assert.Empty(t, response.Errors)
 	assert.Equal(t, []string{"resource-a", "resource-b"}, captured.Query.ResourceIds)
@@ -70,7 +70,7 @@ func assertAgentMetricsRejectsWithoutCloud(t *testing.T, request QueryRequest, e
 		return cloud.QueryMetricsResponse{}, nil
 	})
 
-	response, err := processAgentMetrices(request, security.NewRequestContextForSuperAdmin(nil, nil, nil), time.Now())
+	response, err := processAgentMetrices(request, security.NewRequestContextForSuperAdmin(nil, nil, nil), time.Now(), "cloud")
 	require.NoError(t, err)
 	require.Len(t, response.Errors, 1)
 	assert.Equal(t, expectedCode, response.Errors[0].Code)

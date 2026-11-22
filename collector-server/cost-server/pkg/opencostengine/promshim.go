@@ -36,6 +36,9 @@ type PrometheusShim struct {
 	serviceToken string // X-ACTION-TOKEN value
 	httpClient   *http.Client
 	fallback     http.Handler // reverse proxy to relay /prometheus (nil disables)
+	// router picks the path per cluster. Nil sends every query to metrics_query,
+	// which is what the unit tests built through newPrometheusShim exercise.
+	router *metricsRouter
 }
 
 // shimQueryKey is the single key the shim uses when it forwards a one-off query
@@ -87,7 +90,13 @@ func NewPrometheusShim() (*PrometheusShim, error) {
 	if fallback == nil && serviceURL == "" {
 		return nil, fmt.Errorf("neither RELAY_SERVER_ENDPOINT nor an observability backend is configured")
 	}
-	return newPrometheusShim(serviceURL, token, fallback), nil
+	shim := newPrometheusShim(serviceURL, token, fallback)
+	// With a relay to fall back on, metrics_query is used only for clusters the
+	// agent cannot serve (see metricsRouter). Without one there is no choice.
+	if serviceURL != "" && fallback != nil {
+		shim.router = newMetricsRouter(lookupMetricsRoute)
+	}
+	return shim, nil
 }
 
 // newPrometheusShim is the test seam: it takes already-resolved dependencies.
@@ -156,8 +165,9 @@ func newRelayFallback(relayEndpoint, relayToken string) (http.Handler, error) {
 //
 // Without an observability backend configured every path is proxied straight
 // through to the cluster's Prometheus, which is what OpenCost wants. When one
-// is configured, instant and range queries are answered from it instead and
-// everything else — series, labels, label values — still proxies.
+// is configured, instant and range queries are answered from it instead — for
+// the clusters the router sends there — and everything else (series, labels,
+// label values) still proxies.
 func (s *PrometheusShim) Handler() http.Handler {
 	mux := http.NewServeMux()
 	if s.serviceURL != "" {
@@ -170,6 +180,14 @@ func (s *PrometheusShim) Handler() http.Handler {
 
 func (s *PrometheusShim) handleQuery(instant bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Decide before ParseForm: the passthrough forwards the request body,
+		// which parsing would consume.
+		if s.router != nil {
+			if accountID := r.Header.Get("X-Scope-OrgID"); accountID != "" && !s.router.useObservability(r.Context(), accountID) {
+				s.handleFallback(w, r)
+				return
+			}
+		}
 		// ParseForm merges URL query and POST form; the prometheus client uses
 		// POST-with-form (GET fallback), so this covers both.
 		if err := r.ParseForm(); err != nil {
@@ -292,6 +310,20 @@ func (s *PrometheusShim) fetchMetric(ctx context.Context, accountID, promql stri
 // timestamps in seconds and values as float64; Prometheus expects float-second
 // timestamps paired with string-encoded sample values.
 func writePromResult(w http.ResponseWriter, res *shimQueryResult, instant bool) {
+	// An instant query whose expression ends in a subquery (OpenCost's
+	// `...[1445m:5m]` pod-lifetime queries) evaluates to a range vector, so
+	// Prometheus answers it as a matrix carrying every sample. OpenCost reads
+	// each pod's start and end from those samples; collapsing them to one
+	// vector sample made every pod start where it ended and produced zero or
+	// negative minutes and cost.
+	if instant && res != nil {
+		for _, series := range res.Payload {
+			if len(series.Timestamps) > 1 && len(series.Values) > 1 {
+				instant = false
+				break
+			}
+		}
+	}
 	resultType := "matrix"
 	if instant {
 		resultType = "vector"

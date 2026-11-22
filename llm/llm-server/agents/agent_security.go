@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -184,6 +185,6 @@ func (l SecurityAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
-func (l SecurityAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l SecurityAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

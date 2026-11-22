@@ -418,6 +418,12 @@ type Event struct {
 	// (an alarm that entered and left ALARM between two polls); it is stored with
 	// that end time.
 	EndsAt *time.Time `json:"ends_at,omitempty"`
+	// LegacyFindingId is the finding_id this firing was stored under before its
+	// source changed finding_id format. Polling treats a row under it as the same
+	// firing, so a still-open alert is neither closed nor stored a second time
+	// when the format changes. Transitional: remove once no open
+	// Azure_Monitor_Alert event carries a resource-scoped finding_id.
+	LegacyFindingId string `json:"legacy_finding_id,omitempty"`
 }
 
 // FiringFindingID is the per-firing identity of an event: what makes two
@@ -444,6 +450,16 @@ func (e Event) FiringFindingID() string {
 		return e.FindingId
 	}
 	return fmt.Sprintf("%s-%d", e.EventId, e.Date.Unix())
+}
+
+// StoredFindingIDs are the finding_ids this firing may already be stored
+// under: FiringFindingID, and LegacyFindingId while a format change rolls out.
+func (e Event) StoredFindingIDs() []string {
+	ids := []string{e.FiringFindingID()}
+	if e.LegacyFindingId != "" && e.LegacyFindingId != ids[0] {
+		ids = append(ids, e.LegacyFindingId)
+	}
+	return ids
 }
 
 type ListResourcesResponse struct {
@@ -631,6 +647,11 @@ type QueryLogsResponse struct {
 	Results    []LogMessage       `json:"results"`
 	Status     string             `json:"status"` // e.g., Complete, Failed, Cancelled, Running, Scheduled
 	Statistics LogQueryStatistics `json:"statistics"`
+	// LogGroupName and LogStreamPrefix say where the results were read from,
+	// when the provider resolved that itself (a group detected from the
+	// resource, read through the resource's own streams).
+	LogGroupName    string `json:"log_group_name,omitempty"`
+	LogStreamPrefix string `json:"log_stream_prefix,omitempty"`
 }
 
 // QueryDeploymentDiffRequest defines the input for fetching a resource's recent

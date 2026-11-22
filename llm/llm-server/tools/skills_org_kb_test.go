@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/require"
@@ -21,9 +23,9 @@ func TestSkillQueriesIncludeVisibleOrganisationKBs(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = raw.Close() }()
 	dbms := &common.DatabaseManager{Db: sqlx.NewDb(raw, "postgresql")}
-	old := core.VisibleOrgKnowledgebaseIDs
-	core.VisibleOrgKnowledgebaseIDs = func(context.Context, string) []string { return []string{"org-kb"} }
-	t.Cleanup(func() { core.VisibleOrgKnowledgebaseIDs = old })
+	old := knowledge.VisibleOrgKnowledgebaseIDs
+	knowledge.VisibleOrgKnowledgebaseIDs = func(context.Context, string) []string { return []string{"org-kb"} }
+	t.Cleanup(func() { knowledge.VisibleOrgKnowledgebaseIDs = old })
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account-a"}
 
 	mock.ExpectQuery(`WHERE \(kb.account_id = \$1 OR kb.id = ANY\(\$3::uuid\[\]\)\)\s+AND LOWER\(BTRIM\(kb.name\)\) = ANY\(\$2::text\[\]\)`).

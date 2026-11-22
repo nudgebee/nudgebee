@@ -76,6 +76,27 @@ func TestMuteSourcesFor(t *testing.T) {
 	assert.Equal(t, []string{"elasticsearch_webhook"}, muteSourcesFor("elasticsearch_webhook", promRule))
 }
 
+// A mute made on a pushed alarm while it was stored as an EventBridge event
+// keeps working once the alarm is stored as a CloudWatch alarm: it silences the
+// row, the row reports it, and unmuting from the row reaches it.
+func TestMute_EventBridgeMuteCoversAlarmStoredAsCloudWatchAlarm(t *testing.T) {
+	const alarm = "orders-queue-depth"
+	ebRule := &eventrule.RuleCapabilities{Source: "AWS_EventBridge", Operations: eventrule.RuleOperations{Mute: eventrule.Capability{Available: true}}}
+	cwRule := &eventrule.RuleCapabilities{Source: "AWS_CloudWatch_Alarm", Operations: eventrule.RuleOperations{Mute: eventrule.Capability{Available: true}}}
+	source, key := "AWS_CloudWatch_Alarm", alarm
+	row := &models.Event{Source: &source, AggregationKey: &key}
+
+	// The mute rows as written then: one per source of the EventBridge rule.
+	oldMute := muteSpec{ruleID: "eb-rule", alert: alarm, scope: eventrule.MuteScopeRule, sources: []string{"AWS_EventBridge"}}
+	assert.True(t, MatchesRule(row, oldMute.matchRule("AWS_EventBridge")), "the old mute row suppresses and is reported on the alarm row")
+
+	// Unmuting from the row selects owned rows by these sources.
+	assert.Contains(t, muteSourcesFor(source, ebRule), "AWS_EventBridge")
+
+	// A CloudWatch alarm rule's mute still covers both.
+	assert.ElementsMatch(t, []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}, muteSourcesFor(source, cwRule))
+}
+
 func TestMarkMutedScopes(t *testing.T) {
 	day := time.Now().Add(24 * time.Hour)
 	week := time.Now().Add(7 * 24 * time.Hour)

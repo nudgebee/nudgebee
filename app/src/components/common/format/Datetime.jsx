@@ -1,6 +1,6 @@
 import { Typography } from '@mui/material';
 import PropTypes from 'prop-types';
-import CustomTooltip from '@shared/CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 
 const ONE_SEC = 1_000;
 const ONE_MIN = 60_000;
@@ -202,7 +202,7 @@ export default function Datetime({
 
   if (!showTooltip) return body;
 
-  return <CustomTooltip title={formatTooltip(dateValue)}>{body}</CustomTooltip>;
+  return <Tooltip title={formatTooltip(dateValue)}>{body}</Tooltip>;
 }
 
 Datetime.propTypes = {

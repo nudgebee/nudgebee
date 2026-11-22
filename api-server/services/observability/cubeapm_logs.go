@@ -933,7 +933,7 @@ func buildCubeAPMLogGroupQuery(f cubeAPMLogGroupFieldSet, env, selectedNamespace
 		cubeAPMLogGroupMessageField, f.Namespace, f.Pod, f.Workload, f.Container, cubeAPMLogGroupLevelField, f.Service,
 	}), ", ")
 
-	return fmt.Sprintf(`%s | %s | stats by (%s) count() as cube_count | sort ("cube_count" desc) | limit %d`,
+	return fmt.Sprintf(`%s | %s | stats by (%s) count() as cube_count, max(_time) as last_time | sort ("cube_count" desc) | limit %d`,
 		cubeAPMBaseQuery(env, strings.Join(conditions, " AND ")), strings.Join(pipes, " | "), groupBy, limit)
 }
 
@@ -969,16 +969,14 @@ func (s *CubeAPMLogSource) QueryLogGroup(ctx *security.RequestContext, req Fetch
 		return LogGroupOutput{}, err
 	}
 
-	// The aggregation carries no per-group timestamp (LogsQL's documented stats
-	// functions have no max()), so every group is stamped with the end of the
-	// query window — the same fallback the OpenObserve path uses for groups whose
-	// aggregate timestamp is missing.
+	// endMs/1000 is only the fallback for a row whose last_time is missing or
+	// unparseable — the same fallback the OpenObserve path uses in that case.
 	return convertCubeAPMLogGroups(fields, rows, endMs/1000), nil
 }
 
 // convertCubeAPMLogGroups maps aggregated rows onto the shared LogGroup contract.
 // Timestamps are emitted in epoch seconds — the frontend multiplies by 1000.
-func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, timestampSec int64) LogGroupOutput {
+func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, fallbackTimestampSec int64) LogGroupOutput {
 	groups := make([]LogGroup, 0, len(rows))
 
 	for _, row := range rows {
@@ -991,6 +989,15 @@ func convertCubeAPMLogGroups(f cubeAPMLogGroupFieldSet, rows []map[string]any, t
 		count, err := strconv.ParseInt(strings.TrimSpace(cubeAPMString(row["cube_count"])), 10, 64)
 		if err != nil || count <= 0 {
 			continue
+		}
+
+		// max(_time) comes back as the same RFC3339Nano string CubeAPM uses for
+		// every other timestamp field (see cubeAPMRowToOutputLog).
+		timestampSec := fallbackTimestampSec
+		if lastTime := cubeAPMString(row["last_time"]); lastTime != "" {
+			if parsed, err := time.Parse(time.RFC3339Nano, lastTime); err == nil {
+				timestampSec = parsed.Unix()
+			}
 		}
 
 		pod := cubeAPMString(row[f.Pod])

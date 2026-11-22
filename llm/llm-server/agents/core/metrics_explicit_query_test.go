@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -73,4 +74,20 @@ func TestUseFirstExplicitMetricsQuery(t *testing.T) {
 	ambiguous := []NBAgentPlannerToolAction{{Tool: "es_metrics_query", ToolInput: `{"query":{"match_all":{}}}`}}
 	planner.useFirstExplicitMetricsQuery(ambiguous, nil)
 	require.Equal(t, `{"query":{"match_all":{}}}`, ambiguous[0].ToolInput, "rewritten agent input must not replace ambiguous original user DSL")
+}
+
+// The metrics tool appends a user-supplied query with this wording
+// (withUserSuppliedQuery); with a named index, react4 must recognise it and run it
+// first (#39201).
+func TestExplicitMetricsQuery_UserSuppliedQueryFromMetricsTool(t *testing.T) {
+	dsl := `{"query":{"term":{"metricset.dimensions.DBClusterIdentifier":"example-auroradb"}}}`
+	message := "CPU of example-auroradb in index metrics-*" +
+		"\n\nThe user supplied a query. Run the following query exactly as given first; change it only if it fails or returns nothing, and say what you changed:\n" + dsl
+	got := explicitMetricsQuery(message)
+	if got == "" {
+		t.Fatalf("explicit query not recognised in %q", message)
+	}
+	if !strings.Contains(got, `"index":"metrics-*"`) || !strings.Contains(got, "example-auroradb") {
+		t.Fatalf("got %s", got)
+	}
 }

@@ -217,3 +217,38 @@ func TestSignoz_ValidateConfig_UnknownAuthType(t *testing.T) {
 	require.Len(t, errs, 1)
 	assert.Contains(t, errs[0].Error(), "signoz_auth_type must be")
 }
+
+// The failure from #41200: the tunnel in front of SigNoz is down, so every
+// route answers 502 with the proxy's own HTML page. The form's error popup
+// showed that page's source; it must now read as a reachability problem, on
+// both auth types.
+func TestSignoz_ValidateConfig_ProxyErrorPageIsReadable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprint(w, `<!DOCTYPE html> <html class="h-full" lang="en-US" dir="ltr"> <head> `+
+			`<meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> `+
+			`<link rel="preload" href="/static/fonts/Euclid.woff2" as="font"> </head> `+
+			`<body>ERR_NGROK_8012</body> </html>`)
+	}))
+	t.Cleanup(srv.Close)
+
+	cases := []struct {
+		name string
+		cfg  []core.IntegrationConfigValue
+	}{
+		{"password auth", signozCfg(srv.URL, testSignozPassword, SignozModeSelfHosted)},
+		{"API key auth", signozKeyCfg(srv.URL, testSignozAPIKey)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := Signoz{}.ValidateConfig(nil, tc.cfg, "acc-1")
+			require.Len(t, errs, 1)
+			msg := errs[0].Error()
+			t.Logf("popup shows: %s", msg)
+			assert.NotContains(t, msg, "<", "the popup carries page markup")
+			assert.NotContains(t, msg, "DOCTYPE")
+			assert.Contains(t, msg, "SigNoz is not reachable (HTTP 502)")
+		})
+	}
+}

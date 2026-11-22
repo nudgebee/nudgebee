@@ -5,10 +5,21 @@ import { parseHttpResponseBodyMessage } from 'src/utils/common';
 // rate-limit emitters don't accidentally surface the budget copy. The
 // `fallback` arg is expected to carry the upstream's clean message via
 // `parseHttpResponseBodyMessage` / `errors[0].message`.
+// The llm-server's budget rejections already name the limit ("budget: daily
+// investigation count limit exceeded for this account"), so show that as sent.
+function budgetRejectionMessage(upstream: string): string {
+  const reason = upstream
+    .replace(/^budget:\s*/i, '')
+    .trim()
+    .replace(/\.+$/, '');
+  const shown = reason ? `${reason.charAt(0).toUpperCase()}${reason.slice(1)}` : 'Budget limit exceeded';
+  return `${shown}. Contact ${getBrandTitle()} Support team.`;
+}
+
 export function mapUpstreamError(status: number | undefined, fallback: string): string {
   if (status === 429) {
     if (fallback.toLowerCase().includes('budget')) {
-      return `Monthly Budget Limit exceeded for this account. Contact ${getBrandTitle()} Support team.`;
+      return budgetRejectionMessage(fallback);
     }
     return fallback || 'Rate limit exceeded. Please retry shortly.';
   }

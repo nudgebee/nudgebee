@@ -15,8 +15,9 @@ import ConversationLoader from '@shared/ConversationLoader';
 import { describeAnalysisStage } from '@components/k8s/investigate/analysisStage';
 import { ds } from 'src/utils/colors';
 import { ANNOTATIONS } from '@lib/annotationKeys';
-import { getNubiIconUrl } from '@hooks/useTenantBranding';
-import { hasWriteAccess } from '@lib/auth';
+import { getAssistantLabel, getNubiIconUrl } from '@hooks/useTenantBranding';
+import { remediationLinkText, splitAtNextSteps } from '@components/k8s/investigate/remediationLink';
+import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
 import SimpleDiffViewer from '@shared/viewers/SimpleDiffViewer';
 import EventRaisePrPanel from './EventRaisePrPanel';
 import { FiArrowRight } from 'react-icons/fi';
@@ -26,6 +27,56 @@ import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import { toast } from '@ui/Toast';
 import { reportContainsInvestigation } from '@utils/investigationReport';
 import { formatClockCompact } from '@shared/format/Datetime';
+import { buildDrawerTasks } from '@hooks/useLLMInvestigationControl';
+import EvidenceDrawer from '@components/llm/common/EvidenceDrawer';
+import { useOptionalNubiGlobalChat } from '@context/NubiGlobalChatContext';
+import { alertSessionOf, investigationIsAsking, investigationWaitingReason } from '@components/k8s/investigate/investigationSession';
+import { citationChipSx, findCitedTask, findLegacyCitedTask, parseCitationHref } from '@components/llm/utils/citationLinks';
+
+// The analysis message's steps, listed with a note, when no single step can be opened.
+const evidenceList = (steps, analysisMessageId, note) => {
+  // Without the analysis's own message id, the latest message is the analysis; with one that is
+  // not in the session, no other message's steps stand in for it.
+  const analysis = analysisMessageId ? steps.messages.find((m) => m.id === analysisMessageId) : steps.messages[steps.messages.length - 1];
+  if (!analysis) {
+    return { open: true, tasks: [], conversationId: steps.conversationId, note: 'The steps of this analysis could not be found.' };
+  }
+  return { open: true, tasks: analysis?.tasks || [], conversationId: steps.conversationId, note };
+};
+
+// The URL-hash citations already opened on this page visit (see the hash effect in the card).
+const openedHashCitations = new Set();
+
+// A stage of the analysis read is still running or queued: a re-run is under way.
+const rerunUnderWay = (res) =>
+  Object.values(res?.task_statuses || {}).some((v) => ['in_progress', 'created', 'pending', 'queued'].includes(String(v || '').toLowerCase()));
+
+// The tenant's remediation loop flag (cached after the first read); off when it cannot be read.
+const remediationLoopFlagOn = async () => {
+  try {
+    return Boolean(await hasFeatureAccess('EVENT_REMEDIATION_LOOP'));
+  } catch {
+    return false;
+  }
+};
+
+// What the evidence drawer shows for a citation, from the session's loaded steps — or null when a
+// cited step is not among them yet, so the caller reads the session again.
+const evidenceForCitation = (citation, steps, analysisMessageId) => {
+  if (citation.rowId) {
+    const owner = steps.messages.find((m) => findCitedTask(citation.rowId, m.tasks));
+    return owner ? { open: true, tasks: owner.tasks, task: findCitedTask(citation.rowId, owner.tasks), conversationId: steps.conversationId } : null;
+  }
+  const list = evidenceList(
+    steps,
+    analysisMessageId,
+    'This analysis was written before its citations pointed at a step, so here are all the steps it took.'
+  );
+  const byOrder = findLegacyCitedTask(citation.step, list.tasks);
+  return byOrder
+    ? { ...list, task: byOrder, note: 'Matched by step order: this analysis was written before its citations pointed at an exact step.' }
+    : list;
+};
 
 // The model returns prose with single newlines between paragraphs, which markdown
 // collapses into one run-on paragraph, so a blank line is inserted between them.
@@ -70,6 +121,9 @@ const STATUS_READ_SLOW_MS = 15000;
 const STATUS_READ_SLOW_AFTER_MS = 5 * 60 * 1000;
 // Reads in a row that may get no answer before the page says it cannot read the status.
 const UNANSWERED_READS_BEFORE_NOTICE = 3;
+// How long a run read as killed is still read, for every tenant: a restart picks a killed run up within minutes, so
+// one still killed after this is taken as ended.
+const KILLED_READ_MAX_MS = 30 * 60 * 1000;
 
 // How an analysis run started, as recorded by llm-server (events.AnalysisTrigger).
 const ANALYSIS_TRIGGER_LABELS = {
@@ -316,6 +370,10 @@ class AskAiCard {
       // section (see effectiveActiveSectionId below).
       const [activeSectionId, setActiveSectionId] = useState(null);
       const [selectedAnalysisVersion, setSelectedAnalysisVersion] = useState('live');
+      // The steps behind the analysis, opened from one of its citations.
+      const [evidence, setEvidence] = useState({ open: false });
+      // Each session's steps as last read for a citation, by session; see openCitation.
+      const evidenceStepsRef = useRef({});
       const lastFetchedConvIdRef = useRef(null);
       const isMountedRef = useRef(true);
       // One fetcher for the follow-up poll loop. Holds cursor + merged Maps,
@@ -325,8 +383,34 @@ class AskAiCard {
       if (!followUpFetcherRef.current) {
         followUpFetcherRef.current = createConversationFetcher();
       }
+      // The alert's one conversation: the investigation's steps and questions, the follow-up questions and the
+      // remediation turns. Citations read its steps with their own fetcher, so the follow-up poll's cursor is not reset.
+      const alertSession = alertSessionOf(event?.fingerprint);
+      const evidenceFetchersRef = useRef({});
+      // Stable across renders (it reads only a ref), so openCitation and the effects that depend on it don't re-run.
+      const evidenceFetcherFor = useCallback((sessionId) => {
+        if (!evidenceFetchersRef.current[sessionId]) evidenceFetchersRef.current[sessionId] = createConversationFetcher();
+        return evidenceFetchersRef.current[sessionId];
+      }, []);
+      const nubiChat = useOptionalNubiGlobalChat();
+      // The Remediation tab's fixes made from this report's next steps (set by the page): {count, preparing, open}.
+      const [remediationLink, setRemediationLink] = useState(cardInstance.remediationLink || null);
+      // The tenant's remediation loop is on (set by the page with the link).
+      const [remediationLoopOn, setRemediationLoopOn] = useState(Boolean(cardInstance.remediationLoopOn));
+      useEffect(() => {
+        const onLink = (e) => {
+          if (!e?.detail || (e.detail.eventId && e.detail.eventId !== event?.id)) return;
+          setRemediationLink(e.detail.link || null);
+          setRemediationLoopOn(Boolean(e.detail.loopOn));
+        };
+        window.addEventListener('nb:remediation-link', onLink);
+        return () => window.removeEventListener('nb:remediation-link', onLink);
+      }, []);
 
       useEffect(() => {
+        // Set on mount too: Strict Mode mounts, unmounts and mounts again, and the cleanup in
+        // between would otherwise leave it false and drop every later response.
+        isMountedRef.current = true;
         return () => {
           isMountedRef.current = false;
         };
@@ -341,7 +425,7 @@ class AskAiCard {
         apiAskNudgebee
           .llmConversationHistoryForInvestigation({
             account_id: event.cloud_account_id,
-            session_id: `event-${event.fingerprint}`,
+            session_id: alertSessionOf(event.fingerprint),
             status: 'WAITING',
             source: 'Investigation',
             limit: 1,
@@ -352,9 +436,11 @@ class AskAiCard {
             const conv = conversations[0] || null;
             setWaitingConversation(conv);
             if (conv) {
-              // Only fetch detail if conversation ID changed (avoid repeated getLlmConversation calls)
-              if (lastFetchedConvIdRef.current !== conv.id) {
-                lastFetchedConvIdRef.current = conv.id;
+              // Only fetch detail when the waiting conversation changed (avoid repeated getLlmConversation calls). One
+              // conversation holds every turn of the alert, so a later wait in it is told apart by its update time.
+              const key = `${conv.id}:${conv.updated_at || ''}`;
+              if (lastFetchedConvIdRef.current !== key) {
+                lastFetchedConvIdRef.current = key;
                 fetchWaitingFollowUps(conv);
               }
             } else {
@@ -383,7 +469,9 @@ class AskAiCard {
                 break;
               }
             }
-            if (!waitingMsg) {
+            // A remediation approval waiting in the alert's conversation is the Remediation tab's, not a question the
+            // investigation is waiting on.
+            if (!waitingMsg || !investigationIsAsking(messages)) {
               setWaitingFollowUpItems([]);
               return;
             }
@@ -508,6 +596,7 @@ class AskAiCard {
         let cancelled = false;
         let timer = null;
         let unansweredReads = 0;
+        let killedSince = null;
         const startedAt = Date.now();
         // Each read is scheduled when the last one returns, so a slow answer never overlaps the next.
         const scheduleNextRead = () => {
@@ -544,8 +633,18 @@ class AskAiCard {
               if (!hasFetchedInitial) {
                 setHasFetchedInitial(true);
               }
-              const terminalStatuses = ['completed', 'failed', 'killed'];
-              if (terminalStatuses.includes(res?.status?.toLowerCase())) {
+              // A finished or failed run ends the poll. With the remediation loop on, a run read as killed can be
+              // picked up again by the server (a restart resumes it), and stopping there left the card saying "a new
+              // analysis is in progress" over a run that later completed, until the page was reloaded: keep reading.
+              // With it off a killed run is final, as before the loop, unless a re-run is under way.
+              const status = res?.status?.toLowerCase();
+              killedSince = status === 'killed' ? killedSince ?? Date.now() : null;
+              const ended =
+                ['completed', 'failed'].includes(status) ||
+                (status === 'killed' &&
+                  (Date.now() - killedSince >= KILLED_READ_MAX_MS || (!rerunUnderWay(res) && !(await remediationLoopFlagOn()))));
+              if (cancelled) return;
+              if (ended) {
                 cardInstance.isRefreshing = false;
                 cardInstance.showCardInsights();
                 if (cardInstance.onDataUpdate && typeof cardInstance.onDataUpdate === 'function') {
@@ -571,6 +670,11 @@ class AskAiCard {
           clearTimeout(timer);
         };
       }, [hasFetchedInitial]);
+
+      // A new answer or re-run can add steps the kept copy does not have.
+      useEffect(() => {
+        evidenceStepsRef.current = {};
+      }, [followUpMessages.length, localAiData?.message_id]);
 
       // Fetch follow-up questions when analysis completes
       useEffect(() => {
@@ -689,6 +793,68 @@ class AskAiCard {
         [event, followUpLoading, fetchSuggestions, clearSuggestions]
       );
 
+      // A citation in the analysis or a follow-up answer opens the step it names, in the alert's conversation. Its
+      // steps are read once and kept; they are read again only after a new follow-up answer, or when a link names a
+      // step the kept copy does not have yet.
+      const openCitation = useCallback(
+        (href) => {
+          const citation = parseCitationHref(href);
+          if (!citation || !event?.fingerprint || !event?.cloud_account_id) {
+            return false;
+          }
+          const sessionId = alertSessionOf(event.fingerprint);
+          const keptSteps = evidenceStepsRef.current[sessionId];
+          const kept = keptSteps && evidenceForCitation(citation, keptSteps, localAiData?.message_id);
+          if (kept) {
+            setEvidence(kept);
+            return true;
+          }
+          setEvidence({ open: true, loading: true });
+          evidenceFetcherFor(sessionId)
+            .fetch({ accountId: event.cloud_account_id, sessionId })
+            .then((res) => {
+              if (!isMountedRef.current) return;
+              const conversation = res?.data?.data?.llm_conversations?.[0];
+              // A read overtaken by the follow-up poll comes back without the conversation; it is
+              // not an empty session, so it is neither shown nor kept.
+              if (!conversation) {
+                setEvidence({ open: true, tasks: [], note: 'The steps could not be loaded. Close this and try again.' });
+                return;
+              }
+              const steps = {
+                conversationId: conversation?.id,
+                messages: (conversation?.llm_conversation_messages || []).map((m) => ({
+                  id: m.id,
+                  tasks: buildDrawerTasks(m.llm_conversation_agents, m),
+                })),
+              };
+              evidenceStepsRef.current = { ...evidenceStepsRef.current, [sessionId]: steps };
+              setEvidence(
+                evidenceForCitation(citation, steps, localAiData?.message_id) ||
+                  evidenceList(steps, localAiData?.message_id, 'That step is not in this analysis any more, so here are all the steps it took.')
+              );
+            })
+            .catch(() => {
+              if (isMountedRef.current) setEvidence({ open: true, tasks: [], note: 'The steps could not be loaded. Close this and try again.' });
+            });
+          return true;
+        },
+        [event?.fingerprint, event?.cloud_account_id, localAiData?.message_id]
+      );
+
+      // A link from outside the app (a Slack post of this analysis) names its step in the URL
+      // hash; open it once the analysis has loaded. Once per page visit, not once per mount: the card
+      // mounts again on a tab switch or a re-read, and the hash is still in the URL, so a per-mount
+      // guard opened the steps drawer again by itself (while a plan was being written, say).
+      useEffect(() => {
+        if (!localAiData || typeof window === 'undefined') return;
+        const hash = window.location.hash;
+        if (!parseCitationHref(hash)) return;
+        const key = `${window.location.pathname}${window.location.search}${hash}`;
+        if (openedHashCitations.has(key)) return;
+        if (openCitation(hash)) openedHashCitations.add(key);
+      }, [localAiData, openCitation]);
+
       if (!localAiData) {
         return <ConversationLoader label='Loading the analysis' />;
       }
@@ -761,6 +927,8 @@ class AskAiCard {
       // The latest run failed, and the reader is looking at the latest (or at the older version
       // shown in its place), not at a version picked from the list.
       const liveFailed = selectedAnalysisVersion === 'live' && localAiData?.status?.toLowerCase() === 'failed';
+      // A re-investigation that waits for the alert's conversation (an approval, an answer, a step running) says why.
+      const waitingReason = investigationWaitingReason(selectedAnalysisVersion === 'live' ? localAiData : null);
       const fallbackNote = isShowingFallback ? ' Showing the most recent completed version.' : '';
 
       const fallbackStatus = (taskStatus, content) => {
@@ -1073,6 +1241,11 @@ class AskAiCard {
                     actionsPlacement='inline'
                   />
                 )}
+                {waitingReason && !liveFailed && (
+                  <Box data-testid='investigation-waiting-reason'>
+                    <Banner tone='info' surface='section' title='The investigation is waiting' message={waitingReason} />
+                  </Box>
+                )}
                 {statusUnreadable && (
                   <Banner
                     tone='warning'
@@ -1090,7 +1263,10 @@ class AskAiCard {
                     }}
                   >
                     <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-800)' }}>
-                      {`A new analysis is in progress${liveStage ? ` (${liveStage})` : ''}. Showing the most recent completed version.`}
+                      {/* A waiting run has not started: the banner above says why, so no step is shown as under way. */}
+                      {waitingReason
+                        ? 'Showing the most recent completed version until the new analysis starts.'
+                        : `A new analysis is in progress${liveStage ? ` (${liveStage})` : ''}. Showing the most recent completed version.`}
                     </Typography>
                   </Box>
                 )}
@@ -1124,6 +1300,24 @@ class AskAiCard {
                         );
                       })}
                     </Box>
+                    {/* The alert's chat holds the investigation's steps only with the remediation loop on (set by the page). */}
+                    {nubiChat && event?.fingerprint && alertSession && remediationLoopOn ? (
+                      <DsButton
+                        tone='link'
+                        size='xs'
+                        data-testid='view-investigation-steps'
+                        onClick={() =>
+                          // The alert's conversation, as the Remediation tab opens it: its approvals stay answerable.
+                          nubiChat.openWithContext({
+                            accountId: event.cloud_account_id,
+                            sessionId: alertSession,
+                            eventId: event.id,
+                          })
+                        }
+                      >
+                        View investigation steps
+                      </DsButton>
+                    ) : null}
                     {historicalVersions.length === 0 && liveTriggerLabel && (
                       <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', whiteSpace: 'nowrap' }}>
                         Started: {liveTriggerLabel}
@@ -1202,10 +1396,42 @@ class AskAiCard {
                               <ConversationLoader label={runningStage} />
                             </Box>
                           )}
-                          <MarkDowns
-                            data={cleanContent(activeSection.content)}
-                            sx={{ width: '100%', padding: noPadding ? '0px' : undefined, maxHeight: 'none', overflowY: 'visible' }}
-                          />
+                          {(() => {
+                            const markdownSx = {
+                              ...citationChipSx,
+                              width: '100%',
+                              padding: noPadding ? '0px' : undefined,
+                              maxHeight: 'none',
+                              overflowY: 'visible',
+                            };
+                            const content = cleanContent(activeSection.content);
+                            const linkText = activeSection.id === 'summary' ? remediationLinkText(remediationLink, getAssistantLabel()) : '';
+                            if (!linkText) {
+                              return <MarkDowns data={content} sx={markdownSx} onLinkClick={openCitation} />;
+                            }
+                            // The report's next steps, made runnable in the Remediation tab: one line just above its Next
+                            // Steps heading (at the top when the report has none). The report's text is not changed.
+                            const linkLine = (
+                              <Box sx={{ my: 'var(--ds-space-2)' }} data-testid='investigation-remediation-link'>
+                                <DsButton tone='link' size='xs' onClick={() => remediationLink?.open?.()}>
+                                  {linkText}
+                                </DsButton>
+                              </Box>
+                            );
+                            const parts = splitAtNextSteps(content);
+                            return parts ? (
+                              <>
+                                {parts.before.trim() ? <MarkDowns data={parts.before} sx={markdownSx} onLinkClick={openCitation} /> : null}
+                                {linkLine}
+                                <MarkDowns data={parts.after} sx={markdownSx} onLinkClick={openCitation} />
+                              </>
+                            ) : (
+                              <>
+                                {linkLine}
+                                <MarkDowns data={content} sx={markdownSx} onLinkClick={openCitation} />
+                              </>
+                            );
+                          })()}
                         </>
                       ) : (
                         <Box
@@ -1251,7 +1477,11 @@ class AskAiCard {
                   </Box>
                 ) : (
                   <Box key={msg.messageId || `fu-a-${idx}`} sx={{ mb: 'var(--ds-space-4)' }}>
-                    <MarkDowns data={msg.text} sx={{ width: '100%', padding: '0px', maxHeight: 'none', overflowY: 'visible' }} />
+                    <MarkDowns
+                      data={msg.text}
+                      sx={{ ...citationChipSx, width: '100%', padding: '0px', maxHeight: 'none', overflowY: 'visible' }}
+                      onLinkClick={openCitation}
+                    />
                   </Box>
                 )
               )}
@@ -1308,6 +1538,17 @@ class AskAiCard {
               </Box>
             </Box>
           )}
+          <EvidenceDrawer
+            open={Boolean(evidence.open)}
+            loading={evidence.loading}
+            tasks={evidence.tasks}
+            activeTask={evidence.task}
+            note={evidence.note}
+            accountId={event?.cloud_account_id}
+            conversationId={evidence.conversationId}
+            onClose={() => setEvidence({ open: false })}
+            onSelectTask={(task) => setEvidence((prev) => ({ ...prev, task }))}
+          />
         </div>
       );
     };
@@ -1417,6 +1658,21 @@ class AskAiCard {
 
   isCompleted = () => {
     return this.aiData?.status?.toLowerCase() === 'completed';
+  };
+
+  // One read of the analysis status, for the page while the card is not on screen (the card reads it only while
+  // mounted; the Remediation tab follows it). Updates the card as its own read does, and returns the read.
+  readStatusOnce = async () => {
+    if (!this.event?.id) return null;
+    const res = await apiKubernetes.generateAiRecommendation(this.event.cloud_account_id, this.event.id, 'pod_log_analysis');
+    if (!res || typeof res !== 'object') return null;
+    this.aiData = res;
+    if (['completed', 'failed'].includes(String(res.status || '').toLowerCase())) {
+      this.isRefreshing = false;
+      this.showCardInsights();
+      if (this.onDataUpdate && typeof this.onDataUpdate === 'function') this.onDataUpdate(this);
+    }
+    return res;
   };
 
   isFailed = () => {

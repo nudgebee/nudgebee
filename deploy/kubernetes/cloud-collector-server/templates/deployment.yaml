@@ -30,8 +30,14 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "cloud-collector-server.serviceAccountName" . }}
+      {{- $podSecurityContext := deepCopy (default dict .Values.podSecurityContext) }}
+      {{- if and .Values.awsWebIdentity.enabled (not (hasKey $podSecurityContext "fsGroup")) }}
+      {{- /* The kubelet gives the token file to this group (group-read, not world-read); the
+             collector process holds it as a supplementary group. */}}
+      {{- $_ := set $podSecurityContext "fsGroup" (int .Values.awsWebIdentity.fsGroup) }}
+      {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml $podSecurityContext | nindent 8 }}
       {{- if .Values.initCheckEnabled | default true }}
       initContainers:
         - name: db-check
@@ -55,6 +61,34 @@ spec:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
+            {{- with .Values.awsWebIdentity }}
+            {{- if .enabled }}
+            {{- /* Static-key variables are blanked below; the same names in .Values.env would be
+                   duplicate entries, and they would shadow web identity. */}}
+            {{- $staticKeyVars := list "AWS_ACCESS_KEY_ID" "AWS_SECRET_ACCESS_KEY" "AWS_SESSION_TOKEN" "AWS_ACCESS_KEY" "AWS_SECRET_KEY" }}
+            {{- range $staticKeyVars }}
+            {{- if hasKey (default dict $.Values.env) . }}
+            {{- fail (printf "awsWebIdentity.enabled: remove %s from env; static AWS keys take precedence over web identity" .) }}
+            {{- end }}
+            {{- end }}
+            # Explicit env overrides envFrom. The AWS SDKs ignore an empty credential variable,
+            # so blanking these keeps any static key in the shared secret from shadowing the role.
+            # AWS_PROFILE is deliberately not blanked: an empty profile name makes the AWS CLI
+            # fail with "profile () not found".
+            {{- range $staticKeyVars }}
+            - name: {{ . }}
+              value: ""
+            {{- end }}
+            - name: AWS_ROLE_ARN
+              value: {{ required "awsWebIdentity.roleArn is required when awsWebIdentity.enabled is true" .roleArn | quote }}
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: {{ printf "%s/token" .mountPath | quote }}
+            - name: AWS_ROLE_SESSION_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- end }}
             {{- end }}
             {{- if and .Values.resources.limits .Values.resources.limits.memory (not (hasKey (default dict .Values.env) "GOMEMLIMIT")) }}
             {{- /* Compute ~90% of limits.memory as an integer MiB value. Match the
@@ -110,6 +144,27 @@ spec:
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.awsWebIdentity.enabled }}
+          volumeMounts:
+            - name: aws-web-identity-token
+              mountPath: {{ .Values.awsWebIdentity.mountPath }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.awsWebIdentity.enabled }}
+      volumes:
+        # Token issued by the kubelet for this pod's service account, audience-bound to AWS
+        # STS. It is a file, not a network endpoint, so a request-forgery bug cannot fetch it.
+        # Readable by the pod's fsGroup only, never world-readable, so a process running
+        # under a different user without that group cannot read it.
+        - name: aws-web-identity-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.awsWebIdentity.audience | quote }}
+                  expirationSeconds: {{ .Values.awsWebIdentity.expirationSeconds }}
+                  path: token
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

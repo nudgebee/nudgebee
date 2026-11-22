@@ -571,6 +571,27 @@ func (m AzureMonitorWebhook) ProcessEventWebook(sc *security.RequestContext, set
 		AccountId:             resolvedAccountId,
 	}
 
+	setAzureFiringKey(&webhook, alertId)
+
+	// The same alert also arrives by polling when the account's credentials can list
+	// alerts. Name it exactly as polling does, so the two arrivals are one event.
+	normalizeAccountId := resolvedAccountId
+	if normalizeAccountId == "" {
+		normalizeAccountId = accountId
+	}
+	if normalizeAccountId != "" {
+		normalized, err := normalizeByCollector(sc, "normalize_azure_monitor_webhook", normalizeAccountId, webhookPayloadString)
+		if err != nil {
+			// The firing key set above still collapses this delivery with its polled
+			// twin and lets a resolve close it; only fingerprint and subject keep the
+			// webhook's own naming.
+			sc.GetLogger().Warn("azure_monitor_webhook: collector normalization failed, using the webhook's own fingerprint and subject",
+				"error", err, "alertId", alertId, "accountId", normalizeAccountId)
+		} else {
+			applyCollectorIdentity(&webhook, normalized)
+		}
+	}
+
 	// Create event rule asynchronously based on Azure Monitor alert configuration
 	go func() {
 		// Add panic recovery to prevent application crashes
@@ -664,6 +685,33 @@ func (m AzureMonitorWebhook) ProcessEventWebook(sc *security.RequestContext, set
 
 func (m AzureMonitorWebhook) TestConnection(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId string) (bool, error) {
 	return true, nil
+}
+
+// setAzureFiringKey keys the delivery by the per-firing id polling stores, without
+// the collector: the webhook's alertId is already subscription-scoped, so in
+// lowercase it is the canonical finding_id the events unique index collapses a
+// polled and a pushed arrival on, and the key a resolve closes them by. A
+// collector outage then costs only fingerprint and subject, never dedup or
+// resolve. Events opened before this were keyed by alertId in Azure's casing,
+// which LegacyFingerprint keeps closable.
+func setAzureFiringKey(webhook *core.EventIncomingWebhook, alertId string) {
+	webhook.EventId = strings.ToLower(alertId)
+	webhook.LegacyFingerprint = alertId
+}
+
+// applyCollectorIdentity replaces the webhook's own naming of an alert with the one
+// polling stores, keeping its richer description, labels and evidence. finding_id is
+// the per-firing key; fingerprint and subject are what dedup chains and enrichment
+// match.
+func applyCollectorIdentity(webhook *core.EventIncomingWebhook, n collectorNormalizedEvent) {
+	webhook.EventId = n.FindingId
+	webhook.EventTitle = n.Title
+	webhook.EventSubjectKind = n.SubjectType
+	webhook.EventSubjectNamespace = n.SubjectNamespace
+	webhook.EventSubjectName = n.SubjectName
+	webhook.ServiceKey = n.ServiceKey
+	webhook.CloudResourceId = n.CloudResourceId
+	webhook.Investigation.Fingerprint = n.Fingerprint
 }
 
 // contains checks if a string slice contains a specific string

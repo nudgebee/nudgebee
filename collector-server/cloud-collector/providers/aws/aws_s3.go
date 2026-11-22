@@ -66,16 +66,17 @@ func (a *amazonS3) GetResources(ctx providers.CloudProviderContext, account prov
 	// Lazily fetch CloudWatch alarms per region so we hit DescribeAlarms once
 	// per bucket-region across the whole account, not once per bucket.
 	alarmsByRegion := map[string]map[string][]any{}
-	getAlarms := func(region string) map[string][]any {
+	// ok is false when the region's alarms could not be listed.
+	getAlarms := func(region string) (alarms map[string][]any, ok bool) {
 		if region == "" {
-			return nil
+			return nil, false
 		}
 		if cached, ok := alarmsByRegion[region]; ok {
-			return cached
+			return cached, cached != nil
 		}
-		fetched := fetchAlarmsByResource(ctx, account, region)
+		fetched, err := fetchAlarmsByResource(ctx, account, region)
 		alarmsByRegion[region] = fetched
-		return fetched
+		return fetched, err == nil
 	}
 
 	for _, instance := range buckets {
@@ -189,7 +190,9 @@ func (a *amazonS3) GetResources(ctx providers.CloudProviderContext, account prov
 			instanceMap["LoggingEnabled"] = loggingOutput.LoggingEnabled
 		}
 
-		instanceMap["AlarmDetails"] = getAlarms(bucketRegion)[*instance.Name]
+		if alarms, ok := getAlarms(bucketRegion); ok {
+			instanceMap["AlarmDetails"] = alarms[*instance.Name]
+		}
 
 		resource := providers.Resource{
 			Id:          *instance.Name,

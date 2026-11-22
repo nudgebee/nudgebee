@@ -37,8 +37,8 @@ func TestGrantHelpers(t *testing.T) {
 	if !granted(kbWriter, authzAcctA, moduleAiKbs, "Read", "Write") {
 		t.Error("Write implies Read, as at the gateway")
 	}
-	if !grantedRun(kbWriter, authzAcctA, moduleAiKbs) {
-		t.Error("ai_kbs:Write should authorize a sync (Execute class)")
+	if grantedRun(kbWriter, authzAcctA, moduleAiKbs) {
+		t.Error("ai_kbs:Write must not authorize a sync (Execute class): Write does not imply Execute")
 	}
 	// Module isolation: a KB grant is not an agents/tools/RCA grant.
 	for _, module := range []string{moduleAiAgents, moduleAiTools, moduleAiRca, moduleAiMisc, moduleAiGeneration} {
@@ -91,7 +91,7 @@ func TestGrantHelpers(t *testing.T) {
 	// built-in HasAccountAccess check it always had.
 	plain := authzContext(t, `{"TenantId":"t1","UserId":"u5","Roles":["account_admin"],
 		"AccountIds":["`+authzAcctA+`"]}`)
-	for _, module := range []string{moduleAiKbs, moduleAiAgents, moduleAiTools, moduleAiFunctions,
+	for _, module := range []string{moduleAiKbs, moduleAiAgents, moduleAiTools,
 		moduleAiGuardrails, moduleAiMemory, moduleAiMisc, moduleAiRca, moduleAiGeneration, moduleAiConversations} {
 		if granted(plain, authzAcctA, module, "Read", "Write", "Execute") {
 			t.Errorf("a user with no custom grants must get nothing from %s", module)
@@ -124,5 +124,20 @@ func TestCanRunAIMatchesReadOrAiMiscRun(t *testing.T) {
 	}
 	if authzContext(t, callers["kb writer only"]).CanRunAI(authzAcctA) {
 		t.Error("an ai_kbs grant alone must not allow running Nubi")
+	}
+}
+
+// Write and Execute are separate rights: running (sync a knowledge base, start
+// Nubi) needs the module's Execute grant, and Write alone does not give it.
+func TestRunNeedsExecuteNotWrite(t *testing.T) {
+	runner := authzContext(t, `{"TenantId":"t1","UserId":"u1","Roles":[],"AccountIds":["`+authzAcctA+`"],
+		"CustomPermissions":{"ai_kbs:Execute":true,"ai_misc:Execute":true}}`)
+	writer := authzContext(t, `{"TenantId":"t1","UserId":"u2","Roles":[],"AccountIds":["`+authzAcctA+`"],
+		"CustomPermissions":{"ai_kbs:Write":true,"ai_misc:Write":true}}`)
+	if !grantedRun(runner, authzAcctA, moduleAiKbs) || !runner.CanRunAI(authzAcctA) {
+		t.Error("an Execute grant should allow running")
+	}
+	if grantedRun(writer, authzAcctA, moduleAiKbs) || writer.CanRunAI(authzAcctA) {
+		t.Error("a Write grant alone must not allow running")
 	}
 }

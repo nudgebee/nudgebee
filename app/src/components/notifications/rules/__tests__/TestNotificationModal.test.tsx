@@ -50,3 +50,12 @@ it('never shows the previous answer while the next check is loading', async () =
   expect(screen.queryByText(previous)).not.toBeInTheDocument();
   expect(document.getElementById('test-answer')).toBeNull();
 });
+
+it('always checks a High alert and says lower severities never reach chat', async () => {
+  checkRoute.mockResolvedValue({ answer: answer({}) });
+  render(<TestNotificationModal open {...props} />);
+
+  expect(await screen.findByText('Checked as a High alert. Medium and Low alerts are never sent to chat.')).toBeInTheDocument();
+  expect(document.getElementById('test-severity')).toBeNull();
+  expect(checkRoute).toHaveBeenCalledWith(expect.objectContaining({ source: 'troubleshoot', severity: 'high' }));
+});

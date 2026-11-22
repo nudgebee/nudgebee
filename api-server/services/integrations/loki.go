@@ -34,6 +34,15 @@ const (
 	LokiAuthBearer = "bearer_token"
 )
 
+// connection_mode selects how Nudgebee reaches Loki: "direct" (the default, and what
+// rows saved before this field mean) dials loki_url from the server; "vm_agent" goes
+// through a forager for a Loki the server cannot reach.
+const (
+	LokiConnectionModeKey     = "connection_mode"
+	LokiConnectionModeDirect  = "direct"
+	LokiConnectionModeVMAgent = "vm_agent"
+)
+
 type Loki struct{}
 
 func (m Loki) Name() string {
@@ -50,6 +59,15 @@ func (m Loki) ConfigSchema() core.IntegrationSchema {
 		Required: []string{"loki_url"},
 		Testable: true,
 		Properties: map[string]core.IntegrationSchemaProperty{
+			LokiConnectionModeKey: {
+				Type: core.ToolSchemaTypeString,
+				Description: "How Nudgebee reaches Loki: directly from Nudgebee, or through a forager " +
+					"running in your network (for a Loki Nudgebee cannot reach, such as the store your VM agents write logs to).",
+				Default:    LokiConnectionModeDirect,
+				Enum:       []any{LokiConnectionModeDirect, LokiConnectionModeVMAgent},
+				Priority:   92,
+				IsTestable: true,
+			},
 			"loki_url": {
 				Type: core.ToolSchemaTypeString,
 				Description: "Base URL of the Loki query endpoint (e.g. http://loki-gateway.loki.svc.cluster.local " +
@@ -138,6 +156,7 @@ func (m Loki) ConfigSchema() core.IntegrationSchema {
 
 // lokiFormConfig is the subset of the form this integration validates and probes.
 type lokiFormConfig struct {
+	Mode        string
 	URL         string
 	RulesURL    string
 	AuthType    string
@@ -152,6 +171,8 @@ func readLokiFormConfig(config []core.IntegrationConfigValue) lokiFormConfig {
 	var cfg lokiFormConfig
 	for _, c := range config {
 		switch c.Name {
+		case LokiConnectionModeKey:
+			cfg.Mode = strings.TrimSpace(c.Value)
 		case "loki_url":
 			cfg.URL = c.Value
 		case "loki_rules_url":
@@ -191,6 +212,9 @@ func readLokiFormConfig(config []core.IntegrationConfigValue) lokiFormConfig {
 // TestConnection so a save is not silently coupled to endpoint reachability.
 func (m Loki) ValidateConfig(sc *security.SecurityContext, config []core.IntegrationConfigValue, accountId string) []error {
 	cfg := readLokiFormConfig(config)
+	if cfg.Mode == LokiConnectionModeVMAgent {
+		return validateLokiVMAgent(cfg)
+	}
 
 	var errs []error
 	if cfg.URL == "" {
@@ -244,6 +268,39 @@ func (m Loki) ValidateConfig(sc *security.SecurityContext, config []core.Integra
 		}
 	}
 
+	return errs
+}
+
+// validateLokiVMAgent checks a forager-reached Loki. The URL is only reachable from the
+// customer's network, so there is no egress check or live probe: the pre-save test runs
+// through the forager. Its http proxy supports only none, basic and bearer auth, and
+// the ruler is a second URL it does not hold.
+func validateLokiVMAgent(cfg lokiFormConfig) []error {
+	var errs []error
+
+	if cfg.URL == "" {
+		errs = append(errs, fmt.Errorf("loki_url is required"))
+	} else if u, err := neturl.Parse(cfg.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		errs = append(errs, fmt.Errorf("loki_url must be an http or https URL with a host"))
+	}
+	if cfg.RulesURL != "" {
+		errs = append(errs, fmt.Errorf("loki_rules_url is not supported through a forager; leave it empty"))
+	}
+
+	switch cfg.AuthType {
+	case LokiAuthNone:
+	case LokiAuthBasic:
+		if cfg.Username == "" || cfg.Password == "" {
+			errs = append(errs, fmt.Errorf("loki_username and loki_password are both required for basic authentication"))
+		}
+	case LokiAuthBearer:
+		if cfg.BearerToken == "" {
+			errs = append(errs, fmt.Errorf("loki_bearer_token is required for bearer-token authentication"))
+		}
+	default:
+		errs = append(errs, fmt.Errorf("loki_auth_type must be one of %q, %q or %q (got %q)",
+			LokiAuthNone, LokiAuthBasic, LokiAuthBearer, cfg.AuthType))
+	}
 	return errs
 }
 

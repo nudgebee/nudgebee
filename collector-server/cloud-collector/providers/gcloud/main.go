@@ -181,7 +181,13 @@ func (a *gcloudProvider) ListResources(ctx providers.CloudProviderContext, accou
 		}
 		serviceResources, err := service.GetResources(ctx, account, regionName)
 		if err != nil {
-			ctx.GetLogger().Error("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
+			// A service the collector does not list resources for is not a failure;
+			// the sync above already ignores it.
+			log := ctx.GetLogger().Error
+			if errors.Is(err, errors.ErrUnsupported) {
+				log = ctx.GetLogger().Debug
+			}
+			log("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
 			return providers.ListResourcesResponse{
 				Items: resources,
 			}, err
@@ -280,7 +286,15 @@ func (a *gcloudProvider) ListEvents(ctx providers.CloudProviderContext, account 
 
 		// Fallback to Cloud Logging method
 		// Requires: notification channels configured, Cloud Logging enabled
-		return getGCPAlertIncidents(ctx, account, query)
+		listedAt := time.Now().UTC()
+		fallback, fallbackErr := getGCPAlertIncidents(ctx, account, query)
+		if fallbackErr != nil {
+			return fallback, fallbackErr
+		}
+		// The fallback does not list what is open, so it ends nothing; the
+		// snapshot only keeps the batch-wide close off the firings left open.
+		fallback.Ongoing = unlistedIncidentSnapshot(listedAt)
+		return fallback, nil
 	}
 
 	// v3 API succeeded - return results (even if empty, which means no alerts firing)
@@ -417,7 +431,11 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		Timeout: 30 * time.Second,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud auth command failed", "error", err, "stderr", stderr)
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud auth command failed", "error", err, "stderr", stderr)
 		return "", fmt.Errorf("gcloud auth failed: %w", err)
 	}
 
@@ -429,7 +447,13 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		Untrusted: true,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
 		return stdout, fmt.Errorf("gcloud CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 
@@ -491,6 +515,14 @@ func validateGcloudWorkspaceBoundary(args []string) error {
 	case "gcloud":
 		if (contains("auth") && !isGcloudPrintAccessToken(args)) || contains("config", "set") || contains("config", "unset") || contains("init") {
 			return errors.New("GCP authentication and persistent configuration commands are not allowed")
+		}
+		// The command runs as the account's activated service account. --account
+		// could name another credential gcloud can find on its own, such as the
+		// collector's own GCE/GKE metadata identity.
+		for _, arg := range args[1:] {
+			if arg == "--account" || strings.HasPrefix(arg, "--account=") {
+				return errors.New("GCP CLI commands run as the connected account; --account is not allowed")
+			}
 		}
 		if contains("storage", "cp") || contains("storage", "mv") || contains("storage", "rsync") || contains("compute", "scp") {
 			return errors.New("GCP CLI cannot transfer collector-local files")

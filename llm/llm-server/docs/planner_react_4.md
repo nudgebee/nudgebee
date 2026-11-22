@@ -159,8 +159,10 @@ for react_3, so a react_4 agent runs with an identical tool surface (`resolveRea
 client tools → account-configured tools (`AgentAdditionalInstructionsAndToolsAndConfigs`) →
 `FilterAndInjectDefaultTools` (injects `load_skills` on KB-mapped agents, plus shell/watch) →
 `FilterTools(capabilities)` → then the `update_notebook` tool (added last so capability
-filtering never drops it). The stable account-wide `AccountContext` and account-configured
-`<additional_agent_prompt>` are placed in the system prefix. The human message carries the
+filtering never drops it). The stable account-wide `AccountContext` and the agent's
+always-on text (`request.AgentInstructions` — skills linked with "always load", resolved once
+per agent run by the executor, #40899) in `<additional_agent_prompt>` are placed
+in the system prefix. The human message carries the
 request-specific `AccountPrompt` as global preferences, plus KB-prestep / skill-lists blocks —
 matching react_3's context split so KB/skill flows behave identically without cache churn.
 
@@ -333,7 +335,7 @@ rebuilds history from persisted turns instead of rebuilding a scratchpad string.
 | `agents/core/planner_react_shared.go` | Shared symbols (extend, don't fork) |
 | `agents/core/executor.go` | ReAct4 resolution + capability gate |
 | `agents/core/executor_planner.go` | Reused: parallel exec, write pre-flight (args serialized) |
-| `agents/core/llm_common.go` | Remove `hasMalformedFunctionCall` suppression; add `WithTools` on native path |
+| `llms/runtime/llm_common.go` | Remove `hasMalformedFunctionCall` suppression; add `WithTools` on native path |
 | `agents/prompts_repo/planner_react_4_base.txt` | Thin base prompt (no XML grammar) |
 | `llms/*/` | Verify tool defs land in the cached prefix per provider |
 | `tools/tool_notebook.go` (new) | `update_notebook` tool |

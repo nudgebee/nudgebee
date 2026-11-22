@@ -126,21 +126,31 @@ type DependencyGraph struct {
 // observedSourcesForWeighting names the source identifiers that count as
 // "observed reality" for the corroboration weight. Any one of these
 // asserting an edge upgrades that edge to full weight; a path whose every
-// edge is in this set always weights 1.0. Mirror the priority table in
-// flow_sources/edge_priority.go — keep in sync when adding new sources.
+// edge is in this set always weights 1.0. Every source in the priority table in
+// flow_sources/edge_priority.go other than "manual" must be here; a test holds
+// the two together, because the comment alone did not: aws-vpc-flow and
+// gcp-cloud-traces were missing, so an edge seen in VPC flow logs scored as a
+// user-declared one and its links read "manual-only edge".
 var observedSourcesForWeighting = map[string]bool{
 	"k8s":              true,
 	"aws":              true,
 	"ebpf":             true,
 	"traces":           true,
+	"gcp-cloud-traces": true,
 	"datadog-apm":      true,
 	"newrelic-apm":     true,
 	"elastic-apm":      true,
+	"aws-vpc-flow":     true,
 	"cloud":            true, // CentralizedExternalServiceEnricher edges
 	"cloud_enrichment": true,
 	"dns_resolver":     true,
 	"ip_mapper":        true,
 }
+
+// unresolvedVPCAddressSubtype is the subtype of the node the VPC flow source
+// collects every unidentified address of a VPC into
+// (core.UnresolvedVPCAddressSubtype; a test holds the two equal).
+const unresolvedVPCAddressSubtype = "vpc-unresolved-ip"
 
 // manualOnlySourceWeight is applied to the dependency-distance score when the
 // shortest path between two events has no observed-source corroboration —
@@ -759,6 +769,14 @@ func parseKnowledgeGraphEvidence(evidence map[string]interface{}) *DependencyGra
 		name, _ := properties["name"].(string)
 		namespace, _ := properties["namespace"].(string)
 		if name == "" {
+			continue
+		}
+		// One node stands for every address the VPC flow source could not
+		// identify, with flow edges to and from each instance that talked to one.
+		// Walking through it made every instance of a VPC two hops from every
+		// other, which is not a dependency. No alert is ever about it, so it is
+		// left out of the graph; its edges go with it.
+		if subtype, _ := properties["subtype"].(string); subtype == unresolvedVPCAddressSubtype {
 			continue
 		}
 

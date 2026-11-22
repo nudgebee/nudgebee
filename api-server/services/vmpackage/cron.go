@@ -11,6 +11,8 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+
+	"github.com/lib/pq"
 )
 
 // DiscoveryLabels is the shape forager's own metadata reporting writes into
@@ -293,7 +295,7 @@ func findOrCreateVMResource(dbms *database.DatabaseManager, tenantID, accountID,
 		return id, nil
 	}
 
-	meta, err := json.Marshal(map[string]string{"PrivateIpAddress": ip})
+	meta, err := json.Marshal(map[string]string{"PrivateIpAddress": ip, "nb_source": "vmpackage"})
 	if err != nil {
 		return "", fmt.Errorf("vmpackage: marshal meta for %s: %w", resourceID, err)
 	}
@@ -319,6 +321,22 @@ func findOrCreateVMResource(dbms *database.DatabaseManager, tenantID, accountID,
 		return "", fmt.Errorf("vmpackage: read back cloud_resourse for %s: %w", resourceID, err)
 	}
 	return id, nil
+}
+
+// markVMSeen stamps first_seen/last_seen on a placeholder this package owns and
+// reports whether it is still active. A decommissioned one (see DecommissionVM)
+// is stamped but stays retired: the operator's call outlives the host still
+// answering the sweep, so the caller skips the scan.
+func markVMSeen(dbms *database.DatabaseManager, tenantID, accountID, cloudResourceID string) (bool, error) {
+	var active bool
+	err := dbms.Db.Get(&active,
+		`UPDATE cloud_resourses
+		 SET last_seen = now(), first_seen = COALESCE(first_seen, now())
+		 WHERE id = $1 AND account = $2 AND tenant = $3
+		 RETURNING is_active IS NOT FALSE`,
+		cloudResourceID, accountID, tenantID,
+	)
+	return active, err
 }
 
 // maxInt returns the largest value in vs, or 0 for an empty slice.
@@ -352,6 +370,19 @@ func ScanDiscoveryDatasource(ctx *security.RequestContext, dbms *database.Databa
 			tenantCtx.GetLogger().Error("vmpackage: panic scanning discovery datasource", "panic", r)
 		}
 	}()
+
+	// Everything below writes under ds.AccountID or ds.TargetAccountID, and the
+	// findings upsert moves an archived row back to Open. An account that is not
+	// active is skipped before the first relay call, not after it.
+	active, err := accountsActive(dbms, ds.AccountID, ds.TargetAccountID)
+	if err != nil {
+		tenantCtx.GetLogger().Error("vmpackage: read account status failed, skipping", "error", err)
+		return
+	}
+	if !active {
+		tenantCtx.GetLogger().Info("vmpackage: account not active, skipping", "target_account_id", ds.TargetAccountID)
+		return
+	}
 
 	datasourceKey, err := resolveDiscoveryDatasourceKey(dbms, ds.IntegrationID)
 	if err != nil {
@@ -401,6 +432,27 @@ func ScanDiscoveryDatasource(ctx *security.RequestContext, dbms *database.Databa
 	}
 }
 
+// accountsActive reports whether every non-empty id names a cloud account with
+// status 'active'. An id with no cloud_accounts row counts as not active.
+func accountsActive(dbms *database.DatabaseManager, accountIDs ...string) (bool, error) {
+	ids := make([]string, 0, len(accountIDs))
+	for _, id := range accountIDs {
+		if id != "" && !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return false, nil
+	}
+	var active int
+	if err := dbms.Db.Get(&active,
+		`SELECT count(*) FROM cloud_accounts WHERE id::text = ANY($1) AND status = 'active'`,
+		pq.Array(ids)); err != nil {
+		return false, fmt.Errorf("vmpackage: read account status: %w", err)
+	}
+	return active == len(ids), nil
+}
+
 func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.DatabaseManager, ds DiscoveryDatasource, target discoveryTarget, res resolvedTarget) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -410,6 +462,11 @@ func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.Databas
 
 	if target.Status != "ok" {
 		tenantCtx.GetLogger().Debug("vmpackage: target not ok, skipping", "host", target.Host, "status", target.Status)
+		return
+	}
+
+	if res.Decommissioned {
+		tenantCtx.GetLogger().Debug("vmpackage: VM decommissioned, skipping scan", "host", target.Host, "cloud_resource_id", res.CloudResourceID)
 		return
 	}
 
@@ -426,6 +483,14 @@ func scanTargetSafely(tenantCtx *security.RequestContext, dbms *database.Databas
 			return
 		}
 		resolvedAccountID = ds.AccountID
+		// Best-effort stamp: if it fails, scan as before rather than skip a live VM.
+		active, err := markVMSeen(dbms, ds.TenantID, ds.AccountID, cloudResourceID)
+		if err != nil {
+			tenantCtx.GetLogger().Warn("vmpackage: stamp last_seen failed", "cloud_resource_id", cloudResourceID, "error", err)
+		} else if !active {
+			tenantCtx.GetLogger().Debug("vmpackage: VM decommissioned, skipping scan", "host", target.Host, "cloud_resource_id", cloudResourceID)
+			return
+		}
 	}
 
 	attemptID := startScanAttempt(ds.TenantID, resolvedAccountID, cloudResourceID)

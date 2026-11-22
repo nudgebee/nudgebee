@@ -2,10 +2,10 @@ package cicd
 
 import (
 	"errors"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
+	"regexp"
 )
 
 // ArgoCDCliTask defines a task that executes ArgoCD commands.
@@ -18,7 +18,7 @@ func (t *ArgoCDCliTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *ArgoCDCliTask) GetDescription() string {
-	return "Run ArgoCD commands to manage application deployments."
+	return "Run ArgoCD commands to manage application deployments. A non-zero exit fails the step, except argocd app diff, which exits 1 when the app has drifted (output.exit_code = 1)."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -54,17 +54,21 @@ func (t *ArgoCDCliTask) Execute(taskCtx types.TaskContext, params map[string]any
 	}
 
 	if respStr, ok := resp.(string); ok {
-		argoResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &argoResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-		if argoResp["stderr"] != nil && argoResp["stderr"] != "" {
-			return nil, errors.New(argoResp["stderr"].(string))
-		}
-		return map[string]any{"data": argoResp["stdout"]}, nil
+		return relay.InterpretCommandResponse("argocd", respStr, argoCDOKExitCodes(params["command"].(string))...)
 	}
 
 	return nil, errors.New("unable to process request")
+}
+
+var argoAppDiff = regexp.MustCompile(`(^|\s)app\s+diff(\s|$)`)
+
+// argoCDOKExitCodes lists exit codes that are a result for this command:
+// `argocd app diff` exits 1 when the app has drifted from git.
+func argoCDOKExitCodes(command string) []int {
+	if argoAppDiff.MatchString(command) {
+		return []int{1}
+	}
+	return nil
 }
 
 // InputSchema returns the schema for the task's expected parameters.
@@ -102,6 +106,11 @@ func (t *ArgoCDCliTask) OutputSchema() *types.Schema {
 				Type:        "string",
 				Description: "ARGO Cli Response.",
 				Required:    true,
+			},
+			"exit_code": {
+				Type:        "integer",
+				Description: "Exit code of the argocd command, when the agent reports it.",
+				Required:    false,
 			},
 		},
 	}

@@ -21,7 +21,7 @@ import { RULE_COLUMNS, RULE_TYPE_LABEL, RULE_STATUS_LABEL, NAME_FORMAT_ERROR, IN
 test.describe.configure({ timeout: 240000 });
 
 test(
-  "Notifications sanity - open the Notifications tab, verify the rules table, Add rule button, type filters, search and Test a notification render",
+  "Notifications sanity - open the Notifications tab, verify the rules table, Add rule button, type filters, search and Check where it goes render",
   { tag: ["@dev", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);

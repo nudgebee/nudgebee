@@ -817,6 +817,7 @@ func (s *Service) executionSummaryFromInfo(info *workflowpb.WorkflowExecutionInf
 			}
 		}
 	}
+	summary.FailedSteps = s.failedStepsFromMemo(info.GetMemo())
 	return summary
 }
 

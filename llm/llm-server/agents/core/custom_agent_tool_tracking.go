@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security/egressfilter"
@@ -48,6 +49,22 @@ func CallTool(tc toolcore.NbToolContext, tool toolcore.NBTool, req toolcore.NBTo
 	toolCallId := tc.ToolCallId
 	if toolCallId == "" {
 		toolCallId = uuid.NewString()
+	}
+
+	// The agents that call tools directly (log fetch, visualization, search,
+	// events) call fixed read tools, outside the planner's approval and run
+	// policy gates. In a governed run a call whose own classifier says it
+	// writes is refused here, so this path can never carry a write past the
+	// run's policy.
+	if RunProfileOf(ctx) != nil {
+		if classified, ok := tool.(toolcore.ToolRequestInference); ok {
+			kind, err := classified.InferToolRequestType(ctx, toolName, req.Command)
+			if err != nil || (kind != "" && kind != toolcore.ToolRequestTypeRead) {
+				ctx.GetLogger().Warn("customagenttool: write refused in a governed run", "tool", toolName, "request_type", kind, "error", err)
+				return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusError,
+					Data: fmt.Sprintf("Not run: %s would change something, and this run makes changes only through its own tools.", toolName)}, nil
+			}
+		}
 	}
 
 	if err := dao.SaveConversationToolCall(tc.ConversationId, tc.AccountId, toolCallUserId(tc), tc.MessageId,

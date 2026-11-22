@@ -1445,6 +1445,7 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 				NativeToolInput:  `{"title":"bug","_thought":"Creating the approved issue."}`,
 				MemoryRefs:       []NBAgentPlannerToolActionMemoryRef{{Position: 1, Note: "preferred tracker"}},
 				DisplayID:        "E2",
+				SourceToolID:     "ran-earlier-2",
 				TurnID:           "turn-2",
 				ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
 			},
@@ -1486,6 +1487,7 @@ func TestUnmarshal_DropsWaitingStepsOnResume(t *testing.T) {
 	restoredAction := restored.currentAction[0]
 	assert.Equal(t, "pending-1", restoredAction.ToolID)
 	assert.Equal(t, "E2", restoredAction.DisplayID)
+	assert.Equal(t, "ran-earlier-2", restoredAction.SourceToolID)
 	assert.Equal(t, "turn-2", restoredAction.TurnID)
 	assert.Equal(t, `{"title":"bug","_thought":"Creating the approved issue."}`, restoredAction.NativeToolInput)
 	assert.Equal(t, []NBAgentPlannerToolActionMemoryRef{{Position: 1, Note: "preferred tracker"}}, restoredAction.MemoryRefs)
@@ -1883,39 +1885,6 @@ func TestPlannerToolNoData_IsInformative(t *testing.T) {
 		"sentinel must explain the write/mutation case")
 }
 
-// TestDelegationSkillScope pins the skill-scope propagation helper: a sub-agent
-// inherits its delegating parent's chain plus the parent's own name, without the
-// parent's slice being mutated. Empty parent name is a no-op (see callNbTool).
-func TestDelegationSkillScope(t *testing.T) {
-	t.Run("appends parent name to inherited chain", func(t *testing.T) {
-		got := delegationSkillScope([]string{"prometheus"}, "k8s_orchestrator")
-		assert.Equal(t, []string{"prometheus", "k8s_orchestrator"}, got)
-	})
-
-	t.Run("empty parent name is a no-op", func(t *testing.T) {
-		in := []string{"metrics"}
-		assert.Equal(t, in, delegationSkillScope(in, ""))
-	})
-
-	t.Run("nil inherited yields just the parent name", func(t *testing.T) {
-		assert.Equal(t, []string{"k8s_orchestrator"}, delegationSkillScope(nil, "k8s_orchestrator"))
-	})
-
-	t.Run("does not mutate the parent's slice (append path)", func(t *testing.T) {
-		parent := make([]string, 1, 4) // spare capacity → naive append would clobber
-		parent[0] = "metrics"
-		_ = delegationSkillScope(parent, "k8s_orchestrator")
-		assert.Equal(t, []string{"metrics"}, parent, "parent slice must be untouched")
-	})
-
-	t.Run("returns a copy on empty parent name (no aliasing)", func(t *testing.T) {
-		parent := []string{"metrics"}
-		got := delegationSkillScope(parent, "")
-		got[0] = "mutated"
-		assert.Equal(t, []string{"metrics"}, parent, "parent slice must be untouched even on the no-op path")
-	})
-}
-
 // TestDoIterationParallel_ConcurrentStatusAccess guards the data race fixed alongside
 // this test: the dispatcher (preResolveToolConfigs / submitReadyNodes) read
 // ActionNode.Status while already-dispatched workers wrote it under mu, so the reads
@@ -2008,6 +1977,7 @@ func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
 					MemoryRefs:       []NBAgentPlannerToolActionMemoryRef{{Position: 2, Note: "default namespace"}},
 					Log:              "checking pods",
 					DisplayID:        "E3",
+					SourceToolID:     "ran-earlier-3",
 					TurnID:           "t7-2",
 					ThoughtSignature: []byte{0x01, 0x02, 0xfe, 0xff},
 				},
@@ -2034,6 +2004,7 @@ func TestUnmarshal_PreservesReAct4ActionFieldsOnResume(t *testing.T) {
 
 	got := restored.steps[0].Action
 	assert.Equal(t, "E3", got.DisplayID, "citations must still resolve after a resume")
+	assert.Equal(t, "ran-earlier-3", got.SourceToolID, "a cached step's citation must still open the row that ran")
 	assert.Equal(t, "t7-2", got.TurnID, "batch grouping must survive or siblings replay unsigned")
 	assert.Equal(t, `{"command":"get pods","_thought":"Checking pods."}`, got.NativeToolInput,
 		"provider-native arguments must survive so replay does not alter the signed function call")
@@ -2195,4 +2166,113 @@ func TestSummarizeConversation_ProseMentioningNotebookTagUnchanged(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, prose, result["output"])
+}
+
+// TestDoIterationSequential_PriorObservationFallback covers #37183: ReAct-3/4
+// actions never declare Dependency, so an agent-type tool called without one
+// used to get every earlier observation as QueryContext. Only summarizers keep
+// that fallback; specialists get nothing, and declared dependencies still flow.
+func TestDoIterationSequential_PriorObservationFallback(t *testing.T) {
+	const priorObservation = "pod checkout-7f9 is CrashLoopBackOff"
+	priorStep := NBAgentPlannerToolActionStep{
+		Action:      NBAgentPlannerToolAction{ToolID: "Plan1", Tool: "kubectl", ToolInput: "get pods"},
+		Observation: priorObservation,
+		Status:      ToolStatusSuccess,
+	}
+
+	tests := []struct {
+		name        string
+		tool        toolcore.NBTool
+		summaryTool string
+		dependency  []string
+		wantPrior   bool
+	}{
+		{
+			name:      "independent specialist gets no unrelated observations",
+			tool:      &MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			wantPrior: false,
+		},
+		{
+			name:        "summary tool keeps prior observations",
+			tool:        &MockAgentTypeTool{MockContextCapturingTool{NameVal: "event_summarizer", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			summaryTool: "event_summarizer",
+			wantPrior:   true,
+		},
+		{
+			name:      "agent-tool that implements PriorObservationsConsumer keeps prior observations",
+			tool:      &mockPriorObservationsConsumerTool{MockAgentTypeTool{MockContextCapturingTool{NameVal: "answer_from_context", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}}},
+			wantPrior: true,
+		},
+		{
+			name:      "clarification by name alone is not an opt-in",
+			tool:      &MockAgentTypeTool{MockContextCapturingTool{NameVal: ToolClarification, ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			wantPrior: false,
+		},
+		{
+			name:        "declared dependency still flows to a specialist",
+			tool:        &MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs", ReturnOutput: "ok", ReturnStatus: toolcore.NBToolResponseStatusSuccess}},
+			summaryTool: "logs", // bypass rewriteToolInput, which calls the LLM when deps are declared
+			dependency:  []string{"Plan1"},
+			wantPrior:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+			executor := &plannerExecutor{
+				ctx:   ctx,
+				agent: &MockAgent{SupportedTools: []toolcore.NBTool{tc.tool}},
+				agentRequest: NBAgentRequest{
+					AccountId:      "cccccccc-cccc-cccc-cccc-cccccccccccc",
+					UserId:         "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+					ConversationId: "conv_id",
+					MessageId:      "msg_id",
+					AgentId:        "agent_id",
+				},
+				summaryToolName: tc.summaryTool,
+				steps:           []NBAgentPlannerToolActionStep{priorStep},
+				toolCallCache:   turnToolCallCache{cache: make(map[string]NBAgentPlannerToolActionStep)},
+			}
+			actions := []NBAgentPlannerToolAction{
+				{ToolID: "Plan2", Tool: tc.tool.Name(), ToolInput: "error logs for checkout", Dependency: tc.dependency},
+			}
+
+			_, _, err := executor.doIterationSequential([]NBAgentPlannerToolActionStep{priorStep}, map[string]toolcore.NBTool{strings.ToUpper(tc.tool.Name()): tc.tool}, actions)
+			assert.NoError(t, err)
+
+			var captured string
+			switch tool := tc.tool.(type) {
+			case *MockAgentTypeTool:
+				captured = tool.CapturedCtx
+			case *mockPriorObservationsConsumerTool:
+				captured = tool.CapturedCtx
+			}
+			if tc.wantPrior {
+				assert.Contains(t, captured, priorObservation)
+			} else {
+				assert.NotContains(t, captured, priorObservation)
+				assert.Empty(t, captured)
+			}
+		})
+	}
+}
+
+type mockPriorObservationsConsumerTool struct {
+	MockAgentTypeTool
+}
+
+func (m *mockPriorObservationsConsumerTool) ConsumesPriorObservations() {}
+
+// TestConsumesPriorObservations_AgentTools checks the opt-in through the real
+// agent-tool wrapper: LLM and clarification opt in through their agents, a
+// specialist does not, and the executor's own summary tool always does.
+func TestConsumesPriorObservations_AgentTools(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", []string{"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+	executor := &plannerExecutor{ctx: ctx, summaryToolName: "logs"}
+
+	assert.True(t, executor.consumesPriorObservations(NewToolFromAgent(LLMAgent{})))
+	assert.True(t, executor.consumesPriorObservations(NewToolFromAgent(ClarificationAgent{})))
+	assert.False(t, executor.consumesPriorObservations(NewToolFromAgent(&MockAgent{})))
+	assert.True(t, executor.consumesPriorObservations(&MockAgentTypeTool{MockContextCapturingTool{NameVal: "logs"}}), "the executor's summary tool keeps the fallback")
 }

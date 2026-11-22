@@ -48,7 +48,7 @@ func TestRemediationArtifactsTrustTheServerForCodeFix(t *testing.T) {
 // Only a recorded firing is stated: a same-finding_id re-fire records none, so absence proves nothing.
 func TestRenderAttemptStatesOnlyARecordedFiring(t *testing.T) {
 	a := attempt{Kind: "CommandExecution", Ref: "kubectl set resources deployment relay-server -n nudgebee --limits=memory=512Mi",
-		Status: "Success", At: time.Now(), FiredAfter: 7}
+		Status: "Success", Data: []byte(`{"exit_code_reported":true}`), At: time.Now(), FiredAfter: 7}
 	require.Contains(t, renderAttempt(a), "a firing of this alert was recorded after it (7 recorded)")
 	a.FiredAfter = 0
 	line := renderAttempt(a)
@@ -408,15 +408,20 @@ func TestGenerateRefusesAnIncompleteInvestigation(t *testing.T) {
 // A plan that is not stored cannot be run (Run checks the stored plan), so it must not be returned.
 func TestPersistRemediationPlanReportsEveryFailure(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
-	require.Error(t, persistRemediationPlan(ctx, "acc", "", RemediationPlan{}, RemediationTrace{}), "no event to store it under")
+	persist := func() error {
+		_, err := persistRemediationPlan(ctx, "acc", "evt", RemediationPlan{}, RemediationTrace{})
+		return err
+	}
+	_, err := persistRemediationPlan(ctx, "acc", "", RemediationPlan{}, RemediationTrace{})
+	require.Error(t, err, "no event to store it under")
 
 	mock := useMetastore(t)
 	mock.ExpectQuery(`FROM events WHERE id = \$1`).WithArgs("evt", "acc").WillReturnError(errors.New("connection reset"))
-	require.ErrorContains(t, persistRemediationPlan(ctx, "acc", "evt", RemediationPlan{}, RemediationTrace{}), "connection reset")
+	require.ErrorContains(t, persist(), "connection reset")
 
 	expectEvent(mock)
 	mock.ExpectBegin().WillReturnError(errors.New("too many connections"))
-	require.ErrorContains(t, persistRemediationPlan(ctx, "acc", "evt", RemediationPlan{}, RemediationTrace{}), "too many connections")
+	require.ErrorContains(t, persist(), "too many connections")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -426,14 +431,15 @@ func TestGenerateFailsWhenThePlanCannotBeSaved(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	respondWithStoredPlan(c, slog.Default(), plan, func() error { return errors.New("event info unavailable: connection reset") })
+	respondWithStoredPlan(c, slog.Default(), plan, func() (string, error) { return "", errors.New("event info unavailable: connection reset") })
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	require.Contains(t, rec.Body.String(), "failed to save remediation plan")
 	require.NotContains(t, rec.Body.String(), "kubectl", "an unsaved plan's commands are not shown")
 
 	rec = httptest.NewRecorder()
 	c, _ = gin.CreateTestContext(rec)
-	respondWithStoredPlan(c, slog.Default(), plan, func() error { return nil })
+	respondWithStoredPlan(c, slog.Default(), plan, func() (string, error) { return "v1", nil })
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Contains(t, rec.Body.String(), "kubectl set resources")
+	require.Contains(t, rec.Body.String(), `"plan_version":"v1"`, "decisions on the plan are recorded against the stored version")
 }

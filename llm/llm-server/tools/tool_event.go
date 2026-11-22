@@ -220,6 +220,15 @@ func appendLogCoverageNote(note string, additionalInfo map[string]any) string {
 			parts = append(parts, strings.TrimSpace(truncationNote))
 		}
 	}
+	// Last: readers cut this note from the end, and the span and truncation
+	// sentences say more about what the lines can show.
+	if group, _ := additionalInfo["log_group_name"].(string); strings.TrimSpace(group) != "" {
+		source := fmt.Sprintf("The collected log lines were read from log group %s", strings.TrimSpace(group))
+		if prefix, _ := additionalInfo["log_stream_prefix"].(string); strings.TrimSpace(prefix) != "" {
+			source += fmt.Sprintf(", streams starting with %s", strings.TrimSpace(prefix))
+		}
+		parts = append(parts, source+".")
+	}
 	if len(parts) == 0 {
 		return note
 	}
@@ -935,6 +944,16 @@ func castIsoTimestampLiterals(sql string) string {
 }
 
 func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A lookup of one event by id runs on the account the event belongs to.
+	if matches := idLookupPredicateRe.FindAllStringSubmatch(input.Command, -1); len(matches) == 1 {
+		return onEventAccount(nbRequestContext, matches[0][1], func(c core.NbToolContext) (core.NBToolResponse, error) {
+			return m.call(c, input)
+		})
+	}
+	return m.call(nbRequestContext, input)
+}
+
+func (m EventsExecuteTool) call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
 	// Validate that the input is actually SQL, not descriptive text
 	if isDescriptiveText(input.Command) {
@@ -979,12 +998,12 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	references := []core.NBToolResponseReference{}
 	if len(data) > 0 {
 		m.enrichData(data)
-		bytesData, marshalErr := common.MarshalJson(data)
+		enriched, marshalErr := sqlResultData(resp, data)
 		if marshalErr != nil {
 			slog.Error("events: failed to marshal enriched data", "error", marshalErr)
 			return core.NBToolResponse{}, marshalErr
 		}
-		resp.Data = string(bytesData)
+		resp.Data = enriched
 
 		for _, e := range data {
 			if idStr, ok := e["id"].(string); ok {

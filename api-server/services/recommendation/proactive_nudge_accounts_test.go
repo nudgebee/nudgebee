@@ -58,6 +58,8 @@ func TestProactiveAccountQueries_DB(t *testing.T) {
 		id uuid PRIMARY KEY, tenant_id uuid, rule_name text, account_object_id text, finops_score int,
 		finops_band text, estimated_savings double precision, severity text, category text,
 		cloud_account_id uuid, created_at timestamp, status text, last_nudged_at timestamp, recommendation jsonb)`)
+	mustExec(`CREATE TABLE agent (cloud_account_id uuid, type text, connection_status jsonb)`)
+	mustExec(`CREATE TABLE cloud_account_attrs (cloud_account_id uuid, name text, value text)`)
 
 	const tenant = "00000000-0000-0000-0000-0000000000f1"
 	const prod = "00000000-0000-0000-0000-0000000000a1"
@@ -72,6 +74,11 @@ func TestProactiveAccountQueries_DB(t *testing.T) {
 		insert(i, prod, fmt.Sprintf("rule_%d", i%6), 900-i)
 	}
 	insert(100, dev, "rule_x", 5)
+	// k8s-dev lists one more namespace as NudgeBee's own; its recommendation is
+	// left out.
+	mustExec(`INSERT INTO cloud_account_attrs VALUES ($1, 'nudgebee_workloads', '{"namespaces": ["nudgebee"]}')`, dev)
+	insert(101, dev, "rule_y", 999)
+	mustExec(`UPDATE recommendation SET recommendation = '{"namespace": "nudgebee"}' WHERE id = '00000000-0000-0000-0000-000000000101'`)
 
 	recs, err := queryProactiveAccountRecommendations(db, tenant)
 	require.NoError(t, err)

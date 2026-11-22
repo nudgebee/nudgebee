@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/services/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -320,4 +321,105 @@ func TestTokenizeKeepsNonASCIIIntact(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSearchAIInvocableWorkflowsInOtherAccounts(t *testing.T) {
+	// The caller reads three accounts; "home" is the conversation's own and is
+	// searched on its own, so it must not be listed again here.
+	ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"home", "b", "c"})
+	original := featureEnabledForAccount
+	featureEnabledForAccount = func(_, _, accountID string) (bool, error) {
+		if accountID == "c" {
+			return false, errors.New("metastore unreachable")
+		}
+		return true, nil
+	}
+	t.Cleanup(func() { featureEnabledForAccount = original })
+
+	good := liveDefinition("Restarts the consumers.", model.WorkflowTriggerManual)
+	store := new(MockWorkflowStore)
+	store.On("ListAIToolCandidates", mock.Anything, "test-tenant", []string{"b", "c"}).Return([]model.AIToolCandidate{
+		{ID: "b-restart", Name: "restart-consumers", AccountID: "b", Status: model.WorkflowStatusActive, AIInvocable: true, Live: good},
+		{ID: "b-not-opted-in", Name: "restart-other", AccountID: "b", Status: model.WorkflowStatusActive, Live: good},
+		{ID: "b-unpublished", Name: "restart-draft", AccountID: "b", Status: model.WorkflowStatusActive, AIInvocable: true},
+		// Offered on its own terms, but its account's flag could not be read.
+		{ID: "c-restart", Name: "restart-c", AccountID: "c", Status: model.WorkflowStatusActive, AIInvocable: true, Live: good},
+	}, nil)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflowsInOtherAccounts(ctx, "home", "restart", 0)
+	require.NoError(t, err)
+	store.AssertExpectations(t)
+	require.Len(t, got.Workflows, 1)
+	assert.Equal(t, "b-restart", got.Workflows[0].ID)
+	assert.Equal(t, "b", got.Workflows[0].AccountID, "each automation says which account it runs on")
+	assert.Equal(t, 1, got.TotalInvocable)
+}
+
+func TestSearchAIInvocableWorkflowsInOtherAccountsMatchesTheDescription(t *testing.T) {
+	// Ranked and shown like the conversation's own account's: an automation
+	// whose only match is its description is still found, and carries it.
+	ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"home", "b"})
+	stubFeatureFlag(t, true, nil)
+	store := new(MockWorkflowStore)
+	store.On("ListAIToolCandidates", mock.Anything, "test-tenant", []string{"b"}).Return([]model.AIToolCandidate{
+		{ID: "b-drain", Name: "nightly-maintenance", Description: "Drains the payment queue.", AccountID: "b",
+			Status: model.WorkflowStatusActive, AIInvocable: true, Live: liveDefinition("Runs maintenance.", model.WorkflowTriggerManual)},
+	}, nil)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflowsInOtherAccounts(ctx, "home", "payment queue", 0)
+	require.NoError(t, err)
+	require.Len(t, got.Workflows, 1)
+	assert.Equal(t, "Drains the payment queue.", got.Workflows[0].Description)
+}
+
+func TestSearchAIInvocableWorkflowsInOtherAccountsWithNoOtherAccount(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"home"})
+	store := new(MockWorkflowStore)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflowsInOtherAccounts(ctx, "home", "", 0)
+	require.NoError(t, err)
+	assert.Empty(t, got.Workflows)
+	store.AssertNotCalled(t, "ListAIToolCandidates", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestSearchAIInvocableWorkflowsTagsTheAccount(t *testing.T) {
+	stubFeatureFlag(t, true, nil)
+	store := new(MockWorkflowStore)
+	store.On("ListAIInvocableWorkflows", mock.Anything, mock.Anything, mock.Anything).
+		Return([]model.AIInvocableWorkflow{aiCandidate("wf-1", "restart-consumers", "Restarts the consumers.")}, nil)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflows(aiRequestContext(true), "test-account", "restart", 0)
+	require.NoError(t, err)
+	require.Len(t, got.Workflows, 1)
+	assert.Equal(t, "test-account", got.Workflows[0].AccountID)
+}
+
+func TestSearchAIInvocableWorkflowsSaysWhichCanStopForAnApproval(t *testing.T) {
+	// The remediation plan offers only automations a run never parks on a person's
+	// approval partway, and binds the option to the version it read.
+	stubFeatureFlag(t, true, nil)
+	plain := aiCandidate("wf-plain", "restart-consumers", "Restarts the consumers.")
+	plain.Version = "v-1"
+	plain.Definition.Tasks = []model.Task{{ID: "restart", Type: "cloud.k8s.cli"}}
+	gated := aiCandidate("wf-gated", "restart-payments", "Restarts the payment consumers.")
+	gated.Definition.Tasks = []model.Task{{ID: "group", Type: "core.parallel", Tasks: []model.Task{{ID: "ok", Type: "core.approval"}}}}
+	store := new(MockWorkflowStore)
+	store.On("ListAIInvocableWorkflows", mock.Anything, mock.Anything, mock.Anything).
+		Return([]model.AIInvocableWorkflow{plain, gated}, nil)
+	s := &Service{store: store}
+
+	got, err := s.SearchAIInvocableWorkflows(aiRequestContext(true), "test-account", "", 0)
+	require.NoError(t, err)
+	require.Len(t, got.Workflows, 2)
+	byID := map[string]model.AIWorkflowCandidate{}
+	for _, w := range got.Workflows {
+		byID[w.ID] = w
+	}
+	assert.False(t, byID["wf-plain"].HasApprovalStep)
+	assert.Equal(t, "v-1", byID["wf-plain"].Version)
+	assert.True(t, byID["wf-gated"].HasApprovalStep, "a nested core.approval counts")
 }

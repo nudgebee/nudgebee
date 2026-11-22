@@ -1,0 +1,2 @@
+DELETE FROM feature_flag WHERE feature_id = 'LLM_DECISION_MODELS';
+DELETE FROM feature WHERE value = 'LLM_DECISION_MODELS';

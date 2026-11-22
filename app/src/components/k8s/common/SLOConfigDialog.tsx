@@ -5,11 +5,28 @@ import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
+import { Label } from '@ui/Label';
+import { Callout } from '@ui/Callout';
 import apiKubernetes1 from '@api1/kubernetes1';
 import k8sApi from '@api1/kubernetes';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
+import { canOnAccount } from '@lib/auth';
 import { formatObjectivePercent } from 'src/utils/common';
+import {
+  CPU_SLO_TYPES,
+  CpuSloType,
+  FORECAST_SLO_TYPES,
+  ForecastResult,
+  MEMORY_SLO_CAVEATS,
+  MEMORY_SLO_TYPES,
+  defaultMemoryContainer,
+  forecastDailyLine,
+  forecastStatus,
+  forecastSummary,
+  isForecastSloName,
+  quantity,
+} from './cpuForecast';
 
 interface SLOConfigDialogProps {
   open: boolean;
@@ -32,6 +49,16 @@ interface SLOConfigDialogProps {
 // slo_config_v2 casts numeric columns to TEXT, so rows the user never touched
 // come back as strings and the Go decoder (strict float64) rejects them.
 const toNumber = (value: any) => (value === null || value === undefined || value === '' || !Number.isFinite(Number(value)) ? null : Number(value));
+
+// An SLI counts as configured once any of its values is set; an untouched or cleared
+// one is left out of the save, so clearing a field never writes a 0 threshold.
+const isConfigured = (c: any) =>
+  isForecastSloName(c.name) ? toNumber(c.threshold) !== null : toNumber(c.goal) !== null || toNumber(c.threshold) !== null;
+
+type ForecastState = { loading: boolean; result?: ForecastResult | null; error?: string };
+
+/** "CPU saturation" / "Memory saturation", for messages. */
+const forecastSloLabel = (t: CpuSloType) => `${t.containerScoped ? 'Memory' : 'CPU'} ${t.title.toLowerCase()}`;
 
 const SectionCard = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <Box
@@ -62,6 +89,11 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
   const [isEditMode, setIsEditMode] = useState(false);
   // Raw text per SLI while the objective field is being edited.
   const [goalInputs, setGoalInputs] = useState<Record<string, string>>({});
+  // Raw text per CPU SLO threshold, and the last Check now result per type.
+  const [cpuInputs, setCpuInputs] = useState<Record<string, string>>({});
+  const [forecasts, setForecasts] = useState<Record<string, ForecastState>>({});
+  // The workload's containers that set a memory limit, for the memory SLO's picker.
+  const [memoryContainers, setMemoryContainers] = useState<string[]>([]);
 
   // Workload selection state (only used when no workload prop is provided)
   const [availableNamespaces, setAvailableNamespaces] = useState<string[]>([]);
@@ -79,6 +111,9 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
       setSloConfig([]);
       setIsEditMode(false);
       setGoalInputs({});
+      setCpuInputs({});
+      setForecasts({});
+      setMemoryContainers([]);
       setSelectedNamespace('');
       setSelectedWorkload(null);
       setAvailableWorkloads([]);
@@ -145,6 +180,35 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
       });
   }, [selectedWorkload]);
 
+  // The memory SLO measures one container; list the ones that have a memory limit.
+  useEffect(() => {
+    if (!open || !activeWorkload?.name || !activeWorkload?.namespace) {
+      setMemoryContainers([]);
+      return;
+    }
+    let current = true;
+    apiKubernetes1
+      .getMemoryLimitedContainers(accountId, activeWorkload.namespace, activeWorkload.name)
+      .then((names: string[]) => current && setMemoryContainers(names))
+      .catch(() => current && setMemoryContainers([]));
+    return () => {
+      current = false;
+    };
+  }, [open, accountId, activeWorkload?.name, activeWorkload?.namespace]);
+
+  // A threshold typed before the container list arrived left the memory SLO without a
+  // container; give it the default once the list is in.
+  useEffect(() => {
+    if (memoryContainers.length === 0) return;
+    setSloConfig((prev) =>
+      prev.some((c: any) => MEMORY_SLO_TYPES.some((t) => t.name === c.name) && !c.container)
+        ? prev.map((c: any) =>
+            MEMORY_SLO_TYPES.some((t) => t.name === c.name) && !c.container ? { ...c, container: defaultMemoryContainer(memoryContainers) } : c
+          )
+        : prev
+    );
+  }, [memoryContainers]);
+
   const handleInput = (event: any, inspection: string, type: string) => {
     const raw = String(event.target.value ?? '');
 
@@ -209,39 +273,41 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
       snackbar.error('Please select a workload');
       return;
     }
-    if (sloConfig && sloConfig.length > 0) {
-      const availabilityObj = sloConfig.filter((f: any) => f.name === 'availability');
-      if (availabilityObj && availabilityObj.length === 1) {
-        if (!availabilityObj[0].goal) {
-          snackbar.error('Configure Availability Objective');
-          return;
-        }
-      } else {
-        snackbar.error('Configure Availability');
-        return;
-      }
-      const latencyObj = sloConfig.filter((f: any) => f.name === 'latency');
-      if (latencyObj && latencyObj.length === 1) {
-        if (!latencyObj[0].goal) {
-          snackbar.error('Configure Latency Objective');
-          return;
-        }
-        if (!latencyObj[0].threshold) {
-          snackbar.error('Configure Latency Threshold');
-          return;
-        }
-      } else {
-        snackbar.error('Configure Latency');
-        return;
-      }
-    } else {
-      snackbar.error('Configure Availability & Latency');
+    // Any one SLI is enough, so a workload can have CPU SLOs only; each one that is
+    // configured must be complete.
+    const configured = sloConfig.filter(isConfigured);
+    if (configured.length === 0) {
+      snackbar.error('Configure at least one SLO');
       return;
+    }
+    for (const c of configured) {
+      if (c.name === 'availability' && !toNumber(c.goal)) {
+        snackbar.error('Configure Availability Objective');
+        return;
+      }
+      if (c.name === 'latency' && !toNumber(c.goal)) {
+        snackbar.error('Configure Latency Objective');
+        return;
+      }
+      if (c.name === 'latency' && !toNumber(c.threshold)) {
+        snackbar.error('Configure Latency Threshold');
+        return;
+      }
+      const forecastType = FORECAST_SLO_TYPES.find((t) => t.name === c.name);
+      const threshold = toNumber(c.threshold) ?? 0;
+      if (forecastType && (threshold <= 0 || threshold > 100)) {
+        snackbar.error(`${forecastSloLabel(forecastType)} threshold must be above 0% and at most 100%`);
+        return;
+      }
+      if (forecastType?.containerScoped && !c.container) {
+        snackbar.error('Choose the container the memory SLO watches');
+        return;
+      }
     }
 
     const data = {
       cloud_account_id: accountId,
-      config: sloConfig.map((c: any) => ({ ...c, goal: toNumber(c.goal), threshold: toNumber(c.threshold) })),
+      config: configured.map((c: any) => ({ ...c, goal: toNumber(c.goal), threshold: toNumber(c.threshold) })),
       namespace: activeWorkload.namespace,
       workload_id: activeWorkload.cloud_resource_id,
       workload_name: activeWorkload.name,
@@ -268,6 +334,211 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
       })
       .finally(() => setLoading(false));
   };
+
+  const setCpuThreshold = (name: string, raw: string) => {
+    setCpuInputs((prev) => ({ ...prev, [name]: raw }));
+    const parsed = parseFloat(raw);
+    const threshold = Number.isFinite(parsed) ? parsed : null;
+    const isMemory = MEMORY_SLO_TYPES.some((t) => t.name === name);
+    setSloConfig((prev) =>
+      prev.some((c: any) => c.name === name)
+        ? prev.map((c: any) => (c.name === name ? { ...c, threshold } : c))
+        : [...prev, { enabled: true, name, goal: 0, threshold, ...(isMemory ? { container: defaultMemoryContainer(memoryContainers) } : {}) }]
+    );
+    setForecasts((prev) => ({ ...prev, [name]: { loading: false } }));
+  };
+
+  const memoryContainerOf = (name: string): string => sloConfig.find((c: any) => c.name === name)?.container ?? '';
+
+  const setMemoryContainer = (name: string, container: string) => {
+    setSloConfig((prev) =>
+      prev.some((c: any) => c.name === name)
+        ? prev.map((c: any) => (c.name === name ? { ...c, container } : c))
+        : [...prev, { enabled: true, name, goal: 0, threshold: null, container }]
+    );
+    setForecasts((prev) => ({ ...prev, [name]: { loading: false } }));
+  };
+
+  const cpuThresholdText = (name: string) => {
+    if (cpuInputs[name] !== undefined) return cpuInputs[name];
+    const threshold = toNumber(sloConfig.find((c: any) => c.name === name)?.threshold);
+    return threshold !== null ? String(threshold) : '';
+  };
+
+  // A saved CPU SLO (it has an id) is removed on the server; an unsaved one only here.
+  const isSavedCpu = (name: string) => sloConfig.some((c: any) => c.name === name && c.id);
+
+  const handleCheckNow = (name: string) => {
+    const threshold = toNumber(sloConfig.find((c: any) => c.name === name)?.threshold);
+    if (!activeWorkload || threshold === null || threshold <= 0 || threshold > 100) {
+      snackbar.error('Enter a threshold between 0% and 100% first');
+      return;
+    }
+    const isMemory = MEMORY_SLO_TYPES.some((t) => t.name === name);
+    const container = memoryContainerOf(name);
+    if (isMemory && !container) {
+      snackbar.error('Choose the container first');
+      return;
+    }
+    setForecasts((prev) => ({ ...prev, [name]: { loading: true } }));
+    apiKubernetes1
+      .generateForecast({
+        account_id: accountId,
+        workload_namespace: activeWorkload.namespace,
+        workload_name: activeWorkload.name,
+        metric: name,
+        threshold,
+        ...(isMemory ? { container } : {}),
+      })
+      .then((result: ForecastResult) => setForecasts((prev) => ({ ...prev, [name]: { loading: false, result } })))
+      .catch((err: any) => setForecasts((prev) => ({ ...prev, [name]: { loading: false, error: err?.message || 'Could not run the forecast' } })));
+  };
+
+  const handleRemoveCpu = (name: string) => {
+    const dropLocally = () => {
+      setSloConfig((prev) => prev.filter((c: any) => c.name !== name));
+      setCpuInputs((prev) => ({ ...prev, [name]: '' }));
+      setForecasts((prev) => ({ ...prev, [name]: { loading: false } }));
+    };
+    if (!activeWorkload || !isSavedCpu(name)) {
+      dropLocally();
+      return;
+    }
+    setLoading(true);
+    apiKubernetes1
+      .deleteSLOConfig({ cloud_account_id: accountId, workload_name: activeWorkload.name, namespace: activeWorkload.namespace, name })
+      .then((res: any) => {
+        if (res?.data?.data?.slo_config_delete?.data?.success) {
+          dropLocally();
+          snackbar.success('Forecast SLO removed');
+          onSuccess?.();
+        } else {
+          snackbar.error('Failed to remove forecast SLO');
+        }
+      })
+      .catch(() => snackbar.error('Failed to remove forecast SLO'))
+      .finally(() => setLoading(false));
+  };
+
+  const renderForecast = (name: string) => {
+    const f = forecasts[name];
+    if (!f) return null;
+    if (f.loading) {
+      return (
+        <Typography variant='body2' sx={{ color: ds.gray[700], marginTop: 'var(--ds-space-2)' }}>
+          Checking the last 3 days of metrics…
+        </Typography>
+      );
+    }
+    if (f.error) {
+      return (
+        <Box sx={{ marginTop: 'var(--ds-space-2)' }}>
+          <Callout tone='critical'>{f.error}</Callout>
+        </Box>
+      );
+    }
+    if (!f.result) return null;
+    const status = forecastStatus(f.result);
+    const daily = forecastDailyLine(f.result);
+    return (
+      <Box
+        sx={{ marginTop: 'var(--ds-space-2)', display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}
+        data-testid={`slo-${name}-forecast`}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+          <Label text={status.text} tone={status.tone} size='sm' />
+          <Typography variant='body2'>{forecastSummary(f.result)}</Typography>
+        </Box>
+        {daily && (
+          <Typography variant='caption' sx={{ color: ds.gray[700] }}>
+            {daily}
+          </Typography>
+        )}
+        {f.result.suggested_limit ? (
+          <Typography variant='caption' sx={{ color: ds.gray[700] }}>
+            {`Suggested ${f.result.limit_unit === 'MiB' ? 'memory' : 'CPU'} limit per pod: ${quantity(
+              f.result.suggested_limit,
+              f.result.limit_unit
+            )}`}
+          </Typography>
+        ) : null}
+        {f.result.oom_restarts_6h ? (
+          <Typography variant='caption' sx={{ color: ds.gray[700] }}>
+            {`${f.result.oom_restarts_6h} restarts in the last 6h, last exit OOMKilled (evidence only; the OOMKilled alert covers the kills)`}
+          </Typography>
+        ) : null}
+      </Box>
+    );
+  };
+
+  const renderForecastRow = (t: CpuSloType) => (
+    <Box key={t.name} sx={{ marginBottom: 'var(--ds-space-3)' }}>
+      <Grid container alignItems='center' spacing={1}>
+        <Grid item>
+          <Typography variant='body2' sx={{ color: ds.blue[500] }}>
+            {`${t.title}:`}
+          </Typography>
+        </Grid>
+        <Grid item>
+          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+            {t.description}
+          </Typography>
+        </Grid>
+        <Grid item>
+          <Box sx={{ width: ds.space.mul(0, 50) }} data-testid={`slo-${t.name}-threshold`}>
+            <Input
+              size='sm'
+              id={`slo-${t.name}-threshold`}
+              type='text'
+              inputMode='decimal'
+              suffix='%'
+              onChange={(value) => setCpuThreshold(t.name, String(value ?? ''))}
+              value={cpuThresholdText(t.name)}
+            />
+          </Box>
+        </Grid>
+        <Grid item>
+          <Typography variant='body2' sx={{ color: ds.gray[700] }}>
+            {t.unit}
+          </Typography>
+        </Grid>
+        {t.containerScoped && (
+          <Grid item data-testid={`slo-${t.name}-container-dropdown`}>
+            <Box sx={{ width: ds.space.mul(0, 80) }}>
+              <Select
+                id={`slo-${t.name}-container`}
+                label='Container'
+                value={memoryContainerOf(t.name)}
+                options={memoryContainers}
+                onChange={(next) => setMemoryContainer(t.name, String(next ?? ''))}
+                placeholder={memoryContainers.length ? 'Select container' : 'No container with a memory limit'}
+              />
+            </Box>
+          </Grid>
+        )}
+        <Grid item>
+          <DsButton
+            id={`slo-${t.name}-check-now`}
+            tone='secondary'
+            size='sm'
+            onClick={() => handleCheckNow(t.name)}
+            disabled={loading || forecasts[t.name]?.loading}
+          >
+            Check now
+          </DsButton>
+        </Grid>
+        {/* Deleting a saved SLO is account-level, as in the SLO list; namespace admins can still edit it. */}
+        {(isSavedCpu(t.name) ? canOnAccount('slo', 'Write', accountId) : cpuThresholdText(t.name) !== '') && (
+          <Grid item>
+            <DsButton id={`slo-${t.name}-remove`} tone='ghost' size='sm' onClick={() => handleRemoveCpu(t.name)} disabled={loading}>
+              Remove
+            </DsButton>
+          </Grid>
+        )}
+      </Grid>
+      {renderForecast(t.name)}
+    </Box>
+  );
 
   const formContent = () => {
     return (
@@ -399,6 +670,24 @@ const SLOConfigDialog: React.FC<SLOConfigDialogProps> = ({ open, onClose, accoun
                   </Box>
                 </Grid>
               </Grid>
+            </SectionCard>
+
+            {/* CPU Section: forecast-based thresholds */}
+            <SectionCard title='CPU'>
+              <Typography variant='body2' sx={{ color: ds.gray[700], marginBottom: 'var(--ds-space-3)' }}>
+                Forecast hourly from the last 3 days of metrics, alerting before the threshold is reached. Leave a field empty to skip it; Remove
+                deletes a saved one.
+              </Typography>
+              {CPU_SLO_TYPES.map((t) => renderForecastRow(t))}
+            </SectionCard>
+
+            {/* Memory Section: one container's RSS against its own memory limit */}
+            <SectionCard title='Memory'>
+              <Typography variant='body2' sx={{ color: ds.gray[700], marginBottom: 'var(--ds-space-3)' }}>
+                Forecast hourly from the last 3 days of one container&apos;s memory, alerting before it reaches the threshold of its limit.{' '}
+                {MEMORY_SLO_CAVEATS}
+              </Typography>
+              {MEMORY_SLO_TYPES.map((t) => renderForecastRow(t))}
             </SectionCard>
           </>
         )}

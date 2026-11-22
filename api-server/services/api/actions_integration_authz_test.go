@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -36,8 +37,19 @@ func authzRequestContext(t *testing.T, extra string) *security.RequestContext {
 }
 
 func TestCanRunIntegrationAction(t *testing.T) {
-	previous := listWorkflowWebhookAccountIDs
-	t.Cleanup(func() { listWorkflowWebhookAccountIDs = previous })
+	previous, previousType := listWorkflowWebhookAccountIDs, getStoredIntegrationType
+	t.Cleanup(func() { listWorkflowWebhookAccountIDs, getStoredIntegrationType = previous, previousType })
+	getStoredIntegrationType = func(_ *security.RequestContext, id string) (string, error) {
+		switch id {
+		case "datadog-row":
+			return "datadog", nil
+		case "es-row":
+			return "ES", nil
+		case "lookup-fails":
+			return "", errors.New("db down")
+		}
+		return "", nil
+	}
 	listWorkflowWebhookAccountIDs = func(_ *security.RequestContext, name, source string) ([]string, error) {
 		if source != "user" {
 			// Only the default source has rows in this fixture.
@@ -63,7 +75,14 @@ func TestCanRunIntegrationAction(t *testing.T) {
 		workflowsWrite    = `"CustomPermissions":{"workflows:Write":true}`
 		accountAdminOnA   = `"Roles":["account_admin"],"ScopedEntityIds":{"account_admin":["` + authzAcctA + `"]}`
 		workflowsWriteOnA = `"ScopedCustomPermissions":{"` + authzAcctA + `":{"workflows:Write":true}}`
+		datadogOnly       = `"CustomPermissions":{"integrations:Read":true,"integrations.datadog:Write":true}`
+		esOnly            = `"CustomPermissions":{"integrations:Read":true,"integrations.es:Write":true}`
+		datadogOnAccountA = `"ScopedCustomPermissions":{"` + authzAcctA + `":{"integrations.datadog:Write":true}}`
+		datadogRead       = `"CustomPermissions":{"integrations.datadog:Read":true}`
 	)
+	provider := func(name, id string) integrationActionTarget {
+		return integrationActionTarget{IntegrationName: name, IntegrationConfigName: "cfg", IntegrationId: id, AccountIds: []string{authzAcctA}}
+	}
 	webhook := func(name, id string, accounts ...string) integrationActionTarget {
 		return integrationActionTarget{IntegrationName: workflowWebhookIntegration, IntegrationConfigName: name, IntegrationId: id, AccountIds: accounts}
 	}
@@ -112,6 +131,29 @@ func TestCanRunIntegrationAction(t *testing.T) {
 		{"workflows grant does not cover other types", workflowsWrite, "integrations_delete_config", integrationActionTarget{IntegrationName: "datadog"}, false},
 		{"ambiguous request refused on the workflow carve-out", accountAdminOnA, "integrations_create_config", integrationActionTarget{IntegrationName: workflowWebhookIntegration, IntegrationConfigName: "wh-new", AccountIds: []string{authzAcctA}, Ambiguous: true}, false},
 		{"ambiguous request still allowed for a tenant admin", tenantAdmin, "integrations_create_config", integrationActionTarget{IntegrationName: "datadog", Ambiguous: true}, true},
+
+		// Per-provider grants: integrations.<type>:Write covers that provider's writes only.
+		{"provider grant creates its provider", datadogOnly, "integrations_create_config", provider("datadog", ""), true},
+		{"provider grant deletes its provider", datadogOnly, "integrations_delete_config", provider("datadog", ""), true},
+		{"provider grant updates status of its provider", datadogOnly, "integrations_update_status", provider("datadog", ""), true},
+		{"provider grant matches the type case-insensitively", esOnly, "integrations_create_config", provider("ES", ""), true},
+		{"provider grant cannot create another provider", datadogOnly, "integrations_create_config", provider("ES", ""), false},
+		{"provider grant cannot delete another provider", datadogOnly, "integrations_delete_config", provider("ES", ""), false},
+		{"provider grant cannot disable another provider", datadogOnly, "integrations_update_status", provider("prometheus", ""), false},
+		{"provider grant edits its own row by id", datadogOnly, "integrations_create_config", provider("datadog", "datadog-row"), true},
+		{"provider grant cannot edit another provider's row by claiming its own type", datadogOnly, "integrations_create_config", provider("datadog", "es-row"), false},
+		{"provider grant edits by id with a stored type in another case", esOnly, "integrations_create_config", provider("es", "es-row"), true},
+		{"provider grant refused when the stored type lookup fails", datadogOnly, "integrations_create_config", provider("datadog", "lookup-fails"), false},
+		{"provider grant refused for an unknown id", datadogOnly, "integrations_create_config", provider("datadog", "missing-row"), false},
+		{"provider grant does not cover discovery targets", datadogOnly, "integrations_upsert_discovery_target", provider("datadog", ""), false},
+		{"provider grant does not cover config pushes", datadogOnly, "integrations_trigger_config_push", provider("datadog", ""), false},
+		{"provider grant does not cover non-observability types", `"CustomPermissions":{"integrations.jira:Write":true}`, "integrations_create_config", provider("jira", ""), false},
+		{"provider grant does not cover the provider's webhook", `"CustomPermissions":{"integrations.datadog_webhook:Write":true}`, "integrations_create_config", provider("datadog_webhook", ""), false},
+		{"provider grant bound to an account is inert", datadogOnAccountA, "integrations_create_config", provider("datadog", ""), false},
+		{"provider Read grant does not write", datadogRead, "integrations_create_config", provider("datadog", ""), false},
+		{"provider grant alone does not read", `"CustomPermissions":{"integrations.datadog:Write":true}`, "integrations_get_schema", provider("datadog", ""), false},
+		{"provider grant with integrations:Read reads", datadogOnly, "integrations_get_schema", provider("ES", ""), true},
+		{"provider grant refuses a request that spells the type twice", datadogOnly, "integrations_delete_config", integrationActionTarget{IntegrationName: "datadog", IntegrationConfigName: "cfg", Ambiguous: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -191,4 +233,23 @@ func TestIntegrationActionClassCoversEveryRoutedAction(t *testing.T) {
 		}
 	}
 	assert.NotZero(t, routed, "no /rpc/integration actions found — has the yaml shape changed?")
+}
+
+// TestObservabilityIntegrationTypesMatchApp pins observabilityIntegrationTypes
+// to the app's OBSERVABILITY_INTEGRATION_PROVIDERS. The role editor offers a
+// grant for each type in the app's list; one the Go list lacks would be a box
+// that does nothing, and one only Go knows would be a grant no editor offers.
+func TestObservabilityIntegrationTypesMatchApp(t *testing.T) {
+	raw, err := os.ReadFile("../../../app/src/lib/integrationProviderGrants.ts")
+	require.NoError(t, err)
+	matches := regexp.MustCompile(`\{ section: '[A-Z0-9_]+', type: '([a-z0-9_]+)' \}`).FindAllStringSubmatch(string(raw), -1)
+	appTypes := map[string]bool{}
+	for _, m := range matches {
+		appTypes[m[1]] = true
+	}
+	require.NotEmpty(t, appTypes, "no providers parsed — has the list's shape changed?")
+	assert.Equal(t, appTypes, observabilityIntegrationTypes)
+	for actionName := range providerGrantActions {
+		assert.Contains(t, string(raw), "'"+actionName+"'", "PROVIDER_GRANT_ACTIONS is missing %s", actionName)
+	}
 }

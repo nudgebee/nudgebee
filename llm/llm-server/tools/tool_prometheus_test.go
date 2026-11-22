@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools/core"
 	"strings"
@@ -430,10 +431,11 @@ func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
 // otherwise start guessing label names, so it must route both named-resource
 // shapes: workloads to series-match, everything else to label-values.
 func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
-	msg := prometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
+	msg := PrometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
 
 	assert.Contains(t, msg, `node_cpu_seconds_total{kubernetes_node="worker-1"}`,
 		"the failing query must be echoed so the agent knows what to change")
+	assert.Contains(t, msg, "If a base read verifies the metric and scope in the same time range")
 	assert.Contains(t, msg, ToolMetricsSeriesMatch, "workload path")
 	assert.Contains(t, msg, ToolMetricsLabelValues, "non-workload named-resource path")
 	assert.Contains(t, msg, ToolMetricsList, "keyword-discovery path")
@@ -908,4 +910,273 @@ func TestStatsOnlySeriesWithin_DropsUnmarshalableSeries(t *testing.T) {
 	require.Len(t, kept, 1)
 	assert.Equal(t, "ok", byName(kept[0]))
 	assert.Equal(t, 1, shown)
+}
+
+// ---------------------------------------------------------------------------
+// step argument and long-window file save (#41760)
+// ---------------------------------------------------------------------------
+
+func TestParsePromStep(t *testing.T) {
+	ok := []struct {
+		in   any
+		want time.Duration
+	}{
+		{nil, 0},
+		{"", 0},
+		{"5m", 5 * time.Minute},
+		{"30s", 30 * time.Second},
+		{"1h", time.Hour},
+		{"1d", 24 * time.Hour},
+		{"1h30m", 90 * time.Minute},
+		{"1.5h", 90 * time.Minute},
+		{"300", 300 * time.Second},
+		{float64(60), time.Minute},
+		{120, 2 * time.Minute},
+		{json.Number("45"), 45 * time.Second},
+	}
+	for _, tt := range ok {
+		got, err := parsePromStep(tt.in)
+		require.NoError(t, err, "%v", tt.in)
+		assert.Equal(t, tt.want, got, "%v", tt.in)
+	}
+	for _, bad := range []any{"abc", "-5m", "0", float64(-1), math.NaN(), true} {
+		_, err := parsePromStep(bad)
+		assert.Error(t, err, "%v", bad)
+	}
+}
+
+func TestResolvePromStep(t *testing.T) {
+	week := 7 * 24 * time.Hour
+
+	step, note := resolvePromStep(0, week)
+	assert.Equal(t, 0, step, "absent step leaves the ~60-point default to executePromQl")
+	assert.Empty(t, note)
+
+	step, note = resolvePromStep(5*time.Minute, week)
+	assert.Equal(t, 300, step)
+	assert.Empty(t, note, "a step within the limits is used as asked")
+
+	step, note = resolvePromStep(5*time.Second, time.Hour)
+	assert.Equal(t, 15, step, "floored at 15s")
+	assert.Contains(t, note, "15s minimum")
+
+	step, note = resolvePromStep(15*time.Second, week)
+	assert.Equal(t, 55, step, "7d / 10999 rounded up to whole seconds")
+	assert.Contains(t, note, "11000 points per series")
+	assert.LessOrEqual(t, int(week/(time.Duration(step)*time.Second))+1, promMaxPointsPerSeries)
+
+	step, _ = resolvePromStep(1500*time.Millisecond, time.Hour)
+	assert.Equal(t, 15, step)
+	step, _ = resolvePromStep(90500*time.Millisecond, time.Hour)
+	assert.Equal(t, 91, step, "sub-second steps round up to the whole seconds the backend takes")
+}
+
+// promCallFixture stubs the metrics backend and the workspace for a Call.
+type promCallFixture struct {
+	saved   *esSaveCapture
+	request core.ObservabilityMetricsQueryRequest
+}
+
+func newPromCallFixture(t *testing.T, series, points int) *promCallFixture {
+	t.Helper()
+	f := &promCallFixture{saved: &esSaveCapture{}}
+	origWm, origQuery := wm, promQueryMetrics
+	wm = f.saved
+	promQueryMetrics = func(_ security.RequestContext, req core.ObservabilityMetricsQueryRequest) (core.ObservabilityMetricsQueryResponse, error) {
+		f.request = req
+		payload := make([]core.ObservabilityMetricsQuerySeries, 0, series)
+		for s := 0; s < series; s++ {
+			ts := make([]int64, points)
+			vals := make([]float64, points)
+			for i := range ts {
+				ts[i] = 1700000000 + int64(i*300)
+				vals[i] = float64(s*1000 + i)
+			}
+			payload = append(payload, core.ObservabilityMetricsQuerySeries{Metric: map[string]string{"pod": fmt.Sprintf("p-%d", s)}, Timestamps: ts, Values: vals})
+		}
+		return core.ObservabilityMetricsQueryResponse{Results: []core.ObservabilityMetricsQueryResult{{QueryKey: "query", Payload: payload}}}, nil
+	}
+	t.Cleanup(func() { wm, promQueryMetrics = origWm, origQuery })
+	return f
+}
+
+func promWindowArgs(window time.Duration) map[string]any {
+	end := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	return map[string]any{"start_time": end.Add(-window).Format(time.RFC3339), "end_time": end.Format(time.RFC3339)}
+}
+
+func callPrometheus(t *testing.T, args map[string]any) (core.NBToolResponse, map[string]any) {
+	t.Helper()
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
+	resp, err := PrometheusExecuteTool{}.Call(ctx, core.NBToolCallRequest{Command: `container_memory_working_set_bytes{pod="p"}`, Arguments: args})
+	require.NoError(t, err)
+	require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status, resp.Data)
+	var out map[string]any
+	require.NoError(t, json.Unmarshal([]byte(resp.Data), &out), resp.Data)
+	return resp, out
+}
+
+func fileRefs(refs []core.NBToolResponseReference) []core.NBToolResponseReference {
+	var out []core.NBToolResponseReference
+	for _, r := range refs {
+		if r.Type == "file" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestPrometheusCall_LongWindowSmallResultSavedAndKeptInline(t *testing.T) {
+	f := newPromCallFixture(t, 2, 20)
+	resp, out := callPrometheus(t, promWindowArgs(7*24*time.Hour))
+
+	files := fileRefs(resp.References)
+	require.Len(t, files, 1, "a >24h result lands in a file")
+	assert.Equal(t, f.saved.path, files[0].Url)
+	assert.True(t, strings.HasPrefix(files[0].Url, "metrics_prometheus_"))
+	note, _ := out["__data_note"].(string)
+	assert.Contains(t, note, fmt.Sprintf("%q", files[0].Url), "the note names the exact file_ref")
+	assert.Contains(t, note, "analyze_metric_series")
+	assert.Contains(t, note, "shell_execute")
+	assert.NotContains(t, note, "stats (min/max/avg/p99)", "not oversized: the stats-only note does not apply")
+
+	inline, _ := out[`container_memory_working_set_bytes{pod="p"}`].(string)
+	assert.Contains(t, inline, `"values"`, "inline data is kept as today")
+	assert.Contains(t, inline, `"timestamps"`)
+
+	var saved map[string][]map[string]any
+	require.NoError(t, json.Unmarshal([]byte(f.saved.body), &saved))
+	require.Len(t, saved[`container_memory_working_set_bytes{pod="p"}`], 2)
+}
+
+func TestPrometheusCall_DefaultDaySmallResultNotSaved(t *testing.T) {
+	f := newPromCallFixture(t, 2, 20)
+	resp, out := callPrometheus(t, promWindowArgs(24*time.Hour))
+	assert.Empty(t, fileRefs(resp.References), "exactly the default 24h window: unchanged, no file")
+	assert.Empty(t, f.saved.path)
+	assert.NotContains(t, out, "__data_note")
+	assert.Equal(t, 1440, f.request.StepInterval, "default step: 24h / 60")
+}
+
+func TestPrometheusCall_OversizedUnchanged(t *testing.T) {
+	f := newPromCallFixture(t, 3, 1000) // 3,000 points: past maxInlinePoints
+	resp, out := callPrometheus(t, promWindowArgs(7*24*time.Hour))
+	files := fileRefs(resp.References)
+	require.Len(t, files, 1, "saved once, by the oversized path")
+	assert.Equal(t, "Full Prometheus query results", files[0].Description)
+	assert.Equal(t, f.saved.path, files[0].Url)
+	assert.Contains(t, out["__data_note"], "stats (min/max/avg/p99)")
+	assert.NotContains(t, out["__data_note"], "analyze_metric_series", "the oversized note is as before")
+	inline, _ := out[`container_memory_working_set_bytes{pod="p"}`].(string)
+	assert.NotContains(t, inline, `"values"`, "oversized stays stats-only inline")
+}
+
+func TestPrometheusCall_StepPassedThroughAndClamped(t *testing.T) {
+	f := newPromCallFixture(t, 1, 10)
+	args := promWindowArgs(time.Hour)
+	args["step"] = "5m"
+	_, out := callPrometheus(t, args)
+	assert.Equal(t, 300, f.request.StepInterval)
+	assert.NotContains(t, out, "__data_note")
+
+	args = promWindowArgs(14 * 24 * time.Hour)
+	args["step"] = "30s"
+	_, out = callPrometheus(t, args)
+	assert.Equal(t, 110, f.request.StepInterval, "14d / 10999 rounded up")
+	assert.Contains(t, out["__data_note"], "Step raised to 1m50s")
+	assert.Contains(t, out["__data_note"], "analyze_metric_series", "the 14d window is saved too")
+}
+
+func TestPrometheusCall_InvalidStepIsAnActionableError(t *testing.T) {
+	newPromCallFixture(t, 1, 10)
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
+	resp, err := PrometheusExecuteTool{}.Call(ctx, core.NBToolCallRequest{Command: "up", Arguments: map[string]any{"step": "fast"}})
+	require.NoError(t, err)
+	assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "invalid_step")
+}
+
+// promAccountCapture records which account's workspace a save went to.
+type promAccountCapture struct {
+	esSaveCapture
+	account string
+}
+
+func (c *promAccountCapture) SaveFile(ctx *security.RequestContext, account, conversation, path, content string) error {
+	c.account = account
+	return c.esSaveCapture.SaveFile(ctx, account, conversation, path, content)
+}
+
+// A targeted call reads the target account's metrics, but the saved file must
+// land in the conversation's workspace, where analyze_metric_series and
+// shell_execute read it.
+func TestPrometheusCall_TargetedCallSavesToConversationWorkspace(t *testing.T) {
+	f := newPromCallFixture(t, 2, 20)
+	capture := &promAccountCapture{}
+	wm = capture
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "conversation-account", TargetAccountId: "target-account", ConversationId: "c"}
+	resp, err := PrometheusExecuteTool{}.Call(ctx, core.NBToolCallRequest{Command: `container_memory_working_set_bytes{pod="p"}`, Arguments: promWindowArgs(7 * 24 * time.Hour)})
+	require.NoError(t, err)
+	require.Len(t, fileRefs(resp.References), 1)
+	assert.Equal(t, "conversation-account", capture.account)
+	assert.Equal(t, "target-account", f.request.AccountId, "the query itself still reads the target account")
+}
+
+// TestPromQLRejectsOnlyDots pins which queries the syntax gate is allowed to wave
+// through on a non-Prometheus backend. An OTel-named backend reports names like
+// k8s.pod.memory.working_set and answers that exact spelling, so the dots are the
+// backend's own naming, not a mistake. Everything else the Prometheus grammar
+// rejects must still be rejected.
+func TestPromQLRejectsOnlyDots(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"bare otel metric name", `k8s.pod.memory.working_set`, true},
+		{"segment starting with a digit", `composite.k8s.apiserver.request.5xx.rate`, true},
+		{"segment that is a number and a letter", `kafka.request.time.99p`, true},
+		{"otel name with otel labels", `k8s.container_memory_usage_bytes{k8s.namespace.name="demo"}`, true},
+		{"otel name inside a function", `sum by (service) (http.server.request.duration_bucket)`, true},
+		{"valid promql needs no help", `rate(container_cpu_usage_seconds_total[5m])`, false},
+		{"float literal is not a dotted name", `node_load1 > 0.5`, false},
+		{"natural language stays rejected", `the CPU utilization for pod X. Is it high?`, false},
+		{"broken brackets stay rejected", `sum by (pod (k8s.pod.cpu.usage)`, false},
+		{"comma-separated batch stays rejected", `k8s.pod.cpu.usage, k8s.pod.memory.usage`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, promQLRejectsOnlyDots(tc.query))
+		})
+	}
+}
+
+// TestBackendAcceptsDottedNames pins the allowlist. Only backends checked against
+// dev are on it; everything else — including a backend that merely is not
+// Prometheus — keeps the syntax gate, so an unverified one fails the way it does
+// today rather than in a new way.
+func TestBackendAcceptsDottedNames(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		want     bool
+	}{
+		{"solarwinds", true},
+		{"SolarWinds", true},
+		{" signoz ", true},
+		{"prometheus", false},
+		{"cubeapm", false},
+		{"openobserve", false},
+		{"datadog", false},
+		{"", false},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			assert.Equal(t, tc.want, backendAcceptsDottedNames(tc.provider))
+		})
+	}
+}
+
+// TestMetricsBackendAcceptsDottedNamesWithoutAccount keeps the gate on when the
+// account is unknown: the resolver falls back to "prometheus", which is not on
+// the list.
+func TestMetricsBackendAcceptsDottedNamesWithoutAccount(t *testing.T) {
+	assert.False(t, metricsBackendAcceptsDottedNames(""))
 }

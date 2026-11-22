@@ -141,6 +141,9 @@ func (t GcpCliTool) InputSchema() core.ToolSchema {
 }
 
 func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := readOnlyCheckRefusal(nbRequestContext, t.Name(), input); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 
 	requested := RequestedCloudAccount(input.Arguments)
 	if requested == "" && nbRequestContext.ToolConfig.Name == "" {

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -22,22 +23,22 @@ func TestClassifyTaskType(t *testing.T) {
 		{
 			name:    "top-level plain retrieval → query",
 			request: NBAgentRequest{Query: "list all pods in the default namespace"},
-			want:    taskTypeQuery,
+			want:    llmruntime.TaskTypeQuery,
 		},
 		{
 			name:    "top-level causal question → investigation",
 			request: NBAgentRequest{Query: "why is the checkout service returning 500 errors"},
-			want:    taskTypeInvestigation,
+			want:    llmruntime.TaskTypeInvestigation,
 		},
 		{
 			name:    "investigation conversation source → investigation regardless of query",
 			request: NBAgentRequest{Query: "list pods", ConversationSource: ConversationSourceInvestigation},
-			want:    taskTypeInvestigation,
+			want:    llmruntime.TaskTypeInvestigation,
 		},
 		{
 			name:    "OriginalQuery wins over Query for classification",
 			request: NBAgentRequest{OriginalQuery: "why did the deployment roll back", Query: "get pods"},
-			want:    taskTypeInvestigation,
+			want:    llmruntime.TaskTypeInvestigation,
 		},
 		{
 			name:    "sub-agent turn (ParentAgentId set, differs from AgentId) → unclassified",
@@ -47,7 +48,7 @@ func TestClassifyTaskType(t *testing.T) {
 		{
 			name:    "top-level when ParentAgentId equals AgentId → classified",
 			request: NBAgentRequest{AgentId: "agent-1", ParentAgentId: "agent-1", Query: "show me the services"},
-			want:    taskTypeQuery,
+			want:    llmruntime.TaskTypeQuery,
 		},
 		{
 			name:    "empty query → unclassified",
@@ -70,45 +71,13 @@ func TestApplyTaskTypeAttribution_RoundTrip(t *testing.T) {
 
 	// A top-level query stamps "query" and reads back.
 	q := applyTaskTypeAttribution(base, NBAgentRequest{Query: "list pods"})
-	assert.Equal(t, taskTypeQuery, taskTypeFromContext(q))
+	assert.Equal(t, llmruntime.TaskTypeQuery, llmruntime.TaskTypeFromContext(q))
 
 	// A sub-agent turn stamps "" — and re-stamping over a parent context that
 	// carried "query" must RESET to "", not inherit the parent's label.
 	sub := applyTaskTypeAttribution(q, NBAgentRequest{AgentId: "a", ParentAgentId: "p", Query: "list pods"})
-	assert.Equal(t, "", taskTypeFromContext(sub))
+	assert.Equal(t, "", llmruntime.TaskTypeFromContext(sub))
 
 	// nil context is tolerated (mirrors applyPromptVariant).
 	assert.Nil(t, applyTaskTypeAttribution(nil, NBAgentRequest{}))
-}
-
-// TestTierAttributionForRecord confirms the writer helper returns nil pointers
-// when nothing is stamped (legacy rows stay NULL) and populated pointers when
-// tier / task_type are present on the context.
-func TestTierAttributionForRecord(t *testing.T) {
-	// nil context → both nil (no panic).
-	nilTier, nilTask := tierAttributionForRecord(nil)
-	assert.Nil(t, nilTier)
-	assert.Nil(t, nilTask)
-
-	// Unstamped context → both nil.
-	bare := security.NewRequestContext(context.Background(), nil, nil, nil, nil)
-	tier, task := tierAttributionForRecord(bare)
-	assert.Nil(t, tier)
-	assert.Nil(t, task)
-
-	// Stamped tier + task_type → both non-nil with the stamped values.
-	stamped := security.NewRequestContext(
-		context.WithValue(
-			context.WithValue(context.Background(), ContextKeyModelTier, ModelTierSummary),
-			ContextKeyTaskType, taskTypeQuery,
-		),
-		nil, nil, nil, nil,
-	)
-	tier, task = tierAttributionForRecord(stamped)
-	if assert.NotNil(t, tier) {
-		assert.Equal(t, string(ModelTierSummary), *tier)
-	}
-	if assert.NotNil(t, task) {
-		assert.Equal(t, taskTypeQuery, *task)
-	}
 }

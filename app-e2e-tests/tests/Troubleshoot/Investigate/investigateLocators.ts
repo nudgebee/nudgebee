@@ -184,6 +184,14 @@ export class InvestigateLocators extends TroubleshootEventsLocators {
     return container.locator('[role="menuitem"]').filter({ hasText: label }).first();
   }
 
+  // Only "Run an automation" rows (run-automation-item-<id>); "Triggered for this event" rows carry the same workflow name.
+  runnableAutomation(name: string): Locator {
+    return this.automationDropdownMenu
+      .locator('[id^="run-automation-item-"]')
+      .filter({ has: this.page.getByText(name, { exact: true }) })
+      .first();
+  }
+
   // ds/Modal labels its MUI Dialog via id='alert-dialog-title', so the modal
   // title is the dialog's accessible name.
   dialog(title: string): Locator {

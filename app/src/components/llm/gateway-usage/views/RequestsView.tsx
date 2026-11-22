@@ -7,7 +7,7 @@
  * as muted subtext when routing changed it) · Provider · Tokens (in/out) ·
  * Latency · Cost (severity dot) · Status (a small pill).
  *
- * A toolbar of FilterDropdowns scopes the list by user · model · provider ·
+ * A toolbar of FilterDropdowns scopes the list by user · API key · model · provider ·
  * status (Success 2xx / Error). User/model/provider options come from the
  * shell's already-fetched aggregate `metrics` breakdowns (same date window —
  * no extra fetch); filtering happens server-side so the pager total matches.
@@ -50,6 +50,9 @@ interface RequestsViewProps {
   /** The user scope — set here via the User dropdown or by a Users-tab drill-in. */
   userFilter: { id: string; name: string } | null;
   onChangeUser: (user: { id: string; name: string } | null) => void;
+  /** The API key scope — set here via the Key dropdown or by a Keys-tab drill-in. */
+  keyFilter: { id: string; name: string } | null;
+  onChangeKey: (key: { id: string; name: string } | null) => void;
   /** Set when drilled in from the Tools tab — scopes to requests that offered it. */
   toolFilter: string | null;
   onClearTool: () => void;
@@ -81,7 +84,7 @@ const numCell = { fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', 
 
 const H = {
   time: <HeaderLabel label='Time' info='When the gateway received the request (UTC).' />,
-  user: <HeaderLabel label='User' info='The user whose request was forwarded through the gateway.' />,
+  user: <HeaderLabel label='User' info='The user whose request was forwarded through the gateway, and below it the API key it was sent with.' />,
   model: (
     <HeaderLabel
       label='Model'
@@ -96,7 +99,12 @@ const H = {
       info='Input / output tokens. Cached input tokens (prompt-cache reads) are shown below when present.'
     />
   ),
-  latency: <HeaderLabel label='Latency' info='End-to-end latency for this request.' />,
+  latency: (
+    <HeaderLabel
+      label='Latency'
+      info='End-to-end latency for this request. For a streamed answer, "first" below it is how long until the first part of the answer arrived.'
+    />
+  ),
   cost: <HeaderLabel label='Cost' info='Cost of this request.' />,
   status: <HeaderLabel label='Status' info='HTTP status the gateway returned for this request.' />,
   body: <HeaderLabel label='Body' info='View the captured request and response body (when available for your own requests).' />,
@@ -275,7 +283,16 @@ function toRow(
       ),
     },
     {
-      component: <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', overflowWrap: 'anywhere' }}>{r.user || '—'}</Box>,
+      component: (
+        <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <Box sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-700)', overflowWrap: 'anywhere' }}>{r.user || '—'}</Box>
+          {r.api_key && (
+            <Box title='API key' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', overflowWrap: 'anywhere' }}>
+              {r.api_key === r.api_key_id ? `Deleted key (${r.api_key_id.slice(0, 8)})` : r.api_key}
+            </Box>
+          )}
+        </Box>
+      ),
     },
     {
       component: (
@@ -331,7 +348,22 @@ function toRow(
         </Box>
       ),
     },
-    { align: 'right' as const, component: <Box sx={{ ...numCell, textAlign: 'right' }}>{fmtDuration(r.latency_ms)}</Box> },
+    {
+      align: 'right' as const,
+      component: (
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+          <Box sx={numCell}>{fmtDuration(r.latency_ms)}</Box>
+          {r.ttft_ms != null && (
+            <Box
+              title='Time to first token'
+              sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontVariantNumeric: 'tabular-nums' }}
+            >
+              first {fmtDuration(r.ttft_ms)}
+            </Box>
+          )}
+        </Box>
+      ),
+    },
     {
       align: 'right' as const,
       component: (
@@ -381,6 +413,8 @@ export function RequestsView({
   metricsLoading,
   userFilter,
   onChangeUser,
+  keyFilter,
+  onChangeKey,
   toolFilter,
   onClearTool,
   govFilter,
@@ -416,10 +450,11 @@ export function RequestsView({
   // change via their setters (which always receive a fresh array).
   React.useEffect(() => {
     setOffset(0);
-  }, [filters.startDate, filters.endDate, userFilter?.id, toolFilter, govFilter, sessionFilter, models, providers, effStatus, effDlp]);
+  }, [filters.startDate, filters.endDate, userFilter?.id, keyFilter?.id, toolFilter, govFilter, sessionFilter, models, providers, effStatus, effDlp]);
 
   const { loading, error, data } = useGatewayRequests(filters, {
     userId: userFilter?.id,
+    apiKeyId: keyFilter?.id,
     providers,
     models,
     status: effStatus || undefined,
@@ -438,6 +473,13 @@ export function RequestsView({
     () => (metrics?.breakdowns.user ?? []).filter((g) => g.id).map((g) => ({ label: g.key, value: g.id as string })),
     [metrics]
   );
+  const keyOptions = React.useMemo(
+    () =>
+      (metrics?.breakdowns.api_key ?? [])
+        .filter((g) => g.id)
+        .map((g) => ({ label: g.key === g.id ? `Deleted key (${(g.id as string).slice(0, 8)})` : g.key, value: g.id as string })),
+    [metrics]
+  );
   const modelOptions = React.useMemo(() => (metrics?.breakdowns.model ?? []).map((g) => g.key).filter(Boolean), [metrics]);
   const providerOptions = React.useMemo(() => (metrics?.breakdowns.provider ?? []).map((g) => g.key).filter(Boolean), [metrics]);
 
@@ -450,6 +492,15 @@ export function RequestsView({
     onChangeUser({ id, name });
   };
 
+  const onSelectKey = (id: string | null) => {
+    if (!id) {
+      onChangeKey(null);
+      return;
+    }
+    const name = keyOptions.find((o) => o.value === id)?.label ?? id;
+    onChangeKey({ id, name });
+  };
+
   const rows = data?.rows ?? [];
   const total = data?.total ?? 0;
   const costSev = React.useMemo(() => makeSeverity(rows.map((r) => r.cost_usd)), [rows]);
@@ -460,7 +511,9 @@ export function RequestsView({
   // Empty-state guidance: if any filter is active it's the likely cause, so offer to
   // clear them; otherwise the window is just empty, so offer to widen it (unless it's
   // already ~30 days). effStatus/effDlp fold in any Governance-drill-in scope.
-  const hasActiveFilters = Boolean(userFilter || models.length || providers.length || effStatus || effDlp || toolFilter || govChip || sessionFilter);
+  const hasActiveFilters = Boolean(
+    userFilter || keyFilter || models.length || providers.length || effStatus || effDlp || toolFilter || govChip || sessionFilter
+  );
   const rangeDays = Math.round((Date.parse(filters.endDate) - Date.parse(filters.startDate)) / 86_400_000);
   const canExpand = rangeDays < 29;
   const clearAllFilters = () => {
@@ -472,6 +525,7 @@ export function RequestsView({
     if (govFilter) onClearGov();
     if (sessionFilter) onClearSession();
     if (userFilter) onChangeUser(null);
+    if (keyFilter) onChangeKey(null);
   };
 
   return (
@@ -488,6 +542,14 @@ export function RequestsView({
             value={userFilter ? { label: userFilter.name, value: userFilter.id } : ''}
             isOptionsLoading={metricsLoading}
             onSelect={(e: { target: { value: string | null } }) => onSelectUser(e?.target?.value ?? null)}
+          />
+          <FilterDropdown
+            id='gateway-requests-filter-key'
+            label='API key'
+            options={keyOptions}
+            value={keyFilter ? { label: keyFilter.name, value: keyFilter.id } : ''}
+            isOptionsLoading={metricsLoading}
+            onSelect={(e: { target: { value: string | null } }) => onSelectKey(e?.target?.value ?? null)}
           />
           <FilterDropdown
             id='gateway-requests-filter-model'

@@ -17,7 +17,7 @@ import (
 // account named in the request. The gateway only checks the role, so the
 // account id in the request is checked here.
 func authorizeUpgradeAccount(ctx *security.RequestContext, c *gin.Context, accountID string, access security.SecurityAccessType) bool {
-	if ctx == nil || ctx.GetSecurityContext() == nil || !ctx.GetSecurityContext().HasAccountAccess(accountID, access) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountID, access) {
 		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account: "+accountID))
 		return false
 	}

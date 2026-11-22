@@ -43,6 +43,10 @@ func TestTenantScopedSuperAdminRowsGrantNothing(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"group_id", "role", "entity_id", "entity_type"}).
 			AddRow(group, "super_admin", tenant, "tenant").
 			AddRow(group, "tenant_admin_readonly", tenant, "tenant"))
+	mock.ExpectQuery(`FROM feature_flag WHERE feature_id`).WithArgs(FeatureCustomRoles, tenant).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("enabled"))
+	mock.ExpectQuery(`from custom_role_permissions crp`).WithArgs(tenant, user).
+		WillReturnRows(sqlmock.NewRows([]string{"module", "class", "etype", "eid"}))
 	mock.ExpectQuery(`from user_attrs`).
 		WillReturnRows(sqlmock.NewRows([]string{"name", "value"}))
 	mock.ExpectQuery(`FROM users WHERE id`).WithArgs(user).

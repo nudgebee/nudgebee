@@ -1,5 +1,10 @@
 import { Page } from "@playwright/test";
 
+// Sign-in lands on /ask-nudgebee now; /home was the landing page before that change
+// deployed, and this helper runs against whatever build is live, so accept both.
+const LANDING_PATHS = ["/ask-nudgebee", "/home", "/workflow"];
+const isLanded = (href: string): boolean => LANDING_PATHS.some((p) => href.includes(p));
+
 // LDAP sign-in only; tenant + cluster are owned by LoginPage.doFullLogin() for every env.
 export async function doDevLogin(page: Page): Promise<void> {
   const baseUrl     = process.env.BASE_URL;
@@ -11,16 +16,16 @@ export async function doDevLogin(page: Page): Promise<void> {
 
   await page.goto(baseUrl);
   await page
-    .waitForURL(url => url.href.includes("/home") || url.href.includes("/signin"), { timeout: 8000 })
+    .waitForURL(url => isLanded(url.href) || url.href.includes("/signin"), { timeout: 8000 })
     .catch(() => {});
 
-  const alreadyLoggedIn = page.url().includes("/home") || page.url().includes("/workflow");
+  const alreadyLoggedIn = isLanded(page.url());
 
   if (!alreadyLoggedIn) {
     try {
       await ldapLogin(page, username, password);
     } catch (e) {
-      if (!page.url().includes("/home") && !page.url().includes("/workflow")) throw e;
+      if (!isLanded(page.url())) throw e;
     }
 
     await page
@@ -38,12 +43,12 @@ export async function doDevLogin(page: Page): Promise<void> {
       try {
         await ldapLogin(page, username, password);
       } catch (e) {
-        if (!page.url().includes("/home") && !page.url().includes("/workflow")) throw e;
+        if (!isLanded(page.url())) throw e;
       }
     }
   }
 
-  await page.waitForURL(/\/(home|workflow)/, { timeout: 50000 });
+  await page.waitForURL(url => isLanded(url.href), { timeout: 50000 });
   await waitForLoaderToDisappear(page);
 }
 

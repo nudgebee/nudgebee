@@ -8,7 +8,7 @@ describe('ExecutionStatusBar', () => {
   it('renders the approval form while the run is live', () => {
     render(<ExecutionStatusBar visible pendingApprovals={pendingApprovals} onApprove={jest.fn()} completedTasks={0} totalTasks={1} />);
     expect(screen.getByText('Waiting for approval')).toBeInTheDocument();
-    expect(screen.getByText('deployment-approval-gate: respond below or via Slack/MS Teams')).toBeInTheDocument();
+    expect(screen.getByText('deployment-approval-gate: Respond below')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'approve' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'reject' })).toBeInTheDocument();
   });

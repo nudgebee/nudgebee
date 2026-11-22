@@ -3,6 +3,7 @@ package bedrockclient
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -199,7 +200,7 @@ func TestProcessInputMessagesAnthropic_ChatMessageTypeTool(t *testing.T) {
 		},
 	}
 
-	inputMsgs, sys, err := processInputMessagesAnthropic(messages)
+	inputMsgs, sys, err := processInputMessagesAnthropic(messages, "")
 	require.NoError(t, err)
 	assert.Empty(t, sys)
 	require.Len(t, inputMsgs, 3)
@@ -219,7 +220,7 @@ func TestProcessInputMessagesAnthropic_ImageBase64Encoding(t *testing.T) {
 		},
 	}
 
-	inputMsgs, _, err := processInputMessagesAnthropic(messages)
+	inputMsgs, _, err := processInputMessagesAnthropic(messages, "")
 	require.NoError(t, err)
 	require.Len(t, inputMsgs, 1)
 	require.Len(t, inputMsgs[0].Content, 1)
@@ -249,8 +250,130 @@ func TestProcessInputMessagesAnthropic_MultipleSystemPrompts(t *testing.T) {
 		},
 	}
 
-	inputMsgs, sys, err := processInputMessagesAnthropic(messages)
+	inputMsgs, sys, err := processInputMessagesAnthropic(messages, "")
 	require.NoError(t, err)
 	assert.Equal(t, "You are a helpful assistant.\n\nAlways output JSON.", sys)
 	require.Len(t, inputMsgs, 1)
+}
+
+func TestProcessInputMessagesAnthropic_CacheControl(t *testing.T) {
+	hour := &llms.CacheControl{Type: "ephemeral", Duration: time.Hour}
+	fiveMin := &llms.CacheControl{Type: "ephemeral"}
+	messages := []Message{
+		{Role: llms.ChatMessageTypeSystem, Content: "You are a helpful assistant.", Type: AnthropicMessageTypeText, CacheControl: hour},
+		{Role: llms.ChatMessageTypeHuman, Content: "Run tool", Type: AnthropicMessageTypeText},
+		{Role: llms.ChatMessageTypeAI, Content: "Executing tool", Type: AnthropicMessageTypeText},
+		{Role: llms.ChatMessageTypeTool, Content: `{"content":"result"}`, Type: "tool_call_response", CacheControl: fiveMin},
+	}
+
+	tests := []struct {
+		name      string
+		modelID   string
+		cached    bool
+		systemTTL string
+	}{
+		{"1h TTL on Claude 4.5+", "us.anthropic.claude-sonnet-4-5-20250929-v1:0", true, "1h"},
+		{"1h TTL on Claude 5", "global.anthropic.claude-opus-5", true, "1h"},
+		{"5m only on Claude 3.7", "us.anthropic.claude-3-7-sonnet-20250219-v1:0", true, ""},
+		{"no caching before 3.7", "anthropic.claude-3-5-haiku-20241022-v1:0", false, ""},
+		{"no caching on unnamed model", "arn:aws:bedrock:us-east-1:000000000000:application-inference-profile/abc", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inputMsgs, sys, err := processInputMessagesAnthropic(messages, tt.modelID)
+			require.NoError(t, err)
+			require.Len(t, inputMsgs, 3)
+			toolBlock := inputMsgs[2].Content[0]
+			if !tt.cached {
+				assert.Equal(t, "You are a helpful assistant.", sys)
+				assert.Nil(t, toolBlock.CacheControl)
+				return
+			}
+			blocks, ok := sys.([]anthropicTextGenerationInputContent)
+			require.True(t, ok, "a marked system prompt is sent as blocks")
+			require.Len(t, blocks, 1)
+			require.NotNil(t, blocks[0].CacheControl)
+			assert.Equal(t, tt.systemTTL, blocks[0].CacheControl.TTL)
+			require.NotNil(t, toolBlock.CacheControl)
+			assert.Equal(t, "ephemeral", toolBlock.CacheControl.Type)
+			assert.Empty(t, toolBlock.CacheControl.TTL)
+			assert.Nil(t, inputMsgs[0].Content[0].CacheControl, "unmarked blocks stay unmarked")
+		})
+	}
+}
+
+func TestAnthropicInput_CacheControlJSON(t *testing.T) {
+	messages := []Message{
+		{Role: llms.ChatMessageTypeSystem, Content: "sys", Type: AnthropicMessageTypeText, CacheControl: &llms.CacheControl{Duration: time.Hour}},
+		{Role: llms.ChatMessageTypeHuman, Content: "hi", Type: AnthropicMessageTypeText, CacheControl: &llms.CacheControl{}},
+	}
+	inputMsgs, sys, err := processInputMessagesAnthropic(messages, "anthropic.claude-haiku-4-5-20251001-v1:0")
+	require.NoError(t, err)
+	body, err := json.Marshal(anthropicTextGenerationInput{System: sys, Messages: inputMsgs})
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"1h"}}]`)
+	assert.Contains(t, string(body), `{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}`)
+
+	// No system text: the field is omitted rather than sent empty.
+	inputMsgs, sys, err = processInputMessagesAnthropic(messages[1:], "")
+	require.NoError(t, err)
+	body, err = json.Marshal(anthropicTextGenerationInput{System: sys, Messages: inputMsgs})
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), `"system"`)
+}
+
+func TestBedrockAnthropicOutput_CacheCreation1h(t *testing.T) {
+	body := `{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],
+		"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":5000,"cache_read_input_tokens":0,
+		"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":5000}}}`
+	var output anthropicTextGenerationOutput
+	require.NoError(t, json.Unmarshal([]byte(body), &output))
+	require.NotNil(t, output.Usage.CacheCreation)
+	assert.Equal(t, 5000, output.Usage.CacheCreation.Ephemeral1hInputTokens)
+}
+
+// Bedrock InvokeModel returns the Anthropic Messages body, which reports
+// thinking under usage.output_tokens_details as a share of output_tokens.
+func TestBedrockAnthropicOutput_ThinkingFromOutputTokensDetails(t *testing.T) {
+	body := `{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+		"usage":{"input_tokens":427,"output_tokens":161,"output_tokens_details":{"thinking_tokens":156}}}`
+	var out anthropicTextGenerationOutput
+	require.NoError(t, json.Unmarshal([]byte(body), &out))
+	output, thinking := splitAnthropicThinking(out.Usage.OutputTokens, out.Usage.ThinkingTokens, out.Usage.OutputTokensDetails)
+	assert.Equal(t, 5, output)
+	assert.Equal(t, 156, thinking)
+}
+
+// Streaming: only the final message_delta carries the breakdown.
+func TestBedrockAnthropicStreaming_ThinkingFromFinalDelta(t *testing.T) {
+	chunk := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},
+		"usage":{"output_tokens":251,"output_tokens_details":{"thinking_tokens":40}}}`
+	var resp streamingCompletionResponseChunk
+	require.NoError(t, json.Unmarshal([]byte(chunk), &resp))
+	output, thinking := splitAnthropicThinking(resp.Usage.OutputTokens, resp.Usage.ThinkingTokens, resp.Usage.OutputTokensDetails)
+	assert.Equal(t, 211, output)
+	assert.Equal(t, 40, thinking)
+}
+
+func TestSplitAnthropicThinking(t *testing.T) {
+	tests := []struct {
+		name                     string
+		output, thinking         int
+		details                  *anthropicOutputTokensDetails
+		wantOutput, wantThinking int
+	}{
+		{"no details", 100, 0, nil, 100, 0},
+		{"thinking included in output", 100, 0, &anthropicOutputTokensDetails{ThinkingTokens: 60}, 40, 60},
+		{"all thinking", 60, 0, &anthropicOutputTokensDetails{ThinkingTokens: 60}, 0, 60},
+		{"thinking above output is untrusted", 10, 0, &anthropicOutputTokensDetails{ThinkingTokens: 60}, 10, 0},
+		{"zero thinking detail", 100, 0, &anthropicOutputTokensDetails{}, 100, 0},
+		{"top-level thinking kept as separate", 100, 30, &anthropicOutputTokensDetails{ThinkingTokens: 60}, 100, 30},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output, thinking := splitAnthropicThinking(tt.output, tt.thinking, tt.details)
+			assert.Equal(t, tt.wantOutput, output)
+			assert.Equal(t, tt.wantThinking, thinking)
+		})
+	}
 }

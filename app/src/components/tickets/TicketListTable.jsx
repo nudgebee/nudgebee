@@ -123,6 +123,32 @@ const INLINE_COMMENT_PLATFORMS = ['jira', 'servicenow', 'pagerduty', 'github', '
 // full comment text.
 const ATTACHMENT_MARKER_RE = /\[\[nb-attachment:([^\]]+)\]\]/g;
 
+// GitHub auto-links a bare "#123" to the same-repo issue/PR (github.com's own
+// rendering, not part of markdown) - a generic markdown renderer has no
+// notion of this, so a dynamic field like "Parent / epic: #41396" renders as
+// plain text instead of a real link. Only a standalone "#123" (not glued to
+// a word, e.g. "something#123", and not followed by more word chars, e.g.
+// "#123something") matches, same as GitHub's own autolinker - so a *bare*
+// "#123456" in prose still linkifies even if it was meant as a hex color
+// (GitHub does the same). Code fences/spans are split out first so that
+// token is left alone specifically when it sits inside actual code (a CSS
+// block, a `#define`, ...), which is the one case worth protecting; the
+// lookbehind also keeps "C#123" or an existing "##123" from matching.
+const CODE_SPAN_OR_FENCE_RE = /(```[\s\S]*?```|`[^`]*`)/g;
+const BARE_ISSUE_REF_RE = /(?<![\w#/])#(\d+)\b/g;
+
+const linkifyGithubIssueRefs = (text, projectKey) => {
+  if (!text || !projectKey) {
+    return text;
+  }
+  return text
+    .split(CODE_SPAN_OR_FENCE_RE)
+    .map((part, i) =>
+      i % 2 === 1 ? part : part.replace(BARE_ISSUE_REF_RE, (_match, num) => `[#${num}](https://github.com/${projectKey}/issues/${num})`)
+    )
+    .join('');
+};
+
 const TicketDetailsComponent = ({ ticketData, accountsData }) => {
   const platform = ticketData?.platform?.toLowerCase();
   const supportsInlineComments = INLINE_COMMENT_PLATFORMS.includes(platform);
@@ -346,6 +372,21 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
             Description
           </Typography>
           {(() => {
+            // GitHub descriptions are GFM markdown (### headings, the dynamic
+            // issue-form answers) - render via MarkDowns, same as GitHub
+            // comments below, instead of dumping the raw "### Heading" text.
+            // Unlike the comment thread (maxHeight: 'none' - already scrolls
+            // via its own list), this sits in a two-column grid next to the
+            // much shorter Additional Details card - a form with several
+            // dynamic fields can grow long, so it stays scrollable (under
+            // MarkDowns' own 500px default) instead of unbounded, so the two
+            // columns stay roughly balanced.
+            if (platform === 'github') {
+              const description = ticketData?.description
+                ? linkifyGithubIssueRefs(ticketData.description, ticketData?.project_key)
+                : 'No description available';
+              return <MarkDowns data={description} sx={{ p: 0, maxHeight: ds.space.mul(0, 150) }} />;
+            }
             const parsedData = parseDescription(ticketData?.description);
             if (parsedData.length > 0) {
               return (

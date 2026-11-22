@@ -9,7 +9,7 @@ export enum user_status_type_enum {
 
 const USER_DETAILS_QUERY = `query UserDetails($where: UserDetailsWhereRequest) {
   users_get_details(where: $where) {
-    rows { id display_name username status created_at updated_at user_roles user_auths tenants groups user_attrs }
+    rows { id display_name username status kind created_at updated_at user_roles user_auths tenants groups user_attrs }
   }
 }`;
 
@@ -19,6 +19,7 @@ function parseUserRow(row: any) {
     display_name: row.display_name,
     username: row.username,
     status: row.status,
+    kind: row.kind,
     created_at: row.created_at,
     updated_at: row.updated_at,
     user_roles: safeJSONParse(row.user_roles) || [],
@@ -35,7 +36,7 @@ function parseUserRow(row: any) {
 
 const USER_BY_PROVIDER_ACCOUNT_QUERY = `query UserByProviderAccount($where: UserByProviderAccountWhereRequest) {
   users_get_by_provider_account(where: $where) {
-    rows { auth_id id display_name username status created_at updated_at account_id provider user_roles user_auths tenants groups }
+    rows { auth_id id display_name username status kind created_at updated_at account_id provider user_roles user_auths tenants groups }
   }
 }`;
 
@@ -91,6 +92,7 @@ query GetUserAuthByTokenHash($provider: String!, $hash: String!) {
       display_name
       username
       user_status
+      user_kind
       user_roles
     }
   }
@@ -124,11 +126,12 @@ mutation AddUser($username: String!, $firstname: String!, $lastname: String, $ro
 
 export const GET_USERS = `
 query GetUsers($offset: Int, $limit: Int) {
-  users: users_list_by_tenant(limit: $limit, offset: $offset, order_by: [{column: "username", order: asc}], where: __WHERE__) {
+  users: __USERS_ACTION__(limit: $limit, offset: $offset, order_by: [{column: "username", order: asc}], where: __WHERE__) {
     rows {
       display_name
       id
       status
+      kind
       username
       user_roles
     }
@@ -138,11 +141,12 @@ query GetUsers($offset: Int, $limit: Int) {
 
 export const GET_USERS_BY_TENANT = `
 query GetUsersByTenant($offset: Int, $limit: Int) {
-  users_list_by_tenant (limit: $limit, offset: $offset, order_by: __ORDERBY__, where: __WHERE__) {
+  users_list_by_tenant: users_list_by_tenant_with_bees (limit: $limit, offset: $offset, order_by: __ORDERBY__, where: __WHERE__) {
     rows{
       display_name
       id
       status
+      kind
       username
       created_at
       last_accessed_at
@@ -150,7 +154,7 @@ query GetUsersByTenant($offset: Int, $limit: Int) {
       user_groups
     }
   }
-  users_aggregate_by_tenant (where: __WHERE__){
+  users_aggregate_by_tenant: users_aggregate_by_tenant_with_bees (where: __WHERE__){
     rows{
       count
     }
@@ -321,6 +325,10 @@ export interface GetUsersRequest {
   limit?: number;
   offset?: number;
   status?: user_status_type_enum;
+  // users_list_by_tenant lists people only: bee accounts (AI workers) never show
+  // in pickers. Pass true where the list resolves who did something (run,
+  // command, investigation) to use users_list_by_tenant_with_bees instead.
+  includeBees?: boolean;
 }
 
 export interface GetUsersByTenantRequest {
@@ -600,6 +608,7 @@ export async function getUserAuthByTokenSha256(tokenSha256: string) {
           display_name: row.display_name,
           username: row.username,
           status: row.user_status,
+          kind: row.user_kind,
           // Same defensive parse as the username lookup above: the gateway
           // returns json columns as a string on some upstream builds and as a
           // parsed array on others.
@@ -690,7 +699,7 @@ export async function getUsers(request: GetUsersRequest) {
   if (request.status) {
     where.status = { _eq: request.status };
   }
-  let queryStr = GET_USERS;
+  let queryStr = GET_USERS.replace('__USERS_ACTION__', request.includeBees ? 'users_list_by_tenant_with_bees' : 'users_list_by_tenant');
   queryStr = queryStr.replaceAll('__WHERE__', gqlStringify(where));
   const response = await queryGraphQL(queryStr, 'GetUsers', {
     limit: request.limit || 10,
@@ -938,6 +947,7 @@ query ResolveCustomPermissions($userId: String!, $tenantId: String!) {
   customroles_list_user_permissions(user_id: $userId, tenant_id: $tenantId) {
     permissions
     enabled
+    bound_grants
   }
 }`;
 
@@ -947,10 +957,13 @@ export type ResolvedCustomPermissions = {
   // isn't part of this build (OSS), or the resolve failed — all of which must
   // leave the UI on its built-in-role behavior rather than gate anything.
   enabled: boolean;
+  // Account-bound grants per account ({account id: ["<module>:<class>"]}). The
+  // session serves these to the browser; they never go into the token.
+  boundGrants: Record<string, string[]>;
 };
 
 export async function resolveUserCustomPermissions(userId: string, tenantId: string): Promise<ResolvedCustomPermissions> {
-  const off: ResolvedCustomPermissions = { permissions: [], enabled: false };
+  const off: ResolvedCustomPermissions = { permissions: [], enabled: false, boundGrants: {} };
   if (!userId || !tenantId) return off;
   try {
     const response = await queryGraphQL(RESOLVE_CUSTOM_PERMISSIONS_QUERY, 'ResolveCustomPermissions', {
@@ -964,7 +977,7 @@ export async function resolveUserCustomPermissions(userId: string, tenantId: str
       throw new Error(response.data.errors?.[0]?.message || 'GraphQL error resolving custom permissions');
     }
     const result = response?.data?.data?.customroles_list_user_permissions;
-    return { permissions: result?.permissions || [], enabled: !!result?.enabled };
+    return { permissions: result?.permissions || [], enabled: !!result?.enabled, boundGrants: result?.bound_grants || {} };
   } catch (err) {
     console.log('unable to resolve custom permissions for user', userId, err);
     return off;

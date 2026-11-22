@@ -314,6 +314,10 @@ func parseWatchInput(args map[string]any) (*watchResourceInput, error) {
 	if err := json.Unmarshal(encoded, out); err != nil {
 		return nil, fmt.Errorf("watch_resource: invalid arguments: %w", err)
 	}
+	// A timer (wait until a time, observe nothing) is NudgeBee's own kind of wait, not one a chat sets up.
+	if out.SourceKind == watch.SourceKindTimer || out.PredicateKind == watch.PredicateKindNever {
+		return nil, fmt.Errorf(`watch_resource: source_kind must be "tool" or "sql", and predicate_kind "regex", "substring" or "llm_judge"`)
+	}
 	return out, nil
 }
 

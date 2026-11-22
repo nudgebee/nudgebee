@@ -43,11 +43,16 @@ type RawTemplate struct {
 
 // Bundle is the full set of templates a Source resolved at a point in time.
 // OK=false means the fetch failed/was incomplete and MUST NOT be reconciled.
+//
+// Extra holds the files registered extensions claimed (see RegisterExtension),
+// and ExtraError says why they could not all be kept. Neither affects OK.
 type Bundle struct {
 	SourceName string
 	Ref        string
 	Templates  []RawTemplate
 	OK         bool
+	Extra      map[string][]byte
+	ExtraError error
 }
 
 // Source resolves the current set of system templates from somewhere.

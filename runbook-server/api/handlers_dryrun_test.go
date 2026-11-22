@@ -50,6 +50,7 @@ func (s *DryRunHandlerTestSuite) TestDryRunWorkflowHandler() {
 
 	jsonValue, _ := json.Marshal(reqPayload)
 	req, _ := http.NewRequest("POST", "/workflows/dry-run", bytes.NewBuffer(jsonValue))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Account-ID", "test-account")
 

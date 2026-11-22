@@ -29,6 +29,19 @@ func TestAgentEventsExposesStructuredEventTools(t *testing.T) {
 	assert.True(t, names[tools.ToolEventExecuteSql], "raw SQL must remain available as a fallback")
 }
 
+// HIGH CPUThrottlingPredicted/CPUSaturationPredicted events are auto-investigated
+// through the events agent, so it must be able to run the forecast. The k8s lean
+// orchestrator does not preload it (every k8s turn would carry it); chat reaches it
+// through the events agent or search_tools.
+func TestMetricForecastIsOfferedToEventsNotPreloaded(t *testing.T) {
+	names := map[string]bool{}
+	for _, tool := range (AgentEvents{}).GetSupportedTools(security.NewRequestContextForSuperAdmin()) {
+		names[tool.Name()] = true
+	}
+	assert.True(t, names[tools.ToolMetricForecast], "events agent must offer metric_forecast")
+	assert.False(t, containsTool(trimmedK8sCoreToolNames(), tools.ToolMetricForecast), "k8s lean must not preload metric_forecast")
+}
+
 func TestAgentEventsPromptPrefersStructuredTools(t *testing.T) {
 	prompt := AgentEvents{}.GetSystemPrompt(security.NewRequestContextForSuperAdmin(), core.NBAgentRequest{})
 	joined := strings.Join(append(append([]string{}, prompt.Instructions...), prompt.Constraints...), "\n")

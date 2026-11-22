@@ -350,8 +350,8 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 		return err
 	}))
 	investigate := waitConsumer(t, fleet)
-	require.NoError(t, MqFanoutSubscribe("cache_invalidation", noopProcessor))
-	fanout := waitConsumer(t, fleet)
+	require.NoError(t, MqConsume("other_ex", "other", "q-other", 1, noopProcessor))
+	other := waitConsumer(t, fleet)
 	waitState(t, "q-investigate", MqConsumerRunning)
 
 	assert.Equal(t, rabbitmq.Ack, deliver(t, investigate), "handler must finish and ack")
@@ -364,7 +364,7 @@ func TestMqPublish_ClosedChannelInsideHandler_DoesNotStopConsumersOrDeadlock(t *
 	pubMu.Unlock()
 
 	assert.Zero(t, investigate.closeCalls.Load(), "a publish failure must not close consumers")
-	assert.Zero(t, fanout.closeCalls.Load(), "a publish failure must not close consumers")
+	assert.Zero(t, other.closeCalls.Load(), "a publish failure must not close consumers")
 	assert.Equal(t, 2, fleet.count(), "no consumer may be rebuilt")
 	assert.Equal(t, rabbitmq.Ack, deliver(t, investigate), "consumer must keep consuming")
 }
@@ -822,28 +822,4 @@ func TestMqConnWatcher_ReDialsAConnectionClosedTooLong(t *testing.T) {
 	assert.GreaterOrEqual(t, dials.Load(), int32(2), "a new connection is dialed")
 	assert.EqualValues(t, 1, first.closeCalls.Load())
 	assert.LessOrEqual(t, fleet.maxActive.Load(), int32(1), "never two live consumers for one queue")
-}
-
-// RabbitMQ refuses to redeclare a fanout exchange as direct (406
-// PRECONDITION_FAILED), which silently dropped every organisation
-// knowledge-base cache invalidation (#40313): fanout publishes must declare
-// the exchange as fanout, and must not share a publisher with direct ones.
-func TestMqPublishFanout_DeclaresTheExchangeAsFanout(t *testing.T) {
-	useFakeMq(t, nil)
-	var kinds []string
-	mqNewPublisher = func(_ *rabbitmq.Conn, opts ...func(*rabbitmq.PublisherOptions)) (mqPublisher, error) {
-		var o rabbitmq.PublisherOptions
-		for _, opt := range opts {
-			opt(&o)
-		}
-		kinds = append(kinds, o.ExchangeOptions.Kind)
-		return &fakePublisher{}, nil
-	}
-
-	require.NoError(t, MqPublishFanout("llm_cache_invalidation", map[string]bool{"knowledge_bases": true}))
-	require.NoError(t, MqPublish("completed_ex", "completed", "m"))
-
-	require.Len(t, kinds, 2)
-	assert.Equal(t, "fanout", kinds[0])
-	assert.NotEqual(t, "fanout", kinds[1], "direct publishes keep the default kind")
 }

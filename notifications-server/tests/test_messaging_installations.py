@@ -22,6 +22,17 @@ def test_default_channel_shape_teams():
     assert mi._default_channel_shape("ms_teams", {"default_team_id": "T1"}) is None
 
 
+def test_the_default_channels_name_is_kept_beside_the_shape_routing_compares():
+    from notifications_server.models.models import MessagingPlatform
+
+    integ = Integration(id="44444444-4444-4444-4444-444444444444", name="guild-1", tenant_id="t1")
+    inst = mi.build_installation("discord", integ, {"default_channel_id": "C1", "default_channel_name": "alerts"})
+
+    assert inst.channels == {"id": "C1"}
+    assert inst.default_channel_name == "alerts"
+    assert MessagingPlatform.from_dict(inst.to_dict()).default_channel_name == "alerts"
+
+
 def test_parse_dt():
     assert mi._parse_dt(None) is None
     assert mi._parse_dt("garbage") is None

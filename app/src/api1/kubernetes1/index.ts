@@ -3,6 +3,7 @@ import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
 import { safeJSONParse, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
+import { memoryLimitedContainers } from '@components/k8s/common/cpuForecast';
 
 // Event rule names are read for pickers and re-read often; five minutes keeps a
 // newly created or renamed rule from being invisible for long without making the
@@ -285,6 +286,17 @@ mutation SLOCreate($data: SLOCreateRequest!) {
 }
 `;
 
+export const WORKLOAD_SPEC = `
+query WorkloadSpec {
+  k8s_workloads_v2(where: __WHERE__, limit: 1) {
+    rows {
+      name
+      meta
+    }
+  }
+}
+`;
+
 export const SLO_LIST = `
 mutation SLOConfigList($data: SLOListRequest!) {
   slo_config_list(request: $data) {
@@ -298,6 +310,7 @@ mutation SLOConfigList($data: SLOListRequest!) {
         id
         name
         threshold
+        container
       }
     }
   }
@@ -319,6 +332,36 @@ mutation SLODelete($data: SLODeleteRequest!) {
   slo_config_delete(request: $data) {
     data {
       success
+    }
+  }
+}
+`;
+
+export const FORECAST = `
+mutation Forecast($data: ForecastGenerateRequest!) {
+  forecast_generate(request: $data) {
+    data {
+      status
+      reason
+      condition
+      threshold_pct
+      current_pct
+      slope_pct_per_day
+      eta_hours
+      level
+      per_pod_limit
+      suggested_limit
+      limit_unit
+      container
+      oom_restarts_6h
+      evaluated_at
+      daily {
+        date
+        value_pct
+        per_pod_usage
+        per_pod_limit
+        projected
+      }
     }
   }
 }
@@ -403,6 +446,8 @@ query GetSLOConfigs {
       threshold
       created_at
       updated_at
+      last_forecast
+      container
     }
   }
 }
@@ -597,6 +642,31 @@ const apiKubernetes1 = {
       data: data,
     });
     return response;
+  },
+  /** The workload's containers that set a memory limit, read from the workload inventory's spec. */
+  async getMemoryLimitedContainers(accountId: string, namespace: string, name: string): Promise<string[]> {
+    const where = gqlStringify({
+      _and: [{ account_id: { _eq: accountId } }, { namespace: { _eq: namespace } }, { name: { _eq: name } }, { is_active: { _eq: true } }],
+    });
+    const response = await queryGraphQL(WORKLOAD_SPEC.replaceAll('__WHERE__', where), 'WorkloadSpec', {});
+    const rows = response?.data?.data?.k8s_workloads_v2?.rows ?? [];
+    return rows.length > 0 ? memoryLimitedContainers(rows[0].meta) : [];
+  },
+  /** Check now: the forecast of one workload metric preset against a threshold. Creates no event. */
+  async generateForecast(data: {
+    account_id: string;
+    workload_namespace: string;
+    workload_name: string;
+    metric: string;
+    threshold: number;
+    container?: string;
+  }) {
+    const response = await queryGraphQL(FORECAST, 'Forecast', { data });
+    const result = response?.data?.data?.forecast_generate?.data;
+    if (!result) {
+      throw new Error(response?.data?.errors?.[0]?.message || 'Could not run the forecast');
+    }
+    return result;
   },
   async getEventRules(query: any, limit: number, offset: number) {
     if (query.accountId === 'demo') {
@@ -1990,9 +2060,16 @@ const apiKubernetes1 = {
     }
   },
   knowledgeGraph: async function (data: any, signal?: AbortSignal) {
+    // Pass `request` as a GraphQL variable rather than inlining it. Label/
+    // attribute keys like `app.kubernetes.io/name` are not valid GraphQL Name
+    // tokens, so gqlStringify-ing them into an inline object literal makes the
+    // gateway's parser reject the whole query (#40696). Variable values are
+    // carried as JSON and never tokenized as query text, so arbitrary keys
+    // survive. `request` is always an object (possibly empty), so the non-null
+    // `!` never trips the gateway's missing-required-variable guard.
     const KNOWLEDGE_GRAPH = `
-    mutation KnowledgeGraph {
-      kg_get_complete_graph(request: __WHERE__) {
+    mutation KnowledgeGraph($request: kg_get_complete_graph_input!) {
+      kg_get_complete_graph(request: $request) {
         data {
           edges
           generated_at
@@ -2024,11 +2101,7 @@ const apiKubernetes1 = {
     if (data?.levels) {
       request['levels'] = data.levels;
     }
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH.replace('__WHERE__', gqlStringify(request)), 'KnowledgeGraph', {}, undefined, signal);
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
   knowledgeGraphFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[]; specificTypes?: string[] }) {
     const KNOWLEDGE_GRAPH_FILTER_OPTIONS = `
@@ -2048,6 +2121,8 @@ const apiKubernetes1 = {
           node_bucket_idx
           specific_type_dict
           cluster_dict
+          display_name_node_idx
+          display_names
           filter_buckets
           label_key_buckets
           attribute_key_buckets
@@ -2069,8 +2144,14 @@ const apiKubernetes1 = {
   knowledgeGraphGetNode: async function (nodeId: string) {
     return await queryGraphQL(KG_GET_NODE.replace('__WHERE__', gqlStringify({ node_id: nodeId })), 'KgGetNode', {});
   },
-  knowledgeGraphGetEdge: async function (edgeId: string) {
-    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify({ edge_id: edgeId })), 'KgGetEdge', {});
+  // The endpoints are sent alongside the id because Pod edges are synthesized at
+  // read time and stored nowhere: their uuid5 id can't be reversed to the pod it
+  // was built from, so the server needs the endpoints to resolve one (#41504).
+  knowledgeGraphGetEdge: async function (edgeId: string, sourceNodeId?: string, destNodeId?: string) {
+    const request: Record<string, string> = { edge_id: edgeId };
+    if (sourceNodeId) request.source_node_id = sourceNodeId;
+    if (destNodeId) request.dest_node_id = destNodeId;
+    return await queryGraphQL(KG_GET_EDGE.replace('__WHERE__', gqlStringify(request)), 'KgGetEdge', {});
   },
   knowledgeGraphCloudAccounts: async function () {
     const QUERY = `
@@ -2130,9 +2211,14 @@ const apiKubernetes1 = {
     labelKeys?: string[];
     attributeKeys?: string[];
   }) {
+    // Request goes through a GraphQL variable so arbitrary-keyed scope filters
+    // (e.g. a `labels` map keyed by `app.kubernetes.io/name`) are not inlined
+    // as object-literal keys the parser rejects — same fix as knowledgeGraph
+    // above (#40696). `request` always carries filter_type/filter_key, so it
+    // is never empty and the non-null `!` is safe.
     const KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES = `
-    query KgFilterOptionLabelValues {
-      kg_get_filter_values(request: __WHERE__) {
+    query KgFilterOptionLabelValues($request: kg_get_filter_values_input!) {
+      kg_get_filter_values(request: $request) {
         data {
           filter_key
           filter_type
@@ -2153,11 +2239,7 @@ const apiKubernetes1 = {
     if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
     if (data.labelKeys?.length) request.label_keys = data.labelKeys;
     if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
-    try {
-      return await queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
-    } catch (err) {
-      throw err;
-    }
+    return queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES, 'KgFilterOptionLabelValues', { request });
   },
   // Single round-trip powering the always-on columns (A/B/C) of the Nubi briefing
   // strip. Every block reads event_groupings_v2 over the same display window so

@@ -116,31 +116,39 @@ func (a *Applier) ApplyAll(ctx context.Context, tenantID string, refs []Ref) []s
 	rebuildSet := make(map[string]bool)
 
 	// Every patch runs under the tenant's build lock, so no build can be claimed
-	// between the running-build check and the write (see ExcludeBuilds).
-	err := a.store.ExcludeBuilds(tenantID, func(runningCovers func(string) (bool, error)) error {
-		for _, accountID := range order {
-			accountRefs := byAccount[accountID]
-			if len(accountRefs) > maxRefsPerAccount {
-				a.logger.Info("resourcepatch: too many refs for one account, rebuilding it instead",
-					"tenant_id", tenantID, "account_id", accountID, "refs", len(accountRefs))
-				rebuildSet[accountID] = true
-				continue
-			}
-			running, err := runningCovers(accountID)
-			if err != nil || running {
-				a.logger.Info("resourcepatch: build running or state unknown, folding refs into a rebuild",
-					"tenant_id", tenantID, "account_id", accountID, "running", running, "error", err)
-				rebuildSet[accountID] = true
-				continue
-			}
+	// between the running-build check and the write (see ExcludeBuilds). The lock
+	// is taken once per ref, not once around them all: it is a transaction, and
+	// held across every ref it sat idle in transaction while the refs were
+	// applied, so a migration on the tables it had read queued behind it (#41195).
+	for _, accountID := range order {
+		accountRefs := byAccount[accountID]
+		if len(accountRefs) > maxRefsPerAccount {
+			a.logger.Info("resourcepatch: too many refs for one account, rebuilding it instead",
+				"tenant_id", tenantID, "account_id", accountID, "refs", len(accountRefs))
+			rebuildSet[accountID] = true
+			continue
+		}
 
-			sort.SliceStable(accountRefs, func(i, j int) bool {
-				return accountRefs[i].Op == OpDelete && accountRefs[j].Op != OpDelete
-			})
-			for _, ref := range accountRefs {
-				if ctx.Err() != nil {
+		sort.SliceStable(accountRefs, func(i, j int) bool {
+			return accountRefs[i].Op == OpDelete && accountRefs[j].Op != OpDelete
+		})
+		for _, ref := range accountRefs {
+			if ctx.Err() != nil {
+				rebuildSet[accountID] = true
+				break
+			}
+			skip := false
+			err := a.store.ExcludeBuilds(tenantID, func(runningCovers func(string) (bool, error)) error {
+				running, err := runningCovers(accountID)
+				if err != nil {
+					return err
+				}
+				if running {
+					a.logger.Info("resourcepatch: build running, folding refs into a rebuild",
+						"tenant_id", tenantID, "account_id", accountID)
 					rebuildSet[accountID] = true
-					break
+					skip = true
+					return nil
 				}
 				res := a.Apply(tenantID, ref)
 				a.logger.Info("resourcepatch: ref processed",
@@ -154,17 +162,20 @@ func (a *Applier) ApplyAll(ctx context.Context, tenantID string, refs []Ref) []s
 				if res.Outcome == NeedsRebuild {
 					rebuildSet[accountID] = true
 				}
+				return nil
+			})
+			if err != nil {
+				// The lock could not be taken or released cleanly, or the running-build
+				// check failed. Anything already written is idempotent under a rebuild,
+				// so rebuild the account.
+				a.logger.Warn("resourcepatch: could not hold the tenant build lock or check running builds, rebuilding the account",
+					"tenant_id", tenantID, "account_id", accountID, "error", err)
+				rebuildSet[accountID] = true
+				skip = true
 			}
-		}
-		return nil
-	})
-	if err != nil {
-		// The lock could not be taken or released cleanly. Anything already
-		// written is idempotent under a rebuild, so rebuild every account.
-		a.logger.Warn("resourcepatch: could not hold the tenant build lock, rebuilding every referenced account",
-			"tenant_id", tenantID, "error", err)
-		for _, accountID := range order {
-			rebuildSet[accountID] = true
+			if skip {
+				break
+			}
 		}
 	}
 

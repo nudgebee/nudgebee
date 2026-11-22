@@ -20,6 +20,7 @@ import {
   GROUP_ERRORS,
   GROUP_TOASTS,
   ACCOUNT_ROLE_VALUES,
+  errorSummary,
 } from "./groupLocatorsConstants";
 
 test.describe("Groups - CRUD & edge cases", () => {
@@ -276,7 +277,7 @@ test.describe("Groups - CRUD & edge cases", () => {
             await locators.expectSectionToast(GROUP_TOASTS.tenantUpdated);
           }
         } catch (error) {
-          console.warn(`Could not clear tenant role on "${FIXTURE_GROUPS.roles}":`, error);
+          console.warn(`Could not clear tenant role on "${FIXTURE_GROUPS.roles}":`, errorSummary(error));
         } finally {
           await locators.closeModalIfOpen();
         }
@@ -497,7 +498,7 @@ test.describe("Groups - CRUD & edge cases", () => {
             await locators.expectSectionToast(GROUP_TOASTS.tenantUpdated);
           }
         } catch (error) {
-          console.warn(`Could not clear tenant role on "${FIXTURE_GROUPS.roles}":`, error);
+          console.warn(`Could not clear tenant role on "${FIXTURE_GROUPS.roles}":`, errorSummary(error));
         } finally {
           await locators.closeModalIfOpen();
         }
@@ -617,7 +618,7 @@ test.describe("Groups - CRUD & edge cases", () => {
             await locators.closeModal();
           }
         } catch (error) {
-          console.warn(`Could not remove the seeded member from "${FIXTURE_GROUPS.members}":`, error);
+          console.warn(`Could not remove the seeded member from "${FIXTURE_GROUPS.members}":`, errorSummary(error));
         }
       }
     }
@@ -776,7 +777,7 @@ test.describe("Groups - CRUD & edge cases", () => {
             await locators.closeModal();
           }
         } catch (error) {
-          console.warn(`Could not remove the seeded member from "${FIXTURE_GROUPS.members}":`, error);
+          console.warn(`Could not remove the seeded member from "${FIXTURE_GROUPS.members}":`, errorSummary(error));
         }
       }
     }

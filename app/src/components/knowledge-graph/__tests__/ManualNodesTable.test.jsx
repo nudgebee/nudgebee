@@ -47,6 +47,19 @@ it.each([
   ['GCSBucket', 'GCS Bucket'],
   ['APIGatewayHttpApi', 'API Gateway Http Api'],
   ['Database', 'Database'],
+  // Knowledge Graph Node Type groups, options and node cards (#40705).
+  ['ComputeInstance', 'Compute Instance'],
+  ['ContainerRegistry', 'Container Registry'],
+  ['ServiceIdentity', 'Service Identity'],
+  ['InfraStack', 'Infra Stack'],
+  ['K8sService', 'K8s Service'],
+  // PascalCase product names stay whole.
+  ['DynamoDBTable', 'DynamoDB Table'],
+  ['CloudFrontDistribution', 'CloudFront Distribution'],
+  ['GitHubRepository', 'GitHub Repository'],
+  ['PagerDutyUser', 'PagerDuty User'],
+  ['GitRepository', 'Git Repository'],
+  [undefined, ''],
 ])('humanizes %s as %s', (type, label) => {
   expect(humanizeType(type)).toBe(label);
 });

@@ -9,8 +9,8 @@ from typing import Any
 
 from config import Configs
 from handlers.account_status import is_account_disabled
-from handlers.discovery_handler import run_async_discovery_handler
-from handlers.event_handler import run_event_handler_async
+from handlers.discovery_handler import DISCOVERY_TYPES, run_async_discovery_handler
+from handlers.event_handler import REPORT_HANDLERS, run_event_handler_async
 from handlers.spend_handler import process_spend
 from metrics import otel_metrics
 from rabbitmq.rabbitmq_client import consume_message
@@ -53,18 +53,46 @@ def _is_from_disabled_account(data: Any, queue_name: str) -> bool:
     return True
 
 
+def _payload_fields(data: Any) -> dict:
+    """The message as a dict, for reading metric labels; {} when it isn't one.
+
+    Only used for labels: the handler still receives the original message, so a
+    malformed payload fails inside the handler (and is counted) exactly as before.
+    """
+    if isinstance(data, (str, bytes)):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _track(handler_type: str, fields: dict, action: str):
+    return otel_metrics.track_handler(handler_type, fields.get("tenant"), fields.get("cloud_account_id"), action)
+
+
 def _discovery_callback(data: Any) -> None:
     """Wrapper for discovery handler"""
     if _is_from_disabled_account(data, Configs.RABBIT_MQ_DISCOVERY_QUEUE):
         return
-    run_async_discovery_handler(data)
+    fields = _payload_fields(data)
+    data_type = str(fields.get("type") or "").lower()
+    with _track("discovery", fields, data_type if data_type in DISCOVERY_TYPES else "other"):
+        run_async_discovery_handler(data)
 
 
 def _event_callback(data: Any) -> None:
     """Wrapper for event handler"""
     if _is_from_disabled_account(data, Configs.RABBIT_MQ_EVENT_QUEUE):
         return
-    run_event_handler_async(data)
+    fields = _payload_fields(data)
+    finding = fields.get("finding")
+    key = finding.get("aggregation_key") if isinstance(finding, dict) else None
+    # Every alert name is its own aggregation_key; labelling by it would add a
+    # series per alert. Only the fixed set of report handlers is named.
+    action = key if key in REPORT_HANDLERS else "alert"
+    with _track("event", fields, action):
+        run_event_handler_async(data)
 
 
 def _spend_callback(data: Any) -> None:
@@ -83,7 +111,8 @@ def _spend_callback(data: Any) -> None:
     if _is_from_disabled_account(data, Configs.RABBIT_MQ_SPEND_QUEUE):
         return
 
-    process_spend(data, tenant, cloud_account_id)
+    with otel_metrics.track_handler("spend", tenant, cloud_account_id, "spend"):
+        process_spend(data, tenant, cloud_account_id)
 
 
 def register_all_consumers():

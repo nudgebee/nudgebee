@@ -7,6 +7,7 @@ from slack_bolt.oauth.oauth_settings import OAuthSettings
 from slack_sdk.oauth.state_store.sqlalchemy import SQLAlchemyOAuthStateStore
 
 from notifications_server.clients.slack_client import SlackClient
+from notifications_server.configs.settings import settings
 from notifications_server.models.db_factory import DBFactory, DBType
 from notifications_server.services.slack.slack_installation_store import SlackInstallationStore
 from notifications_server.services.slack.slack_oauth_flow import SlackOAuthFlow
@@ -92,9 +93,9 @@ slack_app = make_slack_app()
 
 
 def make_teams_app(cache=None):
-    ms_teams_client_id = os.environ.get("MS_TEAMS_CLIENT_ID", "client_id")
-    ms_teams_client_secret = os.environ.get("MS_TEAMS_CLIENT_SECRET", "client_secret")
-    authority = os.environ.get("MS_TEAMS_AUTHORITY", "https://login.microsoftonline.com/common")
+    ms_teams_client_id = settings.ms_teams.client_id or "client_id"
+    ms_teams_client_secret = settings.ms_teams.client_secret or "client_secret"
+    authority = settings.ms_teams.authority
 
     if not ms_teams_client_secret or ms_teams_client_secret == "client_secret":
         LOG.warning(

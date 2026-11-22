@@ -34,6 +34,12 @@ def _version_where(table_name: str) -> str:
     )
 
 
+# Never SET a column of a cloud_resourses unique index (id, account,
+# external_resource_id, resourse_id, type, region, service_name). Naming one makes
+# ON CONFLICT lock the existing row FOR UPDATE even when the value is unchanged,
+# which blocks the FOR KEY SHARE that every foreign-key insert into
+# cloud_resource_metrics / spends takes, and the two deadlock. resourse_id needs
+# no update anyway: external_resource_id is a uuid5 of it plus the account.
 resources_on_conflict = (
     "ON CONFLICT(account,external_resource_id) DO UPDATE SET "
     "last_seen = EXCLUDED.last_seen, "
@@ -41,8 +47,7 @@ resources_on_conflict = (
     "is_active = EXCLUDED.is_active, "
     "tags = EXCLUDED.tags, "
     "first_seen = EXCLUDED.first_seen, "
-    "status = EXCLUDED.status, "
-    "resourse_id = EXCLUDED.resourse_id "
+    "status = EXCLUDED.status "
     f"WHERE {_version_where('cloud_resourses')}"
 )
 
@@ -275,6 +280,24 @@ def run_async_discovery_handler(content) -> None:
     with acquire_discovery_lock(data["cloud_account_id"], Configs):
         with deletion_scope(data["tenant"], data["cloud_account_id"]):
             _process_discovery(data)
+
+
+# The message types _process_discovery acts on; any other type is a silent no-op.
+# rabbitmq_consumers labels handler metrics with these and collapses the rest, so
+# an agent sending arbitrary types cannot add metric series.
+DISCOVERY_TYPES = frozenset(
+    {
+        "service",
+        "node",
+        "job",
+        "status",
+        "resolved_services",
+        "resolved_node_issue",
+        "resolved_namespace",
+        "namespace",
+        "alert_rules",
+    }
+)
 
 
 def _process_discovery(data) -> None:
@@ -2144,6 +2167,18 @@ def run_namespace_discovery(
     namespace_resources = []
 
     for k8s_data in data:
+        # A namespace the API server has begun deleting keeps appearing in every
+        # snapshot -- for months, when a finalizer is stuck -- and the agent
+        # hardcodes `deleted: false` for all of them, so `deleted` alone never
+        # retires one. Its contents are already reaped (no default ServiceAccount,
+        # no kube-root-ca.crt ConfigMap), so it is gone for every practical
+        # purpose and must not be offered as a live namespace. The agent has sent
+        # status.phase all along (runner/pkg/discovery/converters.go
+        # convertNamespace) and we simply dropped it. `or "Active"` rather than
+        # a .get() default so a missing key and an explicit null both fall back,
+        # keeping an agent too old to send phase behaving exactly as before.
+        is_live = not k8s_data.get("deleted", False) and (k8s_data.get("phase") or "Active") != "Terminating"
+
         namespace = {
             "name": k8s_data["name"],
             "tenant_id": tenant,
@@ -2151,7 +2186,7 @@ def run_namespace_discovery(
             "creation_time": k8s_data["creation_time"],
             "workload_count": k8s_data["workload_count"],
             "pod_count": k8s_data["pod_count"],
-            "is_active": not k8s_data.get("deleted", False),
+            "is_active": is_live,
         }
 
         # Create a mock resource for active resources tracking
@@ -2162,7 +2197,7 @@ def run_namespace_discovery(
         }
 
         namespaces.append(NamespaceDetails(**namespace))
-        if not k8s_data.get("deleted", False):
+        if is_live:
             namespace_resources.append(namespace_resource)
 
     # Stage + gated reconcile (completeness-based for batched snapshots, see

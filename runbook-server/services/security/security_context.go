@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,14 +47,18 @@ const (
 )
 
 type SecurityContext struct {
-	tenantId        string
-	accountIds      []string
-	userId          string
-	roles           []string
-	scopedEntityIds map[string][]string
-	k8sUser         map[string]string
-	k8sGroup        map[string][]string
-	k8sNamespaces   map[string][]string
+	// actionPermission is the current action's "<module>:<Class>" grant key
+	// (ActionKey). Each request loads its own copy of the context, and the key
+	// is not part of the wire form (MarshalJSON), so it never leaks.
+	actionPermission string
+	tenantId         string
+	accountIds       []string
+	userId           string
+	roles            []string
+	scopedEntityIds  map[string][]string
+	k8sUser          map[string]string
+	k8sGroup         map[string][]string
+	k8sNamespaces    map[string][]string
 	// customPermissions is the set of dynamic-RBAC custom-role grants the user
 	// holds, keyed "<module>:<class>" (e.g. "notifications:Write"). Mirrors the
 	// api-server's security_context_v2 wire shape (scPub.CustomPermissions); the
@@ -271,6 +276,61 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
 		sc.HasScopedPermission(accountId, module, "Read") ||
 		sc.HasScopedPermission(accountId, module, "Write")
+}
+
+// Can reports whether the caller holds `module:class` on accountId: a built-in
+// account role that allows the class (Read: read, Execute: create, Write:
+// update), or a custom grant for the module on that account. A Write grant
+// implies Read; it does not imply Execute. The llm-server helper of the same name answers the
+// same (testdata/can_cases.json).
+func (sc *SecurityContext) Can(accountId string, module string, class string) bool {
+	if sc == nil {
+		return false
+	}
+	switch class {
+	case "Read":
+		return sc.CanReadAccountData(accountId, module)
+	case "Execute":
+		return sc.HasAccountAccess(accountId, SecurityAccessTypeCreate) ||
+			sc.HasScopedPermission(accountId, module, "Execute")
+	case "Write":
+		return sc.HasAccountAccess(accountId, SecurityAccessTypeUpdate) ||
+			sc.HasScopedPermission(accountId, module, "Write")
+	}
+	return false
+}
+
+// IntegrationModule is the custom-role module that governs integrations of
+// one stored type: "integrations.<type>", lower-cased.
+func IntegrationModule(integrationType string) string {
+	return "integrations." + strings.ToLower(strings.TrimSpace(integrationType))
+}
+
+// MayUseIntegration reports whether the principal may use an integration of
+// integrationType on accountId: write to make changes through it, else to read
+// through it. A built-in account role that allows the change (create) or the
+// read on the account allows any integration, as it allows any module (Can);
+// otherwise it takes a use grant on integrations.<type>: Read reads through
+// the integration, Execute also makes changes. Write on that module is the
+// right to manage the integration and does not let the holder use it. A bee
+// holds no built-in role, so for a bee only its grants count. The llm-server helper of the same name
+// answers the same (testdata/can_cases.json).
+func (sc *SecurityContext) MayUseIntegration(accountId string, integrationType string, write bool) bool {
+	if sc == nil {
+		return false
+	}
+	access := SecurityAccessTypeRead
+	if write {
+		access = SecurityAccessTypeCreate
+	}
+	if sc.HasAccountAccess(accountId, access) {
+		return true
+	}
+	module := IntegrationModule(integrationType)
+	if sc.HasScopedPermission(accountId, module, "Execute") {
+		return true
+	}
+	return !write && sc.HasScopedPermission(accountId, module, "Read")
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`

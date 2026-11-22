@@ -28,14 +28,14 @@ func dashboardGenerateHandler(tracer trace.Tracer, meter metric.Meter) gin.Handl
 		requestMap := make(map[string]any)
 		if err := c.ShouldBindJSON(&requestMap); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		var request ConversationApiRequest
 		var actionRequest ActionRequest
 		if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 		actionRequestPayload := actionRequest.Input
@@ -46,16 +46,16 @@ func dashboardGenerateHandler(tracer trace.Tracer, meter metric.Meter) gin.Handl
 			actionRequestPayload = requestMap
 		}
 		if err := common.DecodeMapToStruct(actionRequestPayload, &request); err != nil {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: " + err.Error()}}))
 			return
 		}
 
 		if request.Query == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: query is required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: query is required"}}))
 			return
 		}
 		if request.AccountId == "" {
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: "api: account_id is required"}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: "api: account_id is required"}}))
 			return
 		}
 
@@ -65,9 +65,9 @@ func dashboardGenerateHandler(tracer trace.Tracer, meter metric.Meter) gin.Handl
 		request.SessionId = request.ConversationId
 
 		logger := slog.With("account_id", request.AccountId, "conversation_id", request.ConversationId, "user_id", request.UserId)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusInternalServerError, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 
@@ -77,7 +77,7 @@ func dashboardGenerateHandler(tracer trace.Tracer, meter metric.Meter) gin.Handl
 
 		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 			!grantedRun(agentContext.GetSecurityContext(), request.AccountId, moduleAiGeneration) {
-			c.JSON(http.StatusForbidden, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+			c.JSON(http.StatusForbidden, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 			return
 		}
 
@@ -88,7 +88,7 @@ func dashboardGenerateHandler(tracer trace.Tracer, meter metric.Meter) gin.Handl
 		builder, err := agents.NewDashboardBuilderAgent(agentContext, request.AccountId)
 		if err != nil {
 			logger.Warn("api: unable to build dashboard builder agent", "error", err.Error())
-			c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 

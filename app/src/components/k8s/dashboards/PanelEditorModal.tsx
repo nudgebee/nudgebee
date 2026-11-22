@@ -424,7 +424,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
     () =>
       DATASOURCES.map((template) => {
         const option = { ...template, label: fillBrandTokens(template.label) };
-        const missing = missingDatasourceGrant(option.value);
+        const missing = missingDatasourceGrant(option.value, accountIds);
         if (!missing) return option;
         return {
           value: option.value,
@@ -442,7 +442,7 @@ const PanelEditorModal: React.FC<Props> = ({ open, panel, isEdit, accountOptions
           ),
         };
       }),
-    [brandTitle]
+    [brandTitle, accountIds]
   );
 
   /**

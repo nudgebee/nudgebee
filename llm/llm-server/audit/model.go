@@ -20,6 +20,7 @@ const (
 	EventAlertManagerRelay      EventCategory = "ALERT_MANAGER"
 	// EventCategoryChatActions buckets in-app ("Nubi") web chat interactions; web-only — messaging-platform chat is intentionally excluded.
 	EventCategoryChatActions EventCategory = "CHAT_ACTIONS"
+	EventCategorySecurity    EventCategory = "SECURITY"
 	EventCategoryBudget      EventCategory = "BUDGET"
 )
 
@@ -112,6 +113,12 @@ const (
 	EventTypeChatClarificationRespond EventType = "CHAT_CLARIFICATION_RESPOND"
 	// EventTypeChatToolConfirmationRespond is the follow-up answer authorizing/declining a write action, recorded distinctly (tool + decision) so approvals are filterable in one place.
 	EventTypeChatToolConfirmationRespond EventType = "CHAT_TOOL_CONFIRMATION_RESPOND"
+	// EventTypeChatToolPolicyApprove records a confirmation waived by a stored
+	// policy rule. It is distinct from a user's follow-up response.
+	EventTypeChatToolPolicyApprove  EventType = "CHAT_TOOL_POLICY_APPROVE"
+	EventTypeToolApprovalRuleCreate EventType = "TOOL_APPROVAL_RULE_CREATE"
+	EventTypeToolApprovalRuleUpdate EventType = "TOOL_APPROVAL_RULE_UPDATE"
+	EventTypeToolApprovalRuleDelete EventType = "TOOL_APPROVAL_RULE_DELETE"
 
 	EventTypeBudgetConfigCreate   EventType = "BUDGET_CONFIG_CREATE"
 	EventTypeBudgetConfigDelete   EventType = "BUDGET_CONFIG_DELETE"

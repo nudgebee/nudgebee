@@ -84,7 +84,7 @@ class _FakeRedis:
 def _make_cache_with_entry(entry):
     cache = Cache()
     cache.redis_client = _FakeRedis()
-    cache._ensure_connection = lambda: None  # noqa: SLF001 - skip real connection
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001 - skip real connection
     cache.redis_client.store[f"chat_event:{THREAD_TS}"] = json.dumps(entry)
     return cache
 
@@ -136,5 +136,5 @@ def test_after_clear_next_mention_is_a_new_turn():
 def test_remove_event_keys_no_entry_returns_false():
     cache = Cache()
     cache.redis_client = _FakeRedis()
-    cache._ensure_connection = lambda: None  # noqa: SLF001
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001
     assert cache.remove_event_keys(THREAD_TS, PENDING_KEYS) is False

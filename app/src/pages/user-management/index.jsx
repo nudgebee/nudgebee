@@ -4,9 +4,11 @@ import AdminOverview from '@components/user-management/AdminOverview';
 import AllUsers from '@components/user-management/AllUsers';
 import UserGroup from '@components/user-management/UserGroup';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { AuditsTable } from '@components/audits';
 import { Box, Typography } from '@mui/material';
 import Notifications from '@components/notifications';
+import DeliveryHistory from '@components/notifications/delivery-history/DeliveryHistory';
 import Integrations from '@components/accounts/integration';
 import OwnershipRules from '@components/user-management/OwnershipRules';
 import TenantSettings from '@shared/settings/TenantSettings';
@@ -19,7 +21,8 @@ import Loader from '@shared/Loader';
 import { ds } from '@utils/colors';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import AssignmentIndOutlinedIcon from '@mui/icons-material/AssignmentIndOutlined';
-import { AI_TOOLS_SUB_TABS } from '@components/llm/admin/aiToolsConfig';
+import HistoryIcon from '@mui/icons-material/History';
+import { AI_TOOLS_SUB_TABS, subTabAccess } from '@components/llm/admin/aiToolsConfig';
 import { useBCortexEnabled, isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import withBrandBlue from '@shared/icons/withBrandBlue';
 
@@ -27,6 +30,7 @@ import withBrandBlue from '@shared/icons/withBrandBlue';
 // render gray/black instead of matching its blue-SVG siblings (Users,
 // Groups, Audit Log) in the same Access & Users dropdown.
 const OwnershipIcon = withBrandBlue(AssignmentIndOutlinedIcon);
+const DeliveryHistoryIcon = withBrandBlue(HistoryIcon);
 
 // Base filters that ship in OSS. Extensions register additional filters via
 // registerUserManagementFilter — those slot in at the end (e.g. billing on
@@ -124,15 +128,37 @@ const baseFilters = (baseTitle) => [
   },
   // id is pinned so the DOM id (#anchor-tab-Notifications) that app-e2e-tests
   // locates the tab by stays stable if the label ever changes independently.
+  // Rules stays the default sub-tab, so `#notification-rules` and the Overview
+  // card's alert-* actions land on it unchanged. Delivery history is read like
+  // alerts, so it is gated on events rather than notifications.
   {
     name: 'Notification Rules',
     id: 'Notifications',
     fragment: 'notification-rules',
     icon: NotificationIcon1,
-    Body: Notifications,
-    module: 'notifications',
-    description:
-      'Rules decide which troubleshooting, SLO, cloud spend, optimization and automation notifications are delivered, and where. Every matching rule applies; if any says Don’t send, it isn’t sent.',
+    tabOptions: [
+      {
+        id: 'notification-rules-list',
+        fragment: '',
+        text: 'Rules',
+        icon: NotificationIcon1,
+        Body: Notifications,
+        module: 'notifications',
+        description:
+          'Rules decide which troubleshooting, SLO, cloud spend, optimization and automation notifications are delivered, and where. Every matching rule applies; if any says Don’t send, it isn’t sent.',
+      },
+      {
+        id: 'delivery-history',
+        fragment: 'delivery-history',
+        text: 'Delivery history',
+        icon: DeliveryHistoryIcon,
+        Body: DeliveryHistory,
+        module: 'events',
+        description: baseTitle
+          ? `Every notification ${baseTitle} sent or tried to send in the last 7 days: where it went, which rule sent it, and whether it arrived.`
+          : 'Every notification sent or tried to send in the last 7 days: where it went, which rule sent it, and whether it arrived.',
+      },
+    ],
   },
   // AI & Tools (docs/ia-consolidation-plan.md, PR 3) — "what the AI is made
   // of", relocated out of the Settings modal into Admin. Same tabOptions
@@ -249,12 +275,12 @@ export default function UserManagement() {
           return true;
         });
         const tabOptions = visibleTabOptions.map((sub, subIdx) => {
-          const lacksPermission = !isAdmin && !!sub.module && !perms.includes(`${sub.module}:Read`);
+          const access = subTabAccess(sub, { isAdmin, permissions: perms, hasBuiltInRole: roles.length > 0 });
           return {
             ...sub,
             value: subIdx,
-            disabled: sub.disabled ?? lacksPermission,
-            disabledTooltip: lacksPermission ? missingPermissionMessage(`${sub.module}:Read`) : undefined,
+            disabled: sub.disabled ?? access.disabled,
+            disabledTooltip: access.tooltip,
           };
         });
         return {
@@ -291,8 +317,13 @@ export default function UserManagement() {
   // disabled, or absent (bare `#groups` lands on sub-tab 0, "Groups" itself).
   const resolveSubFilter = (tab, subFragment) => {
     if (!tab?.tabOptions) return 0;
+    // A sub-tab named directly in the URL wins even when disabled -- its
+    // content area renders a permission-denied placeholder (see
+    // isSelectedDisabled below) rather than silently swapping to another
+    // sub-tab. Only a missing/unmatched fragment falls back to the first
+    // enabled sub-tab.
     const requested = subFragment ? tab.tabOptions.find((opt) => opt.fragment === subFragment) : null;
-    if (requested && !requested.disabled) return requested.value;
+    if (requested) return requested.value;
     const firstEnabledSub = tab.tabOptions.find((opt) => !opt.disabled);
     return firstEnabledSub ? firstEnabledSub.value : 0;
   };
@@ -305,20 +336,22 @@ export default function UserManagement() {
     // merged tab's sub-tab (e.g. `#groups/ownership`) still matches its parent
     // by fragment, instead of failing to match `groups/ownership` against `groups`.
     const [fragment, subFragment] = (hashFragment || '').split('/');
-    // The tab AnchorComponent highlights: the URL hash's section, else the
-    // first tab (its no-hash default). If that section is one the user can
-    // open, honor it — body and highlight already agree.
+    // A tab named directly in the hash wins even when disabled -- it still
+    // highlights and settles here, and its content area renders a
+    // permission-denied placeholder (isSelectedDisabled, see the render below)
+    // instead of this effect silently steering the user elsewhere. Only a
+    // hash that matches nothing at all falls through to the "steer to the
+    // first reachable tab" branch below.
     const current = filterOptions.find((opt) => opt.fragment == fragment);
-    const anchorTab = current ?? filterOptions[0];
-    if (anchorTab && !anchorTab.disabled) {
-      setSelectedFilter(anchorTab.value);
-      setSelectedSubFilter(resolveSubFilter(anchorTab, subFragment));
+    if (current) {
+      setSelectedFilter(current.value);
+      setSelectedSubFilter(resolveSubFilter(current, subFragment));
       return;
     }
-    // Otherwise the target section is disabled (e.g. an Audit-Read-only user
-    // landing on the default Users tab). Steer to the first section they can
-    // open and sync the hash, so AnchorComponent's highlight follows the body
-    // instead of sitting on the disabled default.
+    // No hash, or a fragment that matches nothing: steer to the first section
+    // the user can actually open (e.g. an Audit-Read-only user lands on Audit
+    // Log, not a disabled default) and sync the hash, so AnchorComponent's
+    // highlight follows the body instead of sitting on the disabled default.
     const firstEnabled = filterOptions.find((opt) => !opt.disabled);
     if (!firstEnabled) {
       setSelectedFilter(0);
@@ -342,15 +375,7 @@ export default function UserManagement() {
   // Rules, Integrations, Tenant Settings) via a typed/bookmarked URL either.
   // hasAdminSurfaceAccess() (not hasReadAccess()) is what the sidebar uses, so a custom-role holder with a grant on an
   // Admin-page module (e.g. audits:Read) can open the page — the per-section
-  // disabled-tab gating above then hides sections they lack Read on. Depends on
-  // `session` itself (not just `sessionData.status`) so a mid-session role
-  // change — status stays 'authenticated' throughout a refetch — still
-  // re-evaluates access.
-  useEffect(() => {
-    if (session && !hasAdminSurfaceAccess()) {
-      router.replace('/home');
-    }
-  }, [session, router]);
+  // disabled-tab gating above then hides sections they lack Read on.
 
   const selectedOption = filterOptions[selectedFilter];
   const activeSubOption = selectedOption?.tabOptions?.[selectedSubFilter];
@@ -358,8 +383,12 @@ export default function UserManagement() {
   const activeDescription = activeSubOption?.description ?? selectedOption?.description;
   const isSelectedDisabled = activeSubOption ? activeSubOption.disabled : selectedOption?.disabled;
 
-  if (!session || !hasAdminSurfaceAccess()) {
+  if (!session) {
     return <Loader />;
+  }
+
+  if (!hasAdminSurfaceAccess()) {
+    return <PermissionDeniedContent />;
   }
 
   return (
@@ -374,10 +403,8 @@ export default function UserManagement() {
         }}
       />
       <ErrorBoundary key={`${selectedFilter}-${selectedSubFilter}`}>
-        {/* Guard against the brief mount tick where AnchorComponent reports its
-            disabled default (0) before the hash-steer above lands — never render
-            a section the user can't open. */}
         <Box mt={2}>
+          {isSelectedDisabled && <PermissionDeniedContent message={(activeSubOption ?? selectedOption)?.disabledTooltip} />}
           {SelectedBody && !isSelectedDisabled && (
             <>
               {/* One-line "what is this tab for" caption. Rendered here rather

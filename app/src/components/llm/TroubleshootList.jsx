@@ -155,13 +155,22 @@ const RenderListItemText = React.memo(({ item, imageSrc, message, ruleLink, link
   return (
     <ListItemText
       primary={
-        <Box sx={{ '& a': { textDecoration: 'none', '&:hover': { '.application-name': { textDecoration: 'underline' } } } }}>
+        <Box
+          sx={{
+            '& a': { textDecoration: 'none', '&:hover': { '.application-name': { textDecoration: 'underline' } } },
+            '& .MuiAccordionSummary-root': {
+              padding: `${ds.space[1]} ${ds.space[0]} ${ds.space[2]} ${ds.space[0]} !important`,
+              '&:hover': { backgroundColor: 'transparent !important' },
+            },
+            '& .MuiAccordionDetails-root': { padding: `${ds.space[2]} !important` },
+          }}
+        >
           <Accordion
             density='sm'
             items={[
               {
                 id: message,
-                label: message,
+                label: <span style={{ color: ds.gray[700], fontWeight: ds.weight.regular }}>{message}</span>,
                 icon: <SafeIcon src={imageSrc} alt='' className='list-icon' width={22} height={22} />,
                 body: (
                   <>

@@ -353,6 +353,14 @@ const VmAgentCredentialsDialog = ({ open, onClose, accessKey, accessSecret, acco
           </Link>
         </Typography>
       </Box>
+      {accountId && agentPhase === 'checking' && (
+        <Box data-testid='vm-agent-install-checking'>
+          <ProgressLinear surface='section' tone='info' aria-label='Checking for an existing connection' />
+          <Box sx={{ mt: ds.space[2] }}>
+            <Banner tone='info' surface='section' message='Checking whether an agent has already reported in…' />
+          </Box>
+        </Box>
+      )}
       {accountId && agentPhase === 'waiting' && (
         <Box data-testid='vm-agent-install-waiting'>
           <ProgressLinear surface='section' tone='info' aria-label='Waiting for the agent to connect' />

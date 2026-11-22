@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/audit"
@@ -12,13 +14,14 @@ import (
 	kgmodels "nudgebee/services/knowledge_graph/models"
 	kgqueue "nudgebee/services/knowledge_graph/queue"
 	"nudgebee/services/knowledge_graph/sources"
-	_ "nudgebee/services/knowledge_graph/sources/aws"       // register AWS source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/azure"     // register Azure source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/gcp"       // register GCP source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/github"    // register GitHub source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/gitlab"    // register GitLab source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/k8s"       // register K8s source factory (init side-effect)
-	_ "nudgebee/services/knowledge_graph/sources/pagerduty" // register PagerDuty source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/aws"        // register AWS source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/azure"      // register Azure source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gcp"        // register GCP source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/github"     // register GitHub source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/gitlab"     // register GitLab source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/k8s"        // register K8s source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/pagerduty"  // register PagerDuty source factory (init side-effect)
+	_ "nudgebee/services/knowledge_graph/sources/selfhosted" // register self-hosted VM source factory (init side-effect)
 	"nudgebee/services/security"
 	"time"
 
@@ -544,6 +547,11 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 	case "kg_get_edge":
 		var req struct {
 			EdgeID string `json:"edge_id"`
+			// Optional endpoints of the edge being asked for. Read only when
+			// edge_id matches no stored row, to resolve the read-time-synthesized
+			// Pod edges, whose uuid5 ID can't be reversed to its pod (#41504).
+			SourceNodeID string `json:"source_node_id"`
+			DestNodeID   string `json:"dest_node_id"`
 		}
 		err := common.UnmarshalMapToStruct(kgRequest, &req)
 		if err != nil {
@@ -570,7 +578,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 			return
 		}
 		kgService := core.NewService(ctx, ctx.GetLogger(), dbManager)
-		edge, err := kgService.GetEdgeByID(req.EdgeID)
+		edge, err := kgService.GetEdgeByIDWithEndpoints(req.EdgeID, req.SourceNodeID, req.DestNodeID)
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "knowledge_graph", "get_edge_error")
 			ctx.GetLogger().Error("failed to get edge by id", "error", err, "id", req.EdgeID)
@@ -689,10 +697,16 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		filterRepo := core.NewFilterRepository(dbManager, ctx.GetLogger())
 		filter, err := filterRepo.GetFilterForTenant(ctx, tenantID, "")
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			// A failed read is not "no filter": answering exists=false here would
+			// show the "all selected" defaults over the tenant's real filter.
+			ctx.GetLogger().Error("failed to read default filter for tenant", "tenant_id", tenantID, "error", err)
+			c.JSON(500, common.ErrorActionInternal("failed to read the knowledge graph filter"))
+			return
+		}
 		if err != nil {
 			// No row yet — return exists=false so the UI shows "all selected" defaults.
-			ctx.GetLogger().Info("no default filter for tenant, returning empty",
-				"tenant_id", tenantID, "error", err)
+			ctx.GetLogger().Info("no default filter for tenant, returning empty", "tenant_id", tenantID)
 			c.JSON(200, map[string]any{
 				"exists":       false,
 				"id":           nil,
@@ -841,6 +855,16 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		return
 	case "kg_delete_all_manual_nodes":
 		handleKgDeleteAllManualNodes(actionPayload, c, tracer, meter, logger)
+		return
+
+	case "kg_list_node_roles":
+		handleKgListNodeRoles(c)
+		return
+	case "kg_upsert_node_role":
+		handleKgWriteNodeRole(actionPayload, c, tracer, meter, logger, true)
+		return
+	case "kg_delete_node_role":
+		handleKgWriteNodeRole(actionPayload, c, tracer, meter, logger, false)
 		return
 
 	default:

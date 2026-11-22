@@ -27,6 +27,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"strings"
 )
 
 // ElasticOtelTraceSource implements TraceSource for user-managed Elasticsearch with
@@ -333,13 +334,31 @@ func buildOtelTraceQuery(req TracesV3Request, labelMapping map[string]string) ma
 	return dsl
 }
 
+// traceSearchBody returns the _search body for a trace request: the caller's raw query
+// (Code mode) when Query is set, else the DSL rendered from the canonical where clause.
+func (e *ElasticOtelTraceSource) traceSearchBody(req TracesV3Request) (map[string]any, error) {
+	if strings.TrimSpace(req.Query) == "" {
+		return buildOtelTraceQuery(req, elasticOtelTraceLabelMapping), nil
+	}
+	var timeFilter map[string]any
+	if req.StartTime > 0 && req.EndTime > 0 {
+		timeFilter = otelTraceTimeRangeFilter(req.StartTime, req.EndTime)
+	}
+	return finalizeESTraceQueryBody(req.Query, esTraceRawQueryType(req.Request), timeFilter,
+		[]map[string]any{{"@timestamp": map[string]any{"order": "desc"}}},
+		req.QueryRequest.Limit, req.QueryRequest.Offset)
+}
+
 func (e *ElasticOtelTraceSource) QueryTraces(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
 	cfg, err := GetElasticsearchConfig(ctx, req.AccountId)
 	if err != nil {
 		return nil, err
 	}
 
-	dsl := buildOtelTraceQuery(req, elasticOtelTraceLabelMapping)
+	dsl, err := e.traceSearchBody(req)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search"), dsl, cfg) //nolint:bodyclose
 	if err != nil {
@@ -365,7 +384,10 @@ func (e *ElasticOtelTraceSource) QueryTraces(ctx *security.RequestContext, req T
 }
 
 func (e *ElasticOtelTraceSource) GetQuery(ctx *security.RequestContext, req TracesV3Request) (string, error) {
-	dsl := buildOtelTraceQuery(req, elasticOtelTraceLabelMapping)
+	dsl, err := e.traceSearchBody(req)
+	if err != nil {
+		return "", err
+	}
 	data, err := json.MarshalIndent(dsl, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal trace query: %w", err)
@@ -379,7 +401,12 @@ func (e *ElasticOtelTraceSource) CountTraces(ctx *security.RequestContext, req T
 		return common.OpenTelemetryTraceCount{}, err
 	}
 
-	dsl := buildOtelTraceQuery(req, elasticOtelTraceLabelMapping)
+	dsl, err := e.traceSearchBody(req)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	// A count reuses the listing body (raw or canonical) and overrides the paging keys:
+	// a raw query's own size/sort/from describe the page it wanted, not the total.
 	dsl["size"] = 0
 	dsl["track_total_hits"] = true
 	delete(dsl, "sort")
@@ -509,13 +536,15 @@ func (e *ElasticOtelTraceSource) QueryGroupedTraces(ctx *security.RequestContext
 		return nil, err
 	}
 
-	boolFilters := []map[string]any{}
+	// Raw query or where clause, plus this view's own time bound. The grouped view keeps
+	// its own aggregation, so a raw query narrows it exactly as it narrows the listing.
+	var groupTimeFilter map[string]any
 	if req.StartTime > 0 && req.EndTime > 0 {
-		boolFilters = append(boolFilters, otelTraceTimeRangeFilter(req.StartTime, req.EndTime))
+		groupTimeFilter = otelTraceTimeRangeFilter(req.StartTime, req.EndTime)
 	}
-	whereBool := buildESBoolQuery(req.QueryRequest.Where, elasticOtelTraceLabelMapping)
-	if whereFilters, ok := whereBool["filter"].([]map[string]any); ok {
-		boolFilters = append(boolFilters, whereFilters...)
+	boolFilters, err := esTraceFilters(req, groupTimeFilter, elasticOtelTraceLabelMapping)
+	if err != nil {
+		return nil, err
 	}
 
 	searchURL := esIndexURL(cfg.Url, esTraceIndexFor(cfg, traceIndexOverride(req.Request)), "_search")
@@ -543,14 +572,15 @@ func (e *ElasticOtelTraceSource) QueryGroupedTracesCount(ctx *security.RequestCo
 		return common.OpenTelemetryTraceGroupCount{}, err
 	}
 
-	boolFilters := []map[string]any{}
+	// Raw query or where clause, plus this view's own time bound. The grouped view keeps
+	// its own aggregation, so a raw query narrows it exactly as it narrows the listing.
+	var groupTimeFilter map[string]any
 	if req.StartTime > 0 && req.EndTime > 0 {
-		boolFilters = append(boolFilters, otelTraceTimeRangeFilter(req.StartTime, req.EndTime))
+		groupTimeFilter = otelTraceTimeRangeFilter(req.StartTime, req.EndTime)
 	}
-
-	whereBool := buildESBoolQuery(req.QueryRequest.Where, elasticOtelTraceLabelMapping)
-	if whereFilters, ok := whereBool["filter"].([]map[string]any); ok {
-		boolFilters = append(boolFilters, whereFilters...)
+	boolFilters, err := esTraceFilters(req, groupTimeFilter, elasticOtelTraceLabelMapping)
+	if err != nil {
+		return common.OpenTelemetryTraceGroupCount{}, err
 	}
 
 	dsl := map[string]any{

@@ -196,6 +196,7 @@ func (h *handler) streamResponses(c *gin.Context, bctx *schemas.BifrostContext, 
 		if len(frame) == 0 {
 			continue
 		}
+		rm.markFirstChunk()
 		if captureBody {
 			respBuf = appendCappedBody(respBuf, frame)
 		}

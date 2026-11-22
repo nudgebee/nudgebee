@@ -234,7 +234,7 @@ func canReadAccount(ctx *security.RequestContext, accountID string) bool {
 	if ctx == nil || ctx.GetSecurityContext() == nil {
 		return false
 	}
-	return ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead)
+	return security.ToolPathAccountAccess(ctx, accountID, "cloud", security.SecurityAccessTypeRead)
 }
 
 // vmMatch is one (integration, VM) pair an instance name resolved to.

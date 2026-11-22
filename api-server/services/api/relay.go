@@ -175,7 +175,7 @@ func validateRelayAccountAccess(reqPayload *relayProxyRequest, sc *security.Secu
 	// also covers the built-in Read path); mutating action_names require k8s:Write
 	// or a built-in Update role, so a k8s:Read-only holder can list but never
 	// mutate. The account in the request body is enforced here, which is what lets
-	// the gateway admit an account-scoped k8s grant (ACCOUNT_ENFORCED_ACTIONS).
+	// the gateway admit an account-scoped k8s grant (`account_enforced` in actions.yaml).
 	var allowed bool
 	if permission == security.SecurityAccessTypeRead {
 		allowed = sc.CanReadAccountData(accountId, "k8s")

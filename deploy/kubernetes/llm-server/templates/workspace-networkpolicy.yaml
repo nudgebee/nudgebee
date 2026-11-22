@@ -74,6 +74,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.workspaceNetworkPolicy.llmServerPort }}
+        - protocol: TCP
+          port: {{ .Values.workspaceNetworkPolicy.workspaceProxyTlsPort }}
     # No egress to relay-server: cluster and database commands go through
     # llm-server's workspace proxy, which checks grants and audits (#39880).
     {{- with .Values.workspaceNetworkPolicy.extraEgress }}

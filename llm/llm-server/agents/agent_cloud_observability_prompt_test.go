@@ -63,11 +63,11 @@ func TestCloudObservabilityAgentPrompts(t *testing.T) {
 			name:  "gcp_metrics",
 			agent: GcpMetricsAgent{accountId: "acct-1"},
 			mustContain: []string{
-				"gcloud monitoring time-series list",   // primary read
-				"gcloud monitoring metric-descriptors", // discovery
-				"monitoring.googleapis.com/v3",         // v3 REST path for complex reads
-				"--limit",                              // bounding
-				"workspace file",                       // large-output offload
+				"monitoring.googleapis.com/v3/projects/<project_id>/timeSeries",        // primary read (gcloud has no metric-data commands)
+				"monitoring.googleapis.com/v3/projects/<project_id>/metricDescriptors", // discovery
+				"gcloud config get-value project",                                      // project id for the REST URL
+				"pageSize",                                                             // bounding
+				"workspace file",                                                       // large-output offload
 			},
 		},
 		{

@@ -272,6 +272,23 @@ func TestQueuedFreshTurnCannotOvertakeQueue(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// A failed conversation's waiting rows are dead (no resume takes a failed conversation): a new turn closes them
+// instead of being refused by them forever.
+func TestFreshTurnClosesDeadWaitingRowsOfFailedConversation(t *testing.T) {
+	dao, mock := setupConversationDAOMock(t)
+	old := config.Config.QueuedMessagesEnabled
+	config.Config.QueuedMessagesEnabled = true
+	t.Cleanup(func() { config.Config.QueuedMessagesEnabled = old })
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT status FROM llm_conversations.*FOR UPDATE`).WithArgs("conv", "account").WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("FAILED"))
+	mock.ExpectExec(`UPDATE llm_conversation_messages SET status = 'FAILED'.*'WAITING', 'WAITING_FOR_CLIENT_TOOL'`).WithArgs("conv").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectQuery(`SELECT EXISTS .*'QUEUED'`).WithArgs("conv").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectRollback()
+	_, err := dao.SaveConversationMessage("", "conv", "account", "author", MessageRoleHuman, MessageTypeGeneration, "question", "", "", uuid.Nil, nil, "", "", "", ConversationStatusInProgress)
+	require.ErrorContains(t, err, "active or queued", "a row still running keeps refusing the turn")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestQueuedFinalizeAllowsOwnApprovalWait(t *testing.T) {
 	dao, mock := setupConversationDAOMock(t)
 	mock.ExpectBegin()

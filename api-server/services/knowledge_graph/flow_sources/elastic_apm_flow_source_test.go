@@ -462,10 +462,19 @@ func TestElasticAPM_BuildToleratesConfigAndFetchFailures(t *testing.T) {
 	assert.Equal(t, 2, s.GetMetrics().ErrorCount)
 }
 
-func TestElasticAPM_DisabledByDefault(t *testing.T) {
+func TestElasticAPM_EnabledByDefault(t *testing.T) {
 	t.Setenv(elasticAPMEnvEnabled, "")
-	assert.False(t, NewElasticAPMFlowSource(nil).IsEnabled())
+	assert.True(t, NewElasticAPMFlowSource(nil).IsEnabled())
 	t.Setenv(elasticAPMEnvEnabled, "true")
+	assert.True(t, NewElasticAPMFlowSource(nil).IsEnabled())
+	// The env var is now a kill switch, so every spelling Go reads as false has to
+	// disable it — an operator who writes 0 means off.
+	for _, off := range []string{"false", "FALSE", "False", "0", "f"} {
+		t.Setenv(elasticAPMEnvEnabled, off)
+		assert.Falsef(t, NewElasticAPMFlowSource(nil).IsEnabled(), "%q should disable the source", off)
+	}
+	// A value that is not a boolean at all leaves it enabled, like an unset var.
+	t.Setenv(elasticAPMEnvEnabled, "yes-please")
 	assert.True(t, NewElasticAPMFlowSource(nil).IsEnabled())
 }
 

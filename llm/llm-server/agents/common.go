@@ -14,16 +14,6 @@ func updateMarkDown(content string) string {
 	return content
 }
 
-var jsonObjectRegex = regexp.MustCompile(`\{\s*("[^"]*"\s*:\s*("[^"]*"\s*|\s*\{\s*[^\}]*\s*\}\s*),?\s*)*\s*\}(,?\s*)`)
-
-func ExtractJsonObjectOrDefault(q string, def string) string {
-	jsonString := jsonObjectRegex.FindString(q)
-	if jsonString != "" {
-		return jsonString
-	}
-	return def
-}
-
 var (
 	// Regex to clean up multiple consecutive newlines
 	multipleNewlinesRegex = regexp.MustCompile(`\n{3,}`)

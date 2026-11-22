@@ -1,5 +1,5 @@
 ---
-description: Review a pull request in an isolated worktree, post comments on the PR, and clean up
+description: Review a pull request design-first in an isolated worktree — premise, root cause, simpler alternatives, blast radius, rollout — then line-level issues; post comments on the PR and clean up
 user-invocable: true
 allowed-tools:
   - Bash
@@ -7,11 +7,18 @@ allowed-tools:
   - Glob
   - Grep
   - Task
+  - Agent
 ---
 
 # Review Pull Request
 
 Review the pull request specified by `$ARGUMENTS` (PR number or URL).
+
+## What this review is for
+
+A reviewer approves the **decision**, not the lines. The comments that change outcomes here are design comments: the premise doesn't hold, the fix treats a symptom, a much smaller change would do, the change quietly alters a flow everyone uses, the rollout order loses data, the next call site will bring the bug back. Line-level bugs come second. Style nits come last, capped, and never block.
+
+A review that lists ten nits and misses that the approach is wrong has failed. A review that says "the approach is right, here is what I checked" with zero findings has succeeded.
 
 ## Step 0: Validate Arguments
 
@@ -29,12 +36,14 @@ PR_NUMBER=<pr number from arguments>
 WORKTREE_DIR="${REPO_ROOT}-pr-review-${PR_NUMBER}"
 
 # Fetch PR metadata
-gh pr view $PR_NUMBER --json number,title,body,baseRefName,headRefName,additions,deletions,changedFiles,author
+gh pr view $PR_NUMBER --json number,title,body,baseRefName,headRefName,headRefOid,additions,deletions,changedFiles,author,closingIssuesReferences
 
 # Fetch latest and create worktree
 git fetch origin
 HEAD_BRANCH=$(gh pr view $PR_NUMBER --json headRefName -q .headRefName)
-git worktree add "$WORKTREE_DIR" "origin/${HEAD_BRANCH}" 2>/dev/null || echo "Worktree already exists"
+# A leftover worktree from an aborted run would sit on an old head — always start from the current one
+git worktree remove "$WORKTREE_DIR" --force 2>/dev/null
+git worktree add --detach "$WORKTREE_DIR" "origin/${HEAD_BRANCH}"
 
 echo "WORKTREE_DIR=${WORKTREE_DIR}"
 ```
@@ -50,14 +59,25 @@ Store the `WORKTREE_DIR` path. You will use it for ALL subsequent operations.
 - **NEVER** use the original repo root for any file operation
 - `gh` commands can run from anywhere (they query the GitHub API), but even those should `cd $WORKTREE_DIR` first for consistency
 
-## Step 2: Identify Affected Services
+## Step 2: Read the Intent Before the Code
 
-Get the list of changed files from the PR:
+You cannot judge a design without knowing what it is for. Before opening the diff, collect:
+
+1. **The PR body.** Note its Decision line, its claims ("X is excluded", "refused before LLM spend", "no change for other providers"), its Risks, and its "Not in this PR". Every claim is something to check in Step 5.
+2. **The linked ticket** (`Fixes #N` / `Part of #N`, or `closingIssuesReferences`) and its parent epic: `gh issue view <N> --comments`. Note the acceptance criteria and any requirement the ticket states. Also note what the *next* tickets in the epic need: a design that has to be migrated away from next sprint is a finding now.
+3. **Decision log.** Read the entries in [`docs/architecture-decisions.md`](../../../docs/architecture-decisions.md) that touch this area. A PR that re-opens a settled decision, or tries something listed under "won't try again", needs to say why.
+4. **Sibling PRs.** Open PRs touching the same files or adding migrations: `gh pr list --state open --search "<file or area>"`. Look for migration `V<N>` collisions with `main` and each other, `atlas.sum` conflicts, and required merge order.
+5. **Earlier review rounds** on this PR: inline comments (`gh api repos/{owner}/{repo}/pulls/$PR_NUMBER/comments`), reviews (`.../pulls/$PR_NUMBER/reviews`), and summary comments, which are issue comments (`gh api repos/{owner}/{repo}/issues/$PR_NUMBER/comments`). Do not repeat a point already raised. On a re-review, check each earlier point against the new head and say which are fixed.
+
+Write down two lines for yourself before going further:
+- **Goal:** what must be true when this ships (from the ticket, not from the PR).
+- **Approach:** what the PR does to get there.
+
+## Step 3: Identify Affected Services and Read Their CLAUDE.md
+
 ```bash
 gh pr diff $PR_NUMBER --name-only
 ```
-
-Map changed files to services:
 
 | Path prefix | Service | Type |
 |---|---|---|
@@ -68,76 +88,154 @@ Map changed files to services:
 | `collector-server/k8s-collector/app/` | k8s-collector-app | Python |
 | `llm/code-analysis/` | code-analysis | Go |
 | `llm/llm-server/` | llm-server | Go |
+| `llm/gateway/` | llm-gateway | Go |
 | `llm/rag-server/` | rag-server | Python |
 | `llm/benchmark/` | benchmark | Python |
 | `ml-k8s-server/` | ml-k8s-server | Python |
 | `auto-pilot/` | auto-pilot | Python |
 | `auto-pilot/sidecar/` | auto-pilot-sidecar | Python |
 | `notifications-server/` | notifications-server | Python |
+| `runbook-server/` | runbook-server | Go |
 | `app/` | frontend | TypeScript |
+| `api-server/migrations/` | migrations | SQL |
 | `deploy/` | infrastructure | Helm/K8s |
 
-## Step 3: Read Service-Specific CLAUDE.md
+For each affected service, read `$WORKTREE_DIR/{path prefix}CLAUDE.md` (the path prefix from the table, e.g. `llm/llm-server/CLAUDE.md`) if it exists. For `app/`, also check the relevant sections of `app/design-system.md`.
 
-For each affected service, use the Read tool to check if `$WORKTREE_DIR/{service}/CLAUDE.md` exists and read it for service-specific conventions.
+## Step 4: Read the Diff, Then Read Outward
 
-## Step 4: Read Changed Files and Diff
-
-Read each changed file from the worktree using the Read tool with paths like `$WORKTREE_DIR/path/to/changed/file`.
-
-Also fetch the full diff for line number context:
 ```bash
 cd $WORKTREE_DIR && gh pr diff $PR_NUMBER
 ```
 
-## Step 5: Review the Code
+Read each changed file in full from the worktree. Then read **outward** — design problems live at the edges of the diff, not inside it:
 
-Analyze the diff and the files you read against these dimensions:
+- For every changed function, type, field, action name, column, header, or prompt contract: grep its callers and consumers **outside** the diff (other services included — llm-server prompts, the UI, collectors). Grep the wire string, not just the Go/TS identifier.
+- For every new check or gate: find the other paths that reach the same effect without passing through it.
+- For every shared code path the PR touches: find the default / non-feature caller and trace what it now does.
 
-### Correctness
-- Logic errors, off-by-one, nil/null pointer risks
-- Missing error handling
-- Race conditions in concurrent code
-- Incorrect API contracts
+## Step 5: Review — Design First
 
-### Security
-- SQL injection, command injection, XSS
-- Hardcoded secrets or credentials
-- Insecure deserialization
-- Missing input validation at system boundaries
-- OWASP Top 10 concerns
+Work through these in order. Each later pass matters less than the one before it; do not let a long list of small findings crowd out one finding from 5.1–5.4.
 
-### Conventions & Style
-- **Go services:** Standard Go idioms, `slog` for logging, `testify` for tests
-- **Python services:** Black formatting (line-length 120), flake8, mypy compliance
-- **TypeScript:** oxlint + prettier compliance
-- PR title format: `type(scope): subject` (per `.github/semantic.yml`)
-  - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `revert`, `ci`, `infra`, `release`
-  - Scopes: `autopilot`, `ml`, `notifications`, `ui`, `tickets`, `relay`, `collector`, `deps`, `NB-\d+`
+**For PRs over ~100 non-test lines, or that touch shared types, API contracts, DB schema, or cross-service behavior**, spawn the `plan-alternative` agent in the background at the start of this step. Give it the Goal from Step 2 (not the PR's framing) and a one-paragraph summary of the PR's approach, and ask it to design the simplest thing that meets the goal in this codebase and say whether it materially dominates. Use its answer in 5.3; do not paste it verbatim.
 
-### Testing
-- Are new features covered by tests?
-- Are edge cases tested?
-- Do existing tests still pass with these changes?
+### 5.1 Premise — is the problem real, and does the fix reach it?
 
-### Architecture
-- Does this change follow existing patterns in the service?
-- Are there unnecessary abstractions or over-engineering?
-- Cross-service impact (shared types, API contracts, database schema)
+- Does the code path the fix lives on actually run for the case in the ticket? (A link that needs a field the producer never sets; a gate keyed on a signal that also matches the cases it should allow.)
+- Check against real data when you can: read-only queries on the dev database, or dev logs. If a PR is premised on "nobody answers these prompts", a count showing most of them are answered by a person within minutes sinks it. Quote the window and the counts. Never query customer systems.
+- Does the PR's evidence represent the default case? (A dev environment holding millions of rows of data that a default install never collects.)
 
-### Deployment
-- Database migration concerns
-- Breaking API changes
-- Environment variable additions
-- Helm chart / K8s config changes needed
+### 5.2 Root cause or symptom?
 
-## Step 6: Post Review Comments on the PR
+- Does the change remove the cause, or explain / retry / sweep around it? Typical symptom fixes: a prompt rule telling the model about a limitation the tool could stop imposing; a cleanup sweep for orphans a transaction would make impossible; a clamp that silently shortens a request, plus a message explaining the shortening.
+- If a cause-level fix exists, name it and its cost. If it is larger than this PR should be, say "as a follow-up" — but say it.
 
-For each finding, post a review comment directly on the PR using `gh`.
+### 5.3 Could this be simpler — or different?
 
-### Inline Comment Format (Gemini-style)
+- Estimate the smallest change that fully meets the goal, in lines. If the PR is several times that, say so with a size breakdown (part → lines → needed for the goal?).
+- Does an existing pattern in the repo already solve this shape? Cite it (file / migration / helper). Reuse beats a parallel mechanism.
+- When the design is questionable, give **2–3 options**, each with approach, what it takes, and cost, and say which you'd pick and why. Leave the call to the author when it is a genuine trade-off.
+- When the approach is right, still record what you considered and why it loses ("Simpler? An api-server check would be easier to wire but takes a different network path and could disagree with what the agent sees") in the Checked-and-fine fold. This tells the author the alternatives were weighed.
 
-Each inline comment MUST start with a **severity icon** on the first line, followed by a blank line, then the explanation. Use these exact icon URLs based on severity:
+### 5.4 Make the class impossible, not the instance
+
+- **Next call site.** If correctness depends on every caller remembering to do X (pass the acting user, apply the filter, call the guard), move X inside the callee so forgetting is impossible.
+- **Fail closed for future values.** A denylist lets every backend / provider / role added later through by default. Prefer an allowlist when the safe answer for "unknown" is "no".
+- **Guard where the effect happens.** A check at write time misses rows written by other paths and conditions that change later (a built-in added next release); a check at lookup / use time covers both.
+- **One source of truth.** A key format, name, or mapping built independently in two places will drift silently. Share it, or pin both sides with one fixture test.
+- **One meaning per name.** If a field's or function's meaning narrows ("needed for a direct write"), rename it or move it to where the meaning lives; if a helper now answers two questions, split it.
+- **Typed over open-ended.** An open header map or `map[string]any` that can overwrite auth headers or accept any shape is a future bug; a typed field is not.
+
+### 5.5 Boundaries and ownership
+
+- Is this the right service and layer? (Logic in the service that already owns the data and the network path; a webhook in the service that handles the rest of that flow.)
+- Does an EE / product concept leak into core code that ships in OSS? Core should expose a generic, concept-free hook with a no-op default; the concept lives behind it.
+- Is data stored with its owner? Feature policy columns added to an identity / auth table, or a feature's state added to a shared table, become a migration later. Check whether the epic's next ticket (per-user, per-tenant default, per-account) fits the chosen shape without another migration.
+
+### 5.6 Blast radius on existing flows
+
+- Trace every changed **shared** hunk for a caller that does not use the new feature. List exactly what changes for everyone — "almost all identical to main; two things change for everyone: …" is the useful form.
+- New failure modes on old paths: an extra DB read that can now fail a resume that worked before; stricter decoding of third-party input that turns a malformed optional field into "integration unavailable"; a wrapper that hides an interface the wrapped type implemented.
+- Behavior changes hidden behind refactors (error now classified differently → circuit breaker never opens; wrapped error overrides a tailored user message).
+
+### 5.7 Failure modes and state
+
+- **Atomicity:** a crash between two writes — what is left behind? One transaction usually removes the orphan *and* the code that cleans it up.
+- **Concurrency:** two writers at once (two pods, cron + manual run, patch + full rebuild). Is there a lock, a unique index, a compare-and-swap? Does a stale writer overwrite a newer one?
+- **Time:** TTLs and leases after a pod dies mid-request; retry windows that let every caller through at once; work that starves later tenants because each run restarts from the same first key.
+- **Stale state:** a flag or row that outlives its source (agent rolled back, key no longer sent, integration unlinked, a removed enum value still stored in rows).
+- **Silent failure:** an empty result that reads as "healthy" or "no errors in this window"; a refused path that logs nothing. Per repo convention, fail loudly.
+- **Flapping:** one broken sub-call marking a whole integration down for everyone, then up again a minute later.
+- **Fail-open UI / API:** unselecting the last option meaning "everything"; a missing value meaning "unrestricted".
+
+### 5.8 Rollout and operations
+
+- **Order:** service deployed before its migration (deploy order between migrations and services is not guaranteed; on-prem installs run migrations from a Helm hook). What does the new code do against the old schema for that window — fail every insert, lose usage, error every heartbeat? Ask for a tolerant fallback or a release-note line.
+- **Rollback:** does the feature flag / switch actually cover the risky write path, or only the harmless half?
+- **Data already present:** rows produced by an older version that the new code treats differently.
+- **Migrations:** `V<N>` collision with `main` or a sibling PR; `atlas.sum` regenerated with `new-migration.sh`; lock windows on large tables; `CONCURRENTLY` rules from the root CLAUDE.md.
+- **Cost at scale:** per-cron or per-request queries that grow with tenants × rows; unbounded time windows or result sizes; regexes over large text columns. Ask for an `EXPLAIN ANALYZE` on dev when a hot query changes.
+- **Observability:** can an operator tell it is broken without reading code — a log line on refusal, a metric, a visible status?
+
+### 5.9 Authorization and security semantics
+
+- For each new action: its roles in `app/src/lib/actions.yaml` **and** the server-side check. Can a narrower role (account / namespace admin, read-only) reach a tenant-wide effect? Is it in the non-grantable list when it should be?
+- Can a restricted caller reach the same effect another way: path traversal (`..`), case-variant JSON keys, model in body vs path, a different HTTP method, a different provider prefix?
+- Does a response return other accounts' or tenants' data to a lower role, even if the UI filters it?
+- Injection, secrets, input validation at boundaries — the usual list, applied to the new surface.
+
+### 5.10 Cross-service consumers and claims
+
+- Who else reads what changed — LLM prompts that describe it, the UI, another service's mapping by name? Do the UI and the AI agree on the same signal (one says Disconnected, the other says healthy)?
+- Prompts and comments that state facts the change makes false ("saved to these exact files" after a GC deletes them; "the data does not exist" when only the query window is limited).
+- **PR body vs code:** check each claim noted in Step 2. A ticket requirement dropped to make the fix easier is a finding; `Fixes #N` that only partly fixes it should be `Part of #N`.
+
+### 5.11 Scope
+
+- Unrelated fixes riding along (a different bug, a separate security change, another service). Ask to call them out in the body or split them — "one logical change = one PR".
+- A PR that is mostly tests and harness for a small behavior change is fine; say so if the size alarms nobody else.
+
+### 5.12 Line-level correctness, tests, conventions
+
+Only now: logic errors, nil risks, missing error handling, races inside a function, off-by-one, language idioms (Go `slog` / `testify`; Python black 120 / flake8; TS oxlint / prettier; `ds/*` primitives in `app/`).
+
+For tests, ask one question: **would this test fail on `main`?** A test that stays green when the bug is present (it asserts the eventual outcome, not that the first attempt succeeded) is not a regression guard. Suggest the assertion that would be.
+
+**Nits: at most three per review in total (inline and summary combined), labelled `Nit`, never blocking.** If you have more, drop the least useful.
+
+### Evidence rules (all passes)
+
+- Every blocking finding states a **concrete scenario**: input / state → what happens → why it's wrong. "Could be a problem" is not a finding.
+- Reproduce when cheap: a throwaway test or probe in the worktree, run against the PR head (and against `main` when the claim is "this changed"). Show input → result, ideally as a small `main` vs PR table. Never commit or push probe code.
+- When you did not reproduce, say "(from reading the code, not reproduced)".
+- Data claims carry their source and window ("<environment>, last <N> days: <count> of <total> have the label").
+- Don't restate bot reviewers' findings. If you agree or disagree with one, say so in one line.
+
+## Step 6: Decide the Verdict
+
+Pick one:
+
+| Verdict | When |
+|---|---|
+| **Approve** | Approach right, nothing blocking. Findings are non-blocking or follow-ups. |
+| **Revise** | Approach right, but specific things must change before merge. |
+| **Redesign** | Premise wrong, or a materially simpler / safer design exists that the PR should switch to. |
+
+The verdict is about the approach first. A PR with a wrong approach is **Redesign** even if every line is correct.
+
+## Step 7: Post the Review
+
+### Inline comments
+
+Post inline only for findings anchored to a specific line. Design findings spanning several files go in the summary, not scattered across inline comments.
+
+Each inline comment starts with a severity icon, then a blank line, then:
+1. **Label, then the claim.** Match the label to the icon: critical/high → `**Fix before merge.**`; medium → `**Should:**` (blocking) or `Non-blocking.`; low → `Non-blocking.` or `Nit:`. Only the blocking labels are bold.
+2. The scenario that breaks (input → outcome).
+3. The fix, with a ` ```suggestion ` block when it's a line replacement.
+
+Aim for five lines; a scenario that needs a short bullet list is fine. Never restate the code back to the author — GitHub renders it above your comment. If a finding needs more than ~8 lines, it belongs in the summary.
 
 | Severity | Icon markdown |
 |---|---|
@@ -147,30 +245,15 @@ Each inline comment MUST start with a **severity icon** on the first line, follo
 | Low / nit | `![low](https://www.gstatic.com/codereviewagent/low-priority.svg)` |
 | Security critical | `![security-high](https://www.gstatic.com/codereviewagent/security-high-priority.svg)` followed by `![high](https://www.gstatic.com/codereviewagent/high-priority.svg)` |
 | Security medium | `![security-medium](https://www.gstatic.com/codereviewagent/security-medium-priority.svg)` followed by `![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)` |
-| Positive / looks good | `> ✅ **Looks Good**` (blockquote format — the positive.svg URL is a 404) |
-
-**Comment structure:**
-1. Severity icon(s) on the first line
-2. Blank line
-3. Clear explanation of the issue or observation
-4. If applicable, a suggested fix with a code block (use ` ```suggestion ` fenced blocks for single-line replacements, or regular fenced blocks for multi-line examples)
-
-**Length: one claim, its evidence, and the fix — five lines or fewer** (see [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md)). Never restate the code you are commenting on back at the author; they wrote it and GitHub renders it directly above your comment. If a finding genuinely needs more than five lines, it is a design discussion — say that in one line and raise it in the summary comment instead.
 
 **Example inline comment body:**
 ```
-![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)
+![high](https://www.gstatic.com/codereviewagent/high-priority.svg)
 
-The dependency array for this `useEffect` is missing `mode`. This violates the `react-hooks/exhaustive-deps` rule and can lead to bugs from stale closures.
-
-` ` `suggestion
-  }, [value, mode]);
-` ` `
+**Fix before merge.** Save the tasks and the approval row in one transaction. A crash between the two leaves tasks parked with no approval — that is why the orphan sweep exists, and the sweep has an edge case of its own (line 264). With one transaction there are no orphans and the sweep can go.
 ```
 
-**IMPORTANT: Posting inline comments**
-
-Always use --input with a JSON payload to avoid gh api -f escaping the exclamation mark in image markdown:
+**Posting:** always use `--input` with a JSON payload, so `gh api -f` doesn't escape the `!` in image markdown:
 
 ```bash
 cd $WORKTREE_DIR && cat <<'JSONEOF' | gh api repos/{owner}/{repo}/pulls/$PR_NUMBER/comments --input -
@@ -183,91 +266,73 @@ cd $WORKTREE_DIR && cat <<'JSONEOF' | gh api repos/{owner}/{repo}/pulls/$PR_NUMB
 JSONEOF
 ```
 
-**Note:** Use `position` (the line offset within the diff hunk, starting from 1), NOT `line` + `subject_type`. Get the head commit SHA via: `gh pr view $PR_NUMBER --json headRefOid -q .headRefOid`
+Use `position` (the line offset within the diff hunk, starting from 1), NOT `line` + `subject_type`. Head SHA: `gh pr view $PR_NUMBER --json headRefOid -q .headRefOid`.
 
-### Summary Comment Format (Gemini-style)
+### Summary comment
 
-Post a single summary comment on the PR with this structure:
+One comment. Above the fold ≤ 200 words (per [`docs/writing-for-readers.md`](../../../docs/writing-for-readers.md)); everything else in folds. No changelog of the diff — the author knows what they changed.
 
-```bash
-cd $WORKTREE_DIR && gh pr comment $PR_NUMBER --body "$(cat <<'EOF'
-## Summary of Changes
+```markdown
+**{Approve | Revise | Redesign}.** {One or two sentences: is the approach right, and the single most important thing. E.g. "The design is right: plan, park, approve into a separate run. Two things to fix before merge."}
 
-{1-3 sentence summary of what this PR does and its motivation}
+**Before merge**
+1. **{Short title}.** {Scenario → fix, 1–3 lines.} ([inline]({link}))
+2. ...
 
-### Highlights
+**Non-blocking**
+1. {Short title — one line.}
 
-- **{Feature/Fix 1}**: {Brief description}
-- **{Feature/Fix 2}**: {Brief description}
-- ...
+**Could this be simpler?** {Only when a materially simpler or different design exists: options A/B with what each takes and its cost, and which you'd pick. Omit otherwise.}
 
 <details>
-<summary>Changelog</summary>
+<summary>Checked and fine</summary>
 
-{For each changed file, a bullet with the filename in bold and a sub-list of what changed}
-
-- **`path/to/file1.go`**
-    - {change description}
-    - {change description}
-- **`path/to/file2.ts`**
-    - {change description}
+- **{Area — authz / blast radius / rollout / perf / migration}:** {what you verified and how — "traced every changed core hunk for a non-feature session: identical to main"}
+- **Simpler?** {alternatives considered and why this approach wins}
 </details>
 
-### Review Summary
+<details>
+<summary>Follow-ups (not for this PR)</summary>
 
-**Services affected:** {list}
-**Risk level:** Low / Medium / High
-
-| Category | Finding | Severity |
-|---|---|---|
-| {Correctness/Security/Style/...} | {Brief description — file:line} | ![critical](https://www.gstatic.com/codereviewagent/critical.svg) |
-| {Category} | {Brief description — file:line} | ![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg) |
-| ... | ... | ... |
-
-### Checklist
-- [ ] Tests cover new/changed behavior
-- [ ] No hardcoded secrets
-- [ ] Error handling is appropriate
-- [ ] No breaking API changes (or documented)
-- [ ] Linting/formatting passes for affected services
-
----
-*Automated PR Review*
-EOF
-)"
+1. {Item — ask for a ticket under the epic so it doesn't drop}
+</details>
 ```
 
 **Rules:**
-- If there are no findings in a severity, omit those rows from the table.
-- Always reference file paths and line numbers in findings.
-- Use the severity icons consistently between inline comments and the summary table.
-- Keep the changelog in a `<details>` block to avoid overwhelming the summary.
-- Omit the Changelog section if there are more than 15 changed files (too verbose).
-
-## Step 7: Clean Up Worktree
-
-After the review is complete and all comments are posted, remove the worktree:
+- Non-blocking items go in a short numbered list labelled **Non-blocking**, after "Before merge" (or in its place on an Approve with nothing blocking). Never fold them into "Before merge".
+- "Checked and fine" is required, even on a clean Approve. It is what tells the author which risks were actually examined.
+- On a re-review, open with `Re-checked at <short sha>.` and say which earlier points are addressed and how you checked each.
+- If you got something wrong in an earlier round, correct it explicitly ("Correction from my side: …").
+- Mention merge order, migration renumbering, and deploy-order notes when they apply — they are easy to miss and costly after merge.
 
 ```bash
-REPO_ROOT=$(git rev-parse --show-toplevel)
-WORKTREE_DIR="${REPO_ROOT}-pr-review-${PR_NUMBER}"
-
-git -C "$REPO_ROOT" worktree remove "$WORKTREE_DIR" --force
+cd $WORKTREE_DIR && gh pr comment $PR_NUMBER --body-file - <<'EOF'
+<summary comment>
+EOF
 ```
 
-Verify cleanup:
+## Step 8: Clean Up Worktree
+
+After the review is posted, remove the worktree (this also removes any throwaway probe tests):
+
 ```bash
+# The shell may still be inside the review worktree, where --show-toplevel would return the worktree
+# itself; the first `worktree list` entry is always the main checkout.
+REPO_ROOT=$(git worktree list --porcelain | head -1 | cut -d' ' -f2-)
+WORKTREE_DIR="${REPO_ROOT}-pr-review-${PR_NUMBER}"
+
+cd "$REPO_ROOT"
+git -C "$REPO_ROOT" worktree remove "$WORKTREE_DIR" --force
 git -C "$REPO_ROOT" worktree list
 ```
 
-## Step 8: Output Summary
-
-Print a brief summary to the user:
+## Step 9: Output Summary
 
 ```
 Review posted on PR #{number}: {title}
-  - {N} inline comments posted
-  - {1} summary comment posted
+  Verdict: {Approve | Revise | Redesign} — {one-line reason}
+  - {N} before-merge items, {M} non-blocking, {K} follow-ups
+  - {N} inline comments + 1 summary comment
   - Worktree cleaned up
 
 PR URL: {url}

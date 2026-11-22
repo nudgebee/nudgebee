@@ -7,7 +7,7 @@ templates:
     alarm_type: "RELIABILITY"
     metric_type: "NATIVE"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Monitors the ratio of errors to successful Lambda invocations"
     configuration:
       namespace: "AWS/Lambda"
@@ -27,12 +27,12 @@ templates:
     alarm_type: "RELIABILITY"
     metric_type: "NATIVE"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Monitors invocation request throughput and throttling"
     configuration:
       namespace: "AWS/Lambda"
       metric_name: "Throttles"
-      statistic: "Average"
+      statistic: "Sum"
       period: 60
       evaluation_periods: 5
       datapoints_to_alarm: 5
@@ -45,7 +45,7 @@ templates:
     alarm_type: "RELIABILITY"
     metric_type: "CONDITIONAL"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Monitors when messages fail to reach the DLQ"
     configuration:
       namespace: "AWS/Lambda"
@@ -65,21 +65,3 @@ templates:
         logic: "AND"
       - field: "Meta.DeadLetterConfig.TargetArn"
         operator: "not_empty"
-
-  - name: "aws_lambda_concurrent_executions_alarm_missing"
-    alarm_type: "RELIABILITY"
-    metric_type: "NATIVE"
-    category: "Configuration"
-    severity: "Medium"
-    description: "Tracks the number of function instances running concurrently"
-    configuration:
-      namespace: "AWS/Lambda"
-      metric_name: "ConcurrentExecutions"
-      statistic: "Average"
-      period: 60
-      evaluation_periods: 5
-      datapoints_to_alarm: 5
-      comparison_operator: "GreaterThanThreshold"
-      treat_missing_data: "notBreaching"
-    threshold_rules:
-      default: 900.0

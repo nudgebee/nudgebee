@@ -37,6 +37,8 @@ func (s *Syncer) SyncOnce(ctx context.Context) (storage.ReconcileResult, error) 
 		return empty, nil
 	}
 
+	s.checkExtensions(ctx, bundle)
+
 	rows := make([]storage.SystemTemplateInput, len(bundle.Templates))
 	for i, t := range bundle.Templates {
 		rows[i] = t.toInput()

@@ -10,6 +10,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"nudgebee/llm/config"
+	"nudgebee/llm/tools"
 )
 
 func TestMetricQueryReturnedNoData(t *testing.T) {
@@ -198,7 +199,7 @@ func TestReAct3MetricEvidenceIsInsertedBeforeLastScratchpadClose(t *testing.T) {
 	assert.Contains(t, got[:lastClosingTag], evidence)
 }
 
-func TestReAct4MetricNoDataMarkerAndSummaryReachModel(t *testing.T) {
+func TestReAct4MetricNoDataMarkerReachesModelOnce(t *testing.T) {
 	planner := &NBReActPlanner4{}
 	steps := []NBAgentPlannerToolActionStep{{
 		Action: NBAgentPlannerToolAction{
@@ -224,11 +225,12 @@ func TestReAct4MetricNoDataMarkerAndSummaryReachModel(t *testing.T) {
 		}
 	}
 	assert.Contains(t, transcript.String(), metricNoDataTag)
-	assert.Contains(t, transcript.String(), "<metric_data_availability>")
+	assert.Equal(t, 1, strings.Count(transcript.String(), metricNoDataTag))
+	assert.NotContains(t, transcript.String(), "<metric_data_availability>")
 	assert.Contains(t, transcript.String(), "step E2")
 }
 
-func TestReAct4MetricEvidenceMergesIntoTrailingHumanMessage(t *testing.T) {
+func TestReAct4MetricEvidenceStaysInToolResponse(t *testing.T) {
 	planner := &NBReActPlanner4{
 		refinementData: []refinementRecord{{
 			Answer:    "An earlier conclusion.",
@@ -258,7 +260,7 @@ func TestReAct4MetricEvidenceMergesIntoTrailingHumanMessage(t *testing.T) {
 		}
 	}
 	assert.Contains(t, trailingHuman.String(), "Recheck the empty metric result.")
-	assert.Contains(t, trailingHuman.String(), metricNoDataTag)
+	assert.NotContains(t, trailingHuman.String(), metricNoDataTag)
 	for i := 1; i < len(messages); i++ {
 		assert.False(t, messages[i-1].Role == llms.ChatMessageTypeHuman && messages[i].Role == llms.ChatMessageTypeHuman)
 	}
@@ -300,12 +302,9 @@ func TestSummarizeConversationIncludesMetricNoDataEvidence(t *testing.T) {
 	}
 	assert.Contains(t, prompt.String(), "<metric_data_availability>")
 	assert.Contains(t, prompt.String(), "step E1")
-	assert.Contains(t, prompt.String(), "only conclude unavailable once metric or label discovery has confirmed the series does not exist")
+	assert.Contains(t, prompt.String(), "A valid filter or threshold with independently verified metric and scope can establish that nothing matched")
 }
 
 func metricDiscoveryNoDataResponse(query string) string {
-	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
-		" If this is for a named workload, call metrics_series_match (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
-		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call metrics_label_values with the label you are filtering on to see the values it actually takes, then filter on a real value."+
-		" Otherwise use metrics_list/search_metrics for keyword discovery.", query)
+	return tools.PrometheusNoDataMessage(query)
 }

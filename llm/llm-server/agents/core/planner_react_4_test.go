@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -504,14 +505,6 @@ func TestReAct4_ParseCompletion_SynthesizedIDsAreUniqueForIdenticalCalls(t *test
 	assert.Len(t, actions, 2)
 	assert.NotEqual(t, actions[0].ToolID, actions[1].ToolID,
 		"identical parallel calls with omitted ids must still get distinct synthesized ids")
-}
-
-func TestReAct4_ExtractNotebookContent(t *testing.T) {
-	assert.Equal(t, "hi", extractNotebookContent(`{"content":"hi"}`))
-	assert.Equal(t, "raw text", extractNotebookContent("raw text"))
-	assert.Equal(t, "", extractNotebookContent("   "))
-	// JSON without a content field falls back to the raw string.
-	assert.Equal(t, `{"other":"x"}`, extractNotebookContent(`{"other":"x"}`))
 }
 
 func TestReAct4_ExtractNotebookUpdate(t *testing.T) {
@@ -1175,10 +1168,10 @@ func TestReAct4_ClarificationContinuationInputRestoresOriginalTask(t *testing.T)
 
 type mockScopedAgent struct {
 	notebookOptOutAgent
-	scope CacheScope
+	scope llmruntime.CacheScope
 }
 
-func (m mockScopedAgent) GetCacheScope() CacheScope {
+func (m mockScopedAgent) GetCacheScope() llmruntime.CacheScope {
 	return m.scope
 }
 
@@ -1187,13 +1180,13 @@ func TestReAct4_ResolveAgentContext_HonorsDeclaredScope(t *testing.T) {
 	caps := toolcore.AgentCapabilities{AllowedTools: []string{"kubectl_execute"}}
 	planner := &NBReActPlanner4{
 		ctx:     ctx,
-		nbAgent: mockScopedAgent{scope: CacheScopeAccount},
+		nbAgent: mockScopedAgent{scope: llmruntime.CacheScopeAccount},
 		request: NBAgentRequest{Capabilities: caps},
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeAccount, agentCtx.GetContext().Value(ContextKeyCacheScope))
-	assert.Equal(t, caps, agentCtx.GetContext().Value(ContextKeyCapabilities))
+	assert.Equal(t, llmruntime.CacheScopeAccount, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
+	assert.Equal(t, caps, agentCtx.GetContext().Value(llmruntime.ContextKeyCapabilities))
 }
 
 func TestReAct4_ResolveAgentContext_DowngradesOnClientTools(t *testing.T) {
@@ -1201,12 +1194,12 @@ func TestReAct4_ResolveAgentContext_DowngradesOnClientTools(t *testing.T) {
 	clientTool := toolcore.NBToolCommand{Name: "custom_client_tool"}
 	planner := &NBReActPlanner4{
 		ctx:     ctx,
-		nbAgent: mockScopedAgent{scope: CacheScopeAccount},
+		nbAgent: mockScopedAgent{scope: llmruntime.CacheScopeAccount},
 		request: NBAgentRequest{ClientTools: []toolcore.NBToolCommand{clientTool}},
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
+	assert.Equal(t, llmruntime.CacheScopeConversation, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
 }
 
 func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
@@ -1218,7 +1211,7 @@ func TestReAct4_ResolveAgentContext_DefaultsWithoutCacheProvider(t *testing.T) {
 	}
 	agentCtx := planner.resolveAgentContext()
 	assert.NotNil(t, agentCtx)
-	assert.Equal(t, CacheScopeConversation, agentCtx.GetContext().Value(ContextKeyCacheScope))
+	assert.Equal(t, llmruntime.CacheScopeConversation, agentCtx.GetContext().Value(llmruntime.ContextKeyCacheScope))
 }
 
 // #39704 root cause: non-JSON args replayed as-is -> vLLM 400s every later request.
@@ -1262,3 +1255,24 @@ func TestReact4RefinementMessageAsksForSelfContainedAnswer(t *testing.T) {
 
 // nemotronFunctionCall is Nemotron Nano's leaked final answer on an S3 question (#38236).
 const nemotronFunctionCall = "<function=cloud_resource_search_execute> <parameter=service> S3 </parameter> </function> </tool_call>"
+
+// ReAct4 shows the same render-only no-progress notice as ReAct3 (#40199),
+// without writing it into the step's stored observation.
+func TestReAct4RenderObservation_NoProgressNotice(t *testing.T) {
+	r4 := &NBReActPlanner4{}
+	step := &NBAgentPlannerToolActionStep{
+		Action:                NBAgentPlannerToolAction{ToolID: "t1", Tool: "kubectl_execute"},
+		Observation:           "Error from server (Forbidden)",
+		NoProgressRepeatCount: 3,
+	}
+	got := r4.renderObservation(step, 0, 1, false, 4096)
+	assert.True(t, strings.HasPrefix(got, noProgressNotice("kubectl_execute", 3)), got)
+	assert.Contains(t, got, "Error from server (Forbidden)")
+	assert.Equal(t, "Error from server (Forbidden)", step.Observation)
+
+	step.IsDuplicateCacheHit = true
+	assert.NotContains(t, r4.renderObservation(step, 0, 1, false, 4096), "NO PROGRESS", "a cache hit repeats an old count")
+
+	step.IsDuplicateCacheHit, step.NoProgressRepeatCount = false, 0
+	assert.NotContains(t, r4.renderObservation(step, 0, 1, false, 4096), "NO PROGRESS")
+}

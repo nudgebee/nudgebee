@@ -3,9 +3,10 @@ native Slack blocks and posting them resiliently.
 
 Used by both the LLM investigation-reply pipeline (services/events.py) and
 the generic notification template (message_templates/slack/generic.py),
-which need the same Mermaid / nb-chart / GFM-table segment dispatch and the
-same divide-and-conquer retry on a Slack block-shape rejection, but differ in
-how they chunk leftover plain text and how they issue the actual send call.
+which need the same Mermaid / nb-chart / generic-code-fence / GFM-table
+segment dispatch and the same divide-and-conquer retry on a Slack block-shape
+rejection, but differ in how they chunk leftover plain text and how they
+issue the actual send call.
 """
 
 import json
@@ -16,6 +17,7 @@ from typing import Any, Callable, List, Optional, Sequence
 from slack_sdk.errors import SlackApiError
 
 from notifications_server.message_templates.blocks import BaseBlock, MarkdownBlock, SlackFileImageBlock
+from notifications_server.utils.code_fence import render_code_fence, split_code_fence_segments
 from notifications_server.utils.markdown_table import render_table, split_table_segments
 from notifications_server.utils.mermaid_chart import (
     ImageUploader,
@@ -119,14 +121,19 @@ def _render_non_mermaid_segment(
                 # mangle the output.
                 groups.append(to_slack_dicts([MarkdownBlock(text=f"```\n{nb_segment.text}\n```")]))
             continue
-        for table_segment in split_table_segments(nb_segment.text):
-            if table_segment.is_table:
-                table_blocks = render_table(table_segment.text, view_url)
-                if table_blocks:
-                    groups.append(to_slack_dicts(table_blocks))
-                    continue
-                # Didn't parse into rows - fall through as plain text.
-            groups.extend([block] for block in render_plain_text(table_segment.text))
+        for fence_segment in split_code_fence_segments(nb_segment.text):
+            if fence_segment.is_code_fence:
+                # Never handed to the chunkers below, which split by line/char length with no idea a fence is open.
+                groups.append(to_slack_dicts(render_code_fence(fence_segment.text)))
+                continue
+            for table_segment in split_table_segments(fence_segment.text):
+                if table_segment.is_table:
+                    table_blocks = render_table(table_segment.text, view_url)
+                    if table_blocks:
+                        groups.append(to_slack_dicts(table_blocks))
+                        continue
+                    # Didn't parse into rows - fall through as plain text.
+                groups.extend([block] for block in render_plain_text(table_segment.text))
     return groups
 
 

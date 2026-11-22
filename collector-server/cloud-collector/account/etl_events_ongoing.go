@@ -180,18 +180,61 @@ func listedScopesFromStatus(jobStatus map[string]any, now time.Time) map[string]
 	return listed
 }
 
+// reopenStoredAsMoment opens again the stored rows of firings that are on but
+// were stored as a moment that had already passed: a webhook delivery stores
+// every firing that way, and so does a push before a poll has listed its scope.
+// Left closed, the row would stay closed while the condition is on, because a
+// firing whose finding_id is stored is never stored again. Rows closed for any
+// other reason keep an end time different from their start and are not touched.
+func reopenStoredAsMoment(ctx *security.RequestContext, dbms *common.DatabaseManager, accountID string, events []providers.Event, stored map[string]bool) {
+	var ids []string
+	for _, event := range events {
+		if event.OngoingScope == "" || event.EventStatus != providers.EventStatusFiring {
+			continue
+		}
+		for _, id := range event.StoredFindingIDs() {
+			if stored[id] {
+				ids = append(ids, id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	result, err := dbms.Exec(
+		`UPDATE events SET status = 'FIRING', ends_at = NULL
+		 WHERE cloud_account_id = $1 AND finding_id = ANY($2)
+		 AND status IN ('FIRING', 'CLOSED') AND ends_at = starts_at`,
+		accountID, pq.Array(ids))
+	if err != nil {
+		ctx.GetLogger().Error("unable to reopen firings stored as a moment", "error", err, "accountId", accountID)
+		return
+	}
+	if n, err := result.RowsAffected(); err == nil && n > 0 {
+		ctx.GetLogger().Info("reopened firings stored as a moment", "accountId", accountID, "count", n)
+	}
+}
+
 // endFiringsNoLongerOn resolves the account's open firings that the poll's
-// snapshot shows to be over.
-func endFiringsNoLongerOn(ctx *security.RequestContext, dbms *common.DatabaseManager, accountID string, snapshot providers.OngoingSnapshot) error {
+// snapshot shows to be over. Firings stored under a finding_id in resolving are
+// left to the resolve the same poll returned for them, which knows when they
+// ended.
+func endFiringsNoLongerOn(ctx *security.RequestContext, dbms *common.DatabaseManager, accountID string, snapshot providers.OngoingSnapshot, resolving []string) error {
 	if len(snapshot.Scopes) == 0 {
 		return nil
+	}
+	// A nil slice binds as NULL, and finding_id != ALL(NULL) is never true: the
+	// read would return nothing and no firing would ever end.
+	if resolving == nil {
+		resolving = []string{}
 	}
 	var open []openFiring
 	err := dbms.QueryAndScan(&open,
 		`SELECT id::text, fingerprint, starts_at FROM events
 		 WHERE cloud_account_id = $1 AND status = 'FIRING' AND source = ANY($2)
-		 AND fingerprint LIKE $3 AND starts_at IS NOT NULL`,
-		accountID, pq.Array(snapshot.Sources), snapshot.FingerprintLike)
+		 AND fingerprint LIKE $3 AND starts_at IS NOT NULL
+		 AND finding_id != ALL($4)`,
+		accountID, pq.Array(snapshot.Sources), snapshot.FingerprintLike, pq.Array(resolving))
 	if err != nil {
 		return err
 	}

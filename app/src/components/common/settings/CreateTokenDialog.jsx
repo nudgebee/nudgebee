@@ -9,8 +9,9 @@ import { Callout } from '@ui/Callout';
 import { ds } from 'src/utils/colors';
 import dayjs from 'dayjs';
 import { getTokenScopeCatalog } from '@api1/roles';
+import { GATEWAY_METRIC_UNIT } from '@api1/gateway-config';
 import { carriesGatewayTraffic, carriesPlatformTraffic, KIND_LABELS } from './keyKinds';
-import { permKey, PermissionMatrix, ScopeTabs } from './PermissionMatrix';
+import { permKey, PermissionMatrix, ScopeTabs, requiresRead } from './PermissionMatrix';
 import { EMPTY_RESTRICTIONS, GATEWAY_ACCESS_OPTIONS, GatewayRestrictionPicker, hasRestrictions, toGatewayPolicy } from './GatewayRestrictions';
 
 const EXPIRY_OPTIONS = [
@@ -31,9 +32,12 @@ const isValidCustomDuration = (value) => {
   return value !== '' && Number.isFinite(n) && n > 0;
 };
 
-const METRICS = ['requests', 'tokens', 'cost'];
+const METRICS = ['requests', 'tokens', 'cost', 'concurrent'];
 const PERIODS = ['minute', 'hour', 'day', 'month'];
-const EMPTY_LIMIT = { metric: 'cost', period: 'month', value: '', model: '' };
+const EMPTY_LIMIT = { metric: 'cost', period: 'month', value: '', model: '', soft_pct: '' };
+
+// A blank warn level is none; otherwise a whole 1-99.
+export const softPctInvalid = (v) => v !== '' && v != null && !(Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 99);
 
 // `model` is free text for now: which catalog supplies the names is an open question in
 // the spec, so no dropdown is wired up here.
@@ -43,9 +47,34 @@ const LimitEditor = ({ limits, onChange }) => {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
       {limits.map((l, i) => (
         <Box key={i} sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-end' }}>
-          <Select label='Metric' value={l.metric} onChange={(v) => update(i, { metric: v })} options={METRICS} />
-          <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />
-          <Input size='sm' label='Value' type='number' value={l.value} onChange={(v) => update(i, { value: v })} />
+          <Select
+            label='Metric'
+            value={l.metric}
+            // concurrent caps requests in flight and has no window.
+            onChange={(v) =>
+              update(i, { metric: v, period: v === 'concurrent' ? '' : l.period || 'month', ...(v === 'concurrent' && { soft_pct: '' }) })
+            }
+            options={METRICS}
+          />
+          {l.metric !== 'concurrent' && <Select label='Per' value={l.period} onChange={(v) => update(i, { period: v })} options={PERIODS} />}
+          <Input
+            size='sm'
+            label={GATEWAY_METRIC_UNIT[l.metric] ? `Limit (${GATEWAY_METRIC_UNIT[l.metric]})` : 'Limit'}
+            type='number'
+            value={l.value}
+            onChange={(v) => update(i, { value: v })}
+          />
+          {l.metric !== 'concurrent' && (
+            <Input
+              size='sm'
+              label='Warn at (%)'
+              type='number'
+              placeholder='optional'
+              value={l.soft_pct ?? ''}
+              onChange={(v) => update(i, { soft_pct: v })}
+              error={softPctInvalid(l.soft_pct) ? '1 to 99' : undefined}
+            />
+          )}
           <Input size='sm' label='Model (blank = any)' value={l.model} onChange={(v) => update(i, { model: v })} />
           <Button tone='secondary' size='sm' onClick={() => onChange(limits.filter((_, n) => n !== i))}>
             Remove
@@ -87,14 +116,19 @@ const ScopePicker = ({ selected, onChange }) => {
 
   const toggle = (module, cls) => {
     const key = permKey(module, cls);
+    const entry = catalog?.find((e) => e.module === module);
     const next = new Set(selected);
     if (next.has(key)) {
       next.delete(key);
-      // Write requires Read — removing Read cascades to Write for the same module.
-      if (cls === 'Read') next.delete(permKey(module, 'Write'));
+      // Write and Execute require Read — removing Read cascades to them for the same module.
+      if (cls === 'Read') {
+        for (const c of ['Write', 'Execute']) {
+          if (requiresRead(entry, c)) next.delete(permKey(module, c));
+        }
+      }
     } else {
       next.add(key);
-      if (cls === 'Write') next.add(permKey(module, 'Read'));
+      if (requiresRead(entry, cls)) next.add(permKey(module, 'Read'));
     }
     onChange(next);
   };
@@ -188,7 +222,9 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
   const submit = async () => {
     // Held as a string while editing so the field can be cleared; coerced here because
     // the API takes a number.
-    const usable = limits.filter((l) => Number(l.value) > 0).map((l) => ({ ...l, value: Number(l.value) }));
+    const usable = limits
+      .filter((l) => Number(l.value) > 0)
+      .map(({ soft_pct, ...l }) => ({ ...l, value: Number(l.value), ...(soft_pct !== '' && soft_pct != null && { soft_pct: Number(soft_pct) }) }));
     // Omitted, not empty, for full access: the server stores no scopes as NULL.
     const restricted = carriesPlatformTraffic(kind) && access === 'restricted';
     setSubmitting(true);
@@ -210,7 +246,12 @@ const CreateTokenDialog = ({ open, defaultKind = 'platform', onClose, onCreate }
   // An unscoped all key could mint an unrestricted key and step around its gateway policy;
   // the server 400s on it (normalizeGatewayPolicy).
   const gatewayNeedsScopes = kind === 'all' && gatewayAccess === 'restricted' && access !== 'restricted';
-  const createDisabled = !name.trim() || (expiryDays === 'custom' && !customValid) || restrictedEmpty || gatewayNeedsScopes;
+  const createDisabled =
+    !name.trim() ||
+    (expiryDays === 'custom' && !customValid) ||
+    restrictedEmpty ||
+    gatewayNeedsScopes ||
+    (carriesGatewayTraffic(kind) && limits.some((l) => softPctInvalid(l.soft_pct)));
   const both = kind === 'all';
 
   return (

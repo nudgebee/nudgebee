@@ -18,6 +18,10 @@ const WIDTH_TOLERANCE_PX = 8;
 export async function landOnApp(page: Page): Promise<{ locators: GlobalChatLocators; cluster: string }> {
   const loginPage = new LoginPage(page);
   const selection = await loginPage.doFullLogin();
+  // Sign-in lands on /ask-nudgebee, where the launcher is not mounted, so move to Home first.
+  if (page.url().includes("/ask-nudgebee")) {
+    await page.goto("/home");
+  }
   const locators = new GlobalChatLocators(page);
   await expect(locators.launcher).toBeVisible({ timeout: 60000 });
   return { locators, cluster: selection.cluster };

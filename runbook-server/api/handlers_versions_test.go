@@ -33,6 +33,7 @@ func (s *VersionsRESTHandlerTestSuite) doRequestWithBody(method, path string, bo
 		reader = bytes.NewReader(raw)
 	}
 	req, _ := http.NewRequest(method, path, reader)
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("X-Tenant-ID", "test-tenant")
 	req.Header.Set("X-Account-ID", "test-account")
 	req.Header.Set("X-User-ID", "test-user")

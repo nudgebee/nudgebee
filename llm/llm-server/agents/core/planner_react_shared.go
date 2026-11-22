@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/google/uuid"
@@ -66,7 +68,7 @@ func metricQueryReturnedNoData(toolName, response string) bool {
 	response = strings.TrimSpace(response)
 	switch toolName {
 	case "prometheus_execute":
-		return response == "" || response == plannerToolNoData || strings.HasPrefix(strings.ToLower(response), "no data found for query:")
+		return response == "" || response == plannerToolNoData || strings.HasPrefix(strings.ToLower(response), strings.ToLower(tools.PrometheusNoDataPrefix))
 	case "datadog_metrics_execute":
 		if response == "" || response == plannerToolNoData {
 			return true
@@ -196,8 +198,8 @@ func metricNoDataSummary(steps []NBAgentPlannerToolActionStep) string {
 		if len(entries) < maxEntries {
 			entries = append(entries, fmt.Sprintf("- %s\n  Query: %s\n  Result: %s\n",
 				marker,
-				SmartTruncateToolOutput(query, maxQueryBytes),
-				SmartTruncateToolOutput(strings.TrimSpace(step.Observation), maxObservationBytes),
+				llmruntime.SmartTruncateToolOutput(query, maxQueryBytes),
+				llmruntime.SmartTruncateToolOutput(strings.TrimSpace(step.Observation), maxObservationBytes),
 			))
 		}
 	}
@@ -363,7 +365,7 @@ const finalIterationsWarning = 2
 // path, instead of the executor's fallback summary writing it unreviewed
 // (#40774). ok is false when the executor set no budget or more remains.
 func finalIterationsNote(ctx context.Context) (string, bool) {
-	left, set := ctx.Value(contextKeyIterationsLeft).(int)
+	left, set := ctx.Value(llmruntime.ContextKeyIterationsLeft).(int)
 	if !set || left > finalIterationsWarning {
 		return "", false
 	}

@@ -45,7 +45,7 @@ Run the appropriate fix command for each affected service. Execute independent s
 | ml-k8s-server | `make fmt` | `ml-k8s-server/` |
 | auto-pilot | `poetry run black .` | `auto-pilot/` |
 | auto-pilot-sidecar | `poetry run black .` | `auto-pilot/sidecar/` |
-| notifications-server | `poetry run black .` | `notifications-server/` |
+| notifications-server | `uv run black .` | `notifications-server/` |
 | frontend | `npm run lint2:fix` | `app/` |
 
 ## Step 3: Verify Fixes

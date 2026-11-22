@@ -161,6 +161,7 @@ def test_handle_selected_account_replies_session_expired_without_cached_entry(mo
 def test_incident_channel_session_event_routes_to_event_conversation_when_account_known(monkeypatch, events_svc):
     fingerprint = "fp-known"
     events_svc.cache.store[fingerprint] = {"account_id": "acc-1", "tenant_id": "tenant-1"}
+    monkeypatch.setattr(events_svc, "_thread_sender", lambda entry, email: "user-1")
 
     processed = []
     monkeypatch.setattr(

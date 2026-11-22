@@ -3,6 +3,7 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -13,7 +14,6 @@ import (
 // orchestrator. It exposes a lean, Kubernetes-CLI-first tool set —
 // kubectl_execute for standalone reads and mutations, shell_execute for
 // bounded read-only composition and local computation,
-// standard_diagnostic_grep for categorised grep bundles on saved log files,
 // helm_execute for chart operations, plus the metrics
 // and traces sub-agents for historical telemetry. Cloud provider
 // wrappers (aws/gcp/azure/datadog), NL-wrapper sub-agents (logs / events
@@ -89,8 +89,10 @@ func (a *K8sNativeAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *K8sNativeAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (a *K8sNativeAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (a *K8sNativeAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
+}
+func (a *K8sNativeAgent) GetCacheScope() llmruntime.CacheScope { return llmruntime.CacheScopeAccount }
 
 // IsWatchCapable returns false — watch_resource is deliberately NOT in the
 // K8s-native allowlist. Write patterns that need to block on completion use
@@ -103,16 +105,14 @@ func (a *K8sNativeAgent) IsWatchCapable() bool { return false }
 // contract change reviewed here.
 func (a *K8sNativeAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	names := []string{
-		tools.ToolExecuteKubectlCommand,  // cluster access: logs, events, resources, describe, exec, mutations
-		tools.ToolExecuteHelmCommand,     // chart install / status / history
-		tools.ToolStandardDiagnosticGrep, // categorised crash-bundle grep on saved log files
-		MetricsAgentName,                 // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
-		TracesAgentName,                  // in-cluster trace queries
-		NudgebeeAgentName,                // Nudgebee product docs and authorized configuration state
+		tools.ToolExecuteKubectlCommand, // cluster access: logs, events, resources, describe, exec, mutations
+		tools.ToolExecuteHelmCommand,    // chart install / status / history
+		MetricsAgentName,                // historical + custom metrics via PromQL wrapper (Prometheus discovery is non-trivial)
+		TracesAgentName,                 // in-cluster trace queries
+		NudgebeeAgentName,               // Nudgebee product docs and authorized configuration state
 	}
 	// shell_execute handles bounded read-only Kubernetes composition and local
-	// processing. standard_diagnostic_grep also depends on the underlying shell
-	// primitive.
+	// processing.
 	names = append(names, toolcore.ToolExecuteShellCommand)
 	if config.Config.LlmServerThinkToolEnabled {
 		names = append(names, tools.ThinkToolName)
@@ -143,13 +143,8 @@ func (a *K8sNativeAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
+	if nudge := workspaceNbctlNudgeIfEnabled(query.AccountId); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
-}
-
-// UpdateToolResponseForPlanner reuses the shared kubectl log condenser
-// (the native agent runs kubectl directly, so raw log output lands in its
-// own scratchpad and benefits from the same size-cap the direct
-// orchestrator uses).
-func (a *K8sNativeAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	return filterKubectlLogResponse(toolRequest, toolResponse)
 }

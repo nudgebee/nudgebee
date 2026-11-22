@@ -27,15 +27,6 @@ func logsUIRef(nbRequestContext core.NbToolContext, qb core.QueryBuilder) core.N
 	return core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "logs"}, "Query Logs", params, "")
 }
 
-func NewNBLogTool(accountId string) (*NBLogTool, error) {
-	logProvider, err := GetLogProvider(accountId)
-	if err != nil {
-		slog.Error("logs: unable to get log provider", "error", err)
-		return nil, err
-	}
-	return NewNBLogToolWithProvider(accountId, logProvider), nil
-}
-
 // NewNBLogToolWithProvider builds against an already-resolved provider, so labels
 // come from the same backend the caller is querying (may be a request override).
 func NewNBLogToolWithProvider(accountId string, logProvider services_server.ObservabilityProvider) *NBLogTool {
@@ -61,8 +52,9 @@ func (t *NBLogTool) GetType() core.NBToolType {
 
 func (t *NBLogTool) Description() string {
 	return `Executes a structured log query and returns matching log lines.
-		Input: a QueryBuilder JSON object whose "where" clause is built from field/operator conditions (use the special field "_body" to match message text); plus optional "index" (log index/pattern), "limit" (max lines), and a time window via start_time/end_time (RFC3339 or Unix) or range (e.g. '1h', '2d').
-		Example: {"where": {"_and": [{"kubernetes.namespace_name": {"_eq": "prod"}}, {"_body": {"_ilike": "error"}}]}, "limit": 200, "range": "1h"}`
+		Input: a QueryBuilder JSON object whose "where" clause is built from field/operator conditions; plus optional "index" (log index/pattern), "limit" (max lines), and a time window via start_time/end_time (RFC3339 or Unix) or range (e.g. '1h', '2d').
+		To match the text of a log line, use the log-text field named in the advertised field list (` + "`message`" + ` on a current backend) rather than guessing a name.
+		Example: {"where": {"_and": [{"kubernetes.namespace_name": {"_eq": "prod"}}, {"message": {"_ilike": "error"}}]}, "limit": 200, "range": "1h"}`
 }
 
 func (t *NBLogTool) QueryLabels() []string {
@@ -77,8 +69,22 @@ func (t *NBLogTool) QueryLabels() []string {
 			"provider", t.logProvider.Provider, "account_id", t.accountId)
 		return []string{}
 	}
+	// No label carrying a verdict means the backend reported nothing, so there is no
+	// real label to steer the model towards instead; keep the list as it arrived.
+	canonical := map[string]struct{}{}
+	for _, label := range logLabels.Labels {
+		if label.Kind != "" {
+			for _, f := range t.logProvider.Capabilities.CanonicalFields {
+				canonical[strings.TrimSpace(f)] = struct{}{}
+			}
+			break
+		}
+	}
 	labels := make([]string, 0, len(logLabels.Labels))
 	for _, label := range logLabels.Labels {
+		if unresolvedCanonicalLabel(label, canonical, t.logProvider.Capabilities.LabelMappings) {
+			continue
+		}
 		if IsESLogProvider(t.logProvider.Provider) {
 			if skipESLabel(label.Label) {
 				continue
@@ -91,7 +97,24 @@ func (t *NBLogTool) QueryLabels() []string {
 		labels = capESLabels(labels)
 	}
 	if len(labels) > 0 {
-		t.labels = append(labels, "_body")
+		// `_body` is this tool's own invention: nothing in any backend is called that.
+		// It existed because services-server never said which fields it would resolve,
+		// so the only way to give the model a log-text field was to make one up — and
+		// it then reached most providers as a field that does not exist, matching
+		// nothing with a success status (#39573).
+		//
+		// services-server now advertises that vocabulary. When it names a log-text
+		// field, use it and stop inventing. The fallback is kept deliberately rather
+		// than removed: on-prem installs pin chart versions and the app, api-server
+		// and llm-server images are resolved independently, so this build can and will
+		// run against a services-server that predates the capability.
+		t.labels = labels
+		if textField, ok := logTextFieldFor(t.logProvider.Capabilities.CanonicalFields); ok {
+			// services-server unions the canonical vocabulary into its label list as
+			// of #39608, so on a current backend `message` arrives here already —
+			// appending it unconditionally would advertise the same field twice.
+			t.labels = appendLogTextField(labels, textField)
+		}
 	}
 	slog.Info("logs: QueryLabels complete", "account_id", t.accountId, "provider", t.logProvider.Provider, "raw_labels_count", len(logLabels.Labels), "final_labels_count", len(t.labels), "final_labels", t.labels)
 	return t.labels
@@ -268,4 +291,84 @@ func (t *NBLogTool) InputSchema() core.ToolSchema {
 		},
 		Required: []string{"command"},
 	}
+}
+
+// LegacyLogTextToken is the field name this service invented for the log line's
+// text before services-server advertised a vocabulary (#39573). No backend has a
+// field called this: services-server special-cases it for Loki and Elasticsearch,
+// and it matches nothing everywhere else.
+//
+// It survives as the fallback for one case only — a services-server that predates
+// `canonical_fields`. Chart versions are pinned per install and each service's
+// image is resolved independently, so that pairing is normal, not hypothetical.
+const LegacyLogTextToken = "_body"
+
+// CanonicalLogTextFieldName is the name services-server uses for the log line's
+// text. A constant rather than something inferred, because the point of #39573 is
+// that one name is agreed rather than guessed again at each layer.
+const CanonicalLogTextFieldName = "message"
+
+// logTextFieldFor names the field a canonical where clause should use to match the
+// text of a log line, and says whether to advertise one at all.
+//
+// Three cases, and the third is the reason this is not a one-liner:
+//
+//   - the backend advertises `message` — use it, which is the whole point of #39573;
+//   - the backend advertises nothing — it predates `canonical_fields`, so fall back
+//     to the invented token this service has always sent;
+//   - the backend advertises a vocabulary that omits `message` — services-server
+//     subtracts what a source declares it cannot resolve (GetIgnoredQueryRequestKeys),
+//     so this is the backend saying it has no text field. Advertising one anyway
+//     would hand the model a field that matches nothing and returns success, which
+//     is exactly the failure this change removes.
+func logTextFieldFor(canonicalFields []string) (string, bool) {
+	if len(canonicalFields) == 0 {
+		return LegacyLogTextToken, true
+	}
+	for _, f := range canonicalFields {
+		if strings.TrimSpace(f) == CanonicalLogTextFieldName {
+			return CanonicalLogTextFieldName, true
+		}
+	}
+	return "", false
+}
+
+// unresolvedCanonicalLabel reports whether a label is a canonical name that
+// services-server says nothing on the backend stands behind: it is not renamed, the
+// backend did not report it (Kind "field"), and there is no reported field it
+// translates to. services-server lists every canonical name a caller may filter on,
+// not only those this backend resolves, so such a name reaches the backend as-is and
+// matches nothing with a success status — on Loki `node` and `level` return 0 rows
+// where `node_name` returns the data.
+//
+// Discovered labels are never dropped. Nothing is dropped when the canonical set is
+// empty: a services-server that predates `canonical_fields`, or a response with no
+// verdict at all. The log-text field is re-added after this by appendLogTextField, so
+// it is unaffected.
+func unresolvedCanonicalLabel(label core.ObservabilityLogLabel, canonical map[string]struct{}, labelMappings map[string]string) bool {
+	// Both sides of the comparison are trimmed: the canonical set is trimmed as it
+	// crosses the service boundary, so a padded label name would otherwise miss it and
+	// be advertised as resolvable when it is not.
+	name := strings.TrimSpace(label.Label)
+	if _, ok := canonical[name]; !ok {
+		return false
+	}
+	if strings.TrimSpace(labelMappings[name]) != "" {
+		return false
+	}
+	return label.Kind != "field" && label.Field == ""
+}
+
+// appendLogTextField adds the log-text field to the advertised label list unless
+// the backend's own label list already carries it.
+//
+// The append happens after the Elasticsearch cap (capESLabels), deliberately: the
+// one field the model always needs must not be the one the cap drops.
+func appendLogTextField(labels []string, field string) []string {
+	for _, l := range labels {
+		if l == field {
+			return labels
+		}
+	}
+	return append(labels, field)
 }

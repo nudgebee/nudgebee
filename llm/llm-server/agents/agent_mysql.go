@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -153,6 +154,6 @@ func (l MySQLDebugAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
-func (l MySQLDebugAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (l MySQLDebugAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }

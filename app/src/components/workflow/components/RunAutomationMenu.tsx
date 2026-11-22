@@ -43,6 +43,16 @@ interface RunAutomationMenuProps {
   // caller can refresh any event-level status it renders (e.g. the investigation
   // page's "Workflow Resolution Status" button) without a manual page refresh.
   onTriggered?: () => void;
+  // Changing it refetches the automation list (e.g. after an AI build saved a new one).
+  refreshKey?: number;
+  // Opens the run dialog for this automation; a new `key` asks again for the same one.
+  runRequest?: { workflow: WorkflowListItem; key: number } | null;
+  // Called once the run dialog has opened for `runRequest`, so the caller can clear it.
+  onRunRequestHandled?: () => void;
+  // Opens the automation menu each time it changes, for a caller whose own menu item stands in for the trigger
+  // (the remediation loop's "More actions"); with hideTrigger the button is kept out of sight, as the menu's anchor.
+  openRequest?: number;
+  hideTrigger?: boolean;
 }
 
 // Poll the triggered-executions list every 5s while the dropdown is open. Closed
@@ -173,6 +183,11 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   canRun = false,
   onCreateAutomation,
   onTriggered,
+  refreshKey = 0,
+  runRequest,
+  onRunRequestHandled,
+  openRequest = 0,
+  hideTrigger = false,
 }) => {
   const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
@@ -241,6 +256,17 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     if (!menuOpenRef.current || !isMountedRef.current) return;
     pollTimeoutRef.current = setTimeout(pollExecutions, EXECUTIONS_POLL_INTERVAL_MS);
   }, [fetchExecutions]);
+
+  // A new openRequest opens the menu as a click on its trigger would, so it anchors and polls the same way. Only a
+  // request made while the menu is mounted: the one it mounts with was already answered (the menu mounts again when
+  // the person comes back to its tab, and must not open by itself then).
+  const triggerBoxRef = useRef<HTMLDivElement | null>(null);
+  const answeredOpenRequestRef = useRef(openRequest);
+  useEffect(() => {
+    if (!openRequest || openRequest === answeredOpenRequestRef.current) return;
+    answeredOpenRequestRef.current = openRequest;
+    triggerBoxRef.current?.querySelector('button')?.click();
+  }, [openRequest]);
 
   const handleMenuOpen = useCallback(() => {
     menuOpenRef.current = true;
@@ -323,6 +349,24 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     lastFetchedAccountIdRef.current = accountId;
     fetchWorkflows();
   }, [canView, canRun, accountId, fetchWorkflows]);
+
+  // The mount effect above loads the list once per account; a new refreshKey loads it again.
+  const lastRefreshKeyRef = useRef(refreshKey);
+  useEffect(() => {
+    if (lastRefreshKeyRef.current === refreshKey) return;
+    lastRefreshKeyRef.current = refreshKey;
+    if (!canView && !canRun) return;
+    fetchWorkflows();
+  }, [refreshKey, canView, canRun, fetchWorkflows]);
+
+  const lastRunRequestKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!runRequest?.workflow?.id || !canRun || lastRunRequestKeyRef.current === runRequest.key) return;
+    lastRunRequestKeyRef.current = runRequest.key;
+    setSelectedWorkflow(runRequest.workflow);
+    setModalOpen(true);
+    onRunRequestHandled?.();
+  }, [runRequest, canRun, onRunRequestHandled]);
 
   const handleSelect = (workflow: WorkflowListItem) => {
     setSelectedWorkflow(workflow);
@@ -522,7 +566,11 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
 
   return (
     <>
-      <Box sx={{ mr: 'var(--ds-space-2)' }}>
+      <Box
+        ref={triggerBoxRef}
+        sx={hideTrigger ? { position: 'relative', width: 0, height: 0, overflow: 'hidden' } : { mr: 'var(--ds-space-2)' }}
+        aria-hidden={hideTrigger || undefined}
+      >
         <DropdownMenu
           align='end'
           side='bottom'

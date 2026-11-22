@@ -1,0 +1,812 @@
+package analytics
+
+import (
+	"database/sql"
+	"fmt"
+	"math"
+	"sort"
+	"strings"
+	"time"
+
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/security"
+)
+
+type ConversationUsageMetricsRequest struct {
+	ConversationId string `json:"conversation_id" validate:"required"` // Note: This is actually the session_id
+	AccountId      string `json:"account_id" mapstructure:"required" validate:"required"`
+	UserId         string `json:"user_id" mapstructure:"required"`
+}
+
+type ConversationUsageMetricsResponse struct {
+	Conversation ConversationMetrics `json:"conversation"`
+}
+
+type ConversationMetrics struct {
+	ConversationId         string           `json:"conversation_id"`
+	Messages               []MessageMetrics `json:"messages"`
+	TotalCostUsd           float64          `json:"total_cost_usd"`
+	TotalInputTokens       int              `json:"total_input_tokens"`
+	TotalOutputTokens      int              `json:"total_output_tokens"`
+	TotalCachedInputTokens int              `json:"total_cached_input_tokens"`
+	// Reasoning tokens, billed at the output rate on top of TotalOutputTokens.
+	TotalThinkingTokens         int              `json:"total_thinking_tokens"`
+	TotalCacheHitRatePercentage *float64         `json:"total_cache_hit_rate_percentage,omitempty"`
+	ModelUsage                  []ModelUsageStat `json:"model_usage"`
+	// Calls whose model has no Model Pricing entry, so TotalCostUsd leaves them out.
+	TotalUnpricedRequests  int              `json:"total_unpriced_requests"`
+	CacheSavings           CacheSavingsInfo `json:"cache_savings"`
+	SuccessRatePercentage  *float64         `json:"success_rate_percentage,omitempty"`
+	TotalRequests          int              `json:"total_requests"`
+	SuccessfulRequests     int              `json:"successful_requests"`
+	FailedRequests         int              `json:"failed_requests"`
+	TotalToolCalls         int              `json:"total_tool_calls"`
+	SuccessfulToolCalls    int              `json:"successful_tool_calls"`
+	TotalLatencySeconds    *float64         `json:"total_latency_seconds,omitempty"`
+	AverageLatencySeconds  *float64         `json:"average_latency_seconds,omitempty"`
+	WallTimeSeconds        *float64         `json:"wall_time_seconds,omitempty"`
+	AgentActiveTimeSeconds *float64         `json:"agent_active_time_seconds,omitempty"`
+	ToolTimeSeconds        *float64         `json:"tool_time_seconds,omitempty"`
+	ApiTimeSeconds         *float64         `json:"api_time_seconds,omitempty"`
+	ApiTimePercentage      *float64         `json:"api_time_percentage,omitempty"`
+	ToolTimePercentage     *float64         `json:"tool_time_percentage,omitempty"`
+	// Streaming-latency averages over calls that reported them. Nil when no call
+	// streamed. AvgTtftMs is how long until the first token appeared; AvgItlMs is
+	// the per-token gap after that — together they separate "slow to start" from
+	// "slow to generate", which total latency alone cannot.
+	AvgTtftMs *float64 `json:"avg_ttft_ms,omitempty"`
+	AvgItlMs  *float64 `json:"avg_itl_ms,omitempty"`
+	// ReasoningByToolCall maps a tool_call_id to the reasoning (LLM thinking) its
+	// owning agent spent across the conversation, so the UI can show, in a tool's
+	// details, how long that tool's agent reasoned. Keyed by tool_call_id because
+	// UI tool-call tasks carry only that id (no agent_id/message_id).
+	ReasoningByToolCall map[string]ToolReasoning `json:"reasoning_by_tool_call,omitempty"`
+}
+
+// ToolReasoning is an agent's reasoning total, attributed to each of its tool calls.
+// Sourced from llm_conversation_token_usage (no new storage). The same agent total
+// is repeated for each of that agent's tool calls — it is an agent-level figure
+// shown per tool, not a per-tool-call split (token_usage has no tool_call_id).
+type ToolReasoning struct {
+	AgentName        string  `json:"agent_name"`
+	ReasoningSeconds float64 `json:"reasoning_seconds"`
+	ThinkingTokens   int     `json:"thinking_tokens"`
+	Calls            int     `json:"calls"`
+}
+
+type ModelUsageStat struct {
+	ModelProvider          string   `json:"model_provider"`
+	ModelName              string   `json:"model_name"`
+	Requests               int      `json:"requests"`
+	InputTokens            int      `json:"input_tokens"`
+	OutputTokens           int      `json:"output_tokens"`
+	CachedInputTokens      int      `json:"cached_input_tokens"`
+	CacheCreationTokens    int      `json:"cache_creation_tokens"`
+	ThinkingTokens         int      `json:"thinking_tokens"`
+	CacheHitRatePercentage *float64 `json:"cache_hit_rate_percentage,omitempty"`
+	CostUsd                float64  `json:"cost_usd"`
+	SuccessRatePercentage  *float64 `json:"success_rate_percentage,omitempty"`
+	SuccessfulRequests     int      `json:"successful_requests"`
+	FailedRequests         int      `json:"failed_requests"`
+	// Calls that spent tokens with no Model Pricing entry — CostUsd excludes them.
+	UnpricedRequests int `json:"unpriced_requests"`
+}
+
+type CacheSavingsInfo struct {
+	TotalCachedTokens            int      `json:"total_cached_tokens"`
+	CacheHitRatePercentage       *float64 `json:"cache_hit_rate_percentage,omitempty"`
+	EstimatedCostWithoutCacheUsd float64  `json:"estimated_cost_without_cache_usd"`
+	ActualCostUsd                float64  `json:"actual_cost_usd"`
+	CostSavingsUsd               float64  `json:"cost_savings_usd"`
+	TokensSaved                  int      `json:"tokens_saved"`
+}
+
+type MessageMetrics struct {
+	MessageId                     string         `json:"message_id"`
+	Agents                        []AgentMetrics `json:"agents"`
+	MessageCostUsd                float64        `json:"message_cost_usd"`
+	MessageInputTokens            int            `json:"message_input_tokens"`
+	MessageOutputTokens           int            `json:"message_output_tokens"`
+	MessageCachedInputTokens      int            `json:"message_cached_input_tokens"`
+	MessageThinkingTokens         int            `json:"message_thinking_tokens"`
+	MessageCacheHitRatePercentage *float64       `json:"message_cache_hit_rate_percentage,omitempty"`
+	// MessageCacheSavings is the same calculation as the conversation's
+	// cache_savings, over this message's calls. Nil when nothing was cached.
+	MessageCacheSavings *CacheSavingsInfo `json:"message_cache_savings,omitempty"`
+}
+
+type AgentMetrics struct {
+	AgentName              string          `json:"agent_name"`
+	InputTokens            int             `json:"input_tokens"`
+	OutputTokens           int             `json:"output_tokens"`
+	CachedInputTokens      int             `json:"cached_input_tokens"`
+	ThinkingTokens         int             `json:"thinking_tokens"`
+	CacheHitRatePercentage sql.NullFloat64 `json:"cache_hit_rate_percentage"`
+	CostUsd                float64         `json:"cost_usd"`
+	ModelProviderName      sql.NullString  `json:"model_provider_name"`
+	ModelName              sql.NullString  `json:"model_name"`
+	ModelTier              string          `json:"model_tier"`
+	LLMConfigSource        string          `json:"llm_config_source"`
+	LLMConfigName          string          `json:"llm_config_name"`
+	// True when LLMConfigName names an actual configured slot, false when it
+	// describes the resolution layer instead (nothing was pinned). The UI must
+	// not present the second kind as a config name.
+	LLMConfigIsSlot  bool `json:"llm_config_is_slot"`
+	Requests         int  `json:"requests"`
+	FailedRequests   int  `json:"failed_requests"`
+	UnpricedRequests int  `json:"unpriced_requests"`
+
+	// promptTokens is the hit-rate denominator for the message total; not sent.
+	promptTokens int
+}
+
+func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request ConversationUsageMetricsRequest) (ConversationUsageMetricsResponse, error) {
+	// Honor a dynamic-RBAC ai_conversations:Read grant, not just built-in account
+	// roles — this per-conversation usage view is part of the conversation read
+	// surface (classifier maps ai_get_conversation_usage_metrics → ai_conversations).
+	if !ctx.GetSecurityContext().CanReadAccountData(request.AccountId, "ai_conversations") {
+		return ConversationUsageMetricsResponse{}, fmt.Errorf("HandleConversationUsageMetricsApi: forbidden account_id")
+	}
+
+	// All metrics queries key off session_id, but callers may pass a conversation id
+	// (e.g. workflow/autopilot conversations opened by conversation_id, whose session_id is
+	// a wf__… id). Normalize once here so every downstream lookup resolves either way.
+	request.ConversationId = GetStore().ResolveSessionId(request.ConversationId)
+
+	// Get aggregated token usage (for backward compatibility)
+	agents, err := GetStore().GetConversationTokenUsage(request.ConversationId, request.AccountId)
+	if err != nil {
+		return ConversationUsageMetricsResponse{}, err
+	}
+
+	// Get detailed token usage records for new metrics
+	detailedRecords, err := GetStore().GetConversationTokenUsageDetailed(request.ConversationId, request.AccountId)
+	if err != nil {
+		return ConversationUsageMetricsResponse{}, err
+	}
+
+	// Get tool calls statistics
+	toolStats, err := GetStore().GetConversationToolCallsStats(request.ConversationId, request.AccountId)
+	if err != nil {
+		// Log error but don't fail - tool stats are optional
+		toolStats = ToolCallsStats{}
+	}
+
+	// Get time breakdown
+	timeBreakdown, err := GetStore().GetConversationTimeBreakdown(request.ConversationId, request.AccountId)
+	if err != nil {
+		// Log error but don't fail - time breakdown is optional
+		timeBreakdown = TimeBreakdown{}
+	}
+
+	// Organize data into hierarchical structure
+	messageMap := make(map[string][]AgentMetrics)
+	conversationId := ""
+	totalCost := 0.0
+	totalUnpriced := 0
+	totalInputTokens := 0
+	totalOutputTokens := 0
+	totalCachedInputTokens := 0
+	totalPromptTokens := 0
+	totalThinkingTokens := 0
+
+	for _, agent := range agents {
+		if conversationId == "" {
+			conversationId = agent.ConversationId
+		}
+
+		agentMetric := AgentMetrics{
+			AgentName:              agent.AgentName,
+			InputTokens:            agent.InputTokens,
+			OutputTokens:           agent.OutputTokens,
+			CachedInputTokens:      agent.CachedInputTokens,
+			ThinkingTokens:         agent.ThinkingTokens,
+			CacheHitRatePercentage: agent.CacheHitRate,
+			CostUsd:                agent.Cost,
+			promptTokens:           agent.PromptTokens,
+			ModelProviderName:      agent.ModelProviderName,
+			ModelName:              agent.ModelName,
+			ModelTier:              agent.ModelTier,
+			Requests:               agent.Requests,
+			FailedRequests:         agent.FailedRequests,
+			UnpricedRequests:       agent.UnpricedRequests,
+			LLMConfigSource:        agent.LLMConfigSource,
+		}
+
+		messageMap[agent.MessageId] = append(messageMap[agent.MessageId], agentMetric)
+		totalCost += agentMetric.CostUsd
+		totalUnpriced += agent.UnpricedRequests
+		totalInputTokens += agent.InputTokens
+		totalOutputTokens += agent.OutputTokens
+		totalCachedInputTokens += agent.CachedInputTokens
+		totalPromptTokens += agent.PromptTokens
+		totalThinkingTokens += agent.ThinkingTokens
+	}
+
+	// Calculate conversation-level cache hit rate
+	var totalCacheHitRate *float64
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedInputTokens) / float64(totalPromptTokens)) * 100
+		totalCacheHitRate = &rate
+	}
+
+	// Time-split each agent's reasoning (LLM thinking) calls onto the specific tool
+	// call they produced: in a ReAct loop the agent reasons, then calls a tool, so a
+	// reasoning call is attributed to the first of that agent's tool calls that starts
+	// at/after it. This makes a tool's details show only the reasoning that led to that
+	// call (slices sum to the agent total) instead of repeating the agent total on each.
+	reasoningByToolCall := make(map[string]ToolReasoning)
+	toolAgents, taErr := GetStore().GetConversationToolCallAgents(request.ConversationId, request.AccountId)
+	if taErr != nil {
+		// Non-fatal: the response is still correct without reasoning attribution.
+		// But it must be visible — this query failed on every call for as long as
+		// it has existed and the swallowed error is why nobody noticed.
+		getLogger(ctx).Error("conversation-usage: failed to load tool call agents",
+			"error", taErr, "conversation_id", request.ConversationId)
+	} else {
+		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
+		toolsByAgent := make(map[string][]ToolCallAgent)
+		for _, ta := range toolAgents {
+			toolsByAgent[ta.AgentID] = append(toolsByAgent[ta.AgentID], ta)
+		}
+		// detailedRecords are chronological too; a per-agent cursor walks that agent's
+		// tool calls forward as we process its reasoning calls in time order.
+		cursor := make(map[string]int)
+		for _, r := range detailedRecords {
+			if !r.AgentID.Valid {
+				continue
+			}
+			tools := toolsByAgent[r.AgentID.String]
+			i := cursor[r.AgentID.String]
+			for i < len(tools) && tools[i].CreatedAt.Before(r.CreatedAt) {
+				i++
+			}
+			cursor[r.AgentID.String] = i
+			if i >= len(tools) {
+				// Reasoning after the agent's last tool call — final answer synthesis,
+				// not attributable to a tool. Skip.
+				continue
+			}
+			tc := reasoningByToolCall[tools[i].ToolCallID]
+			tc.AgentName = r.AgentName
+			if r.LatencySeconds.Valid {
+				tc.ReasoningSeconds += r.LatencySeconds.Float64
+			}
+			tc.ThinkingTokens += r.ThinkingTokens
+			tc.Calls++
+			reasoningByToolCall[tools[i].ToolCallID] = tc
+		}
+	}
+
+	// Resolve source ids to readable config names once, then stamp them on the
+	// agents. Done here rather than per-agent so the integration list is fetched
+	// at most once for the whole conversation.
+	sourceSet := make(map[string]struct{})
+	for _, agentsList := range messageMap {
+		for _, a := range agentsList {
+			if a.LLMConfigSource != "" {
+				sourceSet[a.LLMConfigSource] = struct{}{}
+			}
+		}
+	}
+	if len(sourceSet) > 0 {
+		names := configSourceDisplayNames(ctx, request.AccountId, sourceSet)
+		for msgId, agentsList := range messageMap {
+			for i := range agentsList {
+				if n, ok := names[agentsList[i].LLMConfigSource]; ok {
+					agentsList[i].LLMConfigName = n
+					_, isLayer := resolutionLayerLabels[agentsList[i].LLMConfigSource]
+					agentsList[i].LLMConfigIsSlot = !isLayer
+				}
+			}
+			messageMap[msgId] = agentsList
+		}
+	}
+
+	// Build messages array
+	messages := []MessageMetrics{}
+	for messageId, agentsList := range messageMap {
+		messageCost := 0.0
+		messageInputTokens := 0
+		messageOutputTokens := 0
+		messageCachedInputTokens := 0
+		messagePromptTokens := 0
+		messageThinkingTokens := 0
+
+		for _, agent := range agentsList {
+			messageCost += agent.CostUsd
+			messageInputTokens += agent.InputTokens
+			messageOutputTokens += agent.OutputTokens
+			messageCachedInputTokens += agent.CachedInputTokens
+			messagePromptTokens += agent.promptTokens
+			messageThinkingTokens += agent.ThinkingTokens
+		}
+
+		// Calculate message-level cache hit rate
+		var messageCacheHitRate *float64
+		if messagePromptTokens > 0 {
+			rate := (float64(messageCachedInputTokens) / float64(messagePromptTokens)) * 100
+			messageCacheHitRate = &rate
+		}
+
+		messages = append(messages, MessageMetrics{
+			MessageId:                     messageId,
+			Agents:                        agentsList,
+			MessageCostUsd:                messageCost,
+			MessageInputTokens:            messageInputTokens,
+			MessageOutputTokens:           messageOutputTokens,
+			MessageCachedInputTokens:      messageCachedInputTokens,
+			MessageThinkingTokens:         messageThinkingTokens,
+			MessageCacheHitRatePercentage: messageCacheHitRate,
+		})
+	}
+
+	// Calculate model usage statistics
+	modelUsage := calculateModelUsageStats(detailedRecords, llmruntime.PricingTenantFromContext(ctx))
+
+	// Fetch costs for cache savings calculation
+	modelNames := []string{}
+	for _, record := range detailedRecords {
+		modelNames = append(modelNames, record.LLMModel)
+	}
+	costs, _ := llmruntime.GetUsageStore().GetConversationCosts(modelNames, llmruntime.PricingTenantFromContext(ctx))
+
+	// Add per-hour storage cost for conversation-scoped caches owned by this
+	// conversation. Account/tenant/global-scoped caches are excluded — their
+	// storage rolls up into account/tenant budgets, not conversation metrics.
+	// tenant_id pulled from security context for defense-in-depth tenant isolation.
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	if storageCost, scErr := GetStore().GetConversationLifecycleStorageCost(request.ConversationId, tenantId); scErr == nil {
+		totalCost += storageCost
+	}
+
+	// Calculate cache savings
+	cacheSavings := calculateCacheSavings(detailedRecords, totalCost, costs)
+
+	// Per message, from the same per-call records and prices, so the message
+	// popover no longer has to estimate savings on its own.
+	recordsByMessage := make(map[string][]TokenUsageDetailedRecord)
+	for _, record := range detailedRecords {
+		recordsByMessage[record.MessageID] = append(recordsByMessage[record.MessageID], record)
+	}
+	for i := range messages {
+		records := recordsByMessage[messages[i].MessageId]
+		cachedOrWritten := 0
+		for _, record := range records {
+			cachedOrWritten += record.CachedInputTokens + record.CacheCreationTokens
+		}
+		if cachedOrWritten == 0 {
+			continue
+		}
+		savings := calculateCacheSavings(records, messages[i].MessageCostUsd, costs)
+		messages[i].MessageCacheSavings = &savings
+	}
+
+	// Calculate success rate and request stats
+	successRate, totalRequests, successfulRequests, failedRequests := calculateSuccessRate(detailedRecords)
+
+	// Calculate latency statistics (API time)
+	totalLatency, avgLatency := calculateLatencyStats(detailedRecords)
+
+	// Streaming-latency averages, over the calls that reported them.
+	avgTtftMs, avgItlMs := calculateStreamingLatencyStats(detailedRecords)
+
+	// Calculate time breakdown percentages
+	var wallTimePtr *float64
+	var agentActiveTimePtr *float64
+	var toolTimePtr *float64
+	var apiTimePtr *float64
+	var apiTimePercentagePtr *float64
+	var toolTimePercentagePtr *float64
+
+	if timeBreakdown.WallTimeSeconds > 0 {
+		wallTimePtr = &timeBreakdown.WallTimeSeconds
+	}
+	if timeBreakdown.AgentActiveTimeSeconds > 0 {
+		agentActiveTimePtr = &timeBreakdown.AgentActiveTimeSeconds
+	}
+	if timeBreakdown.ToolTimeSeconds > 0 {
+		toolTimePtr = &timeBreakdown.ToolTimeSeconds
+	}
+	// Use the merged (deduplicated) API-call interval, not the raw latency sum,
+	// so parallel sub-agent LLM calls aren't double-counted against wall time.
+	mergedApiTime := calculateMergedApiTimeSeconds(detailedRecords)
+	if mergedApiTime != nil && *mergedApiTime > 0 {
+		apiTimePtr = mergedApiTime
+		// Calculate percentages if we have agent active time
+		if timeBreakdown.AgentActiveTimeSeconds > 0 {
+			// Active time is the sum of top-level agent row durations while API and
+			// tool time are measured from model-call / tool-call timestamps, so the
+			// parts can exceed it. Use the larger of the two as the denominator so
+			// the split never goes past 100%.
+			denom := math.Max(timeBreakdown.AgentActiveTimeSeconds, *mergedApiTime+timeBreakdown.ToolTimeSeconds)
+			apiPct := (*mergedApiTime / denom) * 100
+			apiTimePercentagePtr = &apiPct
+			toolPct := (timeBreakdown.ToolTimeSeconds / denom) * 100
+			toolTimePercentagePtr = &toolPct
+		}
+	}
+
+	conversation := ConversationMetrics{
+		ConversationId:              conversationId,
+		Messages:                    messages,
+		TotalCostUsd:                totalCost,
+		TotalInputTokens:            totalInputTokens,
+		TotalOutputTokens:           totalOutputTokens,
+		TotalCachedInputTokens:      totalCachedInputTokens,
+		TotalThinkingTokens:         totalThinkingTokens,
+		TotalCacheHitRatePercentage: totalCacheHitRate,
+		ModelUsage:                  modelUsage,
+		TotalUnpricedRequests:       totalUnpriced,
+		CacheSavings:                cacheSavings,
+		SuccessRatePercentage:       successRate,
+		TotalRequests:               totalRequests,
+		SuccessfulRequests:          successfulRequests,
+		FailedRequests:              failedRequests,
+		TotalToolCalls:              toolStats.TotalToolCalls,
+		SuccessfulToolCalls:         toolStats.SuccessfulToolCalls,
+		TotalLatencySeconds:         totalLatency,
+		AverageLatencySeconds:       avgLatency,
+		AvgTtftMs:                   avgTtftMs,
+		AvgItlMs:                    avgItlMs,
+		WallTimeSeconds:             wallTimePtr,
+		AgentActiveTimeSeconds:      agentActiveTimePtr,
+		ToolTimeSeconds:             toolTimePtr,
+		ApiTimeSeconds:              apiTimePtr,
+		ApiTimePercentage:           apiTimePercentagePtr,
+		ToolTimePercentage:          toolTimePercentagePtr,
+		ReasoningByToolCall:         reasoningByToolCall,
+	}
+
+	return ConversationUsageMetricsResponse{Conversation: conversation}, nil
+}
+
+// calculateModelUsageStats aggregates statistics by model
+func calculateModelUsageStats(records []TokenUsageDetailedRecord, tenantId string) []ModelUsageStat {
+	if len(records) == 0 {
+		return []ModelUsageStat{}
+	}
+
+	modelNames := []string{}
+	seenModel := map[string]bool{}
+	for _, record := range records {
+		if !seenModel[record.LLMModel] {
+			seenModel[record.LLMModel] = true
+			modelNames = append(modelNames, record.LLMModel)
+		}
+	}
+
+	// Fetch costs in batch. Tolerate a nil DAO (unit tests) — without pricing,
+	// CostUsd stays zero and only the per-model token aggregates are populated.
+	var costs map[string]llmruntime.ModelPricing
+	pricingLoaded := false
+	if dao := llmruntime.GetUsageStore(); dao != nil {
+		var err error
+		costs, err = dao.GetConversationCosts(modelNames, tenantId)
+		// A failed lookup says nothing about whether a price exists, so no call is flagged unpriced.
+		pricingLoaded = err == nil
+	}
+
+	modelMap := make(map[string]*ModelUsageStat)
+	for _, record := range records {
+		key := record.LLMProvider + "|" + record.LLMModel
+
+		if modelMap[key] == nil {
+			modelMap[key] = &ModelUsageStat{
+				ModelProvider: record.LLMProvider,
+				ModelName:     record.LLMModel,
+			}
+		}
+
+		stat := modelMap[key]
+		stat.Requests++
+		stat.InputTokens += record.InputTokens
+		stat.OutputTokens += record.OutputTokens
+		stat.CachedInputTokens += record.CachedInputTokens
+		stat.CacheCreationTokens += record.CacheCreationTokens
+		stat.ThinkingTokens += record.ThinkingTokens
+
+		switch record.RequestStatus {
+		case "success":
+			stat.SuccessfulRequests++
+		case "failure":
+			stat.FailedRequests++
+		}
+
+		// Prefer the cost persisted at insert time — the conversation total
+		// (GetConversationTokenUsage) and the Cost Analyser (perCallCostExpr) both
+		// do, so recomputing here made this table contradict the very total it sits
+		// under whenever llm_model_pricing changed after the call was billed.
+		//
+		// Legacy rows with no stored cost fall back to a live recompute. Cost is
+		// tiered per call (see CalculateTotalCost) on that call's own prompt size,
+		// so it must be computed per record and summed here — aggregating tokens
+		// across the whole conversation first and pricing the total once would push
+		// the combined volume over the long-ctx threshold even when no single call
+		// did, wildly inflating cost.
+		if record.CostUsd.Valid {
+			stat.CostUsd += record.CostUsd.Float64
+		} else if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
+			nonCachedTokens := record.InputTokens - record.CachedInputTokens
+			if nonCachedTokens < 0 {
+				nonCachedTokens = 0
+			}
+			stat.CostUsd += llmruntime.CalculateTotalCost(
+				&pricing,
+				nonCachedTokens,
+				record.CachedInputTokens,
+				record.CacheCreationTokens,
+				record.OutputTokens,
+				record.ThinkingTokens,
+			)
+		} else if pricingLoaded && record.InputTokens+record.OutputTokens > 0 {
+			stat.UnpricedRequests++
+		}
+	}
+
+	// Calculate derived metrics for each model
+	result := []ModelUsageStat{}
+	for _, stat := range modelMap {
+		// Calculate cache hit rate
+		if prompt := llmruntime.PromptTokens(stat.ModelProvider, stat.InputTokens, stat.CacheCreationTokens); prompt > 0 {
+			rate := (float64(stat.CachedInputTokens) / float64(prompt)) * 100
+			stat.CacheHitRatePercentage = &rate
+		}
+
+		// Calculate success rate
+		if stat.Requests > 0 {
+			rate := (float64(stat.SuccessfulRequests) / float64(stat.Requests)) * 100
+			stat.SuccessRatePercentage = &rate
+		}
+
+		result = append(result, *stat)
+	}
+
+	return result
+}
+
+// calculateCacheSavings computes cache savings metrics using the redesigned
+// formula. For each call we compute:
+//
+//	cost_without_cache = (input + cache_creation) × input_rate
+//	                   + (output + thinking)      × output_rate
+//
+// Then sum and subtract the actual cost. The difference is what caching
+// saved (or, if negative, cost) for the period — accounting for both the
+// cached-read discount and any cache-write premium (e.g. Anthropic 1.25x).
+func calculateCacheSavings(records []TokenUsageDetailedRecord, actualCost float64, costs map[string]llmruntime.ModelPricing) CacheSavingsInfo {
+	totalCachedTokens := 0
+	totalPromptTokens := 0
+	estimatedCostWithoutCache := 0.0
+
+	for _, record := range records {
+		totalCachedTokens += record.CachedInputTokens
+		totalPromptTokens += llmruntime.PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens)
+
+		if pricing, ok := costs[record.LLMProvider+":"+record.LLMModel]; ok {
+			// "Without cache" hypothetical: the whole prompt billed at the
+			// non-cached rate, no cache creation, same output and thinking.
+			// For Anthropic and Bedrock the prompt includes the cache-write
+			// tokens, which are stored outside input_tokens; leaving them out
+			// made caching look cheaper than it was.
+			estimatedCostWithoutCache += llmruntime.CalculateTotalCost(
+				&pricing,
+				PromptTokens(record.LLMProvider, record.InputTokens, record.CacheCreationTokens), // whole prompt as non-cached
+				0, // no cached read
+				0, // no cache creation
+				record.OutputTokens,
+				record.ThinkingTokens,
+			)
+		}
+	}
+
+	var cacheHitRate *float64
+	if totalPromptTokens > 0 {
+		rate := (float64(totalCachedTokens) / float64(totalPromptTokens)) * 100
+		cacheHitRate = &rate
+	}
+
+	costSavings := estimatedCostWithoutCache - actualCost
+	if costSavings < 0 {
+		costSavings = 0
+	}
+
+	return CacheSavingsInfo{
+		TotalCachedTokens:            totalCachedTokens,
+		CacheHitRatePercentage:       cacheHitRate,
+		EstimatedCostWithoutCacheUsd: estimatedCostWithoutCache,
+		ActualCostUsd:                actualCost,
+		CostSavingsUsd:               costSavings,
+		TokensSaved:                  totalCachedTokens,
+	}
+}
+
+// calculateSuccessRate computes success rate and request counts
+func calculateSuccessRate(records []TokenUsageDetailedRecord) (*float64, int, int, int) {
+	totalRequests := len(records)
+	successfulRequests := 0
+	failedRequests := 0
+
+	for _, record := range records {
+		switch record.RequestStatus {
+		case "success":
+			successfulRequests++
+		case "failure":
+			failedRequests++
+		}
+	}
+
+	var successRate *float64
+	if totalRequests > 0 {
+		rate := (float64(successfulRequests) / float64(totalRequests)) * 100
+		successRate = &rate
+	}
+
+	return successRate, totalRequests, successfulRequests, failedRequests
+}
+
+// calculateLatencyStats computes total and average latency
+// calculateStreamingLatencyStats averages ttft_ms and itl_ms_avg over the calls
+// that recorded them. Non-streaming and legacy rows carry NULL and are skipped
+// rather than counted as zero, which would drag both averages toward 0.
+func calculateStreamingLatencyStats(records []TokenUsageDetailedRecord) (avgTtftMs *float64, avgItlMs *float64) {
+	var ttftSum, itlSum float64
+	var ttftN, itlN int
+	for _, r := range records {
+		if r.TTFTMs.Valid && r.TTFTMs.Int64 > 0 {
+			ttftSum += float64(r.TTFTMs.Int64)
+			ttftN++
+		}
+		if r.ITLMsAvg.Valid && r.ITLMsAvg.Float64 > 0 {
+			itlSum += r.ITLMsAvg.Float64
+			itlN++
+		}
+	}
+	if ttftN > 0 {
+		v := ttftSum / float64(ttftN)
+		avgTtftMs = &v
+	}
+	if itlN > 0 {
+		v := itlSum / float64(itlN)
+		avgItlMs = &v
+	}
+	return
+}
+
+func calculateLatencyStats(records []TokenUsageDetailedRecord) (*float64, *float64) {
+	totalLatency := 0.0
+	latencyCount := 0
+
+	for _, record := range records {
+		if record.LatencySeconds.Valid {
+			totalLatency += record.LatencySeconds.Float64
+			latencyCount++
+		}
+	}
+
+	var totalLatencyPtr *float64
+	var avgLatencyPtr *float64
+
+	if latencyCount > 0 {
+		totalLatencyPtr = &totalLatency
+		avgLatency := totalLatency / float64(latencyCount)
+		avgLatencyPtr = &avgLatency
+	}
+
+	return totalLatencyPtr, avgLatencyPtr
+}
+
+// calculateMergedApiTimeSeconds returns the union (not the sum) of individual
+// LLM call intervals, mirroring the tool-call gaps-and-islands merge in
+// GetConversationTimeBreakdown's tool_islands CTE (conversation_dao.go). A
+// plain sum of latencies double-counts whenever sub-agents make LLM calls
+// concurrently, which is what let the "Time split" API percentage exceed
+// 100% (#38129). CreatedAt is the call's completion time (see
+// InsertTokenUsage), so each call's interval is approximated as
+// [CreatedAt-LatencySeconds, CreatedAt].
+func calculateMergedApiTimeSeconds(records []TokenUsageDetailedRecord) *float64 {
+	type span struct{ start, end time.Time }
+
+	spans := make([]span, 0, len(records))
+	for _, record := range records {
+		if !record.LatencySeconds.Valid || record.LatencySeconds.Float64 <= 0 {
+			continue
+		}
+		end := record.CreatedAt
+		start := end.Add(-time.Duration(record.LatencySeconds.Float64 * float64(time.Second)))
+		spans = append(spans, span{start: start, end: end})
+	}
+	if len(spans) == 0 {
+		return nil
+	}
+
+	sort.Slice(spans, func(i, j int) bool { return spans[i].start.Before(spans[j].start) })
+
+	merged := 0.0
+	curStart, curEnd := spans[0].start, spans[0].end
+	for _, s := range spans[1:] {
+		if s.start.After(curEnd) {
+			merged += curEnd.Sub(curStart).Seconds()
+			curStart, curEnd = s.start, s.end
+			continue
+		}
+		if s.end.After(curEnd) {
+			curEnd = s.end
+		}
+	}
+	merged += curEnd.Sub(curStart).Seconds()
+
+	return &merged
+}
+
+// resolutionLayerLabels renders the layered walk's own outcome — recorded when a
+// request pinned nothing — as something a reader can act on. These are layers,
+// not configs: there is no integration id behind them to resolve to a name.
+var resolutionLayerLabels = map[string]string{
+	"env-global":            "system default",
+	"env-tier":              "system tier setting",
+	"env-agent":             "system agent setting",
+	"db-global":             "account default",
+	"db-tier":               "account tier setting",
+	"db-agent":              "account agent setting",
+	"conversation":          "conversation override",
+	"conversation-tier":     "conversation tier override",
+	"context-override":      "request override",
+	"context-override-tier": "request tier override",
+}
+
+// configSourceDisplayNames maps the source ids seen on a conversation's usage
+// rows to something a user can read: the integration's own name for db sources,
+// a plain label for env ones. Ids like "db:a0186cfa-…" are meaningless in the UI.
+//
+// Integrations are fetched once per call (they are cached account-wide), and any
+// id that cannot be resolved is simply absent from the map — the caller falls
+// back to showing the raw source rather than an empty cell.
+func configSourceDisplayNames(ctx *security.RequestContext, accountId string, sources map[string]struct{}) map[string]string {
+	names := make(map[string]string, len(sources))
+	var integrations []llmruntime.LLMIntegration
+	loaded := false
+
+	for src := range sources {
+		if src == "" {
+			continue
+		}
+		if label, ok := resolutionLayerLabels[src]; ok {
+			// Not a config id at all — the layered walk records which LAYER won,
+			// and there is no integration behind it to name. Labelling these
+			// "config: db-tier" claimed a config identity that does not exist.
+			names[src] = label
+			continue
+		}
+		parsed, err := llmruntime.ParseConfigSourceId(src)
+		if err != nil {
+			continue
+		}
+		if parsed.Layer != "db" {
+			// env sources carry no integration; "env:tier:reasoning" already reads
+			// well enough once the layer prefix is dropped.
+			names[src] = strings.ReplaceAll(strings.TrimPrefix(src, "env:"), ":", " · ")
+			continue
+		}
+		if !loaded {
+			var err error
+			// Naming is cosmetic: a lookup failure costs the config label, not the
+			// token and latency figures, so degrade rather than fail the panel.
+			if integrations, err = llmruntime.GetLLMIntegrationsForAccount(ctx, accountId); err != nil {
+				ctx.GetLogger().Warn("usage metrics: unable to load LLM integrations, config names will be omitted", "error", err, "account_id", accountId)
+			}
+			loaded = true
+		}
+		for _, integ := range integrations {
+			if integ.Id == parsed.IntegrationUuid {
+				label := integ.Name
+				if parsed.Scope == "tier" && parsed.Name != "" {
+					label += " · " + parsed.Name
+				}
+				names[src] = label
+				break
+			}
+		}
+	}
+	return names
+}

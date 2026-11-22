@@ -53,7 +53,7 @@ def test_list_documents_returns_titles_links_without_content(client):
     # Chunk 9 is the second chunk of the document listed through chunk 8.
     assert data["items"] == [
         {"id": "a1", "title": "Page A", "url": "https://wiki/a", "source_id": "1"},
-        {"id": "b2", "title": "KB0001 reset", "url": "https://sn/kb0001", "source_id": None},
+        {"id": "b2", "title": "KB0001 reset", "url": "https://sn/kb0001", "source_id": "KB0001"},
         {"id": "7", "title": None, "url": None, "source_id": None},
         {"id": "8", "title": None, "url": None, "source_id": None},
     ]

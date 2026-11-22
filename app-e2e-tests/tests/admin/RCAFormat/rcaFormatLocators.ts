@@ -4,7 +4,6 @@ import { Page, Locator, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { registerWelcomeTourAutoDismiss } from "../../utils/helpers";
 import {
-  ACCOUNT_PLACEHOLDER,
   ACCOUNT_SELECT_ID,
   AI_TOOLS_TAB_ID,
   BUDGETS_LIMITS_TAB_ELEMENT_ID,

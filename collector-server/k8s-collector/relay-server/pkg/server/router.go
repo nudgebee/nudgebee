@@ -107,10 +107,11 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	// there looking healthy.
 	healthTracker := health.NewTracker(connMgr)
 
-	// Tells llm-server replicas to drop their integration caches for an
-	// account after the relay registers agent datasources or changes their
-	// labels. No-op when the exchange is not configured.
-	cacheInvalidator := mq.NewLLMCacheInvalidator(connMgr, cfg.RabbitMQ.LLMCacheInvalidationExchange, logger)
+	// Tells every llm-server and services-server replica to drop its
+	// integration caches for an account after the relay registers agent
+	// datasources or changes their labels (replica broadcast). No-op unless
+	// CACHE_PROVIDER is redis.
+	cacheInvalidator := mq.NewLLMCacheInvalidator(cfg, logger)
 
 	// 3) Public health check
 	r.GET("/status", handlers.Status)

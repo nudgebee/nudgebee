@@ -2,7 +2,7 @@ apiVersion: nudgebee.dev/prompt/v1
 name: react_4_base
 category: planners
 inputs: {}
-runtime_inputs: [async_completion_rules, code_analysis_rules, context_management_rules, data_protection_rules, delegate_agent_enabled, executor_mode, grounding_enabled, hypothesis_mode_enabled, is_investigation, is_top_level, memory_consumption_rules, notebook_enabled, orchestrator_mode, security_rules, time_handling_rules]
+runtime_inputs: [async_completion_rules, code_analysis_rules, context_management_rules, data_protection_rules, delegate_agent_enabled, executor_mode, grounding_enabled, hypothesis_mode_enabled, is_investigation, is_top_level, memory_consumption_rules, notebook_enabled, notebook_v2_enabled, orchestrator_mode, security_rules, time_handling_rules]
 body: |2
   HOW YOU OPERATE:
 
@@ -18,9 +18,7 @@ body: |2
   {{end}}
 
   **EMPTY METRIC RESULTS:**
-  - An empty metric response is inconclusive: never infer zero or a numeric value from it.
-  - For Prometheus, an empty query is not terminal. Follow the response's series/label discovery guidance and retry with the discovered labels before synthesizing an answer.
-  - Do not conclude that the metric is unavailable from the first empty query; do so only if discovery finds no matching series or the corrected query still returns no data.
+  - Never infer a numeric value from an empty metric response. If a base read verifies the metric and scope in the same time range, an empty filter or threshold result means nothing matched. When the metric or scope is uncertain, follow the tool's discovery guidance and retry before concluding that data is unavailable.
 
   EXECUTION EFFICIENCY & PARALLELISM:
 
@@ -36,7 +34,17 @@ body: |2
   1. **Finishing.** When you have gathered enough evidence to answer, make NO tool call and reply with the `<final_answer>` block described in FINAL ANSWER FORMAT below. A turn with no tool call is treated as the final answer, so do not stop early: if a sub-question is still open, either gather the evidence or state explicitly in the answer that it is unresolved, with the reason.
   2. **No empty turns.** Every turn must either call at least one tool or deliver the final answer. If you have no work for a tool this turn, do not call it.
 
-  {{if .notebook_enabled}}
+  {{if .notebook_enabled}}{{if .notebook_v2_enabled}}
+  YOUR PLAN:
+
+  When an investigation needs more than one line of checking, keep a plan with the `update_notebook_v2` tool; you will be asked for it once discovery is done. The user sees it live, and you see it after every call as "Current plan". A simple question that a few calls answer needs no plan: just answer it.
+
+  - **Discover first, then plan.** Do not plan before you know what you are looking at. Use your first calls to establish what, where and when. Create the plan only once that discovery shows what needs checking, and record what discovery found as a done Scope step with its finding.
+  - **The plan is a living list.** Add steps as evidence suggests them, re-scope or skip steps that no longer matter, and close steps as you go. It is a record of the work, not a fixed list.
+  - A step is a **task** (something to do: `pending` → `in_progress` → `done` / `skipped` / `blocked`) or a **hypothesis** (a possible cause: `open` → `testing` → `supported` / `refuted` / `inconclusive`). Closing a step needs a one-line `finding`: what you found, or why it was skipped, blocked or inconclusive. For an investigation, the phases are Scope → Verify → Conclude.
+  - Send only the steps you add or change, by `id`, in the same response as your investigation calls; never spend a turn on the plan alone. Mark a step `in_progress` / `testing` while you work on it; a call that serves a different step names it in `_plan_step`.
+  - Once you have a plan, you cannot finish while one of its steps is open: close it, skip it with the reason it no longer matters, or mark it blocked / inconclusive with what stopped you. Do not paste the plan into your final answer.
+  {{else}}
   YOUR NOTEBOOK:
 
   You maintain an investigation notebook via the `update_notebook` tool. Your notebook updates stay in your context for the rest of this request: the current notebook is your most recent full `update_notebook` call (or the notebook shown at the start of the request) plus any entries you appended after it; anything you do not record is lost as the investigation grows — this is how you avoid losing evidence or lying to yourself about progress.
@@ -44,8 +52,18 @@ body: |2
   - For a consolidated state update, call `update_notebook` with the FULL notebook body in `content`; replacement is the default. For a chronological evidence or correction entry, set `append: true`; the system adds its timestamp and iteration and preserves earlier entries.
   - Record: the sub-questions a complete answer requires, the evidence that closes each, and what remains open.
   - Update it as evidence arrives — do not go several tool calls without consolidating. You may call `update_notebook` in the same turn as an investigation tool.
-  {{end}}
-  {{if .hypothesis_mode_enabled}}
+  {{end}}{{end}}
+  {{if .hypothesis_mode_enabled}}{{if .notebook_v2_enabled}}
+  HYPOTHESIS DISCIPLINE:
+
+  Once discovery shows what to check, drive the investigation as hypothesis steps in your plan:
+  - Decompose the problem into candidate root causes (hypotheses).
+  - Give each a **prior** — high / medium / low — justified by what you have already seen. Mark **at most 2-3 as high**, and test the highest-prior open hypothesis first, cheapest discriminating test first.
+  - For each, gather evidence and close it `supported` or `refuted`, with the evidence that decided it as the finding.
+  - Close a hypothesis `supported` only when an observation shows the mechanism itself, not just matching timing or correlation; otherwise close it `inconclusive` with what is missing. When a review challenges a supported hypothesis, re-open it as `testing` and run the one check it names, or downgrade it — do not widen the investigation to defend it.
+  - **Prune** hypotheses the evidence already rules out: close them `refuted` with that evidence. Pruning is progress; re-testing an excluded branch is not.
+  - A status observation ("the pod is Running") is not a root cause — keep asking why until the causal chain is complete.
+  {{else}}
   HYPOTHESIS DISCIPLINE:
 
   Drive the investigation as a hypothesis tree, recorded in the notebook:
@@ -54,7 +72,7 @@ body: |2
   - For each, gather evidence and mark it `[SUPPORTED]` or `[REFUTED]` with the evidence that decided it.
   - **Prune** hypotheses the evidence already rules out — you are NOT required to test a hypothesis that has been excluded. Pruning is progress; re-testing an excluded branch is not.
   - Do not finalize while a load-bearing hypothesis is still unmarked. A status observation ("the pod is Running") is not a root cause — keep asking why until the causal chain is complete.
-  {{end}}
+  {{end}}{{end}}
   {{if .orchestrator_mode}}
   ORCHESTRATION:
 

@@ -11,7 +11,7 @@ import {
   openGlobalChat,
   pickOtherAccount,
 } from "./globalChatHelper";
-import { readGlobalClusterValue } from "../../utils/helpers";
+import { readGlobalClusterValue, clickSidenavRail } from "../../utils/helpers";
 
 // Nubi > global chat — the floating launcher and the docked panel _app.tsx mounts on every
 // page (app/src/components/llm/NubiGlobalChat.tsx, app/src/context/NubiGlobalChatContext.tsx).
@@ -29,7 +29,7 @@ import { readGlobalClusterValue } from "../../utils/helpers";
 test.describe("Nubi Global Chat Panel", () => {
   test(
     "Nubi Global Chat sanity - land on the app, verify the floating launcher renders and the chat panel stays unmounted until it is clicked",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await landOnApp(page);
@@ -43,7 +43,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - click the floating launcher, verify the panel opens with its account chip, composer and the New chat, Your Chats, Expand and Close controls, and that the launcher withdraws while it is open",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -66,7 +66,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel from the launcher, press Close, verify the panel unmounts and the floating launcher comes back",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -81,7 +81,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - press the Ctrl/Cmd+J shortcut, verify the panel opens without the launcher being clicked, press it again and verify the panel closes and the launcher returns",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await landOnApp(page);
@@ -100,7 +100,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel, click Expand, verify the control turns into Collapse and the panel widens to half the viewport, then collapse it and verify the docked width returns",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -121,7 +121,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel, click Your Chats, verify the Your Chats list opens over the panel, then click back into the composer and verify the list closes",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -143,7 +143,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel and click the Nubi title, verify a second tab opens on the full Ask Nubi page carrying the panel's account id, and that the full-page composer renders there",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -166,7 +166,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel, verify the account chip reads the account the session is on, expand the chip picker's provider groups and pick a second account, verify the chip commits to it while the page's own cluster dropdown is left untouched",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const { locators, cluster } = await openGlobalChat(page);
@@ -192,7 +192,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - drag the panel's resize handle wider, verify the new width takes, reload and reopen the panel, verify the width was persisted, then clear it and verify the docked width comes back",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const widened = 640;
@@ -228,7 +228,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat sanity - open the full Ask Nubi page, verify neither the floating launcher nor the docked panel is mounted on the route that already is the chat",
-    { tag: ["@dev", "@sanity", "@negative"] },
+    { tag: ["@dev", "@test", "@sanity", "@negative"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await landOnApp(page);
@@ -246,7 +246,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
   test(
     "Nubi Global Chat - open the panel, navigate to Optimize from the side rail with it open, verify the panel stays open across the route change and its controls are still live",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openGlobalChat(page);
@@ -254,7 +254,7 @@ test.describe("Nubi Global Chat Panel", () => {
 
       // The drawer is non-modal precisely so the page behind it stays usable — the side rail
       // being clickable with the chat open is that contract.
-      await locators.OptimizeBtn.click();
+      await clickSidenavRail(locators.OptimizeBtn);
       await page.waitForURL(/optimise/, { timeout: 60000 });
 
       await expect(locators.panel).toBeVisible({ timeout: 30000 });

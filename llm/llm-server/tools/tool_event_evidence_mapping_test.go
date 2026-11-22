@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/events"
 
 	"github.com/stretchr/testify/assert"
@@ -273,6 +274,40 @@ func TestProcessRowWithMessages_LogCoverageNote(t *testing.T) {
 		})})
 		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
 		assert.Equal(t, "The collected log lines span 2026-01-15T10:14:02Z to 2026-01-15T10:20:00Z.", ev.LogCoverageNote)
+	})
+
+	t.Run("a card that names its log group and streams says where the lines came from", func(t *testing.T) {
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, map[string]any{
+			"log_group_name":    "EC2-Windows-Logs",
+			"log_stream_prefix": "i-0123456789abcdef0",
+			"log_window_start":  "2026-01-15T10:14:02Z",
+			"log_window_end":    "2026-01-15T10:20:00Z",
+		})})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		assert.Equal(t,
+			"The collected log lines span 2026-01-15T10:14:02Z to 2026-01-15T10:20:00Z. The collected log lines were read from log group EC2-Windows-Logs, streams starting with i-0123456789abcdef0.",
+			ev.LogCoverageNote)
+	})
+
+	t.Run("a long log group name never pushes out the truncation note", func(t *testing.T) {
+		truncation := "The queried window has more lines than the 1000 a log card holds; this card keeps the 1000 most recent, so earlier lines in the window are not shown here."
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, map[string]any{
+			"log_group_name":      "/aws/rds/instance/example-database-with-a-long-name/postgresql",
+			"log_stream_prefix":   "i-0123456789abcdef0",
+			"log_window_start":    "2026-01-15T10:14:02Z",
+			"log_window_end":      "2026-01-15T10:20:00Z",
+			"log_truncated":       true,
+			"log_truncation_note": truncation,
+		})})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		// Readers keep the head of the note (400 bytes in the investigation prompt).
+		assert.Contains(t, common.TruncateHead(ev.LogCoverageNote, 400), truncation)
+	})
+
+	t.Run("a card that names only its log group", func(t *testing.T) {
+		row := buildEvidencesRow(t, []map[string]any{logsEvidenceBlock(t, entries, map[string]any{"log_group_name": "/aws/lambda/example"})})
+		ev := processedEvidence(t, EventsExecuteTool{FullEvidence: true}.processRowWithMessages(row, 0, 1, nil))
+		assert.Equal(t, "The collected log lines were read from log group /aws/lambda/example.", ev.LogCoverageNote)
 	})
 
 	t.Run("a card that says nothing leaves no note", func(t *testing.T) {

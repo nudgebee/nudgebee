@@ -144,9 +144,36 @@ func (s *AzureAppInsightsMetricSource) FetchMetricsQuery(ctx *security.RequestCo
 			results.Results = append(results.Results, QueryResult{QueryKey: queryKey, Error: &msg})
 			continue
 		}
-		results.Results = append(results.Results, azureMetricResponseToQueryResult(resp, queryKey, kql))
+		qr := azureMetricResponseToQueryResult(resp, queryKey, kql)
+		qr.Note = azurePartialErrorNote(resp.Error)
+		results.Results = append(results.Results, qr)
 	}
 	return results, nil
+}
+
+// azurePartialErrorNote says when Azure answered with tables and an error object
+// together, so the series may be incomplete (#39201). Empty when there is no error.
+func azurePartialErrorNote(e *AzureQueryError) string {
+	if e == nil || (e.Code == "" && e.Message == "") {
+		return ""
+	}
+	codeMessage := func(code, message string) string {
+		if code == "" || message == "" {
+			return code + message
+		}
+		return code + ": " + message
+	}
+	what := codeMessage(e.Code, e.Message)
+	details := make([]string, 0, len(e.Details))
+	for _, d := range e.Details {
+		if d.Message != "" {
+			details = append(details, codeMessage(d.Code, d.Message))
+		}
+	}
+	if len(details) > 0 {
+		what += " (" + strings.Join(details, "; ") + ")"
+	}
+	return "Azure reported a partial error: " + what + ". These results may be incomplete."
 }
 
 // FetchMetricList returns distinct metric names from the customMetrics table.

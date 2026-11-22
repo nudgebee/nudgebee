@@ -3,6 +3,9 @@ import { CommonLocators } from "../GlobalLocators";
 
 export class WorkflowLocators extends CommonLocators {
   readonly autoPilotSidenavBtn: Locator;
+  readonly createdByFilter: Locator;
+  readonly filterSearchInput: Locator;
+  readonly rowDeleteMenuItem: Locator;
   readonly createAutomationBtn: Locator;
   readonly createNewAutomationModal: Locator;
   readonly createAccountSelect: Locator;
@@ -69,6 +72,15 @@ export class WorkflowLocators extends CommonLocators {
     super(page);
 
     this.autoPilotSidenavBtn = page.locator("#auto-pilot-sidenavbutton");
+    // Created By renders only for tenant-level roles, after the session roles load.
+    this.createdByFilter = page
+      .locator("#auto-complete-workflow-filter-created-by")
+      .or(page.locator("#workflow-listing-box").getByRole("button", { name: /^Created By/ }))
+      .first();
+    // FilterDropdown portals its search box into a Popover, so it is page-scoped.
+    this.filterSearchInput = page.locator(".MuiPopover-root").getByPlaceholder(/^Search/).first();
+    // MUI menu items carry nested spans, so getByRole("menuitem", { name }) matches nothing here.
+    this.rowDeleteMenuItem = page.locator('[role="menuitem"]:visible', { hasText: "Delete" }).first();
     this.createAutomationBtn = page.locator("#workflow-listing-create-btn");
     this.createNewAutomationModal = page.getByText("Create a New Automation", { exact: true });
     this.createAccountSelect = page.locator("#wf-create-account-select");
@@ -142,6 +154,19 @@ export class WorkflowLocators extends CommonLocators {
     this.dryRunBtn = page.locator("div.MuiDialog-container").getByRole("button", { name: "Dry Run" });
     this.runTaskBtn = page.locator("div.MuiDialog-container").getByRole("button", { name: "Run Task" });
     this.actionTestResultChip = page.locator("div.MuiDialog-container .MuiChip-label");
+  }
+
+  // getByRole name matching misses this option (nested span), so the hasText form is the fallback.
+  filterOption(label: string): Locator {
+    return this.page
+      .getByRole("option", { name: label, exact: true })
+      .or(this.page.locator('[role="option"]').filter({ hasText: label }))
+      .first();
+  }
+
+  // Row menu ids carry the automation uuid; the prefix match covers a link whose href had no id.
+  rowMenuBtn(workflowId?: string): Locator {
+    return workflowId ? this.page.locator(`#workflow-menu-${workflowId}`) : this.page.locator('[id^="workflow-menu-"]').first();
   }
 
   getSuccessMessage(workflowName: string): Locator {

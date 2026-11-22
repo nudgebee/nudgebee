@@ -7,8 +7,13 @@
 // UUID via kg_resolve_manual_dependency.
 //
 // Cascade contract:
-//   Account → kg_get_filter_options({accountIds:[X]}) → node_types
-//   Node type → kg_get_filter_options({accountIds:[X], nodeTypes:[Y]}) → node_id_map
+//   Account → kg_get_filter_options({accountIds:[X]}) → node_types (node_type -> specific_types)
+//   Node type → kg_get_filter_options({accountIds:[X], specificTypes:[Y]} or nodeTypes:[Y]) → node_id_map
+//
+// The Node type dropdown uses the same grouped options as the Knowledge Graph
+// page's Node Type filter (buildNodeTypeOptions): one leaf per specific_type,
+// grouped under its node_type, with a bare node_type leaf when it has no
+// breakdown. The picked leaf is therefore a specific_type or a node_type.
 //   Node → kg_get_node(id) to fetch full identifiers → onPick(node)
 //
 // Loading is lazy: the type / node lists are fetched only when their dropdown
@@ -28,14 +33,26 @@ import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { getCurrentTenant } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { buildNodeTypeOptions, getNodeTypeLeaves, humanizeType } from './kgFilterCascade';
 
 // CloudProviderIcon falls back to the AWS logo for an unknown provider, which
 // would mislabel the "Other" group (nodes outside any connected account).
 const renderAccountGroupIcon = (provider) =>
   provider === 'Other' ? null : <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
+// Backend filter for a picked Node type leaf: a specific_type when the leaf sits
+// under a node_type with a real breakdown, else the bare node_type itself.
+const typeFilterFor = (leaf, specificTypesByNodeType) => {
+  const isSpecific = Object.keys(specificTypesByNodeType).some((nodeType) => {
+    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    return leaves.includes(leaf) && !(leaves.length === 1 && leaves[0] === nodeType);
+  });
+  return isSpecific ? { specificTypes: [leaf] } : { nodeTypes: [leaf] };
+};
+
 const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedLabel, cloudAccounts, onAccountChange, onNodeTypeChange, onPick }) => {
-  const [nodeTypes, setNodeTypes] = useState([]);
+  // node_type -> specific_types, as returned by kg_get_filter_options.
+  const [specificTypesByNodeType, setSpecificTypesByNodeType] = useState({});
   const [loadingTypes, setLoadingTypes] = useState(false);
   // Account the type list was last loaded for — guards against refetching the
   // same list on every dropdown open.
@@ -66,7 +83,7 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
   // Account changed → drop the cached type + node lists so the next time a
   // downstream dropdown is opened it re-fetches for the new account.
   useEffect(() => {
-    setNodeTypes([]);
+    setSpecificTypesByNodeType({});
     setLoadedTypesAccount('');
     setNodeIdMap({});
     setLoadedNodesKey('');
@@ -81,19 +98,20 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
   // Lazy-load node types for the selected account — fired by the Node type
   // dropdown's onOpen, not eagerly on mount. Keeps an edited row that just
   // displays its pinned node from fetching lists the operator never opens.
+  const fetchTypeMap = () =>
+    apiKnowledgeGraph.getFilterOptions({ accountIds: [pickedAccountId] }).then((res) => {
+      const typeMap = res?.data?.data?.kg_get_filter_options?.data?.node_types ?? {};
+      setSpecificTypesByNodeType(typeMap);
+      setLoadedTypesAccount(pickedAccountId);
+      return typeMap;
+    });
+
   const loadNodeTypes = () => {
     if (!pickedAccountId || loadingTypes || loadedTypesAccount === pickedAccountId) {
       return;
     }
     setLoadingTypes(true);
-    apiKnowledgeGraph
-      .getFilterOptions({ accountIds: [pickedAccountId] })
-      .then((res) => {
-        // node_types is the merged node_type -> specific_types map; its keys are the type list.
-        const types = Object.keys(res?.data?.data?.kg_get_filter_options?.data?.node_types ?? {});
-        setNodeTypes(types);
-        setLoadedTypesAccount(pickedAccountId);
-      })
+    fetchTypeMap()
       .catch((err) => {
         console.error('Failed to load KG node types for account:', err);
         snackbar.error('Failed to load node types for the selected account.');
@@ -102,15 +120,17 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
   };
 
   // Lazy-load nodes for the selected account + type — fired by the Node
-  // dropdown's onOpen.
+  // dropdown's onOpen. Telling a specific_type leaf from a bare node_type needs
+  // the type map, so an edited row whose type list was never opened loads it first.
   const nodesKey = `${pickedAccountId}::${pickedNodeType}`;
   const loadNodes = () => {
     if (!pickedAccountId || !pickedNodeType || loadingNodes || loadedNodesKey === nodesKey) {
       return;
     }
     setLoadingNodes(true);
-    apiKnowledgeGraph
-      .getFilterOptions({ accountIds: [pickedAccountId], nodeTypes: [pickedNodeType] })
+    const typeMapReady = loadedTypesAccount === pickedAccountId ? Promise.resolve(specificTypesByNodeType) : fetchTypeMap();
+    typeMapReady
+      .then((typeMap) => apiKnowledgeGraph.getFilterOptions({ accountIds: [pickedAccountId], ...typeFilterFor(pickedNodeType, typeMap) }))
       .then((res) => {
         // Columnar payload: zip node_keys + node_ids back into { unique_key: id }.
         const d = res?.data?.data?.kg_get_filter_options?.data ?? {};
@@ -131,11 +151,12 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
   // Loaded node-type list, or — before it's loaded — a single seed option so a
   // pre-selected type still displays its label.
   const nodeTypeOptions = useMemo(() => {
+    const nodeTypes = Object.keys(specificTypesByNodeType);
     if (nodeTypes.length) {
-      return nodeTypes.map((t) => ({ value: t, label: t }));
+      return buildNodeTypeOptions(nodeTypes, specificTypesByNodeType);
     }
-    return pickedNodeType ? [{ value: pickedNodeType, label: pickedNodeType }] : [];
-  }, [nodeTypes, pickedNodeType]);
+    return pickedNodeType ? [{ value: pickedNodeType, label: humanizeType(pickedNodeType) }] : [];
+  }, [specificTypesByNodeType, pickedNodeType]);
 
   // Loaded node list ({unique_key: id}), or — before it's loaded — a single
   // seed option (selectedLabel) so a pre-selected node still displays.
@@ -215,6 +236,7 @@ const KgNodePicker = ({ pickedAccountId, pickedNodeType, pickedNodeId, selectedL
         label='Node type *'
         placeholder={pickedAccountId ? 'Pick a node type' : 'Pick an account first'}
         options={nodeTypeOptions}
+        grouped
         value={pickedNodeType || null}
         onSelect={(e, v) => onNodeTypeChange(typeof v === 'string' ? v : v?.value || '')}
         onOpen={loadNodeTypes}

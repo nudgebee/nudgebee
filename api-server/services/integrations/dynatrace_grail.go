@@ -40,6 +40,45 @@ type GrailResult struct {
 // The observability metrics layer uses this to reconstruct time-series arrays.
 type GrailMetadata struct {
 	Metrics GrailMetricsMap `json:"metrics"`
+	// Grail is the query-level metadata. Its notifications are how Grail says it
+	// cut a result short, e.g. that the result record limit was reached.
+	Grail *GrailQueryMetadata `json:"grail"`
+}
+
+// GrailQueryMetadata is the part of result.metadata.grail read here.
+type GrailQueryMetadata struct {
+	Notifications []GrailNotification `json:"notifications"`
+}
+
+// GrailNotification is one entry of result.metadata.grail.notifications. Every
+// field may be missing.
+type GrailNotification struct {
+	Severity         string `json:"severity"`
+	NotificationType string `json:"notificationType"`
+	Message          string `json:"message"`
+}
+
+// Warnings returns the messages of the notifications Grail attached to the result,
+// falling back to the notification type when there is no message. INFO-severity
+// notifications are left out: they describe the query, not a gap in its result.
+func (r *GrailResult) Warnings() []string {
+	if r == nil || r.Metadata == nil || r.Metadata.Grail == nil {
+		return nil
+	}
+	var out []string
+	for _, n := range r.Metadata.Grail.Notifications {
+		if strings.EqualFold(n.Severity, "INFO") {
+			continue
+		}
+		msg := strings.TrimSpace(n.Message)
+		if msg == "" {
+			msg = n.NotificationType
+		}
+		if msg != "" {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 // GrailMetricMeta holds the ISO 8601 timestamps for a single timeseries alias.

@@ -17,11 +17,16 @@ func renderReact4BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnab
 
 func renderReact4BaseWithModes(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode, isInvestigation bool) string {
 	t.Helper()
+	return renderReact4BaseFull(t, notebookEnabled, false, hypothesisModeEnabled, orchestratorMode, executorMode, isInvestigation)
+}
+
+func renderReact4BaseFull(t *testing.T, notebookEnabled, notebookV2Enabled, hypothesisModeEnabled, orchestratorMode, executorMode, isInvestigation bool) string {
+	t.Helper()
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact4Base, "")
 	assert.NotEmpty(t, base, "embedded react_4 base prompt must load")
 
 	vars := []string{
-		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
+		"notebook_enabled", "notebook_v2_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
 		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
@@ -31,6 +36,7 @@ func renderReact4BaseWithModes(t *testing.T, notebookEnabled, hypothesisModeEnab
 		"grounding_enabled":        false,
 		"delegate_agent_enabled":   true,
 		"notebook_enabled":         notebookEnabled,
+		"notebook_v2_enabled":      notebookV2Enabled,
 		"hypothesis_mode_enabled":  hypothesisModeEnabled,
 		"is_top_level":             true,
 		"orchestrator_mode":        orchestratorMode,
@@ -259,14 +265,14 @@ func TestReAct4Base_CarriesDelegationGuidanceWhenToolPresent(t *testing.T) {
 func TestReAct4Base_NoDelegationSectionWhenToolAbsent(t *testing.T) {
 	base := nbprompts.GetPrompt(context.Background(), nbprompts.PromptReact4Base, "")
 	tmpl := prompts.NewPromptTemplate(base, []string{
-		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
+		"notebook_enabled", "notebook_v2_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
 		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
 	})
 	out, err := tmpl.Format(map[string]any{
 		"grounding_enabled": false,
-		"notebook_enabled":  true, "hypothesis_mode_enabled": true,
+		"notebook_enabled":  true, "notebook_v2_enabled": false, "hypothesis_mode_enabled": true,
 		"is_top_level":      true,
 		"orchestrator_mode": true, "executor_mode": false,
 		"is_investigation":         true,
@@ -380,4 +386,19 @@ func TestReAct4LeanSubagentPrompt(t *testing.T) {
 		assert.Contains(t, humanMsg, "workspace_file.json")
 		assert.Contains(t, humanMsg, "user preference memory")
 	})
+}
+
+// With the structured plan on (#41443) the notebook and hypothesis sections
+// switch to update_notebook_v2 wording; nothing else changes.
+func TestReAct4Base_NotebookV2Sections(t *testing.T) {
+	v1 := renderReact4BaseFull(t, true, false, true, true, false, true)
+	v2 := renderReact4BaseFull(t, true, true, true, true, false, true)
+	assert.Contains(t, v1, "YOUR NOTEBOOK:")
+	assert.NotContains(t, v1, "update_notebook_v2")
+	assert.Contains(t, v2, "YOUR PLAN:")
+	assert.Contains(t, v2, "update_notebook_v2")
+	assert.Contains(t, v2, "_plan_step")
+	assert.NotContains(t, v2, "YOUR NOTEBOOK:")
+	assert.NotContains(t, v2, "[SUPPORTED]", "v2 hypotheses close via status, not text markers")
+	assert.Contains(t, v2, "HYPOTHESIS DISCIPLINE:")
 }

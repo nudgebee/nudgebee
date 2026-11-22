@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 
 	"nudgebee/llm/common"
@@ -53,7 +54,7 @@ func sqlToolCall(nbRequestContext core.NbToolContext, query string, tableName st
 	query = strings.TrimSpace(query)
 	query = strings.TrimSuffix(query, ";")
 
-	data, err := sqlExecuteQuery(nbRequestContext.Ctx, query, nbRequestContext.AccountId, tableName, eventsView, limit)
+	data, rowCap, err := sqlExecuteQuery(nbRequestContext.Ctx, query, nbRequestContext.AccountId, tableName, eventsView, limit)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("eventssql: unable to execute query", "error", err, "query", query)
 		return core.NBToolResponse{}, nil, err
@@ -74,16 +75,45 @@ func sqlToolCall(nbRequestContext core.NbToolContext, query string, tableName st
 		}, data, nil
 	}
 
-	bytesData, err := common.MarshalJson(data)
+	resp := core.NBToolResponse{
+		Type:   core.NBToolResponseTypeTable,
+		Status: core.NBToolResponseStatusSuccess,
+	}
+	if rowCap > 0 {
+		resp.AdditionalDetails = map[string]any{sqlRowCapKey: rowCap}
+	}
+	resp.Data, err = sqlResultData(resp, data)
 	if err != nil {
 		return core.NBToolResponse{}, nil, err
 	}
+	return resp, data, nil
+}
 
-	return core.NBToolResponse{
-		Data:   string(bytesData),
-		Type:   core.NBToolResponseTypeTable,
-		Status: core.NBToolResponseStatusSuccess,
-	}, data, nil
+// sqlRowCapKey marks, in AdditionalDetails, a result the row cap or the size
+// budget cut, so a tool that rewrites Data after sqlToolCall keeps the note.
+const sqlRowCapKey = "sql_row_cap"
+
+// sqlResultData renders rows as Data; a cut result gets has_more & a note on
+// getting the rest, so the model doesn't read it as complete (#40194).
+func sqlResultData(resp core.NBToolResponse, rows []map[string]any) (string, error) {
+	var out any = rows
+	if returned, ok := resp.AdditionalDetails[sqlRowCapKey].(int); ok {
+		out = map[string]any{
+			"rows":     rows,
+			"returned": returned,
+			"has_more": true,
+			"note": fmt.Sprintf("cut: more rows match than the %d shown (this tool returns at most %d rows or %d MB per call). "+
+				"Best: answer with COUNT(*) or GROUP BY if you can. "+
+				"To list more: run the same query with an ORDER BY that ends in a unique column (e.g. starts_at DESC, id), "+
+				"fixed start and end times instead of NOW(), LIMIT up to %d, and OFFSET = your current OFFSET (0 if none) + %d. "+
+				"Do not start again from the beginning; these rows are already shown. "+
+				"Select only the columns you need (large JSON columns such as evidences slow every page). "+
+				"Do not report these rows as all of them.",
+				returned, sqlToolMaxRows, sqlToolMaxBytes>>20, sqlToolMaxRows, returned),
+		}
+	}
+	b, err := common.MarshalJson(out)
+	return string(b), err
 }
 
 func stripSingleLineComments(query string) string {
@@ -102,8 +132,8 @@ func stripSingleLineComments(query string) string {
 }
 
 // The metastore SQL tools give the model one table (a view swapped in for the
-// account) and run its query as a database user that can read the whole app
-// database. sqlCheckSingleTable keeps the query on that one table without
+// account). Where the scoped role is unavailable (sqlScopeToAccount), its query
+// runs as a database user that can read the whole app database. sqlCheckSingleTable keeps the query on that one table without
 // parsing SQL: it counts keywords in the text, after blanking out '...'
 // literals. Comments, double quotes and dollar quotes are refused outright,
 // so a '...' literal is the only way to quote text and blanking it is exact.
@@ -224,15 +254,17 @@ func sqlValidateReadOnly(finalQuery string, allowedTable string) error {
 	return nil
 }
 
-func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId string, tableName string, tableView string, limit int) ([]map[string]any, error) {
+// sqlExecuteQuery runs the tool query. The int is the number of rows returned
+// when the row cap or the size budget cut the result, else 0.
+func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId string, tableName string, tableView string, limit int) ([]map[string]any, int, error) {
 	finalQuery := sqlCleanUpQuery(query)
 	err := sqlValidateReadOnly(finalQuery, tableName)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	finalQuery, tableSource, err := sqlBindTable(finalQuery, accountId, tableName, tableView)
 	if err != nil {
-		return nil, fmt.Errorf("sqlExecuteQuery: %w", err)
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: %w", err)
 	}
 
 	if limit == 0 {
@@ -241,14 +273,14 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 
 	// The row cap is decided on the caller's SQL, before the view goes in: a
 	// LIMIT inside the view's own subqueries is not the caller's LIMIT.
-	finalQuery = buildLimitedQuery(finalQuery, limit)
+	finalQuery, rowCap := buildLimitedQuery(finalQuery, limit)
 	finalQuery = strings.Replace(finalQuery, sqlTablePlaceholder, tableSource, 1)
 	slog.Info("sql: final tool query", "account", accountId, "query", finalQuery)
 
 	t0 := time.Now()
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return nil, fmt.Errorf("sqlExecuteQuery: get database manager: %w", err)
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: get database manager: %w", err)
 	}
 
 	timeout := time.Duration(config.Config.LlmServerAgentSqlTimeoutSec) * time.Second
@@ -266,7 +298,7 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 	// single statement; see the Prepare below.
 	tx, err := dbManager.Db.BeginTxx(queryCtx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return nil, fmt.Errorf("sqlExecuteQuery: begin read-only transaction: %w", err)
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: begin read-only transaction: %w", err)
 	}
 	defer func() {
 		if rerr := tx.Rollback(); rerr != nil && !errors.Is(rerr, sql.ErrTxDone) {
@@ -274,14 +306,22 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 		}
 	}()
 	if _, err := tx.ExecContext(queryCtx, fmt.Sprintf("SET LOCAL statement_timeout = %d", timeout.Milliseconds())); err != nil {
-		return nil, fmt.Errorf("sqlExecuteQuery: set statement_timeout: %w", err)
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: set statement_timeout: %w", err)
 	}
 	// Enough memory for the view's ranking subqueries to stay hashed, so they
 	// are built once per query rather than re-run for every row.
 	if workMemMB := config.Config.LlmServerAgentSqlWorkMemMB; workMemMB > 0 {
 		if _, err := tx.ExecContext(queryCtx, fmt.Sprintf("SET LOCAL work_mem = '%dMB'", workMemMB)); err != nil {
-			return nil, fmt.Errorf("sqlExecuteQuery: set work_mem: %w", err)
+			return nil, 0, fmt.Errorf("sqlExecuteQuery: set work_mem: %w", err)
 		}
+	}
+	scoped, err := sqlScopeToAccount(queryCtx, tx, accountId)
+	if err != nil {
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: switch to %s: %w", sqlToolRole, err)
+	}
+	if !scoped && config.Config.LlmServerAgentSqlScopedRole {
+		ctx.GetLogger().Error("sql: refused tool query, scoped role unavailable", "table", tableName, "role", sqlToolRole, "schema", sqlToolSchema)
+		return nil, 0, errSqlScopedRoleUnavailable
 	}
 
 	// Prepared, not sent as a plain query: Postgres refuses to prepare more
@@ -289,45 +329,129 @@ func sqlExecuteQuery(ctx *security.RequestContext, query string, accountId strin
 	// read-only transaction and run the rest in autocommit.
 	stmt, err := tx.PreparexContext(queryCtx, finalQuery)
 	if err != nil {
-		return nil, toolQueryError(ctx, tableName, timeout, err)
+		return nil, 0, toolQueryError(ctx, tableName, timeout, err)
 	}
+	// A cut cancels the query (scan loop) -> Close errors are expected; don't warn.
+	cut := false
 	defer func() {
-		if err := stmt.Close(); err != nil {
+		if err := stmt.Close(); err != nil && !cut {
 			ctx.GetLogger().Warn("sql: closing tool query statement failed", "error", err)
 		}
 	}()
 	rows, err := stmt.QueryxContext(queryCtx)
 	if err != nil {
-		return nil, toolQueryError(ctx, tableName, timeout, err)
+		return nil, 0, toolQueryError(ctx, tableName, timeout, err)
 	}
 	defer func() {
-		if err := rows.Close(); err != nil {
+		if err := rows.Close(); err != nil && !cut {
 			ctx.GetLogger().Warn("sql: closing tool query rows failed", "error", err)
 		}
 	}()
 
 	colTypes, err := rows.ColumnTypes()
 	if err != nil {
-		return nil, fmt.Errorf("sqlExecuteQuery: read column types: %w", err)
+		return nil, 0, fmt.Errorf("sqlExecuteQuery: read column types: %w", err)
 	}
 	numericCols := numericColumnNames(colTypes)
 	data := []map[string]any{}
+	size := 0
 	for rows.Next() {
 		row := map[string]any{}
 		if err := rows.MapScan(row); err != nil {
-			return nil, fmt.Errorf("sqlExecuteQuery: scan row: %w", err)
+			return nil, 0, fmt.Errorf("sqlExecuteQuery: scan row: %w", err)
+		}
+		// Row cap+1 reached -> more match. Past the size budget -> stop; the first row always fits.
+		// ponytail: a row is read in full before it's measured -> a call holds up to budget + 1 row.
+		size += sqlRowSize(row)
+		if len(data) == rowCap || (len(data) > 0 && size > sqlToolMaxBytes) {
+			// Cancel rather than let Close read the rest of the rows off the wire.
+			cut = true
+			cancel()
+			break
 		}
 		keepNumericText(row, numericCols)
 		data = append(data, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, toolQueryError(ctx, tableName, timeout, err)
+	// After a cut, Err can report the cancel; the rows already read are whole.
+	if err := rows.Err(); err != nil && !cut {
+		return nil, 0, toolQueryError(ctx, tableName, timeout, err)
 	}
-	ctx.GetLogger().Info("sql: executed tool query", "account", accountId, "query", finalQuery, "time", time.Since(t0).String(), "rows", len(data))
-	if len(data) > 5 && limit <= 0 {
-		data = data[0:5]
+	ctx.GetLogger().Info("sql: executed tool query", "account", accountId, "query", finalQuery, "time", time.Since(t0).String(), "rows", len(data), "bytes", size, "cut", cut, "scoped", scoped)
+	if cut {
+		return data, len(data), nil
 	}
-	return data, nil
+	return data, 0, nil
+}
+
+// sqlToolRole and sqlToolSchema come from migration V1112. The role can read
+// only the views in the schema; each view has the name of the table it reads
+// and returns only the rows of the account in app.account_id.
+const (
+	sqlToolRole   = "nb_llm_sql_tools"
+	sqlToolSchema = "nb_llm_tools"
+)
+
+// sqlScopeQuery switches to sqlToolRole, with search_path = sqlToolSchema and
+// app.account_id = $1, where the role and schema exist and this user may switch
+// to the role. It returns no row, and changes nothing, otherwise. All three
+// settings are LOCAL and end with the transaction.
+const sqlScopeQuery = `SELECT set_config('app.account_id', $1, true), set_config('search_path', '` + sqlToolSchema + `', true),
+	set_config('role', r.rolname, true)
+FROM pg_roles r
+WHERE r.rolname = '` + sqlToolRole + `'
+	AND EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = '` + sqlToolSchema + `')
+	AND CASE WHEN current_setting('server_version_num')::int >= 160000
+		THEN pg_has_role(current_user, r.oid, 'SET') ELSE pg_has_role(current_user, r.oid, 'MEMBER') END`
+
+// errSqlScopedRoleUnavailable refuses a tool query when the scoped role is on
+// but V1112's role, schema or grant is missing: it never falls back to
+// llm-server's own database user.
+var errSqlScopedRoleUnavailable = errors.New("sql: this data is unavailable because the read-only database role " + sqlToolRole +
+	" is not set up; an administrator must apply migration V1112's grants")
+
+// sqlScopeToAccount makes the rest of tx read through the account-scoped
+// views, so the tool's SQL, view text included, can see only accountId's rows
+// and no table outside sqlToolSchema. It reports whether it did; false with
+// the setting on means the role is unavailable, and the caller refuses.
+//
+// Known limit: Postgres checks SET ROLE against the login user, so SQL able to
+// call set_config could switch back. sqlCheckSingleTable does not allow it; a
+// separate login role would close this, at the cost of its own credentials.
+func sqlScopeToAccount(ctx context.Context, tx *sqlx.Tx, accountId string) (bool, error) {
+	if !config.Config.LlmServerAgentSqlScopedRole {
+		return false, nil
+	}
+	var account, searchPath, role string
+	err := tx.QueryRowxContext(ctx, sqlScopeQuery, accountId).Scan(&account, &searchPath, &role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// sqlToolMaxRows is the most rows one tool call returns, even under a LIMIT the
+// model wrote. Dev, 90 days: p99 of rows asked for and returned is 100.
+const sqlToolMaxRows = 100
+
+// sqlToolMaxBytes bounds the row data one call holds. The model sees ≤64 KB of
+// output, so more only costs memory (events_execute parses every row it holds).
+const sqlToolMaxBytes = 4 << 20
+
+// sqlRowSize approximates a scanned row's memory by its text and byte values;
+// the rest (numbers, times, bools) are a few bytes each.
+func sqlRowSize(row map[string]any) int {
+	n := 0
+	for _, v := range row {
+		switch v := v.(type) {
+		case string:
+			n += len(v)
+		case []byte:
+			n += len(v)
+		default:
+			n += 8
+		}
+	}
+	return n
 }
 
 // defaultSqlToolQueryTimeout applies when no positive timeout is configured.
@@ -356,24 +480,23 @@ func toolQueryError(ctx *security.RequestContext, tableName string, timeout time
 
 var limitRegex = regexp.MustCompile(`(?i)\bLIMIT\b`)
 
-// buildLimitedQuery wraps a query with an appropriate LIMIT clause.
-// Uses a subquery wrapper so the inner query (including DISTINCT/GROUP BY)
-// is fully evaluated before the limit is applied. Queries that already have
-// a LIMIT clause are left unchanged.
-func buildLimitedQuery(query string, limit int) string {
+// buildLimitedQuery wraps every query as a subquery limited to rowCap+1, so a cut
+// is detectable. rowCap = the tool's limit, or sqlToolMaxRows if the query has its
+// own LIMIT; never above sqlToolMaxRows.
+func buildLimitedQuery(query string, limit int) (_ string, rowCap int) {
 	// Strip single-line comments before checking so a `-- LIMIT ...` comment
-	// doesn't suppress the safety wrapper. String-literal occurrences of LIMIT
+	// doesn't count as the model's LIMIT. String-literal occurrences of LIMIT
 	// can still false-positive; LLM-generated SQL rarely contains such literals.
-	hasUserLimit := limitRegex.MatchString(stripSingleLineComments(query))
-
-	if !hasUserLimit {
-		return fmt.Sprintf("select * from (%s) as ql limit %d;", query, limit)
+	rowCap = limit
+	if limitRegex.MatchString(stripSingleLineComments(query)) {
+		rowCap = sqlToolMaxRows
 	}
-
-	if !strings.HasSuffix(strings.TrimSpace(query), ";") {
-		return query + ";"
+	rowCap = min(rowCap, sqlToolMaxRows)
+	if rowCap <= 0 {
+		rowCap = 5 // a non-positive configured cap falls back to 5 rows
 	}
-	return query
+	query = strings.TrimSuffix(strings.TrimSpace(query), ";")
+	return fmt.Sprintf("select * from (%s) as ql limit %d;", query, rowCap+1), rowCap
 }
 
 // issue with LLMs doing too much escaping
@@ -432,6 +555,11 @@ func sqlBindTable(query, accountId, tableName, tableView string) (string, string
 	if tableName != "anomaly" && tableName != "events" {
 		// These views are not filtered by account themselves.
 		source = fmt.Sprintf("(select * from %s as tv where cloud_account_id = %s)", source, pq.QuoteLiteral(accountId))
+	}
+	if config.Config.LlmServerAgentSqlScopedRole {
+		// OFFSET 0 stops Postgres pushing the model's WHERE below the views'
+		// account filter, where a failing cast could print another account's row.
+		source = "(select * from " + source + " as tool_view offset 0)"
 	}
 	if !hasAlias {
 		source += " as " + tableName

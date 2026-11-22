@@ -163,6 +163,16 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				Multiline:   true,
 				Priority:    30,
 			},
+			// Tools whose calls ask for approval before Nubi runs them (#40399).
+			// The server's own tool names, comma separated; every other tool
+			// runs without asking. llm-server reads this, never the server.
+			"write_tools": {
+				Type:        core.ToolSchemaTypeString,
+				DisplayName: "Tools that need approval",
+				Description: "Tools on this server that change something. Nubi asks for approval before running them; every other tool runs without asking.",
+				Widget:      "mcp_write_tools",
+				Priority:    29,
+			},
 			// Hidden proxy_type for vm_agent mode config push
 			"proxy_type": {
 				Type:     core.ToolSchemaTypeString,

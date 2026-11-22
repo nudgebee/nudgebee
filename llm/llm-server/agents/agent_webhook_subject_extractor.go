@@ -8,6 +8,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -78,8 +79,8 @@ func (a *WebhookSubjectExtractorAgent) GetPlannerType() core.AgentPlannerType {
 
 // GetModelCategory routes this agent to the Summary tier — mapping an alert to a
 // service name is an analysis/extraction task, not cheap retrieval.
-func (a *WebhookSubjectExtractorAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (a *WebhookSubjectExtractorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }
 
 // GetCacheScope caches the stable system prompt (running services + historical
@@ -95,9 +96,12 @@ func (a *WebhookSubjectExtractorAgent) GetModelCategory() core.ModelTier {
 //
 // The classification planner plumbs this via ContextKeyCacheScope (see
 // planner_classification.go); without that this method would be a no-op.
-func (a *WebhookSubjectExtractorAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (a *WebhookSubjectExtractorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
+
+// GetMemoryEnabled is false: a single-shot classifier has no use for memory.
+func (a *WebhookSubjectExtractorAgent) GetMemoryEnabled() bool { return false }
 
 // GetSupportedTools returns none: this is a pure single-shot classifier.
 func (a *WebhookSubjectExtractorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {

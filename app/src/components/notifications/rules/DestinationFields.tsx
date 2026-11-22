@@ -5,7 +5,7 @@ import { Link } from '@ui/Link';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { SlackIcon, MSTeamsIcon, GChatIcon, DiscordIcon } from '@assets';
 import { ds } from '@utils/colors';
-import { Destination, splitTeamsValue, teamsValue } from './destinations';
+import { Destination, teamsChannelOptions } from './destinations';
 
 const ICONS: Record<string, any> = { slack: SlackIcon, ms_teams: MSTeamsIcon, google_chat: GChatIcon, discord: DiscordIcon };
 
@@ -17,8 +17,7 @@ export const PlatformIcon: React.FC<{ platform: string; size?: number }> = ({ pl
 // Ids the e2e suite knows the editor's pickers by.
 export const EDITOR_PICKER_IDS: Record<string, string> = {
   slack: 'slack-channel',
-  'ms_teams-team': 'msteam-groups',
-  'ms_teams-channel': 'msteam-channel',
+  ms_teams: 'msteam-channel',
   google_chat: 'gchat-channel',
   discord: 'discord-channel',
 };
@@ -52,35 +51,6 @@ const DestinationFields: React.FC<Props> = ({ idPrefix, ids = {}, destinations, 
             {d.label}
           </Box>
         );
-        if (d.platform === 'ms_teams') {
-          const { teamId, channelId } = splitTeamsValue(value[d.platform] || '');
-          const team = d.teams?.find((t) => t.value === teamId);
-          return (
-            <Box key={d.platform} sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
-              <Select
-                id={idFor('ms_teams-team')}
-                label={label}
-                size='sm'
-                placeholder='None'
-                clearable
-                loading={d.loading}
-                value={teamId || null}
-                options={(d.teams || []).map((t) => ({ value: t.value, label: t.label }))}
-                onChange={(next) => set(d.platform, teamsValue(next, ''))}
-              />
-              {teamId && (
-                <Select
-                  id={idFor('ms_teams-channel')}
-                  size='sm'
-                  placeholder='Pick a channel'
-                  value={channelId || null}
-                  options={team?.channels || []}
-                  onChange={(next) => set(d.platform, teamsValue(teamId, next))}
-                />
-              )}
-            </Box>
-          );
-        }
         return (
           <Box key={d.platform} sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
             <Select
@@ -91,7 +61,9 @@ const DestinationFields: React.FC<Props> = ({ idPrefix, ids = {}, destinations, 
               clearable
               loading={d.loading}
               value={value[d.platform] || null}
-              options={d.options}
+              options={d.platform === 'ms_teams' ? teamsChannelOptions(d.teams || []) : d.options}
+              grouped={d.platform === 'ms_teams'}
+              defaultGroupsOpen
               onChange={(next) => set(d.platform, next)}
             />
             {d.hint && !d.options.length && (

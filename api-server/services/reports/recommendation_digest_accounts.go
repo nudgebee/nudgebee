@@ -3,6 +3,7 @@ package reports
 import (
 	"encoding/json"
 	"nudgebee/services/config"
+	"nudgebee/services/notification"
 	"nudgebee/services/recommendation"
 	"time"
 
@@ -69,6 +70,7 @@ func queryDigestAccountRecommendations(db *sqlx.DB, tenantID string) ([]digestRe
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
 					AND r.status = 'Open'
 					AND r.category <> 'Security'
 					AND r.finops_band IN ('Act Now', 'Critical', 'High')
@@ -121,8 +123,9 @@ func queryDigestDeltasByAccount(db *sqlx.DB, tenantID string, cutoff time.Time) 
 	}
 	err := db.Select(&newRows, `
 		SELECT COALESCE(cloud_account_id::text, '') AS account_id, finops_band AS band, COUNT(*) AS cnt
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status = 'Open'
 		  AND category <> 'Security'
 		  AND created_at > $2
@@ -144,8 +147,9 @@ func queryDigestDeltasByAccount(db *sqlx.DB, tenantID string, cutoff time.Time) 
 	err = db.Select(&resolvedRows, `
 		SELECT COALESCE(cloud_account_id::text, '') AS account_id, COUNT(*) AS cnt,
 			COALESCE(SUM(estimated_savings), 0) AS savings
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status IN ('Closed', 'Dismissed')
 		  AND category <> 'Security'
 		  AND updated_at > $2
@@ -164,8 +168,9 @@ func queryDigestDeltasByAccount(db *sqlx.DB, tenantID string, cutoff time.Time) 
 	}
 	err = db.Select(&carryoverRows, `
 		SELECT COALESCE(cloud_account_id::text, '') AS account_id, COUNT(*) AS cnt
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status = 'Open'
 		  AND category <> 'Security'
 		  AND created_at <= $2
@@ -185,8 +190,9 @@ func queryDigestDeltasByAccount(db *sqlx.DB, tenantID string, cutoff time.Time) 
 	err = db.Select(&categoryRows, `
 		SELECT COALESCE(cloud_account_id::text, '') AS account_id, category,
 			COALESCE(SUM(estimated_savings), 0) AS savings
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status = 'Open'
 		  AND category <> 'Security'
 		  AND estimated_savings > 0

@@ -1,5 +1,5 @@
 import { getSessionAccountIds, hasAnyCustomGrant, isTenantWideRole } from '@lib/auth';
-import { accessibleAccountOptions, listensToSeveralAccounts, triggerListenAccounts } from '../listenAccounts';
+import { accessibleAccountOptions, listenAccountPickerOptions, listensToSeveralAccounts, triggerListenAccounts } from '../listenAccounts';
 
 jest.mock('@lib/auth', () => ({
   getSessionAccountIds: jest.fn(),
@@ -50,5 +50,47 @@ describe('accessibleAccountOptions', () => {
     (isTenantWideRole as jest.Mock).mockReturnValue(false);
     (hasAnyCustomGrant as jest.Mock).mockReturnValue(true);
     expect(accessibleAccountOptions(options)).toEqual(options);
+  });
+});
+
+// #40526: while accounts loaded, saved accounts showed as raw IDs and the own account vanished.
+describe('listenAccountPickerOptions', () => {
+  const acct = (value: string, label: string) => ({ value, label, cloud_provider: 'K8s', group: 'K8s' });
+
+  beforeEach(() => {
+    (isTenantWideRole as jest.Mock).mockReturnValue(false);
+    (hasAnyCustomGrant as jest.Mock).mockReturnValue(false);
+    (getSessionAccountIds as jest.Mock).mockReturnValue(['own', 'b']);
+  });
+
+  it('labels every shown account, own included, without calling any out of reach while loading', () => {
+    const options = listenAccountPickerOptions([], ['own', 'b'], 'own', true);
+    expect(options.map((o) => [o.value, o.label, o.group])).toEqual([
+      ['own', "This automation's account", ''],
+      ['b', 'Loading…', ''],
+    ]);
+  });
+
+  it('uses account names once loaded and lists only the unreachable one by id', () => {
+    const options = listenAccountPickerOptions([acct('own', 'k8s-dev'), acct('b', 'k8s-prod')], ['own', 'gone'], 'own', false);
+    expect(options.map((o) => [o.value, o.label, o.group])).toEqual([
+      ['own', 'k8s-dev', 'K8s'],
+      ['b', 'k8s-prod', 'K8s'],
+      ['gone', 'gone', 'No access'],
+    ]);
+  });
+
+  it('does not call accounts out of reach when the account list failed to load', () => {
+    const options = listenAccountPickerOptions([], ['own', 'b'], 'own', false);
+    expect(options.map((o) => [o.value, o.group])).toEqual([
+      ['own', ''],
+      ['b', ''],
+    ]);
+  });
+
+  it('keeps the own account when the account list has no entry for it', () => {
+    expect(listenAccountPickerOptions([], ['own'], 'own', false)).toEqual([
+      { value: 'own', label: "This automation's account", cloud_provider: '', group: '' },
+    ]);
   });
 });

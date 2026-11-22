@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden vectors for the KB document_key recipe. Read by llm-server (tools/core/knowledgebase_document_key_golden_test.go) and rag-server (tests/test_document_key.py); both must produce `key` (DocumentKey, the Fact/SOP mark key) and `label_key` (LabelKey, the per-page label row key). Change a vector here and both sides move together or CI fails.",
+  "_comment": "Golden vectors for the KB document_key recipe. Read by llm-server (knowledge/knowledgebase_document_key_golden_test.go) and rag-server (tests/test_document_key.py); both must produce `key` (DocumentKey, the Fact/SOP mark key) and `label_key` (LabelKey, the per-page label row key). Change a vector here and both sides move together or CI fails.",
   "cases": [
     {
       "name": "confluence page id as string",

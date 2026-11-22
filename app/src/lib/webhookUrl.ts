@@ -32,3 +32,33 @@ export const buildWebhookUrl = (integrationName: string | undefined | null, toke
   // byte-identical to the URL the modal shows while guarding the general case.
   return `${window.location.origin}/api/webhooks/${endpoint}?token=${encodeURIComponent(token)}`;
 };
+
+export const buildWebhookBaseUrl = (integrationName: string | undefined | null): string => {
+  if (!integrationName || !integrationName.endsWith('_webhook')) return '';
+  if (typeof window === 'undefined') return '';
+  const endpoint = integrationName.replace(/_webhook$/, '').replace(/_/g, '-');
+  return `${window.location.origin}/api/webhooks/${endpoint}`;
+};
+
+// Alertmanager receiver that sends the token as `Authorization: Bearer` rather
+// than in the URL: Alertmanager logs the full webhook URL on every failed
+// delivery, but never http_config.authorization. A receiver alone receives
+// nothing, so the snippet also carries the child route; `continue: true` keeps
+// the user's existing receivers getting the same alerts.
+export const buildAlertmanagerReceiverSnippet = (url: string, token: string): string => {
+  return `route:
+  routes:
+    # Add as the first child of your existing route.
+    - receiver: 'nudgebee'
+      continue: true
+
+receivers:
+  - name: 'nudgebee'
+    webhook_configs:
+      - url: '${url}'
+        send_resolved: true
+        http_config:
+          authorization:
+            type: Bearer
+            credentials: '${token}'`;
+};

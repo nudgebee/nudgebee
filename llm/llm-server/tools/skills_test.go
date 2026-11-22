@@ -3,11 +3,13 @@ package tools
 import (
 	"fmt"
 	"html"
-	"nudgebee/llm/security"
-	"nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
 	"testing"
+
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +19,7 @@ func TestSearchSkills_CandidatesLoadExactChunks(t *testing.T) {
 	useLegacySkillLoading(t)
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
 		AccountId: "search-roundtrip-account", ConversationId: "conversation", MessageId: "message"}
-	docs := core.RAGSearchResults{
+	docs := knowledge.RAGSearchResults{
 		{Document: "first chunk <canary>", Metadata: map[string]any{"title": "Article", "url": "https://example.com/article"}},
 		{Document: "second chunk", Metadata: map[string]any{"title": "Article", "url": "https://example.com/article"}},
 		{Document: "   "},
@@ -49,15 +51,15 @@ func TestSearchSkills_CandidatesLoadExactChunks(t *testing.T) {
 func TestCachedCandidatesCarryDocumentMarks(t *testing.T) {
 	useLegacySkillLoading(t)
 	previous := resolveDocumentCategoriesFn
-	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs core.RAGSearchResults) core.RAGSearchResults {
-		out := make(core.RAGSearchResults, len(docs))
+	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs knowledge.RAGSearchResults) knowledge.RAGSearchResults {
+		out := make(knowledge.RAGSearchResults, len(docs))
 		for i, doc := range docs {
 			metadata := map[string]any{}
 			for k, v := range doc.Metadata {
 				metadata[k] = v
 			}
 			if metadata["page_id"] == "101" {
-				metadata[core.DocumentNoteCategoryKey] = core.KBNoteCategorySOP
+				metadata[knowledge.DocumentNoteCategoryKey] = knowledge.KBNoteCategorySOP
 			}
 			doc.Metadata = metadata
 			out[i] = doc
@@ -68,21 +70,21 @@ func TestCachedCandidatesCarryDocumentMarks(t *testing.T) {
 
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
 		AccountId: "marked-candidates-account", ConversationId: "conversation", MessageId: "message"}
-	docs := core.RAGSearchResults{
+	docs := knowledge.RAGSearchResults{
 		{Document: "runbook steps", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "101", "title": "Runbook", "url": "https://wiki.test/101"}},
 		{Document: "background", Metadata: map[string]any{"collection": "integration-a_knowledge_base", "page_id": "102", "title": "Notes", "url": "https://wiki.test/102"}},
 	}
 	results := cacheSearchKnowledgeCandidates(ctx, docs)
 	require.Len(t, results, 2)
-	var purposes []core.KnowledgeContentPurpose
+	var purposes []knowledge.KnowledgeContentPurpose
 	for _, result := range results {
 		match := regexp.MustCompile(`id="(knowledge:[a-f0-9]+)"`).FindStringSubmatch(result)
 		require.Len(t, match, 2)
-		candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, match[1])
+		candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, match[1])
 		require.True(t, ok)
 		purposes = append(purposes, candidate.Purpose)
 	}
-	assert.Equal(t, []core.KnowledgeContentPurpose{core.KnowledgePurposeProcedure, core.KnowledgePurposeReference}, purposes)
+	assert.Equal(t, []knowledge.KnowledgeContentPurpose{knowledge.KnowledgePurposeProcedure, knowledge.KnowledgePurposeReference}, purposes)
 }
 
 func TestLoadSkillsTool_MixedValidAndExpiredCandidatesReportsMissing(t *testing.T) {
@@ -91,8 +93,8 @@ func TestLoadSkillsTool_MixedValidAndExpiredCandidatesReportsMissing(t *testing.
 		AccountId: "mixed-candidates-account", ConversationId: "conversation", MessageId: "message"}
 	const valid = "knowledge:abcdef0123456789"
 	const missing = "knowledge:missing"
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId,
-		core.KnowledgeCandidate{ID: valid, Content: "valid body"}))
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId,
+		knowledge.KnowledgeCandidate{ID: valid, Content: "valid body"}))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": valid + ", " + missing}})
 	require.NoError(t, err)
 	assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
@@ -133,7 +135,7 @@ func TestLoadSkillsTool_LoadDiscoveredKnowledgeCandidateWithoutDB(t *testing.T) 
 		messageID      = "message-candidate-test"
 		candidateID    = "knowledge:0123456789abcdef"
 	)
-	require.NoError(t, core.StoreKnowledgeCandidate(accountID, conversationID, messageID, core.KnowledgeCandidate{
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(accountID, conversationID, messageID, knowledge.KnowledgeCandidate{
 		ID:      candidateID,
 		Title:   "Checkout log fields",
 		Source:  "confluence",
@@ -389,15 +391,15 @@ func TestLoadSkillsTool_ArgumentParsing(t *testing.T) {
 func TestSearchResponsePrintsGuidanceOncePerPurpose(t *testing.T) {
 	useLegacySkillLoading(t)
 	previous := resolveDocumentCategoriesFn
-	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs core.RAGSearchResults) core.RAGSearchResults {
-		out := make(core.RAGSearchResults, len(docs))
+	resolveDocumentCategoriesFn = func(_ *security.RequestContext, _ string, docs knowledge.RAGSearchResults) knowledge.RAGSearchResults {
+		out := make(knowledge.RAGSearchResults, len(docs))
 		for i, doc := range docs {
 			metadata := map[string]any{}
 			for k, v := range doc.Metadata {
 				metadata[k] = v
 			}
 			if metadata["page_id"] == "101" {
-				metadata[core.DocumentNoteCategoryKey] = core.KBNoteCategorySOP
+				metadata[knowledge.DocumentNoteCategoryKey] = knowledge.KBNoteCategorySOP
 			}
 			doc.Metadata = metadata
 			out[i] = doc
@@ -408,16 +410,16 @@ func TestSearchResponsePrintsGuidanceOncePerPurpose(t *testing.T) {
 
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(),
 		AccountId: "guidance-once-account", ConversationId: "conversation", MessageId: "message"}
-	var docs core.RAGSearchResults
+	var docs knowledge.RAGSearchResults
 	for _, page := range []string{"101", "102", "103", "104", "105"} {
-		docs = append(docs, core.RAGSearchResult{Document: "steps " + page, Metadata: map[string]any{
+		docs = append(docs, knowledge.RAGSearchResult{Document: "steps " + page, Metadata: map[string]any{
 			"collection": "integration-a_knowledge_base", "page_id": page, "title": "Page " + page, "url": "https://wiki.test/" + page}})
 	}
 	results := cacheSearchKnowledgeCandidates(ctx, docs)
 	require.Len(t, results, 5)
 
-	procedure := html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurposeProcedure))
-	reference := html.EscapeString(core.KnowledgePurposeGuidance(core.KnowledgePurposeReference))
+	procedure := html.EscapeString(knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurposeProcedure))
+	reference := html.EscapeString(knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurposeReference))
 	for _, result := range results {
 		assert.NotContains(t, result, procedure, "a hit no longer carries the guidance itself")
 		assert.NotContains(t, result, reference, "a hit no longer carries the guidance itself")

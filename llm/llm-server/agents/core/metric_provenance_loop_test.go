@@ -27,13 +27,9 @@ func TestMetricProvenancePlannerExecution(t *testing.T) {
 	}
 	previous := config.Config
 	t.Cleanup(func() { config.Config = previous })
-	previousDAO := GetConversationDao()
-	conversationDaoMutex.Lock()
+	previousDAO := PeekConversationDao()
 	SetConversationDao(&metricLoopDAO{claimCaptureDAO{IConversationDao: previousDAO}})
-	conversationDaoMutex.Unlock()
 	t.Cleanup(func() {
-		conversationDaoMutex.Lock()
-		defer conversationDaoMutex.Unlock()
 		SetConversationDao(previousDAO)
 	})
 	config.Config.LlmServerAgentMaxScratchpadChars = 4096
@@ -157,8 +153,8 @@ func (*metricLoopDAO) SaveCritique(*ConversationCritique) error { return nil }
 
 func TestEmptyMetricRuleIsPresentWhenCritiqueIsDisabled(t *testing.T) {
 	const (
-		rule          = "An empty metric response is inconclusive: never infer zero or a numeric value from it."
-		discoveryRule = "Do not conclude that the metric is unavailable from the first empty query"
+		rule          = "an empty filter or threshold result means nothing matched"
+		discoveryRule = "follow the tool's discovery guidance and retry"
 	)
 	previous := config.Config
 	t.Cleanup(func() { config.Config = previous })
@@ -269,13 +265,9 @@ func TestMetricDiscoveryBeforeUnavailablePlannerExecution(t *testing.T) {
 				noData := metricDiscoveryNoDataResponse(metricDiscoveryWrongLabelQuery)
 				previous := config.Config
 				t.Cleanup(func() { config.Config = previous })
-				previousDAO := GetConversationDao()
-				conversationDaoMutex.Lock()
+				previousDAO := PeekConversationDao()
 				SetConversationDao(&metricLoopDAO{claimCaptureDAO{IConversationDao: previousDAO}})
-				conversationDaoMutex.Unlock()
 				t.Cleanup(func() {
-					conversationDaoMutex.Lock()
-					defer conversationDaoMutex.Unlock()
 					SetConversationDao(previousDAO)
 				})
 				config.Config.LlmServerAgentMaxScratchpadChars = 200000

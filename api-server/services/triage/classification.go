@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/services/internal/database/models"
+
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 )
@@ -247,7 +249,7 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 	}
 
 	if ruleID != nil {
-		ClearTriageRulesCache()
+		ClearTriageRulesCache(tenantID)
 	}
 
 	// 12. Queue bulk update for existing events (async, outside transaction).
@@ -346,20 +348,21 @@ func GetDuplicateSuggestions(ctx context.Context, db *sqlx.DB, eventID, cloudAcc
 
 // eventBasicInfo holds basic event info for internal use
 type eventBasicInfo struct {
-	ID               string  `db:"id"`
-	Title            string  `db:"title"`
-	Fingerprint      *string `db:"fingerprint"`
-	ComputedScore    *int    `db:"computed_score"`
-	ComputedPriority *string `db:"computed_priority"`
-	CloudAccountID   string  `db:"cloud_account_id"`
-	TenantID         string  `db:"tenant"`
-	AggregationKey   *string `db:"aggregation_key"`
-	FindingType      *string `db:"finding_type"`
-	Source           *string `db:"source"`
-	SubjectType      *string `db:"subject_type"`
-	SubjectName      *string `db:"subject_name"`
-	SubjectOwner     *string `db:"subject_owner"`
-	SubjectNamespace *string `db:"subject_namespace"`
+	ID               string       `db:"id"`
+	Title            string       `db:"title"`
+	Fingerprint      *string      `db:"fingerprint"`
+	ComputedScore    *int         `db:"computed_score"`
+	ComputedPriority *string      `db:"computed_priority"`
+	CloudAccountID   string       `db:"cloud_account_id"`
+	TenantID         string       `db:"tenant"`
+	AggregationKey   *string      `db:"aggregation_key"`
+	FindingType      *string      `db:"finding_type"`
+	Source           *string      `db:"source"`
+	SubjectType      *string      `db:"subject_type"`
+	SubjectName      *string      `db:"subject_name"`
+	SubjectOwner     *string      `db:"subject_owner"`
+	SubjectNamespace *string      `db:"subject_namespace"`
+	Labels           *models.Json `db:"labels"`
 }
 
 // classKey derives the signal-class key for this event projection (same formula as ClassKey).
@@ -370,14 +373,14 @@ func (e *eventBasicInfo) classKey() string {
 		Type:      deref(e.SubjectType),
 		Name:      deref(e.SubjectName),
 		Namespace: deref(e.SubjectNamespace),
-	})
+	}, jsonObject(e.Labels))
 }
 
 // loadEventByID loads basic event info by ID
 func loadEventByID(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID string) (*eventBasicInfo, error) {
 	query := `
 		SELECT id, title, fingerprint, computed_score, computed_priority, cloud_account_id, tenant,
-		       aggregation_key, finding_type, source, subject_type, subject_name, subject_owner, subject_namespace
+		       aggregation_key, finding_type, source, subject_type, subject_name, subject_owner, subject_namespace, labels
 		FROM events
 		WHERE id = $1 AND cloud_account_id = $2
 	`
@@ -989,8 +992,19 @@ func UpdateNBStatus(ctx context.Context, db *sqlx.DB, req UpdateNBStatusRequest,
 		return nil, fmt.Errorf("failed to update nb_status: %w", err)
 	}
 
-	// Log to event_history
-	go logStatusChangeToHistory(ctx, db, req.EventID, cloudAccountID, userID, prevStatus, req.NBStatus)
+	// Log to event_history, carrying the user's reason (if any) so the timeline shows why.
+	reason := ""
+	if req.ReasonText != nil {
+		reason = strings.TrimSpace(*req.ReasonText)
+	}
+	// Detach from the request context: this fire-and-forget write outlives the HTTP request, and the
+	// request ctx is cancelled the moment the handler returns its response. Using it here failed the
+	// insert with "context canceled" and silently dropped EVERY manual status-change history row.
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		logStatusChangeToHistory(bgCtx, db, req.EventID, cloudAccountID, userID, prevStatus, req.NBStatus, reason)
+	}()
 
 	return &UpdateNBStatusResponse{
 		Success:    true,
@@ -999,8 +1013,9 @@ func UpdateNBStatus(ctx context.Context, db *sqlx.DB, req UpdateNBStatusRequest,
 	}, nil
 }
 
-// logStatusChangeToHistory logs status changes to event_history
-func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID, userID, prevStatus, newStatus string) {
+// logStatusChangeToHistory logs status changes to event_history. reason is the optional user-provided
+// note for the change; when empty it falls back to the generic "manual_status_update" marker.
+func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID, userID, prevStatus, newStatus, reason string) {
 	// Get tenant_id for the event
 	var tenantID string
 	err := db.GetContext(ctx, &tenantID, "SELECT tenant FROM events WHERE id = $1", eventID)
@@ -1023,7 +1038,12 @@ func logStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventID, cloudAc
 	oldValue, _ := json.Marshal(map[string]string{"nb_status": prevStatus})
 	newValue, _ := json.Marshal(map[string]string{"nb_status": newStatus})
 
-	_, err = db.ExecContext(ctx, query, historyID, eventID, cloudAccountID, tenantID, changeType, userID, string(oldValue), string(newValue), "manual_status_update")
+	changeReason := "manual_status_update"
+	if reason != "" {
+		changeReason = reason
+	}
+
+	_, err = db.ExecContext(ctx, query, historyID, eventID, cloudAccountID, tenantID, changeType, userID, string(oldValue), string(newValue), changeReason)
 	if err != nil {
 		slog.WarnContext(ctx, "Failed to log status change to history", "error", err)
 	}

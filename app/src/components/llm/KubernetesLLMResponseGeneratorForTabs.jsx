@@ -185,11 +185,12 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
   const listAgents = () => {
     setAllAgents([]);
     setLoadingAgents(true);
-    apiAskNudgebee.listAgents({ accountId }).then((res) => {
+    apiAskNudgebee.listAgents({ accountId, includeSwitchedOff: true }).then((res) => {
       let listAgentResponse = res?.data?.data?.ai_list_agents?.data ?? [];
       if (listAgentResponse.length > 0) {
         const agents = listAgentResponse
-          .filter((agent) => agent.status === 'enabled')
+          // Switched-off organisation agents are listed for switching back on, not offered.
+          .filter((agent) => agent.status === 'enabled' && !agent.switched_off)
           .map((agent) => {
             return { name: agent.name, display_name: agent.aliases?.[0] ?? agent.name };
           });

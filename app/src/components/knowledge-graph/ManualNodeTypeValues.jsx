@@ -68,7 +68,14 @@ export const typeCategories = (schema) => {
   const { outside, providers } = groupTypeValues(schema);
   const out = [];
   if (outside.length) {
-    out.push({ key: 'outside', label: 'Not in an account', column: 'node_type', valueOf: (k) => k.node_type, kinds: outside });
+    // A kind of the tenant's own is named by its specific_type; its node_type is the category.
+    out.push({
+      key: 'outside',
+      label: 'Not in an account',
+      column: 'node_type',
+      valueOf: (k) => (k.free_properties ? k.specific_type : k.node_type),
+      kinds: outside,
+    });
   }
   for (const { provider, kinds } of providers) {
     out.push({ key: provider, label: PROVIDER_LABELS[provider] ?? provider, column: 'specific_type', valueOf: (k) => k.specific_type, kinds });
@@ -97,9 +104,9 @@ const ManualNodeTypeValues = ({ schema }) => {
       }}
     >
       <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], lineHeight: 1.5 }}>
-        Values for a node&apos;s type, by account type. Outside a connected account set <Code>node_type</Code>; in a connected account set{' '}
-        <Code>specific_type</Code> — only the clouds connected to this tenant are listed. &quot;Also needs&quot; are the other fields that decide the
-        node&apos;s identity.
+        Values for a node&apos;s type, by account type. Outside a connected account set <Code>node_type</Code> — for a kind of your own, also its name
+        as <Code>specific_type</Code>; in a connected account set <Code>specific_type</Code> — only the clouds connected to this tenant are listed.
+        &quot;Also needs&quot; are the other fields that decide the node&apos;s identity.
       </Typography>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }} role='group' aria-label='Account type'>
         {categories.map((c) => (

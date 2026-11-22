@@ -65,3 +65,87 @@ func TestProcessBulkClassification_DatabaseErrorIsRequeued(t *testing.T) {
 	assert.ErrorIs(t, err, dbErr)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// History and rule matches for a batch are written before the next batch is
+// selected, on the consumer's goroutine. Detached goroutines made the audit
+// trail race the job: it could still be writing, or have silently failed,
+// after the job was marked completed and the message acked.
+func TestProcessBulkClassification_AuditWrittenBeforeNextBatch(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+	db := sqlx.NewDb(raw, "postgres")
+
+	const (
+		jobID   = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a05"
+		ruleID  = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a06"
+		account = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a07"
+		evt1    = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a08"
+		evt2    = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a09"
+	)
+	payload := `{"job_id":"` + jobID + `","fingerprint":"fp","account_id":"` + account + `","exclude_event_id":"0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a0a","new_status":"SUPPRESSED","rule_id":"` + ruleID + `"}`
+
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(BulkStatusProcessing, "", jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id FROM events").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(evt1).AddRow(evt2))
+	mock.ExpectExec("UPDATE events").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectQuery("SELECT id, cloud_account_id, tenant FROM events").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "cloud_account_id", "tenant"}).
+			AddRow(evt1, account, "t1").AddRow(evt2, account, "t1"))
+	mock.ExpectExec("INSERT INTO event_history").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectQuery("SELECT tenant FROM events").
+		WillReturnRows(sqlmock.NewRows([]string{"tenant"}).AddRow("t1"))
+	mock.ExpectExec("INSERT INTO event_triage_rule_matches").WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(2, jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id FROM events").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(BulkStatusCompleted, 2, jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE event_triage_rules").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = ProcessBulkClassification(context.Background(), db, []byte(payload))
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// The events are already updated when the audit write runs, and a requeued job
+// skips events at the target status, so an audit failure must not fail the
+// job: returning it would requeue a message that can never repair the gap.
+func TestProcessBulkClassification_AuditFailureDoesNotFailJob(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = raw.Close() }()
+	db := sqlx.NewDb(raw, "postgres")
+
+	const (
+		jobID   = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a0b"
+		account = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a0c"
+		evt1    = "0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a0d"
+	)
+	payload := `{"job_id":"` + jobID + `","fingerprint":"fp","account_id":"` + account + `","exclude_event_id":"0b6f4f0e-5d0a-4a52-9a43-3c1f6f1f2a0e","new_status":"SUPPRESSED"}`
+
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(BulkStatusProcessing, "", jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id FROM events").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(evt1))
+	mock.ExpectExec("UPDATE events").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id, cloud_account_id, tenant FROM events").
+		WillReturnRows(sqlmock.NewRows([]string{"id", "cloud_account_id", "tenant"}).AddRow(evt1, account, "t1"))
+	mock.ExpectExec("INSERT INTO event_history").WillReturnError(errors.New("pq: deadlock detected"))
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(1, jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT id FROM events").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectExec("UPDATE event_bulk_operations").
+		WithArgs(BulkStatusCompleted, 1, jobID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = ProcessBulkClassification(context.Background(), db, []byte(payload))
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

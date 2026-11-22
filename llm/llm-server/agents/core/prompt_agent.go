@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/samber/lo"
@@ -344,7 +346,7 @@ func renderRAGExamples(p NBAgentPrompt, query NBAgentRequest, plannerType AgentP
 		numberOfResults := p.Rag.Records
 		if numberOfResults <= 1 {
 			// Single-result path (existing behavior)
-			document := toolcore.GetRAG(query.UserId, query.AccountId, query.Query, p.Rag.Module, query.ConversationId, query.MessageId, query.ParentAgentId, true)
+			document := knowledge.GetRAG(query.UserId, query.AccountId, query.Query, p.Rag.Module, query.ConversationId, query.MessageId, query.ParentAgentId, true)
 			if document.Document != "" {
 				matchingDocString := formatRAGDocument(p.Rag, document.Document)
 				if isReActStylePlanner(plannerType) {
@@ -361,7 +363,7 @@ func renderRAGExamples(p NBAgentPrompt, query NBAgentRequest, plannerType AgentP
 			}
 		} else {
 			// Multi-result path: fetch N results from RAG
-			documents := toolcore.QueryRAG(query.UserId, query.AccountId, query.Query,
+			documents := knowledge.QueryRAG(query.UserId, query.AccountId, query.Query,
 				p.Rag.Module, numberOfResults, query.ConversationId,
 				query.MessageId, query.ParentAgentId, true)
 

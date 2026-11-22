@@ -1,12 +1,13 @@
 // Not for OSS
 import { Page, Locator } from "@playwright/test";
-import { OptimizeLocators } from "../OptimizeLocators";
+import { CommonLocators } from "../../GlobalLocators";
 
-// AI Gateway — the BYO-token gateway usage module on the tenant Optimize page
-// (app/src/components/llm/gateway-usage/GatewayUsage.tsx), mounted by
-// app/src/pages/optimise/index.jsx as filterOptions id 'ai-gateway', fragment
-// 'ai-gateway'. Its own screens are a CustomTabs strip that writes
-// #ai-gateway/<screen> into the URL.
+// AI Gateway — the BYO-token gateway usage module on its own page, /ai-gateway
+// (app/src/pages/ai-gateway/index.tsx mounting components/llm/gateway-usage/GatewayUsage.tsx).
+// The page's AnchorComponent strip holds four sections; the open section's screens sit
+// on an inner CustomTabs strip. The URL is #<section> for a section's first screen and
+// #<section>/<screen> for the rest. Kept under tests/Optimize because it used to be an
+// Optimize tab; /optimise#ai-gateway[/<screen>] still redirects here.
 //
 // Rung choices below follow the qa-automation-code-check ladder against what the
 // module actually renders, measured rather than assumed:
@@ -17,11 +18,37 @@ import { OptimizeLocators } from "../OptimizeLocators";
 // so rung 1 is unavailable for every control below — role leads wherever the element
 // carries an accessible name, and the ids the module renders are the rest.
 
-// Screens on the inner strip, in the left-to-right order TAB_IDS declares them, so a
-// caller iterating this reads the same order a user does.
-export const GATEWAY_SCREENS = ["connect", "overview", "models", "users", "requests", "sessions", "tools", "governance"] as const;
+// Every screen the module declares, in the order TAB_IDS declares them.
+export const GATEWAY_SCREENS = ["connect", "overview", "models", "users", "keys", "requests", "sessions", "tools", "governance"] as const;
 
 export type GatewayScreen = (typeof GATEWAY_SCREENS)[number];
+
+// Sections on the page strip and the screens each one holds, first screen first —
+// GROUPS in GatewayUsage.tsx. Connect and Governance hold one screen and show no inner strip.
+export const GATEWAY_SECTIONS = {
+  connect: ["connect"],
+  monitor: ["overview", "models", "users", "keys"],
+  activity: ["requests", "sessions", "tools"],
+  governance: ["governance"],
+} as const satisfies Record<string, readonly GatewayScreen[]>;
+
+export type GatewaySection = keyof typeof GATEWAY_SECTIONS;
+
+export function sectionOf(screen: GatewayScreen): GatewaySection {
+  return (Object.keys(GATEWAY_SECTIONS) as GatewaySection[]).find((s) =>
+    (GATEWAY_SECTIONS[s] as readonly GatewayScreen[]).includes(screen)
+  )!;
+}
+
+// The hash GatewayUsage writes for a screen: the bare section for its first screen.
+export function screenHash(screen: GatewayScreen): string {
+  const section = sectionOf(screen);
+  return GATEWAY_SECTIONS[section][0] === screen ? `#${section}` : `#${section}/${screen}`;
+}
+
+export function hasInnerStrip(screen: GatewayScreen): boolean {
+  return GATEWAY_SECTIONS[sectionOf(screen)].length > 1;
+}
 
 // CustomTable renders `${id}` on the table and `${id}-body` on the tbody; while a fetch
 // is in flight it swaps in a skeleton tbody that carries no id, so the id'd body being
@@ -32,10 +59,7 @@ export const REQUESTS_TABLE = "gateway-requests-table";
 // code through StatusPill (an em-dash when the request recorded none).
 const REQUESTS_STATUS_CELL = "td:nth-child(8)";
 
-export class AiGatewayLocators extends OptimizeLocators {
-  // Outer Optimize strip.
-  readonly aiGatewayTab: Locator;
-
+export class AiGatewayLocators extends CommonLocators {
   // Module root and inner strip.
   readonly root: Locator;
   readonly screenStrip: Locator;
@@ -70,12 +94,6 @@ export class AiGatewayLocators extends OptimizeLocators {
 
   constructor(page: Page) {
     super(page);
-
-    // AnchorComponent renders every Optimize tab as `#anchor-tab-<opt.id>`. "AI Gateway"
-    // is not unique on the page — the sidebar's Optimize flyout carries the same label —
-    // and `.or()` resolves in document order, so a page-wide role fallback could return
-    // the sidebar link and navigate away. The id is the highest unambiguous rung here.
-    this.aiGatewayTab = page.locator("#anchor-tab-ai-gateway");
 
     // A bare <Box id> with no role and no accessible name, so rungs 1-2 do not exist and a
     // text or CSS fallback would match the page body just as well. Id-only, deliberately.
@@ -149,6 +167,13 @@ export class AiGatewayLocators extends OptimizeLocators {
     // role="table" is ambiguous with the screens left mounted behind this one.
     this.sessionsBody = page.locator("#gateway-sessions-table-body");
     this.sessionsEmpty = this.emptyState("No sessions");
+  }
+
+  // One section on the page strip. AnchorComponent renders each as `#anchor-tab-<opt.id>`
+  // with ids `ai-gateway-<section>`. The section names repeat in the sidebar's AI Gateway
+  // flyout, so a page-wide role fallback could return a sidebar row — id-only.
+  sectionTab(section: GatewaySection): Locator {
+    return this.page.locator(`#anchor-tab-ai-gateway-${section}`);
   }
 
   // One tab on the inner strip. MUI Tab keeps role="tab" and aria-selected in CustomTabs'
@@ -229,6 +254,7 @@ const SCREEN_LABEL: Record<GatewayScreen, string> = {
   overview: "Overview",
   models: "Models",
   users: "Users",
+  keys: "Keys",
   requests: "Requests",
   sessions: "Sessions",
   tools: "Tools",

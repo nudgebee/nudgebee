@@ -33,7 +33,7 @@ class DirectVectorStore:
         if not documents:
             return
 
-        texts = [doc.page_content for doc in documents]
+        texts = [doc.retrieval_text() for doc in documents]
         vectors = self.embedding_function.embed_documents(texts)
 
         points = []

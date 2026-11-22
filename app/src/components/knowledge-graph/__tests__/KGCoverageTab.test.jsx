@@ -53,6 +53,8 @@ it('warns which account loses its nodes, and confirms before saving', async () =
   expect(warning).toHaveTextContent(/Prod AWS/);
   expect(warning).not.toHaveTextContent(/Staging GCP/);
   expect(warning).toHaveTextContent(/next hourly rebuild/);
+  // One account takes the singular verb and pronoun (#40705).
+  expect(warning).toHaveTextContent('1 cloud account (Prod AWS) loses every node and edge it owns');
 
   // The destructive save must not go through on the first click.
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
@@ -80,7 +82,7 @@ it('warns about a removed flow source too, since the same Save drops its edges',
 
   const warning = screen.getByRole('alert');
   expect(warning).toHaveTextContent(/eBPF/);
-  expect(warning).toHaveTextContent(/lose every edge they created/);
+  expect(warning).toHaveTextContent(/loses every edge it created/);
 });
 
 it('saves straight through when coverage is only added', async () => {

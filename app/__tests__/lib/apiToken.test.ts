@@ -223,6 +223,11 @@ describe('authenticateApiToken', () => {
     expect(await authenticateApiToken(RAW_TOKEN)).toBeNull();
   });
 
+  it('rejects a key held by a bee account, which acts only through its runs', async () => {
+    lookupReturning(userAuthRow({ user: { ...userAuthRow().user, kind: 'bee' } }));
+    expect(await authenticateApiToken(RAW_TOKEN)).toBeNull();
+  });
+
   it('rejects an expired token', async () => {
     lookupReturning(userAuthRow({ expires_at: new Date(Date.now() - 1000).toISOString() }));
     expect(await authenticateApiToken(RAW_TOKEN)).toBeNull();

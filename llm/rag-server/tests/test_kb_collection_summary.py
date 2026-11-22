@@ -30,11 +30,17 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from rag.core.documents import collection as collection_module
-from rag.core.documents import processing
+from rag.core.documents import kb_document_seed, processing
 from rag.core.utils import db_query
 
 COLLECTION = "kb_11111111-1111-1111-1111-111111111111"
-LABEL_SELECTOR = ["metadata.kind", "metadata.shape", "metadata.capabilities", "metadata.capabilities_extracted"]
+# The labels plus the few metadata fields that identify a page: never the chunk text.
+LABEL_SELECTOR = list(
+    dict.fromkeys(
+        ["metadata.kind", "metadata.shape", "metadata.capabilities", "metadata.capabilities_extracted"]
+        + kb_document_seed.PAYLOAD_FIELDS
+    )
+)
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +49,8 @@ LABEL_SELECTOR = ["metadata.kind", "metadata.shape", "metadata.capabilities", "m
 
 class _Result:
     """What `connection.execute(...)` returns: iterable rows plus .first()."""
+
+    rowcount = 0
 
     def __init__(self, rows):
         self._rows = list(rows)
@@ -466,7 +474,7 @@ def test_refresh_writes_through_to_the_row_upsert_and_the_row_delete(qdrant, mon
     _seed(qdrant, "kb_unlabelled", [None])
     processing.refresh_kb_collection_summary("kb_unlabelled")
 
-    (upsert_sql, upsert_params), (delete_sql, delete_params) = executed
+    (upsert_sql, upsert_params), (page_sql, page_params), (delete_sql, delete_params) = executed
     assert upsert_sql.startswith("INSERT INTO llm_kb_capability_entries")
     assert upsert_params == {
         "collection_name": COLLECTION,
@@ -474,8 +482,81 @@ def test_refresh_writes_through_to_the_row_upsert_and_the_row_delete(qdrant, mon
         "shapes": ["decision_tree"],
         "capabilities": ["k8s.workload_restart"],
     }
+    # A manual knowledge base is one document, labelled under its collection's name.
+    assert page_sql.startswith("INSERT INTO llm_kb_capability_entries") and "'kb_document'" in page_sql
+    assert page_params["collection_name_0"] == COLLECTION and page_params["document_key_0"] == COLLECTION
+    assert page_params["kinds_0"] == ["sop"] and page_params["shapes_0"] == ["decision_tree"]
+    assert page_params["capabilities_0"] == ["k8s.workload_restart"] and page_params["source_version_0"] is None
     assert delete_sql.startswith("DELETE FROM llm_kb_capability_entries")
     assert delete_params == {"collection_name": "kb_unlabelled"}
+
+
+INTEGRATION = "int-1_knowledge_base"
+
+
+@pytest.fixture
+def page_writes(monkeypatch):
+    """Records every batch of per-page label rows refresh hands to the upsert."""
+    batches = []
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", lambda rows: batches.append(rows) or len(rows))
+    return batches
+
+
+def test_refresh_writes_one_label_row_per_page_from_the_scan_it_already_makes(qdrant, summary_writes, page_writes):
+    _seed(
+        qdrant,
+        INTEGRATION,
+        [
+            {"page_id": 11, "chunk_index": 0, **_labelled("sop", "decision_tree", ["k8s.workload_restart"])},
+            {"page_id": 11, "chunk_index": 1, **_labelled("sop", "decision_tree", ["k8s.workload_restart"])},
+            {"page_id": 12, "chunk_index": 0, **_labelled("knowledge", "narrative_reference", [])},
+            {"page_id": 13, "chunk_index": 0},  # unlabelled: no row
+        ],
+    )
+
+    processing.refresh_kb_collection_summary(INTEGRATION)
+
+    (rows,) = page_writes
+    assert {r["document_key"]: (r["kind"], r["shape"], r["capabilities"]) for r in rows} == {
+        f"{INTEGRATION}|11": ("sop", "decision_tree", ["k8s.workload_restart"]),
+        f"{INTEGRATION}|12": ("knowledge", "narrative_reference", []),
+    }
+    assert len(qdrant.summary_scrolls()) == 1, "the rollup and the page rows come from one scan"
+
+
+def test_refresh_hands_the_upsert_the_labels_the_chunks_carry_now(qdrant, summary_writes, page_writes):
+    _seed(qdrant, INTEGRATION, [{"page_id": 11, **_labelled("knowledge", "narrative_reference", [])}])
+    processing.refresh_kb_collection_summary(INTEGRATION)
+    _seed(qdrant, INTEGRATION, [{"page_id": 11, **_labelled("sop", "decision_tree", ["k8s.workload_restart"])}])
+
+    processing.refresh_kb_collection_summary(INTEGRATION)  # the page was re-classified
+
+    first, second = page_writes
+    assert first[0]["kind"] == "knowledge"
+    assert (second[0]["kind"], second[0]["capabilities"]) == ("sop", ["k8s.workload_restart"])
+
+
+def test_a_failed_page_write_is_logged_and_leaves_the_rollup_written(qdrant, summary_writes, monkeypatch, caplog):
+    def boom(rows):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", boom)
+    _seed(qdrant, INTEGRATION, [{"page_id": 11, **_labelled()}])
+
+    with caplog.at_level(logging.ERROR, logger=processing.logger.name):
+        processing.refresh_kb_collection_summary(INTEGRATION)  # must not raise
+
+    assert len(summary_writes) == 1
+    assert any("per-page label rows" in r.getMessage() and INTEGRATION in r.getMessage() for r in caplog.records)
+
+
+def test_a_failed_scan_writes_no_page_rows(qdrant, summary_writes, page_writes):
+    _seed(qdrant, INTEGRATION, [{"page_id": 11, **_labelled()}])
+    qdrant.fail_scroll_after = 0
+
+    processing.refresh_kb_collection_summary(INTEGRATION)
+
+    assert summary_writes == [] and page_writes == []
 
 
 def test_refresh_scroll_error_writes_nothing_and_does_not_raise(qdrant, summary_writes, caplog):

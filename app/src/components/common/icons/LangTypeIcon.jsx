@@ -1,5 +1,5 @@
 import { FaGolang, FaAws } from 'react-icons/fa6';
-import { FaDatabase, FaServer, FaGlobeAsia, FaGithub } from 'react-icons/fa';
+import { FaDatabase, FaServer, FaGlobeAsia, FaGithub, FaUserCircle, FaUsers } from 'react-icons/fa';
 import { BiLogoPython, BiLogoJava, BiLogoPhp } from 'react-icons/bi';
 import { TbLoadBalancer } from 'react-icons/tb';
 import {
@@ -28,6 +28,8 @@ import {
   SiAwssecretsmanager,
   SiHelm,
   SiKubernetes,
+  SiGitlab,
+  SiPagerduty,
 } from 'react-icons/si';
 import { DiPostgresql } from 'react-icons/di';
 import {
@@ -127,6 +129,7 @@ import {
   AzureCommunicationServicesIcon,
   AzureMarketplaceIcon,
   AzureResourceIcon,
+  SelfHostedIcon,
 } from '@assets';
 import SafeIcon from './SafeIcon';
 import { memo } from 'react';
@@ -530,7 +533,25 @@ const LangTypeIcon = memo(({ appLang, size = 25, fallback = null }) => {
 
       // Source Control
       case 'repository':
+      case 'github':
         return <FaGithub {...iconProps} color='#181717' />;
+      case 'gitlab':
+        return <SiGitlab {...iconProps} color='#FC6D26' />;
+
+      // Identity (UserAccount/UserGroup specific_type logos — see specificTypeLogoMap
+      // in knowledge_graph/core/helpers.go; 'useraccount'/'usergroup' are the generic
+      // NodeType fallbacks for identity nodes with no more specific source, e.g.
+      // NudgebeeUser / NudgebeeGroup)
+      case 'pagerduty':
+        return <SiPagerduty {...iconProps} color='#06AC38' />;
+
+      // Hosts scanned through a self-hosted VM account (specific_type SelfHostedVM)
+      case 'selfhosted':
+        return <SafeIcon src={SelfHostedIcon} height={size} width={size} alt='Self-hosted VM' />;
+      case 'useraccount':
+        return <FaUserCircle {...iconProps} color='var(--ds-gray-500)' />;
+      case 'usergroup':
+        return <FaUsers {...iconProps} color='var(--ds-gray-500)' />;
 
       default:
         return null;

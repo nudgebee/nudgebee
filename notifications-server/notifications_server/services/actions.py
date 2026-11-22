@@ -4,7 +4,6 @@ from typing import Optional
 from pydantic import Field
 
 import requests
-from requests import HTTPError
 from sqlalchemy.orm import Session
 
 from notifications_server.configs import settings
@@ -16,6 +15,7 @@ from notifications_server.message_templates.base import Emojis
 from notifications_server.message_templates.blocks import MarkdownBlock
 from notifications_server.message_templates.slack.auto_optimize_scheduled_notification import get_skip_durations
 from notifications_server.repositories.user_repository import get_user_tenants, get_user_by_email
+from notifications_server.services import workflow_approval
 from notifications_server.utils.action_requests import ActionParams
 from notifications_server.utils.transformer import Transformer
 
@@ -52,6 +52,7 @@ class SkipAutoOptimizeParams(BaseParams):
 class ApprovalParams(BaseParams):
     token: str = Field(description="Approval token for workflow")
     status: str = Field(description="Approval status (approved or rejected)")
+    user_email: str = Field(description="Email of the user who clicked")
 
 
 def _get_message(result, is_success, success_msg, failure_msg):
@@ -149,31 +150,10 @@ class Actions:
             )
             return
 
-        url = f"{settings.services.workflow_server}/approvals/{params.token}"
-        payload = {"status": params.status}
-
-        LOG.info("Processing approval action for token: %s, status: %s", params.token, params.status)
-
-        try:
-            result = requests.post(url, json=payload, timeout=30)
-            result.raise_for_status()
-
-            # Format status for display (convert snake_case to Title Case)
-            display_status = params.status.replace("_", " ").title()
-            status_message = f"{Emojis.ThumbsUp.value} {display_status}"
-
-        except requests.Timeout:
-            LOG.error("Timeout calling workflow server for token: %s", params.token)
-            status_message = "Request timed out, please try again"
-        except requests.HTTPError as e:
-            status_message = self._handle_approval_http_error(e)
-        except requests.RequestException as e:
-            response_text = e.response.text if getattr(e, "response", None) is not None else "No response body"
-            LOG.error("Request exception calling workflow server: %s, response: %s", e, response_text)
-            status_message = "Failed to process approval, please try again."
-        except Exception as e:
-            LOG.exception("Unexpected error in approval action: %s", e)
-            status_message = f"An unexpected error occurred, please check {settings.urls.branding_name} UI."
+        LOG.info("Processing approval action, status: %s", params.status)
+        status_message = self._approval_message(
+            workflow_approval.decide(params.token, params.status, params.user_email), params.status
+        )
 
         try:
             output_blocks = Transformer.to_slack(MarkdownBlock(status_message))
@@ -191,15 +171,18 @@ class Actions:
             LOG.exception("Failed to send approval response to Slack: %s", e)
 
     @staticmethod
-    def _handle_approval_http_error(e: HTTPError) -> str:
-        response_text = e.response.text if e.response is not None else "No response body"
-        LOG.error("HTTP error calling workflow server: %s, response: %s", e, response_text)
-        status_message = "Failed to process approval"
-        if hasattr(e.response, "status_code"):
-            if e.response.status_code == 404:
-                status_message = "Approval request not found or expired"
-            elif e.response.status_code == 400:
-                status_message = f"Invalid approval request, please check workflow in {settings.urls.branding_name}."
-            elif e.response.status_code == 409:
-                status_message = f"{Emojis.ThumbsUp.value} This approval has already been processed"
-        return status_message
+    def _approval_message(decision, status) -> str:
+        if decision is workflow_approval.Decision.DECIDED:
+            # Format status for display (convert snake_case to Title Case)
+            return f"{Emojis.ThumbsUp.value} {status.replace('_', ' ').title()}"
+        if decision is workflow_approval.Decision.ANSWERED:
+            return f"{Emojis.ThumbsUp.value} This approval has already been processed"
+        if decision is workflow_approval.Decision.NOT_FOUND:
+            return "Approval request not found or expired"
+        if decision is workflow_approval.Decision.INVALID:
+            return f"Invalid approval request, please check workflow in {settings.urls.branding_name}."
+        if decision is workflow_approval.Decision.NOT_A_USER:
+            return workflow_approval.not_a_user_message()
+        if decision is workflow_approval.Decision.NO_ACCESS:
+            return workflow_approval.no_access_message()
+        return "Failed to process approval, please try again."

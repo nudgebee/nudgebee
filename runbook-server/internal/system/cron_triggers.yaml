@@ -353,15 +353,16 @@
   comment: Hourly anomaly execution
 - name: Batched Notifications
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
-  schedule: '*/5 * * * *'
+  schedule: '5 * * * *'
   payload: {}
   headers:
     - name: X-ACTION-TOKEN
       value_from_env: ACTION_API_SERVER_TOKEN
   retry_conf:
-    num_retries: 0
+    num_retries: 3
+    retry_interval_seconds: 30
     timeout_seconds: 180
-  comment: Process hourly non-prod events batch every 5 minutes
+  comment: Hourly grouped alerts for the previous whole hour; runs at :05 so late-written events land first
 - name: Bill Marketplace Buyers
   webhook: '{{SERVICE_API_SERVER_URL}}/marketplace/billing/charge-buyers'
   schedule: '30 0 * * *'

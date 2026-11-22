@@ -263,6 +263,25 @@ func (a *amazonEcs) GetResources(ctx providers.CloudProviderContext, account pro
 			}
 
 			meta := structToMap(cluster)
+
+			// DescribeClusters returns CapacityProviders as names only. Fetch the full
+			// capacity-provider objects so the UI can render the AWS-console-style table
+			// (scaling type, update status, …) instead of a bare list of names.
+			if len(cluster.CapacityProviders) > 0 {
+				cpOutput, err := svc.DescribeCapacityProviders(ctx.GetContext(), &ecs.DescribeCapacityProvidersInput{
+					CapacityProviders: cluster.CapacityProviders,
+				})
+				if err != nil {
+					ctx.GetLogger().Warn("failed to describe ecs capacity providers", "error", err, "clusterArn", *cluster.ClusterArn, "region", regionName)
+				} else {
+					cpDetails := make([]map[string]any, 0, len(cpOutput.CapacityProviders))
+					for _, cp := range cpOutput.CapacityProviders {
+						cpDetails = append(cpDetails, structToMap(cp))
+					}
+					meta["CapacityProviderDetails"] = cpDetails
+				}
+			}
+
 			createdAt := time.Time{}
 			resource := providers.Resource{
 				Id:          *cluster.ClusterName,

@@ -721,10 +721,8 @@ rules:
             {{ $sc := (index .Detail "stopCode") | str }}
             {{ or (eq $sc "EssentialContainerExited") (eq $sc "TaskFailedToStart") }}
           description: "stopCode indicates a failure. ServiceSchedulerInitiated (scale-in), UserInitiated, SpotInterruption and TerminationNotice are expected stops — they stay Info via the catch-all rule instead of paging as HIGH"
-        - template: |
-            {{ $hasZero := false }}{{ range $c := (index .Detail "containers") }}{{ if eq ((index $c "exitCode") | str) "0" }}{{ $hasZero = true }}{{ end }}{{ end }}
-            {{ not $hasZero }}
-          description: "No container exited 0. The state-change payload doesn't mark which container is essential, and container 0 is often a sidecar: a task whose app finished cleanly while a sidecar was killed non-zero (SIGKILL 137 etc.) is a normal stop, not a failure. Checking containers[0] alone flagged thousands of healthy stops as HIGH"
+        - template: '{{ taskFailed (index .Detail "containers") .TaskDefContainerDefs }}'
+          description: "No container exited 0, or a container that can fail the task crashed. A clean exit elsewhere does not clear a crash: sidecars and injected agents such as GuardDuty's exit 0 after the app fails. Exit 137/143 alone stays a normal stop, since a sidecar shows that when a task whose app finished cleanly is torn down; checking containers[0] alone flagged thousands of healthy stops as HIGH"
     event_template:
       title:
         template: "{{ $fc := pickFailingContainer (index .Detail \"containers\") .TaskDefContainerDefs }}ECS Task Stopped Unexpectedly: {{ (index .Detail \"group\") | default ((index .Detail \"taskArn\") | str | default \"\" | splitList \"/\" | last) }} (Exit Code: {{ safeIndex $fc \"exitCode\" | str | default ((index .Detail \"stopCode\") | str) }})"

@@ -492,6 +492,45 @@ func TestValidateWorkflow_TriggerNilParams(t *testing.T) {
 	}
 }
 
+// TestValidateWorkflow_OptimizationNeedsFilter guards #40459: params holding only empty
+// filters build no event filter, so the trigger would save but never fire.
+func TestValidateWorkflow_OptimizationNeedsFilter(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  map[string]any
+		wantErr bool
+	}{
+		{"empty lists from the UI", map[string]any{"categories": []any{}, "rule_names": []any{}, "clusters": []any{}}, true},
+		{"empty string items", map[string]any{"categories": []any{""}}, true},
+		{"blank filter expression", map[string]any{"filter": "   "}, true},
+		{"one category", map[string]any{"categories": []any{"Cost"}}, false},
+		{"one rule name", map[string]any{"rule_names": []any{"rightsize_pod"}}, false},
+		{"one cluster", map[string]any{"clusters": []any{"acc-1"}}, false},
+		{"filter expression only", map[string]any{"filter": "{{ event.category == 'Cost' }}"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wf := model.Workflow{
+				Name: "test-workflow",
+				Definition: model.WorkflowDefinition{
+					Version:  "v1",
+					Triggers: []model.Trigger{{Type: model.WorkflowTriggerOptimization, Params: tt.params}},
+					Tasks:    []model.Task{{ID: "task1", Type: "http_request"}},
+				},
+			}
+			err := model.ValidateWorkflow(wf)
+			if !tt.wantErr {
+				assert.NoError(t, err)
+				return
+			}
+			if assert.Error(t, err) {
+				assert.Contains(t, err.Error(), "optimization_trigger_needs_params")
+			}
+		})
+	}
+}
+
 func TestValidateWorkflow_TaskTimeoutsExceedWorkflow(t *testing.T) {
 	t.Run("Task timeouts sum exceeds workflow timeout", func(t *testing.T) {
 		wf := model.Workflow{

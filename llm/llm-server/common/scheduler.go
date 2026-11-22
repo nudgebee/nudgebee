@@ -190,6 +190,15 @@ func workerSync() error {
 	return nil
 }
 
+// claimLeaderSQL makes this worker the leader unless another fresh leader holds
+// the flag; when $4 is true, a leader whose name starts with $5 (local workers)
+// does not count.
+const claimLeaderSQL = `update nb_workers
+			set is_leader=true, updated_at = timezone('utc',now())
+			where worker_type=$1 and worker_name=$2
+				and not exists(select * from nb_workers where worker_type=$1 and is_leader = true and updated_at > timezone('utc',now()) - ($3)::interval
+					and not ($4 and worker_name like $5))`
+
 func registerOrUpdateWorker() error {
 	dbms, err := GetDatabaseManager(Metastore)
 	if err != nil {
@@ -222,11 +231,13 @@ func registerOrUpdateWorker() error {
 		return nil
 	}
 
-	updatedRows, err := dbms.Db.Exec(`update nb_workers
-			set is_leader=true, updated_at = timezone('utc',now())
-			where worker_type=$1 and worker_name=$2 
-				and not exists(select * from nb_workers where worker_type=$1 and is_leader = true and updated_at > timezone('utc',now()) - ($3)::interval)
-		`, config.SERVICE_NAME, config.Config.ServerName, fmt.Sprintf("%d second", config.Config.ServerHeartBeatTimeoutSecond))
+	// An in-cluster replica ignores a leader flag held by a local worker: a laptop
+	// on older code or with a forced override can still hold it, and while it
+	// heartbeats no replica could take over (dev ran without a cluster leader for
+	// up to 2.3 h). Winning demotes it below.
+	ignoreLocalLeader := !config.IsLocalWorkerName(config.Config.ServerName)
+	updatedRows, err := dbms.Db.Exec(claimLeaderSQL, config.SERVICE_NAME, config.Config.ServerName,
+		fmt.Sprintf("%d second", config.Config.ServerHeartBeatTimeoutSecond), ignoreLocalLeader, config.LocalWorkerNamePrefix+"%")
 	if err != nil {
 		slog.Error("scheduler: failed to register/update worker", "error", err)
 		return err

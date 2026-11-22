@@ -152,12 +152,11 @@ llm-server/runbook/api → relay → forager `ssh_command`, and there is **one
 - Only VMs matching C1's rules count, capped and sorted by `last_seen`.
 
 **C3. Cache**
-- Relay publishes `{account_ids:[...]}` to the existing
-  `RabbitMqLLMCacheInvalidationExchange` (consumer:
-  `llm/llm-server/api/cache_invalidation_mq.go`) after
+- Relay sends an `integration_changed` replica broadcast (keys: account ids,
+  channel `nb_replica_broadcast`; llm-server handles it in
+  `llm/llm-server/api/integration_changes.go`) after
   `UpsertAgentDatasources`, stale removal, and metadata updates that change
-  `labels`. Relay publishes nothing there today, so agent-registered
-  integrations only show up after the TTL.
+  `labels`.
 
 **Acceptance**
 - [ ] "check disk usage on <instance id>" resolves to the scope's ssh sibling

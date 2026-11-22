@@ -16,7 +16,9 @@ dashboards and alerts keep working once the collector re-exports them.
 import logging
 import os
 import threading
-from typing import Dict, Iterable, List, Sequence, Tuple
+import time
+from contextlib import contextmanager
+from typing import Dict, Iterable, Iterator, List, Sequence, Tuple
 
 from opentelemetry import metrics
 from opentelemetry.metrics import CallbackOptions, Observation
@@ -28,7 +30,6 @@ meter = metrics.get_meter("k8s-collector")
 
 # Bucket boundaries carried over verbatim from the prometheus_client Histograms.
 _DURATION_BUCKETS: Sequence[float] = [0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0]
-_DB_DURATION_BUCKETS: Sequence[float] = [0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 10.0]
 _SIZE_BUCKETS: Sequence[float] = [1024, 10240, 102400, 1048576, 10485760, 104857600]
 
 
@@ -85,10 +86,6 @@ def metric_views() -> List[View]:
         View(
             instrument_name="rabbitmq_message_processing_duration_seconds",
             aggregation=ExplicitBucketHistogramAggregation(_DURATION_BUCKETS),
-        ),
-        View(
-            instrument_name="k8s_collector_database_operation_duration_seconds",
-            aggregation=ExplicitBucketHistogramAggregation(_DB_DURATION_BUCKETS),
         ),
         View(
             instrument_name="rabbitmq_message_size_bytes",
@@ -153,26 +150,6 @@ handler_processing_total = meter.create_counter(
 handler_errors_total = meter.create_counter(
     "k8s_collector_handler_errors_total",
     description="Total number of handler errors by type, tenant, and error category",
-)
-
-discovery_operations_total = meter.create_counter(
-    "k8s_collector_discovery_operations_total",
-    description="Discovery operations by resource type and tenant",
-)
-
-event_operations_total = meter.create_counter(
-    "k8s_collector_event_operations_total",
-    description="Event operations by event type and tenant",
-)
-
-telemetry_updates_total = meter.create_counter(
-    "k8s_collector_telemetry_updates_total",
-    description="Telemetry updates by tenant and integration type",
-)
-
-resources_processed_total = meter.create_counter(
-    "k8s_collector_resources_processed_total",
-    description="Total resources processed by type and tenant",
 )
 
 # ============================================================================
@@ -293,22 +270,6 @@ topology_declarations_total = meter.create_counter(
 )
 
 # ============================================================================
-# Database Metrics
-# ============================================================================
-
-database_operations_total = meter.create_counter(
-    "k8s_collector_database_operations_total",
-    description="Total database operations by type",
-)
-
-database_operation_duration_seconds = meter.create_histogram(
-    "k8s_collector_database_operation_duration_seconds",
-    unit="s",
-    description="Database operation duration",
-)
-
-
-# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -361,54 +322,25 @@ def record_handler_error(handler_type: str, tenant_id: str, account_id: str, err
     )
 
 
-def record_discovery_operation(resource_type: str, tenant_id: str, account_id: str, operation: str):
-    """Record discovery operation (create/update/delete)"""
-    discovery_operations_total.add(
-        1,
-        {
-            "resource_type": resource_type,
-            "tenant_id": tenant_id,
-            "account_id": account_id,
-            "operation": operation,
-        },
-    )
+@contextmanager
+def track_handler(handler_type: str, tenant_id: object, account_id: object, action: str) -> Iterator[None]:
+    """Time a handler run and record its outcome, re-raising any exception.
 
-
-def record_event_operation(event_type: str, tenant_id: str, account_id: str, severity: str):
-    """Record event operation"""
-    event_operations_total.add(
-        1,
-        {
-            "event_type": event_type,
-            "tenant_id": tenant_id,
-            "account_id": account_id,
-            "severity": severity,
-        },
-    )
-
-
-def record_telemetry_update(tenant_id: str, account_id: str, integration_type: str):
-    """Record telemetry update"""
-    telemetry_updates_total.add(
-        1,
-        {
-            "tenant_id": tenant_id,
-            "account_id": account_id,
-            "integration_type": integration_type,
-        },
-    )
-
-
-def record_resource_processed(resource_type: str, tenant_id: str, account_id: str):
-    """Record resource processing"""
-    resources_processed_total.add(
-        1,
-        {
-            "resource_type": resource_type,
-            "tenant_id": tenant_id,
-            "account_id": account_id,
-        },
-    )
+    The rabbitmq_* metrics only say a queue is being consumed; this is what says
+    which handler is slow or failing, and for which account. Exceptions are
+    re-raised untouched so the consumer's retry / DLQ path is unchanged.
+    """
+    # Coerced because ids come straight off message payloads (possibly missing),
+    # and OTel drops non-primitive attribute values with only a warning.
+    tenant, account = str(tenant_id or ""), str(account_id or "")
+    start = time.monotonic()
+    try:
+        yield
+    except Exception as e:
+        record_handler_error(handler_type, tenant, account, type(e).__name__)
+        record_handler_processing(handler_type, tenant, account, action, time.monotonic() - start, False)
+        raise
+    record_handler_processing(handler_type, tenant, account, action, time.monotonic() - start, True)
 
 
 def record_connection_established(queue_name: str, connection_type: str = "consumer"):
@@ -508,13 +440,6 @@ def record_topology_declaration(queue_name: str, success: bool):
 def set_consumer_health(queue_name: str, healthy: bool):
     """Set consumer health status"""
     consumer_health.set(1 if healthy else 0, {"queue_name": queue_name})
-
-
-def record_database_operation(operation: str, table: str, duration_seconds: float, success: bool):
-    """Record database operation"""
-    status = "success" if success else "failed"
-    database_operations_total.add(1, {"operation": operation, "table": table, "status": status})
-    database_operation_duration_seconds.record(duration_seconds, {"operation": operation, "table": table})
 
 
 class LabeledGaugeWrapper:

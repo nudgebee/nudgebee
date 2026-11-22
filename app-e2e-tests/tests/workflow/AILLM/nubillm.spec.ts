@@ -13,7 +13,6 @@ import {
 } from "../workflowHelper";
 
 const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
-const KUBECTL_NAMESPACE = process.env.KUBECTL_NAMESPACE!;
 
 const WORKFLOW_JSON_TEMPLATE = {
   definition: {

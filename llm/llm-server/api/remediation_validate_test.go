@@ -544,7 +544,7 @@ func TestScaleFromRecordedZeroIsStatedAsAReversal(t *testing.T) {
 		{Action: "Scale redis", Kind: RemediationKindMitigation, Confidence: 45, ExecuteArgv: []string{"kubectl", "scale", "statefulset", "redis-replicas", "-n", "oss", "--replicas=1"}, TradeOff: "uses more memory"},
 		{Action: "Scale web", Kind: RemediationKindMitigation, Confidence: 30, ExecuteCommand: "kubectl scale deployment/web -n oss --replicas 5"},
 	}}
-	finalizePlan(&plan, nil, nil, inv)
+	finalizePlan(&plan, nil, nil, inv, nil)
 	require.Equal(t, "scales statefulset/redis-replicas up from the 0 running pods inventory records; if that zero is deliberate, this reverses it; uses more memory", actionByName(t, plan, "Scale redis").TradeOff)
 	require.Empty(t, actionByName(t, plan, "Scale web").TradeOff, "a workload not at zero is not reversed")
 	require.Equal(t, "Scale web", plan.Actions[0].Action, "the reversal ranks last")
@@ -554,7 +554,7 @@ func TestScaleFromRecordedZeroIsStatedAsAReversal(t *testing.T) {
 		{Action: "Raise memory", Kind: RemediationKindFix, Confidence: 80, ExecuteCommand: "kubectl set resources statefulset redis-replicas -n oss --limits=memory=1Gi"},
 		{Action: "Scale redis", Kind: RemediationKindFix, Confidence: 80, After: "Raise memory", ExecuteArgv: []string{"kubectl", "scale", "statefulset", "redis-replicas", "-n", "oss", "--replicas=1"}},
 	}}
-	finalizePlan(&chained, nil, nil, inv)
+	finalizePlan(&chained, nil, nil, inv, nil)
 	for _, a := range chained.Actions {
 		if a.Action == "Scale redis" {
 			require.Contains(t, a.TradeOff, "0 running pods")

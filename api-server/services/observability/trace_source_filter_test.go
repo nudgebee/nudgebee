@@ -174,3 +174,31 @@ func TestApplyTraceSourceFilter_ExplainsAnImpossibleFilter(t *testing.T) {
 	assert.Empty(t, msg)
 	assert.Equal(t, query.BinaryWhereClause{"workload_name": {query.Eq: "a"}}, where.Binary, "the filter is resolved in place")
 }
+
+// The Cross-Zone tab is gated on SupportsCrossZoneCommunication, and it reads
+// traces_groupings_v2 rather than a TraceSource reader. Only otel_clickhouse's
+// definition of that table projects the two zone columns the tab groups on, so only
+// otel_clickhouse may advertise the capability -- anywhere else the tab would render an
+// empty table instead of an honest "not supported for <provider>".
+func TestOnlyOtelClickhouseAdvertisesCrossZoneCommunication(t *testing.T) {
+	for p, caps := range allProviderCaps {
+		assert.Equal(t, p == "otel_clickhouse", caps.SupportsCrossZoneCommunication,
+			"%s: cross-zone is served by the traces_groupings_v2 zone columns, which only otel_clickhouse projects", p)
+	}
+
+	// The other half of the contract, in both the places it can break. The columns the
+	// tab names in group_by must be in the table's schema, or the query engine rejects
+	// them as unknown; and the generated SQL must actually project them under those
+	// names, or the engine groups on a column ClickHouse has never heard of. Only the
+	// non-materialized branch is reachable from a unit test (no agent on record), which
+	// is the branch that derives both zones from the span.
+	def, ok := query.GetTableMetadata("traces_groupings_v2")
+	require.True(t, ok, "traces_groupings_v2 must be a known query-engine table")
+	sql, _, err := def.DefGenerator(security.NewRequestContextForSuperAdmin(nil, nil, nil), "no-such-account", query.QueryRequest{})
+	require.NoError(t, err)
+	for _, col := range []string{"workload_zone", "destination_workload_zone"} {
+		_, inSchema := def.Columns[col]
+		assert.True(t, inSchema, "traces_groupings_v2 must define %s for the Cross-Zone tab to group on it", col)
+		assert.Contains(t, sql, " AS "+col, "the grouping query must project %s for the Cross-Zone tab to group on it", col)
+	}
+}

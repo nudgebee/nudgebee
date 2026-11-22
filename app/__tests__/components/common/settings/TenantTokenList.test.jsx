@@ -57,11 +57,11 @@ const tokens = [
 ];
 
 describe('TenantTokenList', () => {
-  it('shows owner, suffix and last model, and "—" where a key has none', () => {
+  it('shows owner and last model, and "—" where a key has none', () => {
     render(<TenantTokenList tokens={tokens} total={2} page={0} pageSize={50} onPageChange={jest.fn()} canRevoke onRevoke={jest.fn()} />);
     const ci = screen.getByText('ci').closest('tr');
     expect(within(ci).getByText('Asha')).toBeInTheDocument();
-    expect(within(ci).getByText('…a1b2')).toBeInTheDocument();
+    expect(within(ci).queryByText('…a1b2')).not.toBeInTheDocument();
     expect(within(ci).getByText('gpt-4o-mini')).toBeInTheDocument();
     const old = screen.getByText('old').closest('tr');
     expect(within(old).getAllByText('—').length).toBeGreaterThanOrEqual(2);
@@ -85,6 +85,8 @@ describe('TenantTokenList', () => {
     const { rerender } = render(<TenantTokenList {...props} canRevoke />);
     await userEvent.click(within(screen.getByText('ci').closest('tr')).getByTestId('btn-Manage access'));
     expect(onManageAccess).toHaveBeenCalledWith(tokens[0]);
+    // User access only governs gateway traffic, so a Platform key gets no Manage access.
+    expect(within(screen.getByText('old').closest('tr')).queryByTestId('btn-Manage access')).not.toBeInTheDocument();
     rerender(<TenantTokenList {...props} canRevoke={false} />);
     expect(screen.queryByTestId('btn-Manage access')).not.toBeInTheDocument();
   });

@@ -18,11 +18,11 @@ import time
 import pytest
 
 from rag.core.llm import local_reranker as lr
+from rag.core.types import Document
 
 
-class _Doc:
-    def __init__(self, text):
-        self.page_content = text
+def _Doc(text):
+    return Document(page_content=text)
 
 
 def _docs(n):

@@ -174,7 +174,11 @@ var impactRelationshipDefaults = map[NodeType][]RelationshipType{
 	// as dependents; instance-typed callers (sibling VMs, k8s node ENI noise)
 	// are not app types and therefore surface in InfrastructureDependents
 	// with hop distance, never in the band.
-	NodeTypeComputeInstance: {RelationshipRunsOn, RelationshipManages, RelationshipOwns, RelationshipCalls},
+	//
+	// CONNECTED_TO / DEPENDS_ON are user-declared links to nodes declared outside
+	// any account (a switch cabled to the instance, a job that depends on it).
+	// CONNECTED_TO is undirected, so the walk follows it from either end.
+	NodeTypeComputeInstance: {RelationshipRunsOn, RelationshipManages, RelationshipOwns, RelationshipCalls, RelationshipConnectedTo, RelationshipDependsOn},
 	NodeTypeNode:            {RelationshipRunsOn, RelationshipManages, RelationshipOwns},
 	NodeTypePV:              {RelationshipProvidesStorage, RelationshipIsBoundTo, RelationshipMounts},
 	NodeTypePVC:             {RelationshipMounts, RelationshipIsBoundTo},
@@ -245,7 +249,7 @@ func ImpactSeedNodeTypes() []NodeType {
 // fallbackImpactRelationships is used when the seed's node type has no specific
 // mapping — the common dependency edges without traversing noise.
 var fallbackImpactRelationships = []RelationshipType{
-	RelationshipCalls, RelationshipRunsOn, RelationshipMounts,
+	RelationshipCalls, RelationshipRunsOn, RelationshipMounts, RelationshipConnectedTo, RelationshipDependsOn,
 }
 
 // downstreamRelationshipDefaults maps seed node types to the edge types whose
@@ -475,7 +479,16 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		criticality = map[string]string{}
 	}
 
-	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS([]string{nodeID}, traverseOptions{
+	// A host's SAME_AS twins (a self-hosted VM and its cloud instance) are one
+	// machine, so they all seed the walk at depth 0: a blast radius started on
+	// any of them reaches the same dependents, and none of them is reported as
+	// a dependent of itself.
+	seeds := []string{nodeID}
+	if seed.NodeType == NodeTypeComputeInstance {
+		seeds = s.sameAsClosure(tenantID, nodeID)
+	}
+
+	discoveredIDs, _, nodeMinDepth, err := s.discoverBFS(seeds, traverseOptions{
 		Direction:         TraverseDirectionUpstream,
 		Levels:            maxDepth,
 		RelationshipTypes: relTypes,
@@ -564,7 +577,13 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 	// single-source tenant reach an honest "no callers" verdict instead of a
 	// permanent "low".
 	if summary.CoverageConfidence == CoverageLow {
-		observed := hasSeedFlowEvidence(nodeID, edges, summary.DownstreamDependencies)
+		observed := false
+		for _, id := range seeds {
+			if hasSeedFlowEvidence(id, edges, summary.DownstreamDependencies) {
+				observed = true
+				break
+			}
+		}
 		if !observed && seedAccountIsClusterScoped(seed) {
 			observed, err = s.accountHasFlowObservedEdges(tenantID, seed.CloudAccountID)
 			if err != nil {
@@ -576,6 +595,73 @@ func (s *Service) GetImpactedServices(tenantID, nodeID string, relationshipTypes
 		}
 	}
 	return &summary, nil
+}
+
+// sameAsClosureCap bounds the twins added per seed. A host has one cloud
+// instance node per account it is onboarded in, plus one self-hosted VM node per
+// VM account that scanned it; anything near this size is a data problem.
+const sameAsClosureCap = 16
+
+// sameAsClosure returns the seed and every ComputeInstance joined to it by
+// SAME_AS, transitively: the self-hosted VM node and each cloud instance node
+// for the same machine (sources/selfhosted). The seed comes first.
+func (s *Service) sameAsClosure(tenantID, seedID string) []string {
+	return s.withSameAsTwins(tenantID, []string{seedID})
+}
+
+// withSameAsTwins returns the seeds, in order, followed by every ComputeInstance
+// joined to any of them by SAME_AS, transitively — a host's self-hosted VM node
+// and its cloud instance nodes are one machine, so a walk from any of them
+// starts from all of them. One batched walk for all seeds; a seed with no twins
+// costs one indexed edge lookup. A lookup failure degrades to the seeds alone,
+// the walk they had before twins.
+func (s *Service) withSameAsTwins(tenantID string, seeds []string) []string {
+	if len(seeds) == 0 {
+		return seeds
+	}
+	ids, _, depth, err := s.discoverBFS(seeds, traverseOptions{
+		Direction:         TraverseDirectionBoth,
+		Levels:            3,
+		RelationshipTypes: []string{string(RelationshipSameAs)},
+		IncludeNodeTypes:  []NodeType{NodeTypeComputeInstance},
+		TenantID:          tenantID,
+		ExpandSameAsTwins: true,
+	})
+	if err != nil {
+		s.logger.Warn("same-as closure failed; walking from the seeds alone",
+			"seed_count", len(seeds), "error", err)
+		return seeds
+	}
+	isSeed := make(map[string]bool, len(seeds))
+	for _, id := range seeds {
+		isSeed[id] = true
+	}
+	twins := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if !isSeed[id] {
+			twins = append(twins, id)
+		}
+	}
+	if len(twins) == 0 {
+		return seeds
+	}
+	sort.Slice(twins, func(i, j int) bool {
+		if depth[twins[i]] != depth[twins[j]] {
+			return depth[twins[i]] < depth[twins[j]]
+		}
+		return twins[i] < twins[j]
+	})
+	if limit := sameAsClosureCap * len(seeds); len(twins) > limit {
+		twins = twins[:limit]
+	}
+	return append(append(make([]string, 0, len(seeds)+len(twins)), seeds...), twins...)
+}
+
+// isTraversalSeed reports whether discoverBFS started from id: seeds, and only
+// seeds, sit at depth 0.
+func isTraversalSeed(nodeMinDepth map[string]int, id string) bool {
+	d, ok := nodeMinDepth[id]
+	return ok && d == 0
 }
 
 // seedAccountIsClusterScoped reports whether the seed's cloud account maps to
@@ -877,7 +963,7 @@ func summarizeImpact(seedID string, seedType NodeType, nodes []*DbNode, edges []
 	attribution := attributeConnectingEdges(edges, nodeMinDepth, TraverseDirectionUpstream)
 	appHops := appHopDistances(seedID, nodes, edges, nodeMinDepth, TraverseDirectionUpstream, appDependentTypes)
 	for _, n := range nodes {
-		if n == nil || n.ID == seedID || !canBeImpacted(n.NodeType) {
+		if n == nil || n.ID == seedID || isTraversalSeed(nodeMinDepth, n.ID) || !canBeImpacted(n.NodeType) {
 			continue
 		}
 		summary.DependentsByType[n.NodeType]++
@@ -968,10 +1054,10 @@ func summarizeDownstream(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMi
 	return deps
 }
 
-// unresolvedVPCAddressSubtype marks an ExternalService the VPC flow source
+// UnresolvedVPCAddressSubtype marks an ExternalService the VPC flow source
 // minted for an address it could not identify (set alongside is_sync_gap in
 // flow_sources/vpc_flowlogs_flow_source.go).
-const unresolvedVPCAddressSubtype = "vpc-unresolved-ip"
+const UnresolvedVPCAddressSubtype = "vpc-unresolved-ip"
 
 // isUnresolvedVPCAddress reports whether a node is an address we failed to put a
 // name to, rather than something the operator can act on.
@@ -990,7 +1076,7 @@ func isUnresolvedVPCAddress(n *DbNode) bool {
 	if n == nil || n.NodeType != NodeTypeExternalService {
 		return false
 	}
-	return impactNodeAttr(n, "subtype") == unresolvedVPCAddressSubtype
+	return impactNodeAttr(n, "subtype") == UnresolvedVPCAddressSubtype
 }
 
 // sortImpactedServices orders internal dependents before unresolved external
@@ -1037,6 +1123,32 @@ type connectingEdgeAttribution struct {
 // ignored. When several edges connect the same node, the best-corroborated one
 // names the relationship (ties broken lexically so attribution is
 // deterministic) and sources are unioned across all of them.
+// orientTowardSeed returns the edge's endpoint farther from the seed and the
+// one a BFS layer closer to it, for an edge that connects consecutive layers
+// in the walk's direction. An undirected edge (CONNECTED_TO) may connect them
+// either way round.
+func orientTowardSeed(e *DbEdge, direction TraverseDirection, nodeMinDepth map[string]int) (nodeID, towardSeedID string, ok bool) {
+	nodeID, towardSeedID = e.SourceNodeID, e.DestinationNodeID
+	if direction == TraverseDirectionDownstream {
+		nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
+	}
+	layered := func(far, near string) bool {
+		farDepth, ok := nodeMinDepth[far]
+		if !ok {
+			return false
+		}
+		nearDepth, ok := nodeMinDepth[near]
+		return ok && nearDepth == farDepth-1
+	}
+	if layered(nodeID, towardSeedID) {
+		return nodeID, towardSeedID, true
+	}
+	if IsUndirectedRelationship(e.RelationshipType) && layered(towardSeedID, nodeID) {
+		return towardSeedID, nodeID, true
+	}
+	return "", "", false
+}
+
 func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction TraverseDirection) map[string]connectingEdgeAttribution {
 	best := map[string]*DbEdge{}
 	sourceSets := map[string]map[string]struct{}{}
@@ -1045,15 +1157,8 @@ func attributeConnectingEdges(edges []*DbEdge, nodeMinDepth map[string]int, dire
 		if e == nil {
 			continue
 		}
-		nodeID, towardSeedID := e.SourceNodeID, e.DestinationNodeID
-		if direction == TraverseDirectionDownstream {
-			nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
-		}
-		nodeDepth, ok := nodeMinDepth[nodeID]
+		nodeID, _, ok := orientTowardSeed(e, direction, nodeMinDepth)
 		if !ok {
-			continue
-		}
-		if towardDepth, ok := nodeMinDepth[towardSeedID]; !ok || towardDepth != nodeDepth-1 {
 			continue
 		}
 		set := sourceSets[nodeID]
@@ -1116,15 +1221,8 @@ func appHopDistances(seedID string, nodes []*DbNode, edges []*DbEdge, nodeMinDep
 		if e == nil {
 			continue
 		}
-		nodeID, towardSeedID := e.SourceNodeID, e.DestinationNodeID
-		if direction == TraverseDirectionDownstream {
-			nodeID, towardSeedID = e.DestinationNodeID, e.SourceNodeID
-		}
-		nodeDepth, ok := nodeMinDepth[nodeID]
+		nodeID, towardSeedID, ok := orientTowardSeed(e, direction, nodeMinDepth)
 		if !ok {
-			continue
-		}
-		if towardDepth, ok := nodeMinDepth[towardSeedID]; !ok || towardDepth != nodeDepth-1 {
 			continue
 		}
 		toward[nodeID] = append(toward[nodeID], towardSeedID)

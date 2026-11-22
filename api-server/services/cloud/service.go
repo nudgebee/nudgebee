@@ -80,7 +80,7 @@ func ExecuteCliWithRetry(ctx *security.RequestContext, cloudCliRequest CloudExec
 			time.Sleep(backoff)
 		}
 
-		resp, err := common.HttpPost(fmt.Sprintf("%s/v1/cloud/execute_cli", config.Config.CloudCollectorServerUrl), common.HttpWithTimeout(60*time.Second), common.HttpWithHeaders(headersMap), common.HttpWithJsonBody(map[string]any{
+		resp, err := common.HttpPost(fmt.Sprintf("%s/v1/cloud/execute_cli", config.Config.CloudCollectorServerUrl), common.HttpWithTimeout(executeCliTimeout), common.HttpWithHeaders(headersMap), common.HttpWithJsonBody(map[string]any{
 			"account_id": cloudCliRequest.AccountID,
 			"command":    cloudCliRequest.Command,
 		}))
@@ -88,6 +88,14 @@ func ExecuteCliWithRetry(ctx *security.RequestContext, cloudCliRequest CloudExec
 		if err != nil {
 			lastErr = err
 			lastStatusCode = 0
+			if isClientTimeout(err) {
+				ctx.GetLogger().Warn("cloud command did not answer in time, not retrying",
+					"timeout", executeCliTimeout,
+					"attempt", attempt+1,
+					"account_id", cloudCliRequest.AccountID,
+					"command", truncateForLog(cloudCliRequest.Command, 200))
+				return data, fmt.Errorf("cloud collector did not answer within %s: %w", executeCliTimeout, err)
+			}
 			if attempt < maxRetries {
 				continue
 			}
@@ -257,14 +265,13 @@ func QueryMetrics(ctx *security.RequestContext, metricRequest QueryMetricsReques
 		return response, err
 	}
 
-	body := resp.Body
 	defer func() {
-		err := body.Close()
+		err := resp.Body.Close()
 		if err != nil {
 			ctx.GetLogger().Error("Error closing response body", "error", err)
 		}
 	}()
-	bodyData, err := io.ReadAll(body)
+	bodyData, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return response, err
 	}
@@ -304,14 +311,13 @@ func ListMetrics(ctx *security.RequestContext, accountId string, request ListMet
 		return ListMetricsResponse{}, err
 	}
 
-	body := resp.Body
 	defer func() {
-		err := body.Close()
+		err := resp.Body.Close()
 		if err != nil {
 			ctx.GetLogger().Error("Error closing response body", "error", err)
 		}
 	}()
-	bodyData, err := io.ReadAll(body)
+	bodyData, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ListMetricsResponse{}, err
 	}
@@ -384,14 +390,13 @@ func ListNotificationTargets(ctx *security.RequestContext, request ListNotificat
 		return ListNotificationTargetsResponse{}, err
 	}
 
-	body := resp.Body
 	defer func() {
-		err := body.Close()
+		err := resp.Body.Close()
 		if err != nil {
 			ctx.GetLogger().Error("Error closing response body", "error", err)
 		}
 	}()
-	bodyData, err := io.ReadAll(body)
+	bodyData, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ListNotificationTargetsResponse{}, err
 	}

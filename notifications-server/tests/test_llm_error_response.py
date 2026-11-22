@@ -115,6 +115,30 @@ def test_slack_in_progress_error_gets_busy_message(svc):
     assert svc.common_service.slack_messages[0] in LLM_BUSY_MESSAGES
 
 
+def test_slack_in_progress_error_names_the_other_asker_when_known(svc):
+    """When the in-progress turn belongs to someone else, the busy reply must
+    name them and not claim it's the reader's own request (#42744 follow-up)."""
+    svc.common_service.get_slack_user_display_name = lambda team_id, user_id: "Pinkesh"
+    cached_entry = {"slack_user_id": "U_SAHIL", "in_progress_asker": "U_PINKESH"}
+
+    svc.handle_error_response(_Payload(response=IN_PROGRESS_ERROR), cached_entry, "C123", "1779952241.483549", "T123")
+
+    assert svc.common_service.slack_messages[0] not in LLM_BUSY_MESSAGES
+    assert "Pinkesh" in svc.common_service.slack_messages[0]
+    assert svc.common_service.slack_messages[0].startswith("<@U_SAHIL> ")
+
+
+def test_slack_in_progress_error_stays_generic_for_own_request(svc):
+    """Same asker as the in-progress turn: it genuinely is their own earlier
+    request, so the generic "your previous request" copy stays accurate."""
+    svc.common_service.get_slack_user_display_name = lambda team_id, user_id: "Sahil"
+    cached_entry = {"slack_user_id": "U_SAHIL", "in_progress_asker": "U_SAHIL"}
+
+    svc.handle_error_response(_Payload(response=IN_PROGRESS_ERROR), cached_entry, "C123", "1779952241.483549", "T123")
+
+    assert svc.common_service.slack_messages[0][len("<@U_SAHIL> ") :] in LLM_BUSY_MESSAGES
+
+
 def test_slack_error_mentions_the_asker(svc):
     svc.handle_error_response(_Payload(), {"slack_user_id": "U42"}, "C123", "1779952241.483549", "T123")
 

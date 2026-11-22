@@ -84,6 +84,7 @@
       "query_attributes": {
         "name": "my-project/zones/us-central1-a/instances/gke-my-cluster-default-pool-abc12345",
         "private_ip": "10.128.0.5",
+        "region": "us-central1",
         "subtype": "ComputeEngine",
         "vpc_id": "default",
         "zone": "projects/my-project/zones/us-central1-a"
@@ -156,6 +157,7 @@
       "query_attributes": {
         "name": "my-project/zones/us-central1-a/instances/web-server-1",
         "private_ip": "10.128.0.2",
+        "region": "us-central1",
         "subtype": "ComputeEngine",
         "vpc_id": "default",
         "zone": "projects/my-project/zones/us-central1-a"
@@ -199,6 +201,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-project/web-server-2",
+        "region": "us-central1",
         "subtype": "ComputeEngine"
       },
       "ontology_attributes": {
@@ -237,6 +240,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-sql-cost",
+        "region": "us-central1",
         "subtype": "CloudSQL"
       },
       "ontology_attributes": {
@@ -298,6 +302,7 @@
         "engine": "POSTGRES_15",
         "name": "my-sql-instance",
         "private_ip": "10.0.0.5",
+        "region": "us-central1",
         "subtype": "CloudSQL",
         "vpc_id": "default"
       },
@@ -338,7 +343,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-log-sink"
+        "name": "my-log-sink",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",
@@ -474,7 +480,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-monitoring"
+        "name": "my-monitoring",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",
@@ -513,6 +520,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-bucket",
+        "region": "us-central1",
         "subtype": "CloudStorage"
       },
       "ontology_attributes": {
@@ -551,7 +559,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "default-subnet"
+        "name": "default-subnet",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",
@@ -587,7 +596,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "default"
+        "name": "default",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",

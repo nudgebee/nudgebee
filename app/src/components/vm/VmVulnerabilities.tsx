@@ -295,18 +295,16 @@ const VmVulnerabilities = ({
   }, [fetchRows]);
 
   // Filter options are the VMs and packages that actually carry a finding —
-  // filtering by one that has none would only ever produce an empty table. Read
-  // once per account; the toolbar they feed only exists on the top-level view.
+  // filtering by one that has none would only ever produce an empty table. VMs
+  // are read once per account; the toolbar they feed only exists on the
+  // top-level view.
   useEffect(() => {
     if (embedded || !accountId) return undefined;
     let cancelled = false;
-    const options = (grouping: 'vm' | 'package') =>
-      apiVm.listVulnerabilityGroups({ accountId, grouping, limit: FILTER_OPTION_LIMIT, offset: 0, includeTotal: false, orderBy: 'count' });
-    Promise.all([options('vm'), options('package')])
-      .then(([vms, packages]) => {
-        if (cancelled) return;
-        setVmOptions(vms.rows.map((group) => ({ label: group.label || group.key, value: group.key })));
-        setPackageOptions(packages.rows.filter((group) => group.key).map((group) => ({ label: group.label, value: group.key })));
+    apiVm
+      .listVulnerabilityGroups({ accountId, grouping: 'vm', limit: FILTER_OPTION_LIMIT, offset: 0, includeTotal: false, orderBy: 'count' })
+      .then((vms) => {
+        if (!cancelled) setVmOptions(vms.rows.map((group) => ({ label: group.label || group.key, value: group.key })));
       })
       .catch((error) => {
         if (!cancelled) console.error('Failed to load VM vulnerability filter options:', error);
@@ -315,6 +313,43 @@ const VmVulnerabilities = ({
       cancelled = true;
     };
   }, [accountId, embedded]);
+
+  // Packages follow the VM filter: with a VM picked, a package that VM does not
+  // have could only match nothing. They follow the status view too, so the
+  // Dismissed view offers (and keeps) packages seen only among dismissed findings.
+  const packageOptionStatus = statusFilter === 'Dismissed' ? 'Dismissed' : undefined;
+  useEffect(() => {
+    if (embedded || !accountId) return undefined;
+    let cancelled = false;
+    apiVm
+      .listVulnerabilityGroups({
+        accountId,
+        grouping: 'package',
+        cloudResourceId: vmFilter || undefined,
+        status: packageOptionStatus ? [packageOptionStatus] : undefined,
+        limit: FILTER_OPTION_LIMIT,
+        offset: 0,
+        includeTotal: false,
+        orderBy: 'count',
+      })
+      .then((packages) => {
+        if (cancelled) return;
+        const options = packages.rows.filter((group) => group.key).map((group) => ({ label: group.label, value: group.key }));
+        setPackageOptions(options);
+        // Picking a VM that lacks the selected package drops that package rather
+        // than leave a filter that empties the table. Only when the list is
+        // complete: past the cap, a missing package proves nothing.
+        if (vmFilter && packages.rows.length < FILTER_OPTION_LIMIT) {
+          setPackageFilter((current) => (current && !options.some((option) => option.value === current) ? null : current));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) console.error('Failed to load VM vulnerability filter options:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, embedded, vmFilter, packageOptionStatus]);
 
   const dismissal = useRecommendationDismissal(() => {
     setPanelFinding(null);
@@ -419,8 +454,10 @@ const VmVulnerabilities = ({
   // An empty result reads as "no open vulnerabilities" (good news) only when
   // nothing narrowed the query — otherwise it just means the filter (severity,
   // status, VM, package, or a deep-link scope) matched nothing, which
-  // CustomTable's showUpdatedEmptyData path can't tell apart on its own.
-  const isFiltered = Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
+  // CustomTable's showUpdatedEmptyData path can't tell apart on its own. An
+  // embedded table has no toolbar: its scope is the row it opened from, and an
+  // empty VM row means that VM has no findings yet — not a filter to clear.
+  const isFiltered = !embedded && Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
 
   const groupData = groups.map((group) => {
     const groupSeverity = severityFromWeight(group.max_severity_weight);

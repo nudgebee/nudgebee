@@ -221,7 +221,7 @@ func TestIsNodeScopedExporterJob(t *testing.T) {
 
 // TestIsNodeScopedAlertUsesJobWithoutQuerying asserts the job label alone
 // decides, before the rule text is fetched. The nil context is the assertion:
-// fetchEventRuleExpr would panic on it, so a node-exporter job reaching the
+// FetchEventRuleExpr would panic on it, so a node-exporter job reaching the
 // database would fail here rather than adding a query per event — and, more
 // importantly, would make the fix depend on rule text that is empty for some
 // tenants.

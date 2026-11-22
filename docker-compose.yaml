@@ -34,6 +34,8 @@ x-app-common: &app-common
   CLOUD_COLLECTOR_SERVER_TOKEN: ${CLOUD_COLLECTOR_SERVER_TOKEN:-dev-cloud-collector-token-change-me}
   # X-ACTION-TOKEN for llm-server; workspace RPC actions are refused without it.
   LLM_SERVER_TOKEN: ${LLM_SERVER_TOKEN:-dev-llm-server-token-change-me}
+  # Required by workflow-server; the app gateway and llm-server send it.
+  WORKFLOW_SERVER_TOKEN: ${WORKFLOW_SERVER_TOKEN:-dev-workflow-token-change-me}
   # Inter-service URLs whose code defaults point at localhost/unknown ports.
   # SERVICE_API_SERVER_URL is intentionally left at its code default of
   # http://services-server:8000 and satisfied by a network alias on
@@ -341,6 +343,7 @@ services:
       AUTO_PILOT_DATABASE_URL: *db-url
       TEMPORAL_GRPC_ENDPOINT: temporal:7233
       API_PORT: '8000'
+      WORKFLOW_SERVER_TOKEN: ${WORKFLOW_SERVER_TOKEN:-dev-workflow-token-change-me}
     depends_on:
       postgres:
         condition: service_healthy

@@ -675,6 +675,40 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 		}
 		return
 
+	case "cloud_update_credentials":
+		var request account.AccountUpdateCredentialsRequest
+		accountRequest, err = extractNestedObject(accountRequest)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		err = common.UnmarshalMapToStruct(accountRequest, &request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := account.UpdateAccountCredentials(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        ctx.GetSecurityContext().GetUserId(),
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryAccount,
+			EventType:     audit.EventTypeAccountUpdate,
+			EventState:    map[string]any{"id": request.Id, "cloud_provider": request.CloudProvider, "credential_rotated": true, "accounts_updated": resp.AffectedRows},
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "account_credentials",
+			EventAction:   audit.EventActionUpdate,
+			EventStatus:   audit.EventStatusSuccess,
+		}); err != nil {
+			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}
+		return
+
 	default:
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return

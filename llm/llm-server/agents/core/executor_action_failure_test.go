@@ -55,9 +55,9 @@ func newActionFailureTestExecutor(agent NBAgent) *plannerExecutor {
 }
 
 func TestDoIterationParallel_ActionFailureDoesNotAbortIteration(t *testing.T) {
-	prevDao := conversationDao
+	prevDao := PeekConversationDao()
 	SetConversationDao(failureConversationDao{})
-	t.Cleanup(func() { conversationDao = prevDao })
+	t.Cleanup(func() { SetConversationDao(prevDao) })
 
 	toolOk := &MockContextCapturingTool{NameVal: "TOOL_OK", ReturnOutput: "ok-output", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
 	toolUnauthorized := &MockContextCapturingTool{NameVal: "TOOL_UNAUTH", ReturnOutput: "never", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
@@ -112,9 +112,9 @@ func TestDoIterationParallel_ActionFailureDoesNotAbortIteration(t *testing.T) {
 }
 
 func TestDoIterationSequential_ActionFailureRecordsFailedStep(t *testing.T) {
-	prevDao := conversationDao
+	prevDao := PeekConversationDao()
 	SetConversationDao(failureConversationDao{})
-	t.Cleanup(func() { conversationDao = prevDao })
+	t.Cleanup(func() { SetConversationDao(prevDao) })
 
 	toolUnauthorized := &MockContextCapturingTool{NameVal: "TOOL_UNAUTH", ReturnOutput: "never", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
 	toolOk := &MockContextCapturingTool{NameVal: "TOOL_OK", ReturnOutput: "ok-output", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
@@ -147,9 +147,9 @@ func TestDoIterationSequential_ActionFailureRecordsFailedStep(t *testing.T) {
 // replaying a completed sibling put its tool_use id twice in one assistant
 // message ("tool_use ids must be unique" on Anthropic).
 func TestDoIterationSequential_PauseKeepsOnlyUnrunActions(t *testing.T) {
-	prevDao := conversationDao
+	prevDao := PeekConversationDao()
 	SetConversationDao(fakeConversationDao{})
-	t.Cleanup(func() { conversationDao = prevDao })
+	t.Cleanup(func() { SetConversationDao(prevDao) })
 
 	toolOk := &MockContextCapturingTool{NameVal: "TOOL_OK", ReturnOutput: "ok-output", ReturnStatus: toolcore.NBToolResponseStatusSuccess}
 	nameToTool := map[string]toolcore.NBTool{"TOOL_OK": toolOk}

@@ -114,6 +114,7 @@ func (f *metricsAgent) Execute(ctx *security.RequestContext, query core.NBAgentR
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:            ctx,
 		AccountId:      f.accountId,
+		AccountContext: delegatedAccountContext(ctx, query, f.accountId),
 		ConversationId: query.ConversationId,
 		ParentAgentId:  nestedAgentParentID(query),
 		MessageId:      query.MessageId,
@@ -265,6 +266,7 @@ func (m *metricsQueryAgent) Execute(ctx *security.RequestContext, query core.NBA
 	nbRequestContext := toolcore.NbToolContext{
 		Ctx:                     ctx,
 		AccountId:               m.accountId,
+		AccountContext:          delegatedAccountContext(ctx, query, m.accountId),
 		ConversationId:          query.ConversationId,
 		ParentAgentId:           nestedAgentParentID(query),
 		MessageId:               query.MessageId,
@@ -424,6 +426,7 @@ func (m MetricsAgentTool) Description() string {
 
 	* Input: Provide a question in natural language to search, filter, troubleshoot, or visualize metrics.
 	* Output: Returns metrics data, summaries, and visualizations based on your query.
+	* Charts: when the user asks for a chart or graph, the result carries a ` + "```nb-chart" + ` block or chart_ref per query. Copy that block into your final answer as-is (you may set "top", "type" or "title" in it); never type chart numbers or draw a chart yourself.
 	`
 }
 
@@ -434,6 +437,10 @@ func (m MetricsAgentTool) InputSchema() toolcore.ToolSchema {
 			"command": {
 				Type:        toolcore.ToolSchemaTypeString,
 				Description: "Metrics Query Question",
+			},
+			"query": {
+				Type:        toolcore.ToolSchemaTypeString,
+				Description: "Optional: a query the user supplied (PromQL, Elasticsearch DSL JSON, …), copied exactly. It is run as given first.",
 			},
 			"output_file": {
 				Type:        toolcore.ToolSchemaTypeString,
@@ -463,6 +470,8 @@ func (m MetricsAgentTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		// still name the target; tell it the target is already the scope.
 		input.Context = strings.TrimSpace(input.Context + "\n" + target.ScopeNote())
 	}
+
+	input.Command = withUserSuppliedQuery(input.Command, input.Arguments)
 
 	provider, err := tools.GetMetricsProvider(queryAccountId)
 	if target != nil {
@@ -629,8 +638,8 @@ var metricsDataTools = map[string]bool{
 }
 
 // metricsAnswer builds the metrics tool's result from the backend agent's answer: the
-// answer, any chart the agent drew that the answer does not carry, and the last two
-// data queries it ran (tool, status, arguments, saved-data note). It also returns the
+// answer, the chart_refs of charts its queries saved that the answer does not carry,
+// and the last two data queries it ran (tool, status, arguments, saved-data note). It also returns the
 // newest successful query's raw output when that output was not already saved to a
 // file, so the caller can keep it for follow-up work. The status is Error when the
 // agent failed, or when it ran data queries and none of them succeeded (#36633).
@@ -640,10 +649,8 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 	if len(resp.Response) > 0 {
 		agentAnswer = resp.Response[0]
 	}
-	if chart := metricsChart(resp.AgentStepResponse, agentAnswer); chart != "" {
-		data += "\n\n" + chart
-	}
 	var used []string
+	var charts []string
 	lastRaw := ""
 	ran, succeeded, sawOK := false, false, false
 	for i := len(resp.AgentStepResponse) - 1; i >= 0; i-- {
@@ -653,6 +660,12 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 		}
 		ran = true
 		succeeded = succeeded || !st.Failed
+		for _, ref := range toolcore.MetricChartRefs(st.Response.Content) {
+			// Newest first; the answer may already carry the block.
+			if len(charts) < 3 && !strings.Contains(agentAnswer, ref) {
+				charts = append(charts, toolcore.MetricChartNote(ref, ""))
+			}
+		}
 		j := strings.Index(st.Response.Content, "file_ref")
 		// Only the newest successful query's output, even when it is older than the
 		// listed queries: a later success's output would be mislabelled.
@@ -675,6 +688,9 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 		}
 		used = append(used, line)
 	}
+	if len(charts) > 0 {
+		data += "\n\nCharts of the queries below (newest first):\n- " + strings.Join(charts, "\n- ")
+	}
 	if len(used) > 0 {
 		data += "\n\nQueries used (newest first):\n- " + strings.Join(used, "\n- ")
 	}
@@ -685,27 +701,35 @@ func metricsAnswer(resp core.NBAgentResponse, answer string) (string, toolcore.N
 	return data, status, lastRaw
 }
 
-// metricsChart returns the newest visualizer output when the answer does not already
-// carry it, so a chart the agent drew still reaches the user.
-func metricsChart(steps []core.ToolInvocation, answer string) string {
-	for i := len(steps) - 1; i >= 0; i-- {
-		st := steps[i]
-		if st.Call.FunctionCall == nil || st.Call.FunctionCall.Name != "visualizer" || st.Failed {
-			continue
-		}
-		c := strings.TrimSpace(st.Response.Content)
-		if c == "" || strings.Contains(answer, c) {
-			return ""
-		}
-		return c
-	}
-	return ""
-}
-
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// withUserSuppliedQuery appends a query the user gave, verbatim, to the command the
+// provider agent receives. Passed only as a paraphrased question, a pasted query or
+// field path was rewritten on the way and never run as given (#39201).
+//
+// The wording "Run the following query" is what explicitMetricsQuery
+// (agents/core/metrics_explicit_query.go) recognises, so on react4 a complete DSL
+// body with a named index is then executed first deterministically.
+func withUserSuppliedQuery(command string, args map[string]any) string {
+	var query string
+	switch q := args["query"].(type) {
+	case string:
+		query = q
+	case nil:
+	default:
+		// A model may pass a DSL body as a JSON object rather than a string.
+		if b, err := json.Marshal(q); err == nil {
+			query = string(b)
+		}
+	}
+	if strings.TrimSpace(query) == "" {
+		return command
+	}
+	return command + "\n\nThe user supplied a query. Run the following query exactly as given first; change it only if it fails or returns nothing, and say what you changed:\n" + query
 }

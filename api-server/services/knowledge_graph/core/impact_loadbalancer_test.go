@@ -139,7 +139,7 @@ func TestSummarizeDownstream_DropsUnresolvedVPCAddresses(t *testing.T) {
 	// QueryAttributes first and Properties second, so the node is built the way
 	// vpc_flowlogs_flow_source actually builds it.
 	unresolved := newImpactTestNode("ext-1", NodeTypeExternalService, "10.0.0.143", "", "")
-	unresolved.Properties = map[string]interface{}{"subtype": unresolvedVPCAddressSubtype}
+	unresolved.Properties = map[string]interface{}{"subtype": UnresolvedVPCAddressSubtype}
 	named := newImpactTestNode("ext-2", NodeTypeExternalService, "api.stripe.com", "", "")
 
 	nodes := []*DbNode{

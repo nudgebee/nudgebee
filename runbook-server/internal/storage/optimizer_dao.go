@@ -793,6 +793,10 @@ func (d *OptimizerDao) GetFullRecommendationsForOptimizerCategory(ctx context.Co
 }
 
 func (d *OptimizerDao) SaveAutoOptimizeTasks(ctx context.Context, tasks []model.AutoOptimizeTask) error {
+	return saveAutoOptimizeTasks(ctx, d.db, tasks)
+}
+
+func saveAutoOptimizeTasks(ctx context.Context, ext sqlx.ExtContext, tasks []model.AutoOptimizeTask) error {
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -845,7 +849,7 @@ func (d *OptimizerDao) SaveAutoOptimizeTasks(ctx context.Context, tasks []model.
 		})
 	}
 
-	_, err := d.db.NamedExecContext(ctx, query, dbTasks)
+	_, err := sqlx.NamedExecContext(ctx, ext, query, dbTasks)
 	return err
 }
 
@@ -1083,10 +1087,15 @@ func (d *OptimizerDao) UpdateRecommendationStatus(ctx context.Context, id uuid.U
 // GetActiveTasksForRecommendations returns the tasks that are still in flight
 // for the given recommendations, so a run does not schedule the same work twice.
 //
-// Only recently-created Scheduled tasks count. A task left behind by a run that
-// died before writing a terminal status is indistinguishable from one waiting its
+// Only recent Scheduled tasks count. A task left behind by a run that died
+// before writing a terminal status is indistinguishable from one waiting its
 // turn, and without the age bound it held its recommendation back from every
-// later run forever (#34943). See model.ScheduledTaskStaleAfter.
+// later run forever (#34943). See model.ScheduledTaskStaleAfter. An approved
+// task is moved back to Scheduled with a fresh updated_at, so its age runs from
+// the approval, not from when it was planned.
+//
+// A task parked for approval counts for the approval window, so no other run
+// plans the same recommendation while it waits.
 func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID]model.AutoOptimizeTask, error) {
 	if len(recommendationIDs) == 0 {
 		return nil, nil
@@ -1094,7 +1103,9 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 	query := `SELECT id, auto_pilot_id, tenant_id, account_id, recommendation_id, status,
 			created_at, updated_at, meta, attributes, resource_filter, scheduled_time, name,
 			reason, error, command, task_id, skipped_by
-		FROM auto_pilot_task WHERE recommendation_id = ANY($1) AND status = $2 AND created_at > $3`
+		FROM auto_pilot_task WHERE recommendation_id = ANY($1)
+			AND ((status = $2 AND GREATEST(created_at, updated_at) > $3)
+				OR (status = $4 AND created_at > $5))`
 
 	var dbTasks []struct {
 		ID               uuid.UUID  `db:"id"`
@@ -1117,8 +1128,11 @@ func (d *OptimizerDao) GetActiveTasksForRecommendations(ctx context.Context, rec
 		SkippedBy        *uuid.UUID `db:"skipped_by"`
 	}
 
-	staleBefore := time.Now().UTC().Add(-model.ScheduledTaskStaleAfter)
-	if err := d.db.SelectContext(ctx, &dbTasks, query, pq.Array(recommendationIDs), model.AutopilotTaskStatusScheduled, staleBefore); err != nil {
+	now := time.Now().UTC()
+	staleBefore := now.Add(-model.ScheduledTaskStaleAfter)
+	approvalOpenSince := now.Add(-model.AutoOptimizeApprovalWindow)
+	if err := d.db.SelectContext(ctx, &dbTasks, query, pq.Array(recommendationIDs), model.AutopilotTaskStatusScheduled, staleBefore,
+		model.AutopilotTaskStatusPendingApproval, approvalOpenSince); err != nil {
 		return nil, err
 	}
 

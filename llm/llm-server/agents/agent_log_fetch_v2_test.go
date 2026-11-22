@@ -51,7 +51,7 @@ func TestFetchResponseIsEmpty(t *testing.T) {
 	// Build envelopes through the real makeFetchResponse so the test tracks the
 	// actual wire shape the agent produces.
 	env := func(logs string) core.NBAgentResponse {
-		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", "", "", nil)
+		return makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, logs, "", "", nil)
 	}
 	cases := []struct {
 		name string
@@ -122,8 +122,8 @@ func TestQueryRequestsWindowBeyondKubectl(t *testing.T) {
 // falls back UNLESS the query had an explicit start_time, which kubectl's
 // untimed `--tail` dump cannot honor.
 func TestShouldFallbackToKubectl(t *testing.T) {
-	empty := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, "", "", "", "", nil)
-	rows := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, `{"logs":[{"timestamp":"t","message":"boom"}]}`, "", "", "", nil)
+	empty := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, "", "", "", nil)
+	rows := makeFetchResponse(FetchLogsAgentName, `{"where":{}}`, `{"logs":[{"timestamp":"t","message":"boom"}]}`, "", "", nil)
 	failed := core.NBAgentResponse{Status: core.ConversationStatusFailed, Response: []string{"boom"}}
 
 	cases := []struct {
@@ -255,8 +255,9 @@ func TestBuildCanonicalLogQueryPrompt(t *testing.T) {
 
 	t.Run("advertises the canonical field mapping", func(t *testing.T) {
 		assert.Contains(t, p, "Canonical fields for THIS backend")
-		assert.Contains(t, p, "app → app")
-		assert.Contains(t, p, "content → log")
+		assert.Contains(t, p, "- app\n")
+		assert.Contains(t, p, "- content\n")
+		assert.NotContains(t, p, "→ log")
 	})
 
 	t.Run("forbids service_name (the OTel prior the model leaks)", func(t *testing.T) {
@@ -312,7 +313,7 @@ func TestBuildCanonicalLogQueryPrompt(t *testing.T) {
 // error string) are left untouched rather than corrupted.
 func TestWithFallbackNote(t *testing.T) {
 	t.Run("injects the note into a JSON envelope", func(t *testing.T) {
-		resp := makeFetchResponse(FetchLogsAgentName, "kubectl logs pod-x -n ns", `{"stdout":"line1\nline2","stderr":""}`, `{"stdout":"line1\nline2","stderr":""}`, "logs_kubectl_1.txt", "", nil)
+		resp := makeFetchResponse(FetchLogsAgentName, "kubectl logs pod-x -n ns", `{"stdout":"line1\nline2","stderr":""}`, `{"stdout":"line1\nline2","stderr":""}`, "logs_kubectl_1.txt", nil)
 		out := withFallbackNote(resp, "canonical loki query matched zero rows — retried via kubectl.")
 		require.Len(t, out.Response, 1)
 		var env map[string]any
@@ -344,7 +345,7 @@ func TestWithFallbackNote(t *testing.T) {
 // envelopeQuery reads the correct (top-level) shape.
 func TestEnvelopeQuery(t *testing.T) {
 	t.Run("extracts the top-level query field from a real envelope", func(t *testing.T) {
-		resp := makeFetchResponse(FetchLogsAgentName, `{"where":{"app":{"_eq":"checkout"}}}`, `{"logs":[]}`, "", "", "", nil)
+		resp := makeFetchResponse(FetchLogsAgentName, `{"where":{"app":{"_eq":"checkout"}}}`, `{"logs":[]}`, "", "", nil)
 		assert.Equal(t, `{"where":{"app":{"_eq":"checkout"}}}`, envelopeQuery(resp.Response))
 	})
 

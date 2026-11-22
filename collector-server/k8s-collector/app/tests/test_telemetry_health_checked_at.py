@@ -10,6 +10,7 @@ relay stayed healthy, which keeps every other freshness signal on the page looki
 
 `last_connected_at` cannot stand in: relay-server also writes it on connect and
 disconnect, so a reconnect refreshes it without a single flag being re-reported.
+(Telemetry itself no longer writes it; see handle_telemetry.)
 
 Runs offline: heavy deps are stubbed before importing the handler, same as
 test_job_last_seen.py.
@@ -127,7 +128,7 @@ class TestTelemetryHealthCheckedAt(unittest.TestCase):
         return agent_updates[0]
 
     def _connection_status(self, params):
-        return json.loads(params[3])
+        return json.loads(params[2])
 
     def test_flags_are_stamped_with_the_time_they_were_reported(self):
         params = self._handle(_telemetry(dict(AGENT_FLAGS)))
@@ -138,17 +139,17 @@ class TestTelemetryHealthCheckedAt(unittest.TestCase):
             "agent-reported flags reached connection_status with no report time; "
             "Agent Details cannot then say how old they are",
         )
-        # Same instant as last_connected_at, not merely close to it.
-        last_connected_at = params[1]
-        self.assertIsInstance(last_connected_at, datetime.datetime)
-        self.assertEqual(merged["healthCheckedAt"], last_connected_at.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        stamp = datetime.datetime.strptime(merged["healthCheckedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+        self.assertLess(abs((datetime.datetime.now(datetime.timezone.utc) - stamp).total_seconds()), 60)
 
-    def test_stamp_is_tz_aware_utc(self):
-        """A naive local timestamp would be silently right in a UTC container and hours
-        wrong on a laptop -- the UI appends Z to any offset-less string it parses."""
+    def test_heartbeat_does_not_write_last_connected_at(self):
+        """relay-server identifies a session by the last_connected_at its connect write
+        stored; a heartbeat moving it forward makes every disconnect write look stale and
+        leaves a dead agent CONNECTED for ~30 min."""
         params = self._handle(_telemetry(dict(AGENT_FLAGS)))
-        self.assertEqual(params[1].tzinfo, datetime.timezone.utc)
-        self.assertTrue(self._connection_status(params)["healthCheckedAt"].endswith("Z"))
+        self.assertFalse([p for p in params if isinstance(p, datetime.datetime)])
 
     def test_the_agents_own_flags_survive_the_stamp(self):
         merged = self._connection_status(self._handle(_telemetry(dict(AGENT_FLAGS))))

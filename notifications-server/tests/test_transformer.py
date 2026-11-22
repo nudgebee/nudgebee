@@ -16,6 +16,36 @@ class TestApplyLengthLimit:
         assert Transformer.apply_length_limit("1234567890", 9, ".") == "12345678."
 
 
+class TestApplyByteLengthLimit:
+    def test_under_limit_returns_unchanged(self):
+        assert Transformer.apply_byte_length_limit("short", 10) == "short"
+
+    def test_exactly_at_limit_returns_unchanged(self):
+        assert Transformer.apply_byte_length_limit("1234567890", 10) == "1234567890"
+
+    def test_default_truncator_leaves_room_for_itself(self):
+        result = Transformer.apply_byte_length_limit("1234567890", 9)
+        assert result == "123456..."
+        assert len(result.encode()) == 9
+
+    def test_custom_truncator(self):
+        assert Transformer.apply_byte_length_limit("1234567890", 9, ".") == "12345678."
+
+    def test_measures_bytes_not_characters(self):
+        # "é" is 1 char but 2 UTF-8 bytes; a char-based limit would let this
+        # through, a byte-based one must not.
+        text = "é" * 10  # 10 chars, 20 bytes
+        result = Transformer.apply_byte_length_limit(text, 9)
+        assert len(result.encode()) <= 9
+
+    def test_never_splits_a_multibyte_character(self):
+        text = "é" * 10
+        result = Transformer.apply_byte_length_limit(text, 5, ".")
+        # A split would decode to a replacement/garbled char; every char
+        # before the truncator must be a whole, valid "é".
+        assert all(c == "é" for c in result[:-1])
+
+
 class TestGetMarkdownLinks:
     def test_extracts_slack_links(self):
         text = "see <http://x.com|link> and <http://y.com|other>"

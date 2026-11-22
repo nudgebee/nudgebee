@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -96,7 +98,7 @@ func TestReAct3VsReAct4Comparison(t *testing.T) {
 
 	// react_4 only engages on a native-tools-capable provider; otherwise both
 	// runs would execute react_3 and the comparison is vacuous.
-	provider := core.GetLLMProvider(sc, accountID, "", false, "")
+	provider := llmruntime.GetLLMProvider(sc, accountID, "", false, "")
 	if !core.SupportsNativeTools(provider, "") {
 		t.Skipf("provider %q is not native-tools capable — react_4 would fall back to react_3; nothing to compare", provider)
 	}
@@ -272,10 +274,10 @@ func runReact4ComparisonCase(t *testing.T, sc *security.RequestContext, accountI
 	// silently reports 0 tokens / $0 — the query succeeds, it just matches nothing.
 	// Poll until the count stops growing rather than sleeping a fixed amount:
 	// a 4-call run settles in a second, an 80-call run does not.
-	var metrics []core.TokenMetrics
+	var metrics []analytics.TokenMetrics
 	prevCount := -1
 	for attempt := 0; attempt < 10; attempt++ {
-		m, tErr := core.GetConversationDao().GetConversationTokenUsage(conversationID, accountID)
+		m, tErr := analytics.GetStore().GetConversationTokenUsage(conversationID, accountID)
 		if tErr != nil {
 			slog.Warn("react4 comparison: token usage read failed", "case", c.name, "planner", planner, "error", tErr)
 			break

@@ -11,37 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPromqlParsing(t *testing.T) {
-	testCases := []struct {
-		Input    string
-		Expected []string
-	}{
-		{
-			Input: `
-				Here is a PromQL query: sum(rate(http_requests_total[5m])) by (job)
-				Another: avg_over_time(cpu_usage[1h])
-				max(memory_usage_bytes{instance="foo"})
-				count(node_cpu_seconds_total{mode='idle'})
-				foo
-				just some text
-			`,
-			Expected: []string{
-				"sum(rate(http_requests_total[5m])) by (job)",
-				"avg_over_time(cpu_usage[1h])",
-				"max(memory_usage_bytes{instance=\"foo\"})",
-				"count(node_cpu_seconds_total{mode='idle'})",
-			},
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.Input, func(t *testing.T) {
-			queries := ExtractPromQLExprs(tc.Input)
-			assert.ElementsMatch(t, tc.Expected, queries)
-		})
-	}
-}
-
 // TestPromqlAgent_CustomMetricDiscoveryWithSearchMetrics tests that the promql agent
 // uses search_metrics for custom metrics not in ground truth, and resolves them
 // efficiently without excessive steps.

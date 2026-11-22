@@ -36,6 +36,8 @@ import {
 import { Button } from '@ui/Button';
 import Loader from '@shared/Loader';
 import SearchInput from '@ui/SearchInput';
+import TemplateValuesForm from './TemplateValuesForm';
+import { buildTemplateFields } from '../utils/templateValues';
 
 interface WorkflowTemplatesModalProps {
   open: boolean;
@@ -423,6 +425,8 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
   const [selectedLabels, setSelectedLabels] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  // Template awaiting its values; set when Use Template is clicked on one that declares any.
+  const [pendingTemplate, setPendingTemplate] = useState<any>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -467,16 +471,26 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
     setSelectedLabels((prev) => (prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]));
   }, []);
 
-  const handleUseTemplate = useCallback(
+  const openInBuilder = useCallback(
     (workflow: any) => {
       // Store template data in sessionStorage (same pattern as AI-generated workflows)
-      // Include eventContext so the builder can pre-fill input defaults
       const payload = eventContext ? { ...workflow, eventContext } : workflow;
       sessionStorage.setItem('templateWorkflow', JSON.stringify(payload));
       onClose();
       router.push(`/automation/new?accountId=${accountId}&loadFromTemplate=true`);
     },
     [accountId, onClose, router, eventContext]
+  );
+
+  const handleUseTemplate = useCallback(
+    (workflow: any) => {
+      if (buildTemplateFields(workflow).length > 0) {
+        setPendingTemplate(workflow);
+        return;
+      }
+      openInBuilder(workflow);
+    },
+    [openInBuilder]
   );
 
   const handleCreateFromScratch = useCallback(() => {
@@ -548,6 +562,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
       setSearchQuery('');
       setDebouncedQuery('');
       setSelectedLabels([]);
+      setPendingTemplate(null);
     }
   }, [open]);
 
@@ -599,145 +614,157 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
           maxHeight: `calc(85vh - ${ds.space.mul(2, 10)})`,
         }}
       >
-        {/* Search */}
-        <Box sx={{ mb: 'var(--ds-space-3)' }}>
-          <SearchInput
-            id='wf-template-search'
-            label='Search templates'
-            value={searchQuery}
-            onChange={setSearchQuery}
-            onClear={() => setSearchQuery('')}
+        {pendingTemplate ? (
+          <TemplateValuesForm
+            template={pendingTemplate}
+            accountId={accountId}
+            eventContext={eventContext}
+            onBack={() => setPendingTemplate(null)}
+            onSubmit={openInBuilder}
           />
-        </Box>
-
-        {/* Category Tabs */}
-        <Box id='wf-template-categories' sx={{ mb: 'var(--ds-space-2)' }}>
-          <Tabs
-            value={selectedCategory}
-            onChange={setSelectedCategory}
-            showBorderBottom={true}
-            behavior='filter'
-            options={{
-              tabOptions: TEMPLATE_CATEGORIES,
-            }}
-          />
-        </Box>
-
-        {/* Label filter chips */}
-        {availableLabels.length > 0 && (
-          <Box
-            sx={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: 'var(--ds-space-2)',
-              px: 'var(--ds-space-4)',
-              mb: 'var(--ds-space-2)',
-            }}
-          >
-            {availableLabels.map((label) => (
-              <Chip
-                key={label}
-                variant='filter'
-                size='xs'
-                hue={hashHue(label)}
-                pressed={selectedLabels.includes(label)}
-                onClick={() => toggleLabel(label)}
-              >
-                {label}
-              </Chip>
-            ))}
-          </Box>
-        )}
-
-        {/* Cards Grid */}
-        <Box
-          sx={{
-            overflowY: 'auto',
-            flex: 1,
-          }}
-        >
-          {loading && workflows.length === 0 && recommended.length === 0 ? (
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                height: ds.space.mul(3, 25),
-              }}
-            >
-              <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
-            </Box>
-          ) : displayedRecommended.length === 0 && displayedOthers.length === 0 ? (
-            <Box
-              sx={{
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'center',
-                height: ds.space.mul(3, 25),
-              }}
-            >
-              <Text
-                value={
-                  debouncedQuery
-                    ? `No templates match "${debouncedQuery}"`
-                    : selectedLabels.length > 0
-                    ? 'No templates match the selected labels'
-                    : 'No templates available'
-                }
-                sx={{ color: ds.gray[400] }}
+        ) : (
+          <>
+            {/* Search */}
+            <Box sx={{ mb: 'var(--ds-space-3)' }}>
+              <SearchInput
+                id='wf-template-search'
+                label='Search templates'
+                value={searchQuery}
+                onChange={setSearchQuery}
+                onClear={() => setSearchQuery('')}
               />
             </Box>
-          ) : displayedRecommended.length > 0 ? (
-            <>
-              <Box sx={sectionHeaderSx}>
-                <SectionHeading id='wf-template-recommended-heading' value='Recommended for this event' />
-                {eventContextChips}
+
+            {/* Category Tabs */}
+            <Box id='wf-template-categories' sx={{ mb: 'var(--ds-space-2)' }}>
+              <Tabs
+                value={selectedCategory}
+                onChange={setSelectedCategory}
+                showBorderBottom={true}
+                behavior='filter'
+                options={{
+                  tabOptions: TEMPLATE_CATEGORIES,
+                }}
+              />
+            </Box>
+
+            {/* Label filter chips */}
+            {availableLabels.length > 0 && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 'var(--ds-space-2)',
+                  px: 'var(--ds-space-4)',
+                  mb: 'var(--ds-space-2)',
+                }}
+              >
+                {availableLabels.map((label) => (
+                  <Chip
+                    key={label}
+                    variant='filter'
+                    size='xs'
+                    hue={hashHue(label)}
+                    pressed={selectedLabels.includes(label)}
+                    onClick={() => toggleLabel(label)}
+                  >
+                    {label}
+                  </Chip>
+                ))}
               </Box>
-              <TemplateGrid workflows={displayedRecommended} onUseTemplate={handleUseTemplate} />
-              {displayedOthers.length > 0 && (
+            )}
+
+            {/* Cards Grid */}
+            <Box
+              sx={{
+                overflowY: 'auto',
+                flex: 1,
+              }}
+            >
+              {loading && workflows.length === 0 && recommended.length === 0 ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    height: ds.space.mul(3, 25),
+                  }}
+                >
+                  <Loader style={{ position: 'static', height: '100%', width: '100%' }} />
+                </Box>
+              ) : displayedRecommended.length === 0 && displayedOthers.length === 0 ? (
+                <Box
+                  sx={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    height: ds.space.mul(3, 25),
+                  }}
+                >
+                  <Text
+                    value={
+                      debouncedQuery
+                        ? `No templates match "${debouncedQuery}"`
+                        : selectedLabels.length > 0
+                        ? 'No templates match the selected labels'
+                        : 'No templates available'
+                    }
+                    sx={{ color: ds.gray[400] }}
+                  />
+                </Box>
+              ) : displayedRecommended.length > 0 ? (
                 <>
-                  <Box sx={{ ...sectionHeaderSx, mt: 'var(--ds-space-3)' }}>
-                    <SectionHeading id='wf-template-others-heading' value='Other templates' />
+                  <Box sx={sectionHeaderSx}>
+                    <SectionHeading id='wf-template-recommended-heading' value='Recommended for this event' />
+                    {eventContextChips}
                   </Box>
-                  <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} startIndex={displayedRecommended.length} />
+                  <TemplateGrid workflows={displayedRecommended} onUseTemplate={handleUseTemplate} />
+                  {displayedOthers.length > 0 && (
+                    <>
+                      <Box sx={{ ...sectionHeaderSx, mt: 'var(--ds-space-3)' }}>
+                        <SectionHeading id='wf-template-others-heading' value='Other templates' />
+                      </Box>
+                      <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} startIndex={displayedRecommended.length} />
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  {noMatch && (
+                    <Box id='wf-template-no-match' sx={sectionHeaderSx}>
+                      <Text
+                        value='No templates matched this event — showing all templates'
+                        sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}
+                      />
+                      {eventContextChips}
+                    </Box>
+                  )}
+                  <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} />
                 </>
               )}
-            </>
-          ) : (
-            <>
-              {noMatch && (
-                <Box id='wf-template-no-match' sx={sectionHeaderSx}>
-                  <Text
-                    value='No templates matched this event — showing all templates'
-                    sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400] }}
-                  />
-                  {eventContextChips}
-                </Box>
-              )}
-              <TemplateGrid workflows={displayedOthers} onUseTemplate={handleUseTemplate} />
-            </>
-          )}
-        </Box>
+            </Box>
 
-        {/* Bottom actions */}
-        <Box
-          sx={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            gap: 'var(--ds-space-3)',
-            paddingTop: 'var(--ds-space-4)',
-            borderTop: '1px solid var(--ds-gray-200)',
-          }}
-        >
-          {onCreateWithAI && (
-            <Button tone='secondary' size='md' onClick={onCreateWithAI}>
-              Create with AI
-            </Button>
-          )}
-          <Button id='wf-template-scratch-btn' tone='secondary' size='md' onClick={handleCreateFromScratch}>
-            Create from scratch
-          </Button>
-        </Box>
+            {/* Bottom actions */}
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 'var(--ds-space-3)',
+                paddingTop: 'var(--ds-space-4)',
+                borderTop: '1px solid var(--ds-gray-200)',
+              }}
+            >
+              {onCreateWithAI && (
+                <Button tone='secondary' size='md' onClick={onCreateWithAI}>
+                  Create with AI
+                </Button>
+              )}
+              <Button id='wf-template-scratch-btn' tone='secondary' size='md' onClick={handleCreateFromScratch}>
+                Create from scratch
+              </Button>
+            </Box>
+          </>
+        )}
       </Box>
     </Modal>
   );

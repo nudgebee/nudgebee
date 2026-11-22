@@ -15,6 +15,10 @@
  *     on the same side — pick one per side.
  *   - Don't combine `readonly` and `disabled`. Readonly wins if both set.
  *   - Don't reach for a wrapper to override styling; extend the API instead.
+ *
+ * Forwards a ref to the native input/textarea (e.g. for selectionStart/
+ * setSelectionRange caret work). This is the only escape hatch reintroduced
+ * so far — InputProps/inputProps spreading stays out per the note above.
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
@@ -43,8 +47,16 @@ export interface InputProps {
   placeholder?: string;
   /** Animate the placeholder with a typewriter effect when the input is empty. */
   animatePlaceholder?: boolean;
+  /**
+   * Phrases to cycle through while animating. Each is typed in, held, then
+   * deleted back out before the next begins. Overrides `placeholder` for the
+   * animation; falls back to `[placeholder]` when omitted.
+   */
+  placeholderSequence?: string[];
   /** Typing speed in ms per character. Default 60. */
   typingSpeed?: number;
+  /** Backspace speed in ms per character for the fade-out. Default = typingSpeed / 2. */
+  deletingSpeed?: number;
   required?: boolean;
   disabled?: boolean;
   readOnly?: boolean;
@@ -108,38 +120,43 @@ const SIZE_TOKENS: Record<InputSize, SizeToken> = {
   },
 };
 
-export function Input({
-  value,
-  onChange,
-  label,
-  instructionText,
-  help,
-  error,
-  prefix,
-  suffix,
-  leadingIcon,
-  trailingIcon,
-  size = 'md',
-  type = 'text',
-  placeholder,
-  animatePlaceholder = false,
-  typingSpeed = 60,
-  required,
-  disabled,
-  readOnly,
-  inputMode,
-  rows,
-  minRows = 3,
-  maxRows = 20,
-  name,
-  autoComplete,
-  onBlur,
-  onFocus,
-  onKeyDown,
-  className,
-  id,
-  'data-testid': dataTestId,
-}: InputProps) {
+export const Input = React.forwardRef<HTMLInputElement | HTMLTextAreaElement, InputProps>(function Input(
+  {
+    value,
+    onChange,
+    label,
+    instructionText,
+    help,
+    error,
+    prefix,
+    suffix,
+    leadingIcon,
+    trailingIcon,
+    size = 'md',
+    type = 'text',
+    placeholder,
+    animatePlaceholder = false,
+    placeholderSequence,
+    typingSpeed = 60,
+    deletingSpeed,
+    required,
+    disabled,
+    readOnly,
+    inputMode,
+    rows,
+    minRows = 3,
+    maxRows = 20,
+    name,
+    autoComplete,
+    onBlur,
+    onFocus,
+    onKeyDown,
+    className,
+    id,
+    'data-testid': dataTestId,
+  },
+  forwardedRef
+) {
   const tokens = SIZE_TOKENS[size];
   const reactId = React.useId();
   const inputId = id ?? reactId;
@@ -148,13 +165,30 @@ export function Input({
   const errorId = `${inputId}-error`;
   const instrId = `${inputId}-instr`;
   const isTextarea = type === 'textarea';
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const styleCacheRef = React.useRef<{ lineH: number; padding: number } | null>(null);
 
-  // Typewriter placeholder animation
+  // Textarea needs its own ref for the auto-grow effect below, so merge it
+  // with whatever ref the caller forwarded in rather than overwriting either.
+  const setTextareaRef = React.useCallback(
+    (node: HTMLTextAreaElement | null) => {
+      textareaRef.current = node;
+      if (typeof forwardedRef === 'function') {
+        forwardedRef(node);
+      } else if (forwardedRef) {
+        (forwardedRef as React.MutableRefObject<HTMLInputElement | HTMLTextAreaElement | null>).current = node;
+      }
+    },
+    [forwardedRef]
+  );
+
+  // Typewriter placeholder animation: type a phrase in, hold on it, delete it
+  // back out (faster than typing), then advance to the next phrase and repeat.
   const [animatedPlaceholder, setAnimatedPlaceholder] = React.useState('');
-  const charIndexRef = React.useRef(0);
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Serialize the phrase list so an inline-array prop doesn't restart the effect
+  // on every render; a genuine content change still retriggers it.
+  const sequenceKey = placeholderSequence?.join('\n') ?? '';
 
   React.useEffect(() => {
     if (timerRef.current) {
@@ -162,35 +196,56 @@ export function Input({
       timerRef.current = null;
     }
 
-    if (!animatePlaceholder || !placeholder || value) {
-      charIndexRef.current = 0;
+    // A non-empty sequence wins; otherwise fall back to the single placeholder.
+    const phrases = sequenceKey ? sequenceKey.split('\n') : placeholder ? [placeholder] : [];
+
+    if (!animatePlaceholder || phrases.length === 0 || value) {
       setAnimatedPlaceholder('');
       return;
     }
 
-    charIndexRef.current = 0;
+    // Fade out runs quicker than fade in; hold on the full phrase, blink on empty.
+    const deleteSpeed = deletingSpeed ?? Math.max(15, Math.round(typingSpeed / 2));
+    const HOLD_FULL_MS = 1500;
+    const HOLD_EMPTY_MS = 400;
 
-    const type = () => {
-      const idx = charIndexRef.current;
-      if (idx <= (placeholder?.length ?? 0)) {
-        setAnimatedPlaceholder(placeholder.slice(0, idx));
-        charIndexRef.current = idx + 1;
-        timerRef.current = setTimeout(type, typingSpeed);
+    let phraseIdx = 0;
+    let charIdx = 0;
+    let deleting = false;
+
+    const tick = () => {
+      const phrase = phrases[phraseIdx];
+
+      if (!deleting) {
+        // Fade in — type forward one character at a time.
+        charIdx += 1;
+        setAnimatedPlaceholder(phrase.slice(0, charIdx));
+        if (charIdx >= phrase.length) {
+          deleting = true;
+          timerRef.current = setTimeout(tick, HOLD_FULL_MS);
+        } else {
+          timerRef.current = setTimeout(tick, typingSpeed);
+        }
       } else {
-        // Pause at full text, then restart
-        timerRef.current = setTimeout(() => {
-          charIndexRef.current = 0;
-          type();
-        }, 1500);
+        // Fade out — delete backwards, quicker than we typed.
+        charIdx -= 1;
+        setAnimatedPlaceholder(phrase.slice(0, Math.max(0, charIdx)));
+        if (charIdx <= 0) {
+          deleting = false;
+          phraseIdx = (phraseIdx + 1) % phrases.length;
+          timerRef.current = setTimeout(tick, HOLD_EMPTY_MS);
+        } else {
+          timerRef.current = setTimeout(tick, deleteSpeed);
+        }
       }
     };
 
-    type();
+    timerRef.current = setTimeout(tick, typingSpeed);
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [animatePlaceholder, placeholder, value, typingSpeed]);
+  }, [animatePlaceholder, placeholder, sequenceKey, value, typingSpeed, deletingSpeed]);
 
   const effectivePlaceholder = animatePlaceholder ? animatedPlaceholder : placeholder;
 
@@ -297,61 +352,61 @@ export function Input({
   };
 
   const inputEl = isTextarea ? (
-    <Box component='textarea' ref={textareaRef} rows={rows} spellCheck={false} {...sharedInputProps} />
+    <Box component='textarea' ref={setTextareaRef} rows={rows} spellCheck={false} {...sharedInputProps} />
   ) : (
-    <Box component='input' type={type} inputMode={inputMode} {...sharedInputProps} />
+    <Box component='input' type={type} inputMode={inputMode} ref={forwardedRef} {...sharedInputProps} />
   );
 
-  // When an inline icon is present, wrap the input in a position-relative shell
-  // and absolute-position the icon. The input itself owns the padding inset.
-  const inputWithIcons =
-    leadingIcon || trailingIcon ? (
-      <Box sx={{ position: 'relative', display: 'flex', width: '100%' }}>
-        {leadingIcon && (
-          <Box
-            aria-hidden='true'
-            sx={{
-              position: 'absolute',
-              left: tokens.padX,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: tokens.iconSize,
-              height: tokens.iconSize,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--ds-gray-500)',
-              pointerEvents: 'none',
-              fontSize: tokens.iconSize,
-            }}
-          >
-            {leadingIcon}
-          </Box>
-        )}
-        {inputEl}
-        {trailingIcon && (
-          <Box
-            sx={{
-              position: 'absolute',
-              right: tokens.padX,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: tokens.iconSize,
-              height: tokens.iconSize,
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--ds-gray-500)',
-              fontSize: tokens.iconSize,
-            }}
-          >
-            {trailingIcon}
-          </Box>
-        )}
-      </Box>
-    ) : (
-      inputEl
-    );
+  // Wrap the input in a position-relative shell and absolute-position any icon;
+  // the input itself owns the padding inset. The shell is rendered even with no
+  // icon so the <input> keeps its place in the tree: callers that show an icon
+  // only once there is a value would otherwise remount it (and drop focus) on
+  // the first keystroke.
+  const inputWithIcons = (
+    <Box sx={{ position: 'relative', display: 'flex', width: '100%' }}>
+      {leadingIcon && (
+        <Box
+          aria-hidden='true'
+          sx={{
+            position: 'absolute',
+            left: tokens.padX,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: tokens.iconSize,
+            height: tokens.iconSize,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--ds-gray-500)',
+            pointerEvents: 'none',
+            fontSize: tokens.iconSize,
+          }}
+        >
+          {leadingIcon}
+        </Box>
+      )}
+      {inputEl}
+      {trailingIcon && (
+        <Box
+          sx={{
+            position: 'absolute',
+            right: tokens.padX,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: tokens.iconSize,
+            height: tokens.iconSize,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: 'var(--ds-gray-500)',
+            fontSize: tokens.iconSize,
+          }}
+        >
+          {trailingIcon}
+        </Box>
+      )}
+    </Box>
+  );
 
   const inputBlock =
     prefix || suffix ? (
@@ -449,6 +504,8 @@ export function Input({
       )}
     </Box>
   );
-}
+});
+
+Input.displayName = 'Input';
 
 export default Input;

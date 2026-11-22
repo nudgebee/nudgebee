@@ -147,3 +147,39 @@ describe('summarizeFollowups', () => {
     expect(summarizeFollowups([])).toEqual({ approvals: { count: 0, needsAttention: false }, clarifications: { count: 0, needsAttention: false } });
   });
 });
+
+describe('auto-approved tool calls', () => {
+  const { collectAutoApprovals, describeFollowup, summarizeFollowups } = require('../followupRecord');
+  const agents = [
+    {
+      llm_conversation_tool_calls: [
+        {
+          id: 't1',
+          tool_name: 'kubectl_execute',
+          parameters: '{"command":"kubectl rollout restart deployment approval-probe -n e2e"}',
+          created_at: '2026-10-13T14:01:00Z',
+          metadata: JSON.stringify({ nb_approved_by_rule: { rule_name: 'kubectl_rollout_restart', rule_revision: 2 } }),
+        },
+        { id: 't2', tool_name: 'kubectl_execute', parameters: '{"command":"kubectl get pods"}', metadata: '{}' },
+      ],
+    },
+  ];
+
+  it('collects only calls a rule approved', () => {
+    const entries = collectAutoApprovals(agents);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].autoApproval).toEqual({ ruleName: 'kubectl_rollout_restart', ruleRevision: 2 });
+  });
+
+  it('describes them as approvals that need no attention', () => {
+    const [entry] = collectAutoApprovals(agents);
+    const record = describeFollowup(entry);
+    expect(record).toMatchObject({
+      isApproval: true,
+      outcome: 'auto_approved',
+      command: 'kubectl rollout restart deployment approval-probe -n e2e',
+      detail: 'Rule: kubectl_rollout_restart (revision 2)',
+    });
+    expect(summarizeFollowups([entry]).approvals).toEqual({ count: 1, needsAttention: false });
+  });
+});

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/events"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 )
@@ -19,6 +20,9 @@ type OutcomeCheck struct {
 	Expect string `json:"expect,omitempty"`
 	// Describes says what the check observes, for the operator.
 	Describes string `json:"describes"`
+	// Reason, set when the plan is returned, says why NudgeBee will not run this check (it is not a
+	// strict kubectl read); the person checks it themselves.
+	Reason string `json:"reason,omitempty"`
 }
 
 // RemediationSlotOutcome runs the plan's outcome check.
@@ -135,8 +139,9 @@ type OutcomeResult struct {
 	At      string `json:"at"`
 }
 
-// recordOutcome attaches the outcome to the event's most recent attempt. A JSONB null data is treated as
-// empty: jsonb_set on it returns NULL and would wipe the attempt's data.
+// recordOutcome attaches the outcome to the event's most recent attempt: a run that ended (Success,
+// Failed or Unknown) or a step marked done, never one still running or a declined step. A JSONB null data
+// is treated as empty: jsonb_set on it returns NULL and would wipe the attempt's data.
 func recordOutcome(ctx *security.RequestContext, eventId string, outcome OutcomeResult) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
@@ -148,7 +153,8 @@ func recordOutcome(ctx *security.RequestContext, eventId string, outcome Outcome
 	}
 	res, err := dbManager.Db.Exec(`UPDATE event_resolution
 		    SET data = jsonb_set(COALESCE(NULLIF(data, 'null'::jsonb), '{}'::jsonb), '{outcome}', $2::jsonb, true), updated_at = NOW()
-		  WHERE id = (SELECT id FROM event_resolution WHERE event_id = $1 AND type = 'CommandExecution' ORDER BY created_at DESC LIMIT 1)`,
+		  WHERE id = (SELECT id FROM event_resolution WHERE event_id = $1 AND type = 'CommandExecution'
+		                 AND status IN `+events.SettledRunStatuses+` ORDER BY created_at DESC LIMIT 1)`,
 		eventId, string(data))
 	if err != nil {
 		ctx.GetLogger().Warn("remediation: failed to record outcome", "error", err)

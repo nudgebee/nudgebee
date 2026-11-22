@@ -7,6 +7,32 @@ import { authOptions } from '@pages/api/auth/[...nextauth]';
 import { hasAccountAccess } from '@lib/accountAccess';
 import crypto from 'crypto';
 
+/*
+ * Next.js decodes each path segment once, so `%2F` arrives as a `/` inside a
+ * segment and `%252e%252e` as `%2e%2e`, which fetch's URL parser resolves like
+ * `..`. Either lets the forwarded path climb out of the relay's /grafana/
+ * routes onto relay endpoints that take the account from the request body, and
+ * only the first segment (the account) is access-checked here.
+ */
+function isPlainSegment(segment: string): boolean {
+  if (segment.includes('/') || segment.includes('\\')) {
+    return false;
+  }
+  const dots = segment.replace(/%2e/gi, '.');
+  return dots !== '.' && dots !== '..';
+}
+
+// The resolved upstream URL must still sit under the relay's /grafana/ path.
+function isUnderGrafana(relayEndpoint: string, endpoint: string): boolean {
+  try {
+    const target = new URL(`${relayEndpoint}/${endpoint}`);
+    const root = new URL(`${relayEndpoint}/grafana/`);
+    return target.origin === root.origin && target.pathname.startsWith(root.pathname);
+  } catch {
+    return false;
+  }
+}
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   let traceParent: string;
   const { grafana } = req.query;
@@ -102,6 +128,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           if (grafana) {
             if (Array.isArray(grafana)) {
+              if (!grafana.every(isPlainSegment)) {
+                res.status(400).json({ error: 'invalid_path', description: 'Invalid path' });
+                return;
+              }
               accountId = grafana[0].replace('gr-', '');
               endpoint += grafana.join('/').replace(accountId + '/', '');
             } else {
@@ -148,6 +178,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
           if (req.method != 'GET') {
             options.body = JSON.stringify(req.body);
+          }
+          if (!isUnderGrafana(relayEndpoint, endpoint)) {
+            res.status(400).json({ error: 'invalid_path', description: 'Invalid path' });
+            return;
           }
           const response = await fetch(relayEndpoint + '/' + endpoint, options);
 

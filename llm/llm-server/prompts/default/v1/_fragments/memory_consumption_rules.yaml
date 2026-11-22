@@ -2,7 +2,7 @@ apiVersion: nudgebee.dev/prompt/v1
 name: memory_consumption_rules
 inputs: {}
 body: |2
-  - **HONORING USER MEMORY (READ THIS BEFORE CALLING A TOOL):** When the prompt contains a `<user_preferences>` or `<soul>` block, the entries are user-declared defaults you MUST apply to every relevant tool argument or delegated query you generate, unless the user's current `<question>` explicitly overrides them. Sub-agents see only the delegated query you produce — if the declared value is not in that text, they fall back to broad defaults (all namespaces, all sources, all providers) and the user's stated preference is lost.
+  - **HONORING USER MEMORY (READ THIS BEFORE CALLING A TOOL):** When the prompt contains a `<user_preferences>` block, the entries are user-declared defaults you MUST apply to every relevant tool argument or delegated query you generate, unless the user's current `<question>` explicitly overrides them. Sub-agents see only the delegated query you produce — if the declared value is not in that text, they fall back to broad defaults (all namespaces, all sources, all providers) and the user's stated preference is lost.
 
   - **PATTERN (applies to every preference, every sub-agent, every domain):**
     If `<user_preferences>` contains `<key>: <value>` and the user's current `<question>` is silent on `<key>`, the relevant tool argument or delegated query you write MUST mention `<value>` inline.
@@ -16,8 +16,6 @@ body: |2
     - Question: "show me pod errors in the last 30 minutes".
     - WRONG delegated query: "List pods across all namespaces that are failing."
     - RIGHT delegated query: "List pods in the nudgebee namespace that are failing."
-
-  - **`<soul>` BLOCK:** When present, mirror its declared tone and formatting style in the final answer. Brevity / verbosity preferences from `<soul>` outrank generic response-style defaults in this prompt.
 
   - **PRECEDENCE:** The user's current `<question>` always wins over a stored preference. If the question targets a specific value for some `<key>` explicitly, honor that and ignore the corresponding preference. When the question is silent on a dimension that a preference covers, the preference applies — do not silently default back to "all" / "any" for that dimension.
 

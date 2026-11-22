@@ -23,6 +23,7 @@ import { validate as isValidUUID } from 'uuid';
 import CustomTable from '@shared/tables/CustomTable2';
 import AutoPilotApprovalStatusListingModal from '@components/autopilot/AutoPilotApprovalStatusListingModal';
 import { toast as snackbar } from '@ui/Toast';
+import { ds } from '@utils/colors';
 
 const LISTING_HEADER = [
   'Name',
@@ -147,7 +148,9 @@ const AutoOptimizeListingTable = ({
     setLoading(true);
     apiAutoPilot
       .listAutoPilot(recordsPerPage, currentPage * recordsPerPage, query)
-      .then((res) => {
+      .then(async (res) => {
+        const ids = (res?.data?.auto_pilot_listing ?? []).map((item) => item.id);
+        const waitingForApproval = await apiAutoPilot.getAutoPilotIdsWaitingForApproval(ids).catch(() => new Set());
         let data = res?.data?.auto_pilot_listing?.map((item) => {
           return [
             {
@@ -160,7 +163,16 @@ const AutoOptimizeListingTable = ({
                 rule: item.rule,
               },
             },
-            { component: <Label margin='auto' text={item?.status} /> },
+            {
+              component: waitingForApproval.has(item?.id) ? (
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: ds.space[1] }}>
+                  <Label margin='auto' text={item?.status} />
+                  <Label tone='warning' text='Waiting for approval' />
+                </Box>
+              ) : (
+                <Label margin='auto' text={item?.status} />
+              ),
+            },
             { component: <Text value={categoryMap[item?.category] ?? item?.category} /> },
             {
               component: (

@@ -5,6 +5,7 @@ package agents
 import (
 	"fmt"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
 	"nudgebee/llm/security"
 	"os"
 	"sort"
@@ -93,7 +94,7 @@ func runAgentQuery(t *testing.T, sc *security.RequestContext, agent core.NBAgent
 
 	// Token usage keys off session_id (the DAO's WHERE c.session_id), NOT the
 	// conversation UUID — passing resp.ConversationId here silently returns 0 rows.
-	records, rerr := core.GetConversationDao().GetConversationTokenUsageDetailed(sessionId, accountId)
+	records, rerr := analytics.GetStore().GetConversationTokenUsageDetailed(sessionId, accountId)
 	if rerr == nil {
 		m.llmCalls = len(records)
 		for _, r := range records {
