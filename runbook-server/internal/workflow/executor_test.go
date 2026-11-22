@@ -830,8 +830,8 @@ func (s *ExecutorTestSuite) assertOutputTemplateFailure(wfID string, firstTask m
 func (s *ExecutorTestSuite) TestSetVarsTemplateErrorFailsWorkflow() {
 	s.assertOutputTemplateFailure("set-vars-template-failure-wf", model.Task{
 		ID: "save", Type: "test.record-task", Params: map[string]any{"message": "save"},
-		SetVars: map[string]any{"output": "{{ unterminated"},
-	}, "failed to process task output template")
+		SetVars: map[string]any{"z_output": "{{ unterminated", "a_output": "{{ unterminated"},
+	}, "failed to process task output template a_output")
 }
 
 func (s *ExecutorTestSuite) TestSetStateKeyTemplateErrorFailsWorkflow() {
