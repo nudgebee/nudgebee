@@ -181,6 +181,10 @@ type ObservabilityMetricsQueryResponse struct {
 type ObservabilityMetricQueryResult struct {
 	QueryKey                        string                      `json:"query_key"`
 	ObservabilityMetricQueryPayload []ObservabilityMetricResult `json:"payload"`
+	// Error is set when this query failed (it would not parse, or the provider
+	// rejected it). services-server reports that inside an HTTP 200, so it is the
+	// only thing that tells a failed query apart from one that matched nothing.
+	Error *string `json:"error,omitempty"`
 }
 
 type ObservabilityMetricResult struct {

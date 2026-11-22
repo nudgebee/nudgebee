@@ -31,6 +31,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-bucket",
+        "region": "US",
         "subtype": "CloudStorage"
       },
       "ontology_attributes": {
@@ -69,7 +70,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-secret"
+        "name": "my-secret",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",
@@ -110,7 +112,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-fw"
+        "name": "my-fw",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",
@@ -145,6 +148,7 @@
       "query_attributes": {
         "arn": "",
         "name": "sa@proj-1.iam.gserviceaccount.com",
+        "region": "global",
         "service_name": "GCPIAM",
         "subtype": "GCPServiceAccount"
       },
@@ -183,7 +187,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-topic"
+        "name": "my-topic",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",
@@ -220,7 +225,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-vpc"
+        "name": "my-vpc",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",
@@ -259,7 +265,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-cache"
+        "name": "my-cache",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",
@@ -309,6 +316,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-vm",
+        "region": "us-central1",
         "subtype": "ComputeEngine",
         "vpc_id": "my-vpc"
       },
@@ -387,7 +395,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-cron"
+        "name": "my-cron",
+        "region": "us-central1"
       },
       "ontology_attributes": {}
     },
@@ -430,6 +439,7 @@
       "labels": {},
       "query_attributes": {
         "name": "primary-db",
+        "region": "us-central1",
         "subtype": "CloudSQL",
         "vpc_id": "my-vpc"
       },
@@ -475,6 +485,7 @@
       "labels": {},
       "query_attributes": {
         "name": "replica-db",
+        "region": "us-central1",
         "subtype": "CloudSQL"
       },
       "ontology_attributes": {
@@ -523,7 +534,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-service"
+        "name": "my-service",
+        "region": "us-central1"
       },
       "ontology_attributes": {
         "location": "us-central1",
@@ -565,6 +577,7 @@
       "labels": {},
       "query_attributes": {
         "name": "my-subnet",
+        "region": "us-central1",
         "vpc_id": "my-vpc"
       },
       "ontology_attributes": {

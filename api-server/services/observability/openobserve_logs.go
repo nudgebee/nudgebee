@@ -370,22 +370,48 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest, stream string) (str
 		return "", err
 	}
 
-	limit := req.Limit
+	sql := fmt.Sprintf(`SELECT * FROM "%s"`, stream)
+	if whereClause != "" {
+		sql += " WHERE " + whereClause
+	}
+
+	sql += fmt.Sprintf(" ORDER BY _timestamp DESC LIMIT %d", openObserveLogRowLimit(req.Limit))
+
+	return sql, nil
+}
+
+func openObserveLogRowLimit(limit int) int {
 	if limit == 0 {
 		limit = 100
 	}
 	if limit > 10000 {
 		limit = 10000
 	}
+	return limit
+}
 
-	sql := fmt.Sprintf(`SELECT * FROM "%s"`, stream)
-	if whereClause != "" {
-		sql += " WHERE " + whereClause
+// searchSQL returns the statement QueryLogs sends, and the row bound to send with it
+// (0 when the statement carries its own LIMIT).
+//
+// A query typed in Code mode arrives in req.Query and runs as written. Building the SQL
+// from the where clause alone dropped it, so every typed filter returned the whole
+// stream (#41492). FetchLogs also stores the SQL it generated for a Builder query in
+// req.Query; that statement is exactly what buildSQL makes, and is sent unchanged.
+//
+// A typed query is executed as written, like every other provider's raw query: the where
+// clause (in Code mode, only the integration's default filters) is not added to it. The
+// time window travels outside the SQL as start_time and end_time, and the row bound as
+// the request's size.
+func (s *OpenObserveLogSource) searchSQL(req FetchLogRequest, stream string) (string, int, error) {
+	generated, err := s.buildSQL(req, stream)
+	if err != nil {
+		return "", 0, err
 	}
-
-	sql += fmt.Sprintf(" ORDER BY _timestamp DESC LIMIT %d", limit)
-
-	return sql, nil
+	raw := strings.TrimSuffix(strings.TrimSpace(req.Query), ";")
+	if raw == "" || raw == generated {
+		return generated, 0, nil
+	}
+	return raw, openObserveLogRowLimit(req.Limit), nil
 }
 
 func (s *OpenObserveLogSource) GetQuery(ctx *security.RequestContext, req FetchLogRequest) (string, error) {
@@ -634,7 +660,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		return nil, fmt.Errorf("failed to get OpenObserve configs: %w", err)
 	}
 
-	sql, err := s.buildSQL(s.withSchemaFallbacks(ctx, req, cfg), cfg.LogStream)
+	sql, size, err := s.searchSQL(s.withSchemaFallbacks(ctx, req, cfg), cfg.LogStream)
 	if err != nil {
 		return nil, err
 	}
@@ -647,6 +673,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 	searchReq.Query.SQL = sql
 	searchReq.Query.StartTime = startTimeMicros
 	searchReq.Query.EndTime = endTimeMicros
+	searchReq.Query.Size = size
 
 	payloadBytes, err := json.Marshal(searchReq)
 	if err != nil {

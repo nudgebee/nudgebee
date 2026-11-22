@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/services/security"
 
@@ -193,7 +194,7 @@ func TestRedactSecretsFromTasksClearsEveryCanarySurface(t *testing.T) {
 	}
 
 	RedactSecretsFromTasks(tasks, def)
-	ScrubTaskValues(tasks, SecretValues(map[string]any{"k": secretCanary}))
+	ScrubTaskValues(tasks, logsafe.SecretValues(map[string]any{"k": secretCanary}))
 
 	// The output is the author's: a step that prints a credential shows it.
 	var leaks []string

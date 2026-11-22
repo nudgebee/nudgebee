@@ -247,10 +247,20 @@ func TestStructuredEvidenceForWorkspace(t *testing.T) {
 		}
 	})
 
-	t.Run("note names the file", func(t *testing.T) {
-		note := structuredEvidenceNote("event_abc_evidence.json")
+	t.Run("note names the file and describes its shape", func(t *testing.T) {
+		ev := events.InvestigateData{
+			LogData: "not in the file",
+			PodData: events.InvestigateDataInsight{Data: `{"status":{"phase":"Running"}}`},
+		}
+		note := structuredEvidenceNote("event_abc_evidence.json", ev)
 		if !strings.Contains(note, "`event_abc_evidence.json`") {
 			t.Errorf("note must point at the file, got %q", note)
+		}
+		if !strings.Contains(note, "Top-level keys with data: pod_data (") || strings.Contains(note, "log_data (") {
+			t.Errorf("note must list the sections the saved file holds, without logs, got %q", note)
+		}
+		if strings.Contains(note, "jq 'keys'") {
+			t.Errorf("the shape replaces exploring the keys, got %q", note)
 		}
 	})
 }

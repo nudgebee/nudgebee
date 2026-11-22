@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/services/cloud"
 	"nudgebee/services/knowledge_graph/core"
+	"nudgebee/services/knowledge_graph/flow_sources"
 	"nudgebee/services/knowledge_graph/sources"
 	"nudgebee/services/security"
 	"strings"
@@ -18,11 +19,11 @@ var loadBalancerSchemaProps = []core.PropertyDef{
 	{Name: "scheme", Indexed: true},
 	{Name: "dns_name", Indexed: true},
 	{Name: "vpc_id", Indexed: true},
-	{Name: "availability_zone", Indexed: true},
+	{Name: "availability_zone", Indexed: true, Shape: core.PropertyShapeRecords},
 	{Name: "is_public_entry"},
-	{Name: "subnets"},
-	{Name: "instances"},
-	{Name: "security_groups"},
+	{Name: "subnets", Shape: core.PropertyShapeList},
+	{Name: "instances", Shape: core.PropertyShapeRecords},
+	{Name: "security_groups", Shape: core.PropertyShapeList},
 }
 
 // elbClassicParityProps — Additional provider fields (not yet emitted by our extractor)
@@ -253,10 +254,19 @@ func (s *AWSSource) buildLBTargetEdges(lbNode *core.DbNode, instanceIDs []string
 }
 
 // fetchLBTargetInstanceIDs returns the distinct EC2 instance IDs registered as targets
-// of a v2 load balancer, via two elbv2 CLI calls: describe-target-groups (to list the
-// LB's instance-type target groups) then describe-target-health per group. Best-effort:
-// CLI errors are logged and skipped.
+// of a v2 load balancer.
+//
+// It reads the membership discovery already stored on the load balancer's row and
+// only falls back to the original pair of elbv2 CLI calls -- describe-target-groups
+// then describe-target-health per group -- when the row cannot answer.
+// Best-effort throughout: CLI errors are logged and skipped.
 func (s *AWSSource) fetchLBTargetInstanceIDs(reqCtx *security.RequestContext, accountID, region, lbARN string) []string {
+	if ids, fromRow := s.lbTargetInstanceIDsFromRow(lbARN); fromRow {
+		s.logger.Debug("load balancer target instances served from cloud_resourses",
+			"lb_arn", lbARN, "instance_count", len(ids))
+		return ids
+	}
+
 	tgCmd := fmt.Sprintf(
 		"aws elbv2 describe-target-groups --load-balancer-arn %s --region %s --query 'TargetGroups[].[TargetGroupArn,TargetType]' --output json",
 		lbARN, region,
@@ -301,6 +311,64 @@ func (s *AWSSource) fetchLBTargetInstanceIDs(reqCtx *security.RequestContext, ac
 		out = append(out, id)
 	}
 	return out
+}
+
+// lbTargetInstanceIDsFromRow reads instance-type target membership from the load
+// balancer row discovery already stored, following the row-reader idiom used
+// elsewhere in this package rather than pulling the flow-source topology store in.
+// The row's resourse_id is the load balancer ARN on every active row, so the ARN
+// the edge builder already holds is the key.
+//
+// Returns false -- sending the caller to the CLI -- when the row is missing, when
+// meta carries no TargetGroups key, or when any instance-type target group has no
+// captured membership. That last case is deliberate: a partial list would look like
+// a load balancer that had lost targets and would tombstone their edges.
+func (s *AWSSource) lbTargetInstanceIDsFromRow(lbARN string) ([]string, bool) {
+	var row sources.CloudResourceRow
+	found := false
+	for _, lbType := range []string{"application_loadbalancer", "network_loadbalancer"} {
+		if candidate, ok := s.metaByTypeAndID[lbType][lbARN]; ok {
+			row, found = candidate, true
+			break
+		}
+	}
+	if !found || len(row.Meta) == 0 {
+		return nil, false
+	}
+
+	var meta struct {
+		TargetGroups []map[string]interface{} `json:"TargetGroups"`
+	}
+	if err := json.Unmarshal(row.Meta, &meta); err != nil {
+		return nil, false
+	}
+	// Absent key means discovery never captured the target groups; an empty array
+	// means it did and the load balancer genuinely has none.
+	if meta.TargetGroups == nil {
+		return nil, false
+	}
+
+	instanceSet := make(map[string]struct{})
+	for _, tg := range meta.TargetGroups {
+		if targetType, _ := tg["TargetType"].(string); targetType != "instance" {
+			continue
+		}
+		ids, ok := flow_sources.TargetGroupMemberIDs(tg)
+		if !ok {
+			return nil, false
+		}
+		for _, id := range ids {
+			if strings.HasPrefix(id, "i-") { // instance IDs (not IP targets)
+				instanceSet[id] = struct{}{}
+			}
+		}
+	}
+
+	out := make([]string, 0, len(instanceSet))
+	for id := range instanceSet {
+		out = append(out, id)
+	}
+	return out, true
 }
 
 // parseAWSCliData extracts the CLI stdout (resp["data"]) from a collector execute_cli

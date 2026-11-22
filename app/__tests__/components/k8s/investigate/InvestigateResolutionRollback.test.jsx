@@ -2,11 +2,18 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
-jest.mock('@api1/recommendation', () => ({ __esModule: true, default: { applyRecommendation: jest.fn() } }));
+jest.mock('@api1/recommendation', () => ({ __esModule: true, default: { applyRecommendation: jest.fn(), checkEventRollback: jest.fn() } }));
 jest.mock('@api1/kubernetes', () => ({ __esModule: true, default: { resolveEventRecord: jest.fn() } }));
 
 import apiKubernetes from '@api1/kubernetes';
+import apiRecommendations from '@api1/recommendation';
 import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
+
+// Unless a test says otherwise, the server finds no later change on the workload.
+beforeEach(() => {
+  jest.clearAllMocks();
+  apiRecommendations.checkEventRollback.mockResolvedValue({ allowed: true, reason: '' });
+});
 
 // The manifests the collector records are serialised snake_case — owner references included.
 const manifest = ({ labels = {}, annotations = {}, ownerReferences = '' } = {}) => {
@@ -53,11 +60,13 @@ const renderDialog = (row) =>
   );
 
 describe('rollback dialog', () => {
-  it('names the target, the timing and each field as now vs after rollback', () => {
+  it('names the target, the timing and each field as now vs after rollback', async () => {
     renderDialog(eventWith('deployment/nudgebee/notifications.yaml', manifest()));
     expect(screen.getByText('Deployment nudgebee/notifications')).toBeInTheDocument();
     expect(screen.getByText(/31h before the alert/)).toBeInTheDocument();
-    expect(screen.getAllByText('Now')).toHaveLength(2);
+    // The image is confirmed live; the restart marker is not checked, so it is never called "Now".
+    expect(await screen.findAllByText('Now')).toHaveLength(1);
+    expect(screen.getAllByText('At change time')).toHaveLength(1);
     expect(screen.getAllByText('After rollback')).toHaveLength(2);
     // Bare values, not JSON-quoted.
     expect(screen.getByText('registry/app:v2')).toBeInTheDocument();
@@ -67,7 +76,7 @@ describe('rollback dialog', () => {
     expect(screen.getByRole('button', { name: 'Roll back' })).toBeEnabled();
   });
 
-  it('warns that Helm will re-apply the change and offers helm rollback', () => {
+  it('warns that Helm will re-apply the change and offers helm rollback', async () => {
     renderDialog(
       eventWith(
         'deployment/nudgebee/notifications.yaml',
@@ -75,16 +84,64 @@ describe('rollback dialog', () => {
       )
     );
     expect(screen.getByText(/helm rollback notifications -n nudgebee/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Roll back' })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Roll back' })).toBeEnabled());
+  });
+
+  // The fields are what the change recorded. A deployment changed again after the event still read
+  // "Now" with the older value, and the operator learned of the later change only from the refusal
+  // that followed the click.
+  it('warns before the click when the workload was changed again, and does not offer the rollback', async () => {
+    apiRecommendations.checkEventRollback.mockResolvedValue({
+      allowed: false,
+      reason:
+        'event resolution: "spec.template.spec.containers[0].image" was changed again by a later change (2026-09-17T10:19:38Z) — reverting this one would undo that too. Revert the later change first.',
+    });
+    renderDialog(eventWith('deployment/nudgebee/notifications.yaml', manifest()));
+
+    const warning = await screen.findByTestId('rollback-blocked-reason');
+    expect(warning).toHaveTextContent('"spec.template.spec.containers[0].image" was changed again by a later change (2026-09-17T10:19:38Z)');
+    expect(warning).not.toHaveTextContent('event resolution:');
+    expect(apiRecommendations.checkEventRollback).toHaveBeenCalledWith('acc', 'alert-1', '');
+    // The recorded value is no longer what is running, so it is not called "Now".
+    expect(screen.queryByText('Now')).not.toBeInTheDocument();
+    expect(screen.getAllByText('At change time')).toHaveLength(2);
+    const rollBack = screen.getByRole('button', { name: 'Roll back' });
+    expect(rollBack).toBeDisabled();
+    fireEvent.click(rollBack);
+    expect(apiRecommendations.applyRecommendation).not.toHaveBeenCalled();
+  });
+
+  // An unanswered check (a transport failure, an older server) is not a block: the apply runs the
+  // same check on the click. It is not a confirmation either, so the value is not called "Now".
+  it('still offers the rollback when the check could not be answered', async () => {
+    apiRecommendations.checkEventRollback.mockResolvedValue(null);
+    renderDialog(eventWith('deployment/nudgebee/notifications.yaml', manifest()));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Roll back' })).toBeEnabled());
+    expect(screen.queryByTestId('rollback-blocked-reason')).not.toBeInTheDocument();
+    expect(screen.queryByText('Now')).not.toBeInTheDocument();
+    expect(screen.getAllByText('At change time')).toHaveLength(2);
+  });
+
+  it('does not offer the rollback until the check has answered', async () => {
+    let answer;
+    apiRecommendations.checkEventRollback.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    renderDialog(eventWith('deployment/nudgebee/notifications.yaml', manifest()));
+
+    expect(screen.getByRole('button', { name: 'Roll back' })).toBeDisabled();
+    answer({ allowed: true, reason: '' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Roll back' })).toBeEnabled());
   });
 
   // vmagent: the VMAgent operator rewrites the Deployment within seconds, so the rollback would
   // "succeed" and change nothing.
-  it('blocks a rollback of an operator-owned workload', () => {
+  it('blocks a rollback of an operator-owned workload', async () => {
     const owner =
       '  owner_references:\n  - api_version: operator.victoriametrics.com/v1beta1\n    controller: true\n    kind: VMAgent\n    name: victoria\n';
     renderDialog(eventWith('deployment/victoria/vmagent.yaml', manifest({ ownerReferences: owner })));
     expect(screen.getByText(/VMAgent victoria owns this workload/)).toBeInTheDocument();
+    // Still blocked once the later-change check has answered "nothing changed since".
+    expect(await screen.findAllByText('Now')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Roll back' })).toBeDisabled();
   });
 
@@ -139,5 +196,35 @@ describe('rollback dialog', () => {
     fireEvent.click(radios[1]);
     await waitFor(() => expect(apiKubernetes.resolveEventRecord).toHaveBeenLastCalledWith('c2', 'acc'));
     expect(await screen.findByText('env-change')).toBeInTheDocument();
+    // Each pick is checked for itself: a later change may block one change and not another.
+    expect(apiRecommendations.checkEventRollback).toHaveBeenCalledWith('acc', 'alert-1', 'c3');
+    expect(apiRecommendations.checkEventRollback).toHaveBeenLastCalledWith('acc', 'alert-1', 'c2');
+  });
+});
+
+// The header's "Resolve Event" dialog had rollback controls of its own — a Revert radio on CPU and
+// memory alerts, a Revert checkbox on image-pull alerts — sent to server branches that never rolled
+// anything back. The Remediation row is the one place a rollback is started.
+describe('resolve event dialog', () => {
+  const resolveDialog = (aggregationKey) =>
+    render(
+      <InvestigateResolution
+        row={{ ...eventWith('deployment/nudgebee/notifications.yaml', manifest()), aggregation_key: aggregationKey }}
+        handleClose={jest.fn()}
+        updateInvestigateSuccessSnackBar={jest.fn()}
+      />
+    );
+
+  it.each(['CPUThrottlingHigh', 'PodMemoryReachingLimit'])('offers no rollback of its own on %s', (aggregationKey) => {
+    resolveDialog(aggregationKey);
+    expect(screen.getByLabelText('Restart')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Revert')).not.toBeInTheDocument();
+    expect(apiRecommendations.checkEventRollback).not.toHaveBeenCalled();
+  });
+
+  it('offers no rollback of its own on an image-pull alert', () => {
+    resolveDialog('image_pull_backoff_reporter');
+    expect(screen.getByText('Mention Container Name and Image Tag to change')).toBeInTheDocument();
+    expect(screen.queryByText('Revert the Deployment')).not.toBeInTheDocument();
   });
 });

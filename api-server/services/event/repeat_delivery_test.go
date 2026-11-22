@@ -1,6 +1,7 @@
 package event
 
 import (
+	"nudgebee/services/common"
 	"regexp"
 	"testing"
 
@@ -36,6 +37,41 @@ func TestInvestigateEvent_RepeatCarriesTheNodeSubject(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(nodeCloudResourceSQL)).
 		WithArgs(resolveTestTenant, resolveTestAccount, "gke-pool-1-node-7f3a").
 		WillReturnRows(sqlmock.NewRows([]string{"cloud_resource_id"}).AddRow("cccccccc-0000-4000-8000-000000000003"))
+	mock.ExpectExec(labelUpdateSQL).
+		WithArgs(sqlmock.AnyArg(), resolveTestEventID, sqlmock.AnyArg(), "HIGH", "gke-pool-1-node-7f3a", "", "node", "cccccccc-0000-4000-8000-000000000003", "", "").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	id, err := InvestigateEvent(resolveTestContext(), e, "")
+	require.NoError(t, err)
+	assert.Equal(t, resolveTestEventID, id)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// An agent that works out the node itself sends the alert as a node with no
+// namespace, and with the exporter pod's labels still on it. The UPDATE carries
+// no namespace: the `namespace` label is the exporter's, not the node's.
+func TestInvestigateEvent_RepeatOfAnAlertSentAsANodeCarriesNoNamespace(t *testing.T) {
+	mock, _ := setupResolveTest(t)
+	require.NoError(t, common.CacheClear(podOwnerCacheNamespace))
+	t.Cleanup(func() { _ = common.CacheClear(podOwnerCacheNamespace) })
+	e := automationEvent(EventStatusFiring, "node-disk-1", "")
+	e.Source = "prometheus"
+	e.AggregationKey = "NodeDiskIOSaturation"
+	e.SubjectType = "node"
+	e.SubjectName = "gke-pool-1-node-7f3a"
+	e.SubjectOwner = ""
+	e.Labels = map[string]string{
+		"alertname": "NodeDiskIOSaturation", "job": "node-exporter",
+		"namespace": "monitoring", "pod": "victoria-prometheus-node-exporter-skqnn",
+	}
+
+	mock.ExpectQuery(regexp.QuoteMeta(podOwnerLookupSQL)).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "kind"}))
+	mock.ExpectQuery(regexp.QuoteMeta(nodeCloudResourceSQL)).
+		WithArgs(resolveTestTenant, resolveTestAccount, "gke-pool-1-node-7f3a").
+		WillReturnRows(sqlmock.NewRows([]string{"cloud_resource_id"}).AddRow("cccccccc-0000-4000-8000-000000000003"))
+	mock.ExpectQuery(findingLookupSQL).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "subject_name", "source"}).AddRow(resolveTestEventID, "gke-pool-1-node-7f3a", "prometheus"))
 	mock.ExpectExec(labelUpdateSQL).
 		WithArgs(sqlmock.AnyArg(), resolveTestEventID, sqlmock.AnyArg(), "HIGH", "gke-pool-1-node-7f3a", "", "node", "cccccccc-0000-4000-8000-000000000003", "", "").
 		WillReturnResult(sqlmock.NewResult(0, 1))

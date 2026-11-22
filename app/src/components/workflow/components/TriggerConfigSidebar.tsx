@@ -14,7 +14,6 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import apiIntegrations from '@api1/integrations';
 import recommendationApi from '@api1/recommendation';
 import { formatRuleName } from '@components/optimise-new/utils';
-import { titleCaseForAggregationKey } from 'src/utils/common';
 import CopyButton from '@shared/buttons/CopyButton';
 import {
   STRUCTURED_FILTER_FIELDS,
@@ -25,12 +24,14 @@ import {
   structuredCoversFilter,
   type FilterValues,
 } from '../utils/eventFilter';
-import { EVENT_ACCOUNT_TEMPLATE, accessibleAccountOptions, triggerListenAccounts } from '../utils/listenAccounts';
+import { EVENT_ACCOUNT_TEMPLATE, listenAccountPickerOptions, triggerListenAccounts } from '../utils/listenAccounts';
+import { isOptimizationCategoryAllowedFor, optimizationCategoryOptionsFor } from '../utils/optimizationCategories';
 import {
   type AccountFilterValues,
   type FilterValuesByAccount,
   type ScopeAccount,
   accountsSilencedByFilter,
+  eventTypeLabel,
   mergeFilterOptions,
   namespaceFieldCopy,
   silencedAccountsMessage,
@@ -38,6 +39,8 @@ import {
 import { useAccountOptions } from '../hooks/useAccountOptions';
 import { DEFAULT_LIFECYCLE_PHASE, buildTriggerMock, eventAccountOverrides } from '../utils/triggerPayloadMock';
 import { useFilterLiveValidation } from '../hooks/useFilterLiveValidation';
+import { sameProviderAccountIds } from '../utils/optimizationRules';
+import { useLatestRequest } from '@components/vm/common';
 import TriggerSimulatorPanel from './TriggerSimulatorPanel';
 import { DOCS_BASE_URL, docsUrl } from '@lib/externalUrls';
 import { validateCron } from '@utils/cron';
@@ -292,14 +295,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const shownListenAccounts = listenAccounts.length > 0 ? listenAccounts : workflowAccountId ? [workflowAccountId] : [];
   // Only accounts the user can access are offered. One already saved but out of reach stays
   // visible so it can be removed — the server refuses to save it.
-  const listenAccountOptions = useMemo(() => {
-    const accessible = accessibleAccountOptions(accountOptions);
-    const unreachable = shownListenAccounts
-      .filter((id) => id !== workflowAccountId && !accessible.some((o) => o.value === id))
-      .map((id) => ({ label: id, value: id, cloud_provider: '', group: 'No access' }));
-    const own = accountOptions.find((o) => o.value === workflowAccountId);
-    return [...(own && !accessible.includes(own) ? [own] : []), ...accessible, ...unreachable];
-  }, [accountOptions, shownListenAccounts.join(','), workflowAccountId]);
+  const listenAccountOptions = useMemo(
+    () => listenAccountPickerOptions(accountOptions, shownListenAccounts, workflowAccountId, isLoadingAccounts),
+    [accountOptions, shownListenAccounts.join(','), workflowAccountId, isLoadingAccounts]
+  );
   // Filter options come from every listened account the user can reach. Without an account list
   // there is nothing to check reach against, so every listened account counts.
   const filterScopeAccounts: ScopeAccount[] = useMemo(() => {
@@ -312,7 +311,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const namespaceCopy = namespaceFieldCopy(filterScopeAccounts.map((a) => providerOf(a.id) || ''));
   const mergedFilterOptions = useMemo(
     () => ({
-      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, titleCaseForAggregationKey),
+      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, eventTypeLabel),
       namespace: mergeFilterOptions('namespace', filterScopeAccounts, filterValuesByAccount, filterNamespace),
       source: mergeFilterOptions('source', filterScopeAccounts, filterValuesByAccount, filterSource),
     }),
@@ -391,6 +390,11 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     const nodeIdChanged = nodeId !== lastLoadedNodeIdRef.current;
     const currentPendingStr = pendingTriggerConfig ? JSON.stringify(pendingTriggerConfig) : '';
     if (!nodeIdChanged && currentPendingStr && currentPendingStr !== committedSnapshot) {
+      return;
+    }
+    // Our own Save coming back on the node: the form already shows it, so don't reset mode or errors.
+    const incoming = JSON.stringify({ type: triggerType || '', params: { ...(selectedNode?.data?.trigger?.params || {}) } });
+    if (!nodeIdChanged && incoming === committedSnapshot) {
       return;
     }
     lastLoadedNodeIdRef.current = nodeId;
@@ -569,16 +573,33 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  const fetchOptimizationRuleOptions = async () => {
+  // Rules are offered per provider: with an account picked, only rules seen on accounts of
+  // that provider (an AWS account is never offered GCP rules, a cluster only Kubernetes ones).
+  const optimizationRuleAccountIds = useMemo(
+    () => sameProviderAccountIds(optimizationClusters[0] || '', accountOptions),
+    [optimizationClusters, accountOptions]
+  );
+  const optimizationRuleScopeKey = optimizationRuleAccountIds.join(',');
+  const beginOptimizationRulesRequest = useLatestRequest();
+
+  const fetchOptimizationRuleOptions = async (accountIds: string[]) => {
+    // The scope changes while an earlier request is still in flight (the account list
+    // resolves after the sidebar opens, or the user picks another account), so only the
+    // latest response may land. Drop the previous scope's rules while this one loads.
+    const isLatest = beginOptimizationRulesRequest();
     setIsLoadingOptimizationRules(true);
+    setOptimizationRulePairs([]);
     try {
-      const pairs = await recommendationApi.getDistinctOptimizationRules();
-      setOptimizationRulePairs(pairs || []);
+      const pairs = await recommendationApi.getDistinctOptimizationRules(accountIds);
+      if (isLatest()) {
+        setOptimizationRulePairs(pairs || []);
+      }
     } catch (error) {
       console.error('Failed to fetch optimization rule options:', error);
-      setOptimizationRulePairs([]);
     } finally {
-      setIsLoadingOptimizationRules(false);
+      if (isLatest()) {
+        setIsLoadingOptimizationRules(false);
+      }
     }
   };
 
@@ -586,10 +607,15 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     if (open && triggerType === 'event') {
       fetchEventFilterOptions();
     }
-    if (open && triggerType === 'optimization') {
-      fetchOptimizationRuleOptions();
-    }
+    // filterScopeKey is in the deps so switching the Cluster picker re-scopes the
+    // namespace/service and event-type lists to that account.
   }, [open, triggerType, filterScopeKey]);
+
+  useEffect(() => {
+    if (open && triggerType === 'optimization') {
+      fetchOptimizationRuleOptions(optimizationRuleAccountIds);
+    }
+  }, [open, triggerType, optimizationRuleScopeKey]);
 
   const fetchWebhookIntegrationInfo = async () => {
     if (!workflowId) {
@@ -694,6 +720,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   // Memoized because this component re-renders on every keystroke of its text fields.
   const selectedOptimizationCategory = optimizationCategories[0] || '';
   const selectedOptimizationRule = optimizationRuleNames[0] || '';
+  // The selected Cluster's provider decides which recommendation sources apply: a Kubernetes
+  // account also sees Spot Instance, a cloud account doesn't. Unknown provider (nothing picked
+  // or the account list hasn't loaded) keeps every option, matching the pre-filter behavior.
+  const selectedOptimizationClusterProvider = providerOf(optimizationClusters[0]);
+  const optimizationCategoryOptions = useMemo(
+    () => optimizationCategoryOptionsFor(selectedOptimizationClusterProvider, selectedOptimizationCategory),
+    [selectedOptimizationClusterProvider, selectedOptimizationCategory]
+  );
   const optimizationRuleOptions = useMemo(() => {
     const seen = new Set<string>();
     const options = optimizationRulePairs
@@ -1008,16 +1042,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     }
   };
 
-  // Canonical recommendation categories, matching the Optimize Recommendations page
-  // (CATEGORY_FILTER_OPTIONS / WIDGET_CATEGORIES). Values must match the DB `category`
-  // verbatim — the backend matches the trigger's `categories` param against event.category.
-  const OPTIMIZATION_CATEGORY_OPTIONS = [
-    { label: 'Right Sizing', value: 'RightSizing' },
-    { label: 'Infra Upgrade', value: 'InfraUpgrade' },
-    { label: 'Config', value: 'Configuration' },
-    { label: 'Spot Instance', value: 'K8sSpotRecommendation' },
-  ];
-
   // Params as they are persisted on the trigger. Shared with the simulator, which
   // has to check the payload against exactly what will be saved.
   const buildOptimizationParams = (categories: string[], ruleNames: string[], clusters: string[]): Record<string, string[]> => {
@@ -1049,20 +1073,36 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const renderOptimizationConfig = () => (
     <FormCard
       title='Optimization Trigger Configuration'
-      description='Configure which optimization recommendations should trigger this automation'
+      description='Pick at least one filter: Cluster, Category or Rule Name'
       icon={null}
       number={1}
       columns={1}
     >
       <FormField
         label='Cluster'
-        description='Filter by cluster or cloud account (optional)'
+        description='Filter by cluster or cloud account'
         value={optimizationClusters[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
           const newClusters = value ? [value] : [];
           setOptimizationClusters(newClusters);
-          updateOptimizationTrigger({ clusters: newClusters });
+          // Rule options follow the account's provider, so a rule picked for another
+          // provider would save and never fire. Same-provider switches keep the rule.
+          const newProvider = providerOf(value);
+          const dropRule = !!newProvider && newProvider !== providerOf(optimizationClusters[0]);
+          const selectedCategory = optimizationCategories[0] || '';
+          const dropCategory = !isOptimizationCategoryAllowedFor(newProvider, selectedCategory);
+          if (dropRule) {
+            setOptimizationRuleNames([]);
+          }
+          if (dropCategory) {
+            setOptimizationCategories([]);
+          }
+          updateOptimizationTrigger({
+            clusters: newClusters,
+            ...(dropCategory ? { categories: [] } : {}),
+            ...(dropRule ? { rule_names: [] } : {}),
+          });
         }}
         placeholder='Select cluster'
         required={false}
@@ -1083,7 +1123,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Category'
-        description='Filter by recommendation category (optional)'
+        description='Filter by recommendation category'
         value={optimizationCategories[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1098,7 +1138,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
         required={false}
         error=''
         fieldType='select'
-        options={OPTIMIZATION_CATEGORY_OPTIONS}
+        options={optimizationCategoryOptions}
         onSelect={() => {}}
         customRender={null}
         limitTags={0}
@@ -1110,7 +1150,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Rule Name'
-        description='Filter by specific optimization rule (optional)'
+        description='Filter by specific optimization rule'
         value={optimizationRuleNames[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1163,7 +1203,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           • This workflow triggers when a new optimization recommendation is created
           <br />• Use the filters above to narrow which recommendations trigger this workflow
           <br />• The recommendation data is available in the workflow as <CodeBlock inline code='event' />
-          <br />• Leave all filters empty to trigger on any recommendation
         </Typography>
       </Box>
 
@@ -1400,6 +1439,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 border: `1px solid ${ds.gray[200]}`,
               }}
             >
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5, mb: ds.space[1] }}>
+                In steps, read JSON fields with {'{{ Inputs.webhook_json.<field> }}'}. The raw body is {'{{ Inputs.webhook_payload }}'}.
+              </Typography>
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
                 <Link href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL} openInNew>
@@ -1466,7 +1508,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 >
                   <FormField
                     label='Event Type'
-                    description='Aggregation key from the event rules catalog'
+                    description='Alert name from the event rules catalog. Cloud alarms are listed per resource; picking one matches only that resource'
                     value={filterEventType}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       handleStructuredFilterChange('event_type', (e.target.value as unknown as string[]) || [])

@@ -3,6 +3,8 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
+	toolcore "nudgebee/llm/tools/core"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -63,4 +65,24 @@ func TestTicketV2Agent_AgentMetadata(t *testing.T) {
 		// Verify tool usage includes ticket_master_v2
 		assert.Contains(t, prompt.ToolUsage, "ticket_master_v2")
 	})
+}
+
+// The retired v1 names keep resolving to v2: the router's keywords, the agent
+// name "tickets" (stored history, @tickets) and both old tool names.
+func TestRetiredTicketsV1NamesResolveToV2(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin()
+	for _, name := range []string{"tickets", "ticket", "jira", TicketsV2AgentName} {
+		agent, ok := getAgent(ctx, name, "account-1")
+		assert.True(t, ok, name)
+		if ok {
+			assert.Equal(t, TicketsV2AgentName, agent.GetName(), name)
+		}
+	}
+	agent, ok := core.GetNBAgent(ctx, "tickets", "account-1", core.AgentStatusEnabled)
+	assert.True(t, ok)
+	if ok {
+		assert.Equal(t, TicketsV2AgentName, agent.GetName())
+	}
+	assert.Equal(t, TicketsV2AgentName, toolcore.ResolveNBToolAlias("tickets"))
+	assert.Equal(t, tools.TicketMasterToolNameV2, toolcore.ResolveNBToolAlias("ticket_master"))
 }

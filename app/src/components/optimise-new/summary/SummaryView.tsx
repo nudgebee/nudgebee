@@ -43,6 +43,8 @@ import {
 import RecommendationDetailPanel from '../RecommendationDetailPanel';
 import ResolveModal from '../ResolveModal';
 import K8sActionModal from '../K8sActionModal';
+import CloudActionModal from '../CloudActionModal';
+import { cloudActionFor } from '../cloudActions';
 import { k8sActionFor } from '../k8sActions';
 import { useNubiGlobalChat } from '@context/NubiGlobalChatContext';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
@@ -215,11 +217,15 @@ const SummaryView = () => {
     loading,
     lastUpdated,
     totalSavings,
+    savingsLoading,
     categoryBreakdown,
     worstAccount,
     wipCount,
     scopedAccountIds,
     resolvedCount,
+    resolvedSavings,
+    aging,
+    longestStanding,
     safeToApply,
     costByCurrency,
     accountCosts,
@@ -417,10 +423,13 @@ const SummaryView = () => {
   // "Top 3 impact" tile below (moved down from the old headline metrics row).
   const rankedDollars = useMemo(() => subtotal(ranked), [ranked]);
 
+  // The longest-standing callout is fetched outside the curated list, so its row
+  // may not be in `insights` — fall back to it.
   const selectedRecommendation = useMemo(() => {
     if (!selectedResourceId) return null;
-    return insights.find((i) => i.id === selectedResourceId)?._raw || null;
-  }, [selectedResourceId, insights]);
+    const found = insights.find((i) => i.id === selectedResourceId) ?? (longestStanding?.id === selectedResourceId ? longestStanding : null);
+    return found?._raw || null;
+  }, [selectedResourceId, insights, longestStanding]);
 
   const clearAll = () => {
     setAccountFilter(null);
@@ -506,8 +515,10 @@ const SummaryView = () => {
             <Box>
               <NubiAvatar iconUrl={nubiIconUrl} name={assistantName} />
             </Box>
-            {loading ? (
-              <Skeleton shape='text' size='text' width={460} />
+            {loading || savingsLoading ? (
+              <Typography component='div' sx={{ flex: 1, minWidth: 0, fontSize: ds.text.body, lineHeight: 2 }}>
+                <Skeleton shape='text' size='text' width={460} sx={{ verticalAlign: 'middle' }} />
+              </Typography>
             ) : (
               <Typography
                 sx={{
@@ -565,6 +576,9 @@ const SummaryView = () => {
             worstAccount={worstAccount}
             wipCount={wipCount}
             resolvedCount={resolvedCount}
+            resolvedSavings={resolvedSavings}
+            aging={aging}
+            longestStanding={longestStanding}
             safeToApply={safeToApply}
             onViewWorkInProgress={handleViewWorkInProgress}
             onViewResolved={handleViewResolved}
@@ -719,6 +733,10 @@ const SummaryView = () => {
                   // ARNs ellipsize, instead of auto-layout stretching the row past its
                   // container and clipping the header bar on the right.
                   sx={{ '& > table': { tableLayout: 'fixed' } }}
+                  // A filter matching nothing is not the same as no data having loaded —
+                  // the generic default below reads like an outage otherwise.
+                  emptyHeading={hasTableFilter ? 'No findings match the current filters' : undefined}
+                  emptySubHeading={hasTableFilter ? 'Try clearing a filter to see more results.' : undefined}
                   headers={[
                     { name: 'Severity', width: '8%' },
                     { name: 'Finding', width: '28%' },
@@ -876,7 +894,10 @@ const SummaryView = () => {
           agentConnected={accounts[resolveModalRec.account_id]?.agent_connected}
         />
       )}
-      {resolveModalRec && !k8sActionFor(resolveModalRec) && (
+      {resolveModalRec && cloudActionFor(resolveModalRec) && (
+        <CloudActionModal open onClose={() => setResolveModalRec(null)} recommendation={resolveModalRec} />
+      )}
+      {resolveModalRec && !k8sActionFor(resolveModalRec) && !cloudActionFor(resolveModalRec) && (
         <ResolveModal
           open={!!resolveModalRec}
           onClose={() => setResolveModalRec(null)}

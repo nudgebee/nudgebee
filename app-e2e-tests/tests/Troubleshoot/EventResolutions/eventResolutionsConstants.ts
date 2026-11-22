@@ -71,9 +71,19 @@ export const COLUMN_HEADINGS = [
   "Updated",
 ] as const;
 
-// The four Status options (EventResolutions.jsx:323). The Status cell prints `item.status`
-// verbatim (:254), so an option label and the cell text it filters to are the same string.
-export const STATUS_OPTIONS = ["Success", "Failed", "InProgress", "Configuring"] as const;
+// The Status cell shows describeResolution's label (resolutionStatus.js), not `item.status` (#40734 review).
+// STATUS_OF_LABEL maps a cell back to its filter option; "Running" maps to InProgress, never Configuring.
+export const STATUS_OPTIONS = ["Success", "Failed", "InProgress", "Configuring", "Unknown", "Declined"] as const;
+export const STATUS_OF_LABEL: Record<string, string> = {
+  Done: "Success",
+  "Outcome unverified": "Success",
+  "Needs checking": "Success",
+  Failed: "Failed",
+  Running: "InProgress",
+  "Outcome unknown": "Unknown",
+  Declined: "Declined",
+};
+export const statusOfCell = (cellText: string): string => STATUS_OF_LABEL[cellText.trim()] ?? cellText.trim();
 
 // The five Type options (EventResolutions.jsx:336) — every value the event_resolution CHECK
 // constraint allows. Their labels go through snakeToTitleCase, which splits on underscores

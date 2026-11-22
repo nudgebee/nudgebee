@@ -571,7 +571,7 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 			result.ExitCode = 1
 			return result
 		}
-		cmd = exec.CommandContext(cmdCtx, args[0], args[1:]...)
+		cmd = exec.CommandContext(cmdCtx, resolveRepoTool(args[0], workingDir), args[1:]...)
 	}
 
 	cmd.Dir = workingDir
@@ -589,6 +589,10 @@ func (t *CLITool) executeCommand(ctx context.Context, command, workingDir string
 	}
 	if commandInvokesGit(command) {
 		extraEnv = append(extraEnv, gitHTTPSAuthEnv(githubToken)...)
+	}
+	// Tools the repository's setup script installed (see repo_setup.go).
+	if toolsPath := repoToolsPathEnv(workingDir); toolsPath != "" {
+		extraEnv = append(extraEnv, toolsPath)
 	}
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)

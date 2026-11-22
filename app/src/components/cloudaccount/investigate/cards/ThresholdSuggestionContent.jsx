@@ -5,6 +5,7 @@ import { Divider } from '@ui/Divider';
 import { ds, resolveColor } from '@utils/colors';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
+import { firingPattern, offersNumber, recommendationDisplay, waitChange } from '@components/triage/thresholdVerdict';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend);
 
@@ -25,24 +26,6 @@ const formatValue = (val) => {
     return `${(val / 1000).toFixed(1)}K`;
   }
   return val.toFixed(2);
-};
-
-const RECOMMENDATION_LABELS = {
-  tune_threshold: { label: 'Tune Threshold', hue: 'blue' },
-  increase_duration: { label: 'Increase Duration', hue: 'amber' },
-  tune_both: { label: 'Tune Both', hue: 'violet' },
-  disable: { label: 'Consider Disabling', hue: 'red' },
-  none: { label: 'No Change Needed', hue: 'green' },
-  review_alert: { label: 'Review Alert', hue: 'amber' },
-  not_eligible: { label: 'Not Eligible', hue: 'slate' },
-};
-
-const CLASSIFICATION_LABELS = {
-  false_positive: { label: 'False Positive', hue: 'red' },
-  noisy_but_real: { label: 'Noisy but Real', hue: 'amber' },
-  noisy_ignored: { label: 'Noisy, Not Acted On', hue: 'amber' },
-  broken: { label: 'Broken', hue: 'red' },
-  healthy: { label: 'Healthy', hue: 'green' },
 };
 
 const getOperatorSymbol = (operator) => {
@@ -78,8 +61,15 @@ const ThresholdSuggestionContent = ({ data }) => {
     { label: 'P99', value: suggestion.metric_p99 },
   ].filter((p) => p.value != null);
 
+  const recommendation = recommendationDisplay(suggestion.recommendation_type, suggestion.recommendation_label);
+  const pattern = firingPattern(quality);
+  // Only a tuning carries a new value; every other verdict keeps the current threshold.
+  const showsNewValue = offersNumber(suggestion.recommendation_type);
+
+  const waitText = waitChange(suggestion.recommendation_type, suggestion);
+
   const currentThreshold = alert?.current_threshold;
-  const suggestedThreshold = suggestion.suggested_threshold;
+  const suggestedThreshold = showsNewValue ? suggestion.suggested_threshold : null;
 
   const blueHex = resolveColor(ds.blue[500]);
   const chartData = {
@@ -184,14 +174,12 @@ const ThresholdSuggestionContent = ({ data }) => {
 
       {/* Recommendation type and confidence */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[4], flexWrap: 'wrap' }}>
-        {suggestion.recommendation_type && RECOMMENDATION_LABELS[suggestion.recommendation_type] && (
-          <Chip variant='tag' size='sm' hue={RECOMMENDATION_LABELS[suggestion.recommendation_type].hue}>
-            {RECOMMENDATION_LABELS[suggestion.recommendation_type].label}
-          </Chip>
-        )}
-        {quality?.classification && CLASSIFICATION_LABELS[quality.classification] && (
-          <Chip variant='tag' size='sm' hue={CLASSIFICATION_LABELS[quality.classification].hue}>
-            {CLASSIFICATION_LABELS[quality.classification].label}
+        <Chip variant='tag' size='sm' hue={recommendation.hue}>
+          {recommendation.label}
+        </Chip>
+        {pattern && (
+          <Chip variant='tag' size='sm' hue={pattern.hue}>
+            {pattern.label}
           </Chip>
         )}
         {suggestion.confidence && (
@@ -199,20 +187,36 @@ const ThresholdSuggestionContent = ({ data }) => {
             {`${suggestion.confidence} confidence`}
           </Chip>
         )}
-        {suggestion.estimated_reduction > 0 && (
+        {showsNewValue && suggestion.estimated_reduction > 0 && (
           <Chip variant='tag' size='sm' hue='blue'>
             {`~${Math.round(suggestion.estimated_reduction)}% noise reduction`}
           </Chip>
         )}
       </Box>
 
+      {/* The verdict is for the rule as a whole and was read off one of its instances. */}
+      {suggestion.measured_on && (
+        <Typography variant='caption' sx={{ color: suggestion.measured_on_other ? ds.amber[700] : ds.gray[600], display: 'block', mb: ds.space[3] }}>
+          {suggestion.measured_on_other
+            ? `This verdict is for the rule as a whole. It was measured on ${suggestion.measured_on}, not on the instance this alert came from.`
+            : `Measured on ${suggestion.measured_on}.`}
+        </Typography>
+      )}
+      {suggestion.fetch_failed_at && (
+        <Typography variant='caption' sx={{ color: ds.amber[700], display: 'block', mb: ds.space[3] }}>
+          {`The last attempt to read this rule's metric failed (${new Date(
+            suggestion.fetch_failed_at
+          ).toLocaleString()}); this verdict is from an earlier run.`}
+        </Typography>
+      )}
+
       {/* Duration recommendation */}
-      {suggestion.suggested_duration > 0 && (
+      {waitText && (
         <Box
           sx={{ mb: ds.space[4], p: ds.space[3], backgroundColor: ds.amber[100], borderRadius: ds.radius.sm, border: `1px solid ${ds.amber[200]}` }}
         >
           <Typography variant='body2' sx={{ fontWeight: ds.weight.semibold, mb: ds.space[1] }}>
-            Suggested evaluation window: {suggestion.suggested_duration} minutes
+            {`Wait before firing: ${waitText}`}
           </Typography>
           {suggestion.duration_reason && (
             <Typography variant='caption' sx={{ color: ds.gray[600] }}>
@@ -289,9 +293,14 @@ ThresholdSuggestionContent.propTypes = {
       confidence: PropTypes.string,
       estimated_reduction: PropTypes.number,
       recommendation_type: PropTypes.string,
+      recommendation_label: PropTypes.string,
       suggested_threshold: PropTypes.number,
       suggested_duration: PropTypes.number,
+      current_duration_seconds: PropTypes.number,
       duration_reason: PropTypes.string,
+      measured_on: PropTypes.string,
+      measured_on_other: PropTypes.bool,
+      fetch_failed_at: PropTypes.string,
       reason: PropTypes.string,
       metric_p50: PropTypes.number,
       metric_p90: PropTypes.number,
@@ -305,6 +314,7 @@ ThresholdSuggestionContent.propTypes = {
     }),
     alert_quality: PropTypes.shape({
       classification: PropTypes.string,
+      instant_rate: PropTypes.number,
       resolution_rate: PropTypes.number,
       transient_rate: PropTypes.number,
       engagement_rate: PropTypes.number,

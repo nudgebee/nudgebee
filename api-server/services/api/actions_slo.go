@@ -127,6 +127,9 @@ func handleSloAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace
 		}
 		c.JSON(200, map[string]any{"data": resp})
 		return
+	case "forecast_generate":
+		handleForecastGenerate(actionPayload, c, tracer, meter, logger)
+		return
 	case "slo_config_delete":
 		var sloDeleteRequest slo.SLODeleteRequest
 		if sloRequest["request"] != nil {

@@ -73,6 +73,11 @@ func handleCloudMetrics(actionPayload *ActionRequest, c *gin.Context, ctx *secur
 		return
 	}
 
+	if request.AccountId != "" && !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(request.AccountId) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
+
 	err = common.ValidateStruct(request)
 	if err != nil {
 		c.JSON(400, []common.Error{
@@ -123,7 +128,7 @@ func handleCloudListNotificationTargets(actionPayload *ActionRequest, c *gin.Con
 
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeRead) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -270,6 +275,11 @@ func handleDatabasePerformance(actionPayload *ActionRequest, c *gin.Context, ctx
 		return
 	}
 
+	if request.AccountId != "" && !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(request.AccountId) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
+
 	err = common.ValidateStruct(request)
 	if err != nil {
 		c.JSON(400, []common.Error{
@@ -305,6 +315,10 @@ func handleTriggerCloudSync(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		return
 	}
 
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeUpdate) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
 	resp, err := cloud.TriggerCloudAccountSync(ctx, accountId)
 	if err != nil {
 		c.JSON(500, []common.Error{
@@ -349,6 +363,10 @@ func handleSyncCloudService(actionPayload *ActionRequest, c *gin.Context, ctx *s
 		}
 	}
 
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeUpdate) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account"))
+		return
+	}
 	resp, err := cloud.SyncCloudService(ctx, accountId, serviceName, regions)
 	if err != nil {
 		c.JSON(500, []common.Error{
@@ -398,7 +416,7 @@ func handleCloudApplyCommand(actionPayload *ActionRequest, c *gin.Context, ctx *
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -491,7 +509,7 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 	// Gate on access to the target account. tenant_admin passes for any
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include account_admin (actions.yaml).
-	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
 		c.JSON(403, []common.Error{
 			{
 				Message: "access denied for account: " + request.AccountId,
@@ -522,6 +540,23 @@ func handleCloudExecuteCommand(actionPayload *ActionRequest, c *gin.Context, ctx
 		if accountAccess.Valid && accountAccess.String == "readonly" {
 			c.JSON(403, []common.Error{{Message: "cannot execute commands on read-only account"}})
 			return
+		}
+
+		// The linked recommendation's status is updated by id below, so it must
+		// belong to the account the commands run on; otherwise a run on one
+		// account would mark another account's recommendation resolved.
+		if request.RecommendationId != "" {
+			var owned bool
+			dbErr = databaseManager.Db.Get(&owned, `SELECT EXISTS (SELECT 1 FROM recommendation WHERE id = $1 AND cloud_account_id = $2 AND tenant_id = $3)`, request.RecommendationId, request.AccountId, ctx.GetSecurityContext().GetTenantId())
+			if dbErr != nil {
+				slog.Error("cloud_execute_command: failed to check recommendation account", "error", dbErr)
+				c.JSON(500, []common.Error{{Message: "internal server error"}})
+				return
+			}
+			if !owned {
+				c.JSON(404, []common.Error{{Message: "recommendation not found in this account"}})
+				return
+			}
 		}
 	}
 

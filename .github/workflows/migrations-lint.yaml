@@ -52,3 +52,39 @@ jobs:
             exit 1
           fi
           echo "OK: no CONCURRENTLY in executable SQL in migration files."
+
+  model-pricing-image-support:
+    name: New model pricing rows set supports_image_input
+    runs-on: [self-hosted, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Built-in llm_model_pricing rows are only ever written by migrations, and
+      # llm-server refuses image attachments for any model whose
+      # supports_image_input is NULL. V880, V984 and V1038 each seeded models
+      # without it, which broke images on the default model until V1063
+      # backfilled them. So every migration this PR adds that inserts into
+      # llm_model_pricing must set the column explicitly: true, false, or
+      # copied from a row that has it. Files already merged are not checked.
+      - name: Check added migrations that insert model pricing rows
+        run: |
+          set -e
+          base="${{ github.event.pull_request.base.sha }}"
+          fail=0
+          for f in $(git diff --name-only --diff-filter=A "$base" HEAD -- 'api-server/migrations/migrations/app/*.up.sql'); do
+            sql=$(sed -E 's/--.*$//' "$f" | tr '\n' ' ')
+            echo "$sql" | grep -qiE 'INSERT[[:space:]]+INTO[[:space:]]+(public\.)?llm_model_pricing\b' || continue
+            if ! echo "$sql" | grep -qi 'supports_image_input'; then
+              fail=1
+              echo "::error file=$f::inserts into llm_model_pricing without setting supports_image_input"
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "::error::Set supports_image_input on every new built-in model row (true if the provider's docs list image input, false if not)."
+            echo "A NULL makes llm-server refuse image attachments on that model."
+            exit 1
+          fi
+          echo "OK: every added migration that inserts model pricing rows sets supports_image_input."

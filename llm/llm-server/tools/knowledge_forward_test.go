@@ -9,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -29,13 +32,13 @@ func TestKnowledgeForwardSmallCompleteBody(t *testing.T) {
 	defer rag.Close()
 	config.Config.RAGServerUrl = rag.URL + "/"
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "knowledge-conv", MessageId: "m"}
-	candidate := core.KnowledgeCandidate{ID: "knowledge:small", Title: "Steps", Collection: "docs", DocumentID: "point", Version: digest, Bytes: int64(len(body)), Purpose: core.KnowledgePurposeProcedure}
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate))
+	candidate := knowledge.KnowledgeCandidate{ID: "knowledge:small", Title: "Steps", Collection: "docs", DocumentID: "point", Version: digest, Bytes: int64(len(body)), Purpose: knowledge.KnowledgePurposeProcedure}
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, candidate))
 	inline, ref, err := PrepareKnowledgeForAnalysis(ctx, candidate)
 	require.NoError(t, err)
 	require.Nil(t, ref)
 	require.Contains(t, inline, body)
-	require.Contains(t, inline, core.KnowledgePurposeGuidance(core.KnowledgePurposeProcedure))
+	require.Contains(t, inline, knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurposeProcedure))
 	config.Config.LlmServerKnowledgeWorkspaceEnabled = false
 	_, _, err = PrepareKnowledgeForAnalysis(ctx, candidate)
 	require.ErrorContains(t, err, "disabled")

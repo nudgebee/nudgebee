@@ -4,7 +4,8 @@ package core
 // NudgebeeUser is the internal `users` table row materialized as a KG node; every
 // per-integration identity (GitHubUser today) links to it via SAME_AS rather than
 // duplicating its fields, so this spec only needs the two fields the enricher
-// actually writes — see ontology_data_aws.go for the general pattern this follows.
+// actually writes. (SAME_AS also joins a self-hosted VM to its cloud instance;
+// see sources/selfhosted.) — see ontology_data_aws.go for the general pattern this follows.
 
 func init() { registerOntology(identityOntology) }
 

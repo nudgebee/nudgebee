@@ -250,7 +250,7 @@ func init() {
 	toolInput := "Provide metrices question in natural language"
 	toolOutput := "The tool will return the datadog metrics data retrieved your query"
 
-	core.RegisterNBAgentFactoryAndToolAndPrioritizeAgentResponseForTool(DatadogMetricsAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogMetricsAgentName, func(accountId string) (core.NBAgent, error) {
 		return DatadogMetricsAgent{accountId: accountId}, nil
 	}, toolDescription, toolInput, toolOutput)
 }

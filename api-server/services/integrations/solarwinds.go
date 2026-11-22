@@ -82,13 +82,9 @@ func (m SolarWinds) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: "",
 				Priority:         30,
 			},
-			core.DefaultTraceProvider: {
-				Type:             core.ToolSchemaTypeBoolean,
-				Description:      "Make SolarWinds default Trace Provider",
-				Default:          false,
-				AutoGenerateFunc: "",
-				Priority:         25,
-			},
+			// No DefaultTraceProvider: SolarWinds exposes only per-operation trace
+			// aggregates, not individual spans, so the Traces tab cannot list
+			// anything for it. Re-add once the Traces view can handle that.
 			core.DefaultMetricsProvider: {
 				Type:             core.ToolSchemaTypeBoolean,
 				Description:      "Make SolarWinds default Metric Provider",

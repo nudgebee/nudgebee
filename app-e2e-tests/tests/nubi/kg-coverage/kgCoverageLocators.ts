@@ -51,7 +51,7 @@ export class KgCoverageLocators extends KgManualDependenciesLocators {
     this.noAccountsState = this.accountsColumn.getByText("No active cloud accounts configured for this tenant.", { exact: true }).first();
     this.noAccountsMatch = this.accountsColumn.getByText(/^No accounts match/).first();
 
-    // Manual Dependencies is unmounted while Coverage shows, so these are the only Cancel and Save in the Settings dialog.
+    // Manual Declarations is unmounted while Coverage shows, so these are the only Cancel and Save in the Settings dialog.
     this.coverageCancelBtn = this.settingsDialog
       .getByRole("button", { name: "Cancel", exact: true })
       .or(this.settingsDialog.locator("button").filter({ hasText: /^Cancel$/ }))

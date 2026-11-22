@@ -96,6 +96,11 @@ func ValidateRepoURL(raw string) error {
 // --upload-pack=<cmd>` is the classic argument-injection shape — and whitespace or
 // control characters mean the value was never a ref to begin with.
 //
+// A branch name is also written into a fetch refspec, where "*" turns one branch
+// into a pattern that fetches every branch matching it and ":" splits the
+// refspec. Git allows none of "*", "?", "[" or ":" in a ref name, so no real
+// branch is refused by rejecting them.
+//
 // An empty name is rejected here, but callers that treat "" as "no branch specified"
 // (clone the default branch) must skip the check rather than fail: that is a supported
 // input, not a malformed one.
@@ -111,6 +116,9 @@ func ValidateBranchName(branch string) error {
 	}
 	if strings.HasPrefix(branch, "-") {
 		return fmt.Errorf("branch name starts with %q", "-")
+	}
+	if strings.ContainsAny(branch, "*?[:") {
+		return fmt.Errorf("branch name contains a character git does not allow in a ref name")
 	}
 	return nil
 }

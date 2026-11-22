@@ -5,19 +5,25 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/llms/googleai"
-	nbprompts "nudgebee/llm/prompts"
-	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
-	toolcore "nudgebee/llm/tools/core"
+	"maps"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"nudgebee/llm/attachments"
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
+	nbprompts "nudgebee/llm/prompts"
+	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
+	toolcore "nudgebee/llm/tools/core"
 
 	"log/slog"
 
@@ -50,6 +56,15 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 		return AgentExecutionStatusFail
 	}
 
+	// A structured answer is judged by its shape, not its prose: a complete
+	// payload that quotes a log line ("unable to fetch …") is not a failure.
+	if structured, failed := toolcore.StructuredResponseFailed(response); structured {
+		if failed {
+			return AgentExecutionStatusFail
+		}
+		return AgentExecutionStatusSuccess
+	}
+
 	if strings.Contains(response, `"error"`) || strings.Contains(response, "bedrock runtime") || strings.HasSuffix(response, "none is not a valid tool") {
 		return AgentExecutionStatusFail
 	}
@@ -58,7 +73,7 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 		return AgentExecutionStatusFail
 	}
 
-	if strings.Contains(response, toolcore.ErrUnableToFetchData.Error()) || strings.Contains(response, errLlmUnableToGenerate.Error()) {
+	if strings.Contains(response, toolcore.ErrUnableToFetchData.Error()) || strings.Contains(response, llmruntime.ErrLlmUnableToGenerateSentinel.Error()) {
 		return AgentExecutionStatusFail
 	}
 
@@ -74,10 +89,28 @@ func guessAgentStatusFromResponse(plannerResponse NBAgentPlannerExecutorResponse
 	return AgentExecutionStatusSuccess
 }
 
+// normalizeAgentStatus maps an agent's status to the stored value, so the metric
+// and the row cannot disagree: custom agents report "FAILED"/"WAITING".
+func normalizeAgentStatus(status AgentExecutionStatus) AgentExecutionStatus {
+	switch {
+	case strings.EqualFold(string(status), string(AgentExecutionStatusWaiting)) || strings.EqualFold(string(status), string(ConversationStatusWaiting)):
+		return AgentExecutionStatusWaiting
+	case strings.EqualFold(string(status), string(AgentExecutionStatusWaitingForClientTool)) || strings.EqualFold(string(status), string(ConversationStatusWaitingForClientTool)):
+		return AgentExecutionStatusWaitingForClientTool
+	case strings.EqualFold(string(status), string(AgentExecutionStatusFail)) || strings.EqualFold(string(status), string(ConversationStatusFailed)):
+		return AgentExecutionStatusFail
+	default:
+		return AgentExecutionStatusSuccess
+	}
+}
+
 // sanitizeErrorForUser checks for sensitive or low-level errors and returns a user-friendly message.
 func sanitizeErrorForUser(err error) string {
 	if err == nil {
 		return ""
+	}
+	if msg, ok := llmruntime.LLMFailureMessage(err); ok {
+		return msg
 	}
 	errStr := err.Error()
 
@@ -104,8 +137,27 @@ func sanitizeErrorForUser(err error) string {
 		}
 	}
 
+	// Planner errors carry internals ("react4: llm generate: ...") #39704. The classifier
+	// matches substrings ("connection", "500"), so only provider errors reach it.
+	switch {
+	case errors.Is(err, ErrParseFailure) || errors.Is(err, errSummaryTextToolCall):
+		return runStoppedEarlyMessage
+	case errors.Is(err, llmruntime.ErrLlmUnableToGenerateSentinel) || errors.Is(err, llmruntime.ErrLLMRateLimited) ||
+		errors.Is(err, llmruntime.ErrLLMRequestTooLarge) || errors.Is(err, llmruntime.ErrLLMServiceUnavailable):
+		if safe := llmruntime.ClassifyUserFacingLLMError(err); safe != nil {
+			return safe.Error()
+		}
+		return providerErrorMessage
+	}
+
 	return errStr
 }
+
+// User-facing text: unusable model reply / unclassified provider error.
+const (
+	runStoppedEarlyMessage = "The investigation stopped before it finished because the AI model returned a reply that could not be used. Please try again."
+	providerErrorMessage   = "The investigation stopped because the AI service returned an error. Please try again, or contact your administrator if it keeps happening."
+)
 
 // applyAgentModelTier returns a context whose ContextKeyModelTier reflects the
 // agent's declared model category — defaulting to Retrieval when the agent
@@ -131,7 +183,7 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyModelTier, resolveModelTier(ctx, agent, request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -154,13 +206,13 @@ func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent, request NB
 // chosen — same principle as tierPinFor (llm_config.go).
 // This shared executor policy runs before engine selection, so ReAct3 and ReAct4
 // resolve their models (and ReAct4 native-tool capability) using the same tier.
-func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) ModelTier {
+func resolveModelTier(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) llmruntime.ModelTier {
 	base := agentModelCategory(agent)
 	if config.Config.LlmServerOrchestratorQueryModelDownshiftEnabled &&
-		base == ModelTierReasoning &&
+		base == llmruntime.ModelTierReasoning &&
 		isTopLevelPlainRetrievalTurn(request) &&
 		!hasExplicitModelConfig(ctx) {
-		return ModelTierSummary
+		return llmruntime.ModelTierSummary
 	}
 	return base
 }
@@ -178,16 +230,16 @@ func hasExplicitModelConfig(ctx *security.RequestContext) bool {
 	if goCtx == nil {
 		return false
 	}
-	if p, _ := goCtx.Value(ContextKeyLlmProviderOverride).(string); p != "" {
+	if p, _ := goCtx.Value(llmruntime.ContextKeyLlmProviderOverride).(string); p != "" {
 		return true
 	}
-	if m, _ := goCtx.Value(ContextKeyLlmModelOverride).(string); m != "" {
+	if m, _ := goCtx.Value(llmruntime.ContextKeyLlmModelOverride).(string); m != "" {
 		return true
 	}
-	if v, ok := goCtx.Value(ContextKeyLlmTierModelOverrides).(ConversationTierOverrides); ok && v.HasAny() {
+	if v, ok := goCtx.Value(llmruntime.ContextKeyLlmTierModelOverrides).(llmruntime.ConversationTierOverrides); ok && v.HasAny() {
 		return true
 	}
-	if s, _ := goCtx.Value(ContextKeyLlmConfigSourceOverride).(string); s != "" {
+	if s, _ := goCtx.Value(llmruntime.ContextKeyLlmConfigSourceOverride).(string); s != "" {
 		return true
 	}
 	return false
@@ -204,7 +256,7 @@ func promptVariantForRequest(request NBAgentRequest) string {
 	if !isTopLevelPlainRetrievalTurn(request) {
 		return ""
 	}
-	return promptVariantLean
+	return llmruntime.PromptVariantLean
 }
 
 // isTopLevelPlainRetrievalTurn reports whether this is a TOP-LEVEL, non-investigation
@@ -249,7 +301,7 @@ func applyPromptVariant(ctx *security.RequestContext, request NBAgentRequest) *s
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyPromptVariant, promptVariantForRequest(request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyPromptVariant, promptVariantForRequest(request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -277,9 +329,9 @@ func classifyTaskType(request NBAgentRequest) string {
 		return ""
 	}
 	if IsInvestigationRequestTask(query) || request.ConversationSource == ConversationSourceInvestigation {
-		return taskTypeInvestigation
+		return llmruntime.TaskTypeInvestigation
 	}
-	return taskTypeQuery
+	return llmruntime.TaskTypeQuery
 }
 
 // applyTaskTypeAttribution stamps ContextKeyTaskType so the token-usage writer can
@@ -295,7 +347,7 @@ func applyTaskTypeAttribution(ctx *security.RequestContext, request NBAgentReque
 		goCtx = context.Background()
 	}
 	return security.NewRequestContext(
-		context.WithValue(goCtx, ContextKeyTaskType, classifyTaskType(request)),
+		context.WithValue(goCtx, llmruntime.ContextKeyTaskType, classifyTaskType(request)),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -385,6 +437,18 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// writer can persist task_type for post-run tier/quality segmentation. Flag-free
 	// and side-effect-free — attribution only, does not change model or prompt.
 	ctx = applyTaskTypeAttribution(ctx, request)
+
+	// An agent bound to an extension runs only in that extension's runs; the
+	// run's policy then sets up (or refuses) the run.
+	err = CheckAgentInRun(agent, RunProfileOf(ctx))
+	if err == nil {
+		ctx, request, err = policyFor(ctx).StartAgent(ctx, agent, request)
+	}
+	if err != nil {
+		common.MetricsAgentOperationsTotal(agentName, "fail", accountID)
+		common.MetricsAgentLatencySeconds(agentName, accountID, time.Since(start).Seconds())
+		return NBAgentResponse{}, err
+	}
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter
@@ -515,7 +579,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// action batch share the caller's RequestContext pointer, so an in-place
 	// mutation would race and leak one agent's model into its siblings.
 	if ctx != nil {
-		if res, err := ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
+		if res, err := llmruntime.ResolveLLMConfig(ctx, request.AccountId, agent.GetName(), request.ConversationId); err == nil && res != nil && res.Model != "" {
 			ctx = security.NewRequestContext(
 				nbprompts.WithRequestModel(ctx.GetContext(), res.Model),
 				ctx.GetSecurityContext(),
@@ -592,7 +656,14 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// KBs the user mapped to "All agents" are carried by a wildcard mapping row, so
 	// every agent resolves them by looking the sentinel up alongside its own names.
 	// Appended last so ownSkillNames[0] stays the canonical name for logging.
-	ownSkillNames = toolcore.WithKBAgentWildcard(ownSkillNames)
+	ownSkillNames = knowledge.WithKBAgentWildcard(ownSkillNames)
+
+	// Text this agent always gets (skills linked with "always load"),
+	// resolved here for every planner type and for this request's account. Not
+	// forwarded: a delegated provider resolves its own, with the delegator's
+	// name in InheritSkillsFromAgents (#40899).
+	request.AgentInstructions, request.AlwaysLoadedKBIDs = resolveAgentInstructions(ctx, request.AccountId, ownSkillNames, request.InheritSkillsFromAgents)
+
 	knowledgeMode := AgentKnowledgeDisabled
 	switch agent.GetPlannerType() {
 	case AgentPlannerTypeReAct, AgentPlannerTypeOrchestrating:
@@ -619,6 +690,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	}
 	// Used up here; it must not travel with anything built from this request.
 	request.TopLevelResume = false
+	turnRequest.RecentHistory = RecentHistoryTail(historyStr, MemoryPrestepMaxHistory)
 
 	kbChan := make(chan kbAssemblyResult, 1)
 	go func(prompt NBAgentPrompt) {
@@ -646,11 +718,11 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// entirely — no concatenation, no double-injection. When the module is off
 	// (or the tenant is not allowlisted) the legacy notebook remains primary.
 	tenantID := ctx.GetSecurityContext().GetTenantId()
-	memoryModuleActive := isMemoryV2ActiveFn(tenantID)
+	memoryModuleActive := IsMemoryV2ActiveFn(tenantID)
 	memoryEnabled := ResolveAgentMemoryEnabled(agent)
 
 	memChan := make(chan string, 1)
-	memV2Chan := make(chan string, 1)
+	memV2Chan := make(chan MemoryPromptParts, 1)
 	// Memory is composed once, at the top-level invocation; sub-agents skip the
 	// per-agent recompose (mirrors the eager KB retrieval above, which is already
 	// top-level-only) — each recompose re-ran the 3-layer memory Compose (~3-5s).
@@ -662,17 +734,13 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	if isSubAgentInvocation || !memoryEnabled {
 		// Empty sends keep the collectors below unblocked.
 		memChan <- ""
-		memV2Chan <- ""
+		memV2Chan <- MemoryPromptParts{}
 	} else if memoryModuleActive {
 		memChan <- ""
-		go func() {
-			memV2Chan <- composeMemoryV2BlockFn(ctx, turnRequest, agent)
-		}()
+		go composeMemoryV2Into(ctx, memV2Chan, turnRequest, agent)
 	} else {
-		go func(cf []string) {
-			memChan <- retrieveAndBuildMemoryNotebook(ctx, turnRequest, agent, cf)
-		}(convFacts)
-		memV2Chan <- ""
+		go buildMemoryNotebookInto(ctx, memChan, turnRequest, agent, convFacts)
+		memV2Chan <- MemoryPromptParts{}
 	}
 
 	// Collect results
@@ -682,8 +750,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		// Reference context, not working state: seeding the notebook handed
 		// every injected memory the authority of the agent's own prior
 		// findings. The planner frames it as <user_memory>; the notebook
-		// starts empty.
-		request.MemoryContext = <-memV2Chan
+		// starts empty. Style is rendered as its own block before <question>.
+		parts := <-memV2Chan
+		request.MemoryContext = parts.Memory
+		request.UserStyle = parts.Style
 		<-memChan // drain
 	} else {
 		initialNotebook = <-memChan
@@ -728,7 +798,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// agent's ID causes a spurious "agentid is not found" error.
 	isResumingAgent := existingAgentId != uuid.Nil || originalAgentId != ""
 	refinementStart := time.Now()
-	ctx.GetLogger().Info("agentexecutor: handling refinement/followups", "query", request.Query, "agentId", agentId, "isResuming", isResumingAgent)
+	ctx.GetLogger().Info("agentexecutor: handling refinement/followups", "query", egressfilter.RedactForLog(request.Query), "agentId", agentId, "isResuming", isResumingAgent)
 	var refinementFollowupResponse NBAgentResponse
 	var refinementErr error
 	if isResumingAgent {
@@ -775,7 +845,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		// agents that have a specific LLM call with a stable system prompt can override this
 		// by creating a sub-context with ContextKeyDisableCaching set to false.
 		noCacheCtx := security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyDisableCaching, true),
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyDisableCaching, true),
 			ctx.GetSecurityContext(),
 			ctx.GetLogger(),
 			ctx.GetTracer(),
@@ -841,12 +911,15 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 	}
 	// Metrics: record operation result and latency
-	status := response.Status
-	if status == "" {
-		status = guessAgentStatusFromResponse(response)
+	agentStatus := response.Status
+	if agentStatus == "" {
+		agentStatus = guessAgentStatusFromResponse(response)
+		ctx.GetLogger().Info("agentexecutor: agent set no status, inferred from response", "agent", agent.GetName(), "inferredStatus", agentStatus)
 	}
-	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", status, "duration_seconds", time.Since(start).Seconds())
-	switch status {
+	finalDbStatus := normalizeAgentStatus(agentStatus)
+
+	ctx.GetLogger().Info("agentexecutor: operation metrics", "agent", agent.GetName(), "status", finalDbStatus, "duration_seconds", time.Since(start).Seconds())
+	switch finalDbStatus {
 	case AgentExecutionStatusFail:
 		common.MetricsAgentOperationsTotal(agentName, "fail", accountID)
 	case AgentExecutionStatusWaiting:
@@ -855,24 +928,6 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		common.MetricsAgentOperationsTotal(agentName, "success", accountID)
 	}
 	common.MetricsAgentLatencySeconds(agentName, accountID, time.Since(start).Seconds())
-
-	agentStatus := response.Status
-	if agentStatus == "" {
-		agentStatus = guessAgentStatusFromResponse(response)
-	}
-
-	// Map statuses to allowed database values (lowercase)
-	var finalDbStatus AgentExecutionStatus
-	switch {
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaiting)) || strings.EqualFold(string(agentStatus), string(ConversationStatusWaiting)):
-		finalDbStatus = AgentExecutionStatusWaiting
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusWaitingForClientTool)) || strings.EqualFold(string(agentStatus), string(ConversationStatusWaitingForClientTool)):
-		finalDbStatus = AgentExecutionStatusWaitingForClientTool
-	case strings.EqualFold(string(agentStatus), string(AgentExecutionStatusFail)) || strings.EqualFold(string(agentStatus), string(ConversationStatusFailed)):
-		finalDbStatus = AgentExecutionStatusFail
-	default:
-		finalDbStatus = AgentExecutionStatusSuccess
-	}
 
 	ctx.GetLogger().Info("agentexecutor: finalized status mapping", "finalStatus", finalDbStatus, "originalStatus", agentStatus)
 
@@ -895,6 +950,14 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		referencesJson = string(rb)
 	}
 
+	// Point the answer's step citations at the tool-call rows before it is
+	// stored; this agent row is final once written.
+	citationAgentID := ""
+	if agentId != uuid.Nil {
+		citationAgentID = agentId.String()
+	}
+	response.Response = linkStepCitations(ctx, citationRowFinder(), request.ConversationId, citationAgentID, request.MessageId, agentName, accountID, response.Response, response.Invocations)
+
 	dbErr := GetConversationDao().UpdateConversationAgentResponse(agentId.String(), response.Response, finalDbStatus, response.State, limitedSummary, agentStepResponseJson, referencesJson)
 	if dbErr != nil {
 		ctx.GetLogger().Error("agentexecutor: unable to save agent call", "error", dbErr)
@@ -903,7 +966,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	// Phase 2: Async Summary Generation for success responses
 	// Moved here from executeAgentPlanner to avoid race conditions with the main DB update
 	// and to ensure the main response is returned to the user as quickly as possible.
-	isSummaryTask := strings.EqualFold(agent.GetName(), ToolLlm) && request.ParentAgentId != "" && request.ParentAgentId != uuid.Nil.String()
+	isSummaryTask := strings.EqualFold(agent.GetName(), llmruntime.ToolLlm) && request.ParentAgentId != "" && request.ParentAgentId != uuid.Nil.String()
 	if dbErr == nil && finalDbStatus == AgentExecutionStatusSuccess && !isSummaryTask && (agent.GetPlannerType() == AgentPlannerTypeCustom || isReActStylePlanner(agent.GetPlannerType())) && len(response.Response) > 50 && agentId != uuid.Nil {
 		// Generate 1 liner summary asynchronously
 		bgCtx := security.NewRequestContext(
@@ -1019,6 +1082,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			// run as react_3 and assign sequential DisplayIDs, so the formatter must
 			// build the step-reference guide for them too — not just declared-react_3 agents.
 			agentResponse = FormatAgentResponse(ctx, request, agentResponse, resolveEffectivePlannerType(agent.GetPlannerType()))
+			// The formatter writes citations from its step guide as E-numbers.
+			if len(agentResponse.Response) > 0 {
+				agentResponse.Response[0] = linkStepCitations(ctx, citationRowFinder(), request.ConversationId, citationAgentID, request.MessageId, agentName, accountID, agentResponse.Response[0], agentResponse.AgentStepResponse)
+			}
 		}
 	}
 
@@ -1066,7 +1133,7 @@ func syncAgentFollowupMessage(ctx *security.RequestContext, dao IConversationDao
 }
 
 func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, history string, agentId uuid.UUID) (NBAgentRequest, NBAgentResponse, error) {
-	ctx.GetLogger().Info("followup: handling followup response", "agentId", request.AgentId, "query", request.Query)
+	ctx.GetLogger().Info("followup: handling followup response", "agentId", request.AgentId, "query", egressfilter.RedactForLog(request.Query))
 	followupMessage, err := HandleFollowupResponse(ctx, request)
 	if err != nil {
 		ctx.GetLogger().Error("agentexecutor: unable to handle followup response", "error", err)
@@ -1092,6 +1159,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 				existingToolConfirmations[k] = v
 			}
 		}
+		existingConfirmationRefs := maps.Clone(request.QueryConfig.ToolConfirmationRefs)
 		if followupMessage.MessageContext != nil {
 			previousQuestion := NBAgentRequest{}
 			err := common.UnmarshalJson([]byte(*followupMessage.MessageContext), &previousQuestion)
@@ -1124,6 +1192,9 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 			}
 			for k, v := range previousQuestion.QueryConfig.ToolConfirmations {
 				existingToolConfirmations[k] = v
+			}
+			for k, v := range previousQuestion.QueryConfig.ToolConfirmationRefs {
+				existingConfirmationRefs = recordConfirmationRef(existingConfirmationRefs, k, v)
 			}
 			// Merge other config fields from previous question
 			request.QueryConfig.MergeFrom(previousQuestion.QueryConfig)
@@ -1160,6 +1231,11 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 				confirmationKey = toolName
 			}
 			existingToolConfirmations[confirmationKey] = followupMessage.Response
+			// Which approval this is, and who gave it: an approved write in an alert's
+			// conversation is recorded under it (ApprovedWriteRecorder).
+			existingConfirmationRefs = recordConfirmationRef(existingConfirmationRefs, confirmationKey, toolcore.ToolConfirmationRef{
+				MessageId: followupMessage.ID.String(), ApprovedBy: requestUserId(ctx),
+			})
 			request.Query = previousQuery
 			updateRequestMessageConfig = true
 		} else {
@@ -1171,6 +1247,7 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 
 		request.QueryConfig.ToolConfigs = existingToolConfigs
 		request.QueryConfig.ToolConfirmations = existingToolConfirmations
+		request.QueryConfig.ToolConfirmationRefs = existingConfirmationRefs
 		if updateRequestMessageConfig {
 			err := GetConversationDao().UpdateConversationMessageConfig(request.MessageId, request.QueryConfig)
 			if err != nil {
@@ -1180,6 +1257,16 @@ func refineAgentQuestionAndHandleFollowups(ctx *security.RequestContext, request
 	}
 
 	return request, NBAgentResponse{}, nil
+}
+
+// InvestigationReportForHistory is the latest completed investigation report of the alert whose conversation
+// conversationId is, bounded, and its event id; "" when there is none or the alert's investigation stages are kept
+// in the history (remediation loop off). Installed by the api package. A var so tests can stub it.
+var InvestigationReportForHistory func(ctx *security.RequestContext, accountId, conversationId string) (eventId, report string)
+
+// investigationReportPreamble introduces the investigation report in a turn's history: NudgeBee's, not a person's.
+func investigationReportPreamble(eventId string) string {
+	return "NudgeBee's investigation of event " + eventId + " (the latest investigated firing of this alert), for reference; not a message from a person."
 }
 
 func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([]prompts.MessageFormatter, error) {
@@ -1206,9 +1293,9 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 	}
 
 	// Load attachment descriptions for all history messages (best-effort)
-	var attachmentDescs map[string][]AttachmentDescription
+	var attachmentDescs map[string][]attachments.AttachmentDescription
 	if len(messageIDs) > 0 {
-		if dao := GetAttachmentDAO(); dao != nil {
+		if dao := attachments.GetAttachmentDAO(); dao != nil {
 			attachmentDescs, err = dao.LoadAttachmentDescriptions(messageIDs, request.AccountId)
 			if err != nil {
 				ctx.GetLogger().Warn("agentexecutor: failed to load attachment descriptions for history", "error", err)
@@ -1219,6 +1306,15 @@ func getExistingHistory(request NBAgentRequest, ctx *security.RequestContext) ([
 
 	// collect existing history
 	messageHistoryFomatter := []prompts.MessageFormatter{}
+	// An alert investigation's stage turns are not in the history (LoadConversationMessages); its latest report,
+	// bounded, stands in for them, first so the prefix stays the same until a newer investigation completes.
+	if InvestigationReportForHistory != nil {
+		if eventId, report := InvestigationReportForHistory(ctx, request.AccountId, request.ConversationId); report != "" {
+			messageHistoryFomatter = append(messageHistoryFomatter,
+				prompts.NewHumanMessagePromptTemplate(escapeTemplateSyntax(investigationReportPreamble(eventId)), []string{}),
+				prompts.NewAIMessagePromptTemplate(escapeTemplateSyntax(report), []string{}))
+		}
+	}
 	// Rows after the current turn's message belong to this turn (its followups).
 	inCurrentTurn := false
 	// Handle formatting of the message history
@@ -1283,7 +1379,7 @@ func followupTypeOf(messageConfig string) FollowupType {
 }
 
 // formatAttachmentDescriptions builds a text summary of image attachments for history replay.
-func formatAttachmentDescriptions(descs []AttachmentDescription) string {
+func formatAttachmentDescriptions(descs []attachments.AttachmentDescription) string {
 	var descriptions []string
 	for _, d := range descs {
 		if d.Description != nil && *d.Description != "" {
@@ -1382,8 +1478,8 @@ func useReAct4Engine(ctx *security.RequestContext, agent NBAgent, request NBAgen
 	if declared != AgentPlannerTypeReAct && declared != AgentPlannerTypeOrchestrating {
 		return false
 	}
-	provider := GetLLMProvider(ctx, request.AccountId, agent.GetName(), true, request.ConversationId)
-	model := GetLLMModelName(ctx, request.AccountId, provider, agent.GetName(), true, request.ConversationId)
+	provider := llmruntime.GetLLMProvider(ctx, request.AccountId, agent.GetName(), true, request.ConversationId)
+	model := llmruntime.GetLLMModelName(ctx, request.AccountId, provider, agent.GetName(), true, request.ConversationId)
 	return shouldUseReAct4(declared, engine, forced, provider, model)
 }
 
@@ -1422,7 +1518,7 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 		if multiAgent, ok := agent.(NBMultiOptionClassificationAgent); ok {
 			multi = multiAgent.AllowsMultipleOptions()
 		}
-		nbAgentPlanner, err = NewClassificationPlanner(ctx, request, agent, systemMessage, classificationAgent.GetOptions(), multi)
+		nbAgentPlanner, err = NewClassificationPlanner(ctx, request, agent, WithAgentInstructions(request, systemMessage), classificationAgent.GetOptions(), multi)
 	} else if agent.GetPlannerType() == AgentPlannerTypeCustom {
 		customAgent, ok := agent.(NBCustomAgent)
 		if !ok {
@@ -1432,7 +1528,7 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 		// dynamic system-message content inside Execute() does not create stale
 		// Google AI / Anthropic cache entries.
 		noCacheCtx := security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyDisableCaching, true),
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyDisableCaching, true),
 			ctx.GetSecurityContext(),
 			ctx.GetLogger(),
 			ctx.GetTracer(),
@@ -1665,4 +1761,30 @@ func limitStringLength(s string, maxLength int) string {
 	const ellipsis = "..."
 	// Leave space for the ellipsis
 	return s[:maxLength-len(ellipsis)] + ellipsis
+}
+
+// composeMemoryV2Into sends the memory-v2 prompt block on ch. It runs on its own
+// goroutine, where a panic would take down the process (no caller can recover
+// it), so a panic is logged and an empty block is sent instead: the collector in
+// executeAgent waits on ch, and the turn carries on without memory.
+func composeMemoryV2Into(ctx *security.RequestContext, ch chan<- MemoryPromptParts, request NBAgentRequest, agent NBAgent) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.GetLogger().Error("executor: memory-v2 compose panicked", "panic", r, "stack", string(debug.Stack()))
+			ch <- MemoryPromptParts{}
+		}
+	}()
+	ch <- ComposeMemoryV2BlockFn(ctx, request, agent)
+}
+
+// buildMemoryNotebookInto sends the legacy memory notebook on ch, with the same
+// panic handling as composeMemoryV2Into.
+func buildMemoryNotebookInto(ctx *security.RequestContext, ch chan<- string, request NBAgentRequest, agent NBAgent, conversationFacts []string) {
+	defer func() {
+		if r := recover(); r != nil {
+			ctx.GetLogger().Error("executor: memory notebook panicked", "panic", r, "stack", string(debug.Stack()))
+			ch <- ""
+		}
+	}()
+	ch <- retrieveAndBuildMemoryNotebook(ctx, request, agent, conversationFacts)
 }

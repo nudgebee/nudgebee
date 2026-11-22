@@ -18,11 +18,11 @@ var azureLoadBalancerSchema = core.SpecificTypeSchema{
 		{Name: "lb_sku", Indexed: true},
 		{Name: "resource_group", Indexed: true},
 		{Name: "is_public_entry"},
-		{Name: "frontend_ip_addresses"},
-		{Name: "frontend_hostnames"},
-		{Name: "public_ip_refs"},
-		{Name: "backend_pool_ids"},
-		{Name: "backend_addresses"},
+		{Name: "frontend_ip_addresses", Shape: core.PropertyShapeList},
+		{Name: "frontend_hostnames", Shape: core.PropertyShapeList},
+		{Name: "public_ip_refs", Shape: core.PropertyShapeList},
+		{Name: "backend_pool_ids", Shape: core.PropertyShapeList},
+		{Name: "backend_addresses", Shape: core.PropertyShapeList},
 	},
 }
 

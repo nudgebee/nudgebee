@@ -108,6 +108,10 @@ type appConfig struct {
 
 	NotificationServerUrl   string `mapstructure:"notification_service_url"`
 	NotificationServerToken string `mapstructure:"notification_server_token"`
+	// WorkflowServerToken is the X-ACTION-TOKEN every caller of this server
+	// must send (except health, docs, approval links and webhooks, which carry
+	// their own credential). The server refuses to start without it.
+	WorkflowServerToken string `mapstructure:"workflow_server_token"`
 
 	RunbookServerRelayCommandExecutionTimeoutSeconds int `mapstructure:"runbook_server_relay_command_execution_timeout_seconds"`
 	RunbookServerRelayPodExecutionTimeoutSeconds     int `mapstructure:"runbook_server_relay_pod_execution_timeout_seconds"`
@@ -128,6 +132,7 @@ type appConfig struct {
 	LlmServerShellImage           string `mapstructure:"llm_server_tool_shell_image"`
 	ScriptExecutorNodeImage       string `mapstructure:"script_executor_node_image"`
 	ScriptExecutorPowerShellImage string `mapstructure:"script_executor_powershell_image"`
+	ScriptExecutorGithubCliImage  string `mapstructure:"script_executor_github_cli_image"`
 
 	ServerName string `mapstructure:"runbook_server_name"`
 
@@ -153,6 +158,9 @@ type appConfig struct {
 	OptimizationEnabled                           bool `mapstructure:"runbook_server_optimization_enabled"`
 	OptimizationRecommendationPollIntervalSeconds int  `mapstructure:"runbook_server_optimization_poll_interval_seconds"`
 	WebhookMaxBodySizeMB                          int  `mapstructure:"webhook_max_body_size_mb"`
+	// BeeApprovalTimeoutMinutes is how long a Worker Bee's automation in ask
+	// mode waits for a person to approve it; no answer by then stops the run.
+	BeeApprovalTimeoutMinutes int `mapstructure:"runbook_server_bee_approval_timeout_minutes"`
 
 	// Multi-source system template loading (see internal/templatesource).
 	RunbookServerTemplateSyncEnabled           bool   `mapstructure:"runbook_server_template_sync_enabled"`
@@ -177,6 +185,7 @@ func init() {
 	viper.SetDefault("runbook_server_optimization_enabled", true)
 	viper.SetDefault("runbook_server_optimization_poll_interval_seconds", 180)
 	viper.SetDefault("webhook_max_body_size_mb", 5)
+	viper.SetDefault("runbook_server_bee_approval_timeout_minutes", 240)
 
 	viper.SetDefault("nudgebee_encryption_key", "")
 
@@ -239,9 +248,13 @@ func init() {
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 	viper.SetDefault("SCRIPT_EXECUTOR_NODE_IMAGE", "node:22-alpine")
 	viper.SetDefault("SCRIPT_EXECUTOR_POWERSHELL_IMAGE", "mcr.microsoft.com/powershell:lts-alpine-3.17")
+	// nudgebee-debug ships a pinned gh; the GitHub CLI step runs in it with the
+	// customer's GitHub token, so it must stay a first-party, versioned image.
+	viper.SetDefault("SCRIPT_EXECUTOR_GITHUB_CLI_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.13")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
 	viper.SetDefault("notification_server_token", "")
+	viper.SetDefault("workflow_server_token", "")
 
 	viper.SetDefault("runbook_server_llm_retry_attempts", 180)
 	viper.SetDefault("runbook_server_llm_initial_backoff_seconds", 5)

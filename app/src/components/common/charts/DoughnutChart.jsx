@@ -56,7 +56,7 @@ function reduceValue(item) {
  * @param {{
  *   values?: number[],
  *   labels?: string[],
- *   size?: number,
+ *   size?: number | string,
  *   colors?: string[] | string,
  *   displayLegend?: boolean,
  *   displayCustomLegend?: boolean,
@@ -108,6 +108,9 @@ function DoughnutChart({
   externalTooltip = false,
 }) {
   values = values || [];
+  // Opt-in: a string size (e.g. 'fill') lets the chart fill its container instead
+  // of a fixed square, so a caller can size it with CSS. Numbers keep the old px box.
+  const fill = typeof size === 'string';
 
   const truncatedlabels = labels?.map(truncateLabel);
   let resolvedColors;
@@ -254,12 +257,11 @@ function DoughnutChart({
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', ...(fill ? { width: '100%', height: '100%' } : {}) }}>
       <div
-        id={'doughnutChart'}
+        id={id ? `${id}-wrap` : 'doughnutChart'}
         style={{
-          width: size,
-          height: size,
+          ...(fill ? { width: '100%', height: '100%', flex: 1, minHeight: 0 } : { width: size, height: size }),
           position: 'relative',
           display: 'flex',
           alignItems: 'center',
@@ -267,6 +269,7 @@ function DoughnutChart({
         }}
       >
         <Doughnut id={id} data={data} options={options} style={{ zIndex: '1', cursor: 'pointer' }} />
+        {/* No center figure unless a value or center label was asked for — a bare "0" would paint over a full pie (cutout 0). */}
         {hasCustomCenter ? (
           <Box sx={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.15 }}>
             {centerLabel && <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[500] }}>{centerLabel}</Typography>}
@@ -277,15 +280,15 @@ function DoughnutChart({
             )}
           </Box>
         ) : displayValue ? (
-          <Typography fontSize={size < 50 ? 12 : 16} fontWeight={600} color={ds.brand[500]} sx={{ position: 'absolute' }}>
+          <Typography fontSize={typeof size === 'number' && size < 50 ? 12 : 16} fontWeight={600} color={ds.brand[500]} sx={{ position: 'absolute' }}>
             {valueToDisplay}
-            {!isNaN(Math.floor(values.reduce((a, b) => a + b, 0))) ? <span style={{ fontSize: size < 50 ? 8 : 16 }}>{valueUnit}</span> : ''}
+            {!isNaN(Math.floor(values.reduce((a, b) => a + b, 0))) ? (
+              <span style={{ fontSize: typeof size === 'number' && size < 50 ? 8 : 16 }}>{valueUnit}</span>
+            ) : (
+              ''
+            )}
           </Typography>
-        ) : (
-          <Typography fontSize={size < 50 ? 12 : 16} fontWeight={600} color={ds.brand[500]} sx={{ position: 'absolute' }}>
-            {0}
-          </Typography>
-        )}
+        ) : null}
       </div>
       {displayCustomLegend && <CustomLegends />}
     </Box>
@@ -295,7 +298,7 @@ function DoughnutChart({
 DoughnutChart.propTypes = {
   values: PropTypes.arrayOf(PropTypes.number),
   labels: PropTypes.arrayOf(PropTypes.string),
-  size: PropTypes.number,
+  size: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
   colors: PropTypes.oneOfType([PropTypes.arrayOf(PropTypes.string), PropTypes.string]),
   displayLegend: PropTypes.bool,
   displayCustomLegend: PropTypes.bool,

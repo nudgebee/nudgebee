@@ -38,6 +38,15 @@ func (m Prometheus) ConfigSchema() core.IntegrationSchema {
 		Required: []string{PrometheusURLKey, PrometheusAuthTypeKey},
 		Testable: true,
 		Properties: map[string]core.IntegrationSchemaProperty{
+			PrometheusConnectionModeKey: {
+				Type: core.ToolSchemaTypeString,
+				Description: "How Nudgebee reaches the endpoint: directly from Nudgebee, or through a forager " +
+					"running in your network (for a Prometheus Nudgebee cannot reach, such as the store your VM agents write to)",
+				Default:    PrometheusConnectionModeDirect,
+				Enum:       []any{PrometheusConnectionModeDirect, PrometheusConnectionModeVMAgent},
+				Priority:   92,
+				IsTestable: true,
+			},
 			PrometheusURLKey: {
 				Type: core.ToolSchemaTypeString,
 				Description: "Base URL of the Prometheus-compatible endpoint, reachable from Nudgebee " +
@@ -259,6 +268,10 @@ func (m Prometheus) ValidateConfig(sc *security.SecurityContext, config []core.I
 		values[c.Name] = c.Value
 	}
 
+	if values[PrometheusConnectionModeKey] == PrometheusConnectionModeVMAgent {
+		return validatePrometheusVMAgent(values)
+	}
+
 	rawURL := strings.TrimSpace(values[PrometheusURLKey])
 	cfg, err := NewPrometheusUserConfig(values)
 
@@ -294,6 +307,39 @@ func (m Prometheus) ValidateConfig(sc *security.SecurityContext, config []core.I
 		return probePrometheusRuler(cfg)
 	}
 	return nil
+}
+
+// validatePrometheusVMAgent checks a forager-reached Prometheus. The URL is
+// only reachable from the customer's network, so there is no egress check or
+// live probe here: the pre-save connectivity test runs through the forager
+// (core.BuildSingleDatasourceConfig -> relay.TestProxyDatasourceConfig).
+// The forager's http proxy supports only none, basic and bearer auth, and the
+// ruler is addressed at a second URL the forager does not hold.
+func validatePrometheusVMAgent(values map[string]string) []error {
+	var errs []error
+
+	rawURL := strings.TrimSpace(values[PrometheusURLKey])
+	if rawURL == "" {
+		errs = append(errs, fmt.Errorf("%s is required", PrometheusURLKey))
+	} else if u, err := neturl.Parse(rawURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		errs = append(errs, fmt.Errorf("%s must be an http or https URL with a host", PrometheusURLKey))
+	}
+
+	cfg, err := NewPrometheusUserConfig(values)
+	if err != nil {
+		errs = append(errs, err)
+		return errs
+	}
+	switch cfg.AuthType {
+	case PrometheusAuthNone, PrometheusAuthBasic, PrometheusAuthBearerToken:
+		errs = append(errs, validatePrometheusAuth(cfg)...)
+	default:
+		errs = append(errs, fmt.Errorf("%s %q is not supported through a forager; use none, basic or bearer_token", PrometheusAuthTypeKey, cfg.AuthType))
+	}
+	if cfg.HasRuler() {
+		errs = append(errs, fmt.Errorf("%s is not supported through a forager; set it to none", PrometheusRulerTypeKey))
+	}
+	return errs
 }
 
 // probePrometheusRuler proves the declared ruler is really there by listing the

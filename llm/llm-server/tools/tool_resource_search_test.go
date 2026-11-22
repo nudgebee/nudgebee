@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -25,15 +26,37 @@ import (
 func TestBuildResourceSearchDBQuery_ScopesToRequestedNamespace(t *testing.T) {
 	patterns := []string{"%relay-server%"}
 
-	query, args := buildResourceSearchDBQuery("acct-1", "team-alpha", patterns)
+	query, args := buildResourceSearchDBQuery("acct-1", "team-alpha", patterns, nil)
 	assert.Contains(t, query, "AND meta->>'namespace' = $3")
 	require.Len(t, args, 3)
 	assert.Equal(t, "acct-1", args[0])
 	assert.Equal(t, "team-alpha", args[2])
 
-	queryUnscoped, argsUnscoped := buildResourceSearchDBQuery("acct-1", "", patterns)
+	queryUnscoped, argsUnscoped := buildResourceSearchDBQuery("acct-1", "", patterns, nil)
 	assert.NotContains(t, queryUnscoped, "AND meta->>'namespace' = $3")
 	require.Len(t, argsUnscoped, 2)
+}
+
+// TestBuildResourceSearchDBQuery_FiltersBeforeOrdering guards the plan shape:
+// every predicate, the namespace one included, must sit inside the MATERIALIZED
+// CTE, and ORDER BY/LIMIT must apply to its result. Put back in one query
+// block, Postgres walks the (account, name) index in name order through every
+// row of the account to find the first 20 matches.
+func TestBuildResourceSearchDBQuery_FiltersBeforeOrdering(t *testing.T) {
+	query, _ := buildResourceSearchDBQuery("acct-1", "team-alpha", []string{"%relay-server%"}, nil)
+
+	cteStart := strings.Index(query, "AS MATERIALIZED (")
+	cteEnd := strings.Index(query, "FROM matches")
+	require.GreaterOrEqual(t, cteStart, 0, "filter must run in a MATERIALIZED CTE")
+	require.Greater(t, cteEnd, cteStart)
+
+	for _, predicate := range []string{"account = $1", "is_active = true", "ILIKE ANY($2)", "meta->>'namespace' = $3"} {
+		at := strings.Index(query, predicate)
+		assert.Greater(t, at, cteStart, "%s must be inside the CTE", predicate)
+		assert.Less(t, at, cteEnd, "%s must be inside the CTE", predicate)
+	}
+	assert.Greater(t, strings.Index(query, "ORDER BY name"), cteEnd, "ORDER BY must apply to the CTE result")
+	assert.Greater(t, strings.Index(query, fmt.Sprintf("LIMIT %d", k8sInventoryLimit)), cteEnd, "LIMIT must apply to the CTE result")
 }
 
 // grepNoMatchWorkspaceManager stubs ExecuteOrLazyCreate to fail exactly the
@@ -1122,7 +1145,7 @@ func TestCloudResourceMatchesTerms(t *testing.T) {
 	})
 }
 
-// normalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
+// NormalizeK8sType must collapse both cloud_resourses Kind names ("Pod") and
 // kubectl short/plural forms ("pods", "po") to the same canonical singular,
 // since searchDbForResources now returns Kind-cased types from cloud_resourses.
 func TestNormalizeK8sType(t *testing.T) {
@@ -1148,7 +1171,7 @@ func TestNormalizeK8sType(t *testing.T) {
 		"CustomResourceDefinition": "customresourcedefinition", "customresourcedefinitions": "customresourcedefinition", "crd": "customresourcedefinition", "crds": "customresourcedefinition",
 	}
 	for in, want := range cases {
-		assert.Equalf(t, want, normalizeK8sType(in), "normalizeK8sType(%q)", in)
+		assert.Equalf(t, want, NormalizeK8sType(in), "NormalizeK8sType(%q)", in)
 	}
 }
 
@@ -1167,7 +1190,7 @@ func TestFilterResourcesByType_CrossSourceNaming(t *testing.T) {
 	pods := tool.filterResourcesByType(resources, "pods")
 	assert.Len(t, pods, 2, "both Kind-cased 'Pod' and kubectl 'pods' must match a pods request")
 	for _, r := range pods {
-		assert.Equal(t, "pod", normalizeK8sType(r.Type))
+		assert.Equal(t, "pod", NormalizeK8sType(r.Type))
 	}
 
 	deploys := tool.filterResourcesByType(resources, "deployment")
@@ -1568,4 +1591,33 @@ func TestGetCurrentOtelHosts_NilContextReturnsEmpty(t *testing.T) {
 	assert.NotPanics(t, func() {
 		assert.Empty(t, GetCurrentOtelHosts(nil, "acct-1"))
 	})
+}
+
+// TestBuildResourceSearchDBQuery_TypeFilterBeforeLimit pins #39201: the type
+// filter runs in SQL inside the CTE, so a Service ranked after many same-named
+// Pods is not cut by the limit, and the window counts cover every match.
+func TestBuildResourceSearchDBQuery_TypeFilterBeforeLimit(t *testing.T) {
+	query, args := buildResourceSearchDBQuery("acct-1", "team-alpha", []string{"%orders%"}, k8sTypeSpellings("svc"))
+	require.Len(t, args, 4)
+	assert.Contains(t, query, "AND lower(type) = ANY($4)")
+	at, cteEnd := strings.Index(query, "lower(type) = ANY"), strings.Index(query, "FROM matches")
+	assert.Less(t, at, cteEnd, "type filter must be inside the CTE, before LIMIT")
+	assert.Contains(t, query, "COUNT(*) OVER () AS total")
+	assert.Contains(t, query, "GROUP BY type", "per-type counts cover every match, not just the page")
+	assert.Contains(t, query, fmt.Sprintf("LIMIT %d", k8sInventoryLimit))
+
+	unscoped, unscopedArgs := buildResourceSearchDBQuery("acct-1", "", []string{"%orders%"}, k8sTypeSpellings("svc"))
+	require.Len(t, unscopedArgs, 3)
+	assert.Contains(t, unscoped, "AND lower(type) = ANY($3)")
+
+	assert.Equal(t, []string{"service", "services", "servicees"}, k8sTypeSpellings("svc"))
+	assert.Contains(t, k8sTypeSpellings("Endpoints"), "endpoints")
+	assert.Contains(t, k8sTypeSpellings("ing"), "ingresses")
+}
+
+func TestInventoryCutoffNote(t *testing.T) {
+	assert.Empty(t, inventoryCutoffNote(3, inventoryCount{Total: 3}))
+	note := inventoryCutoffNote(50, inventoryCount{Total: 132, ByType: map[string]int{"Pod": 90, "Service": 8, "Deployment": 12, "ConfigMap": 12}})
+	assert.Contains(t, note, "Showing 50 of 132")
+	assert.Contains(t, note, "by type: Pod 90, ConfigMap 12, Deployment 12, Service 8")
 }

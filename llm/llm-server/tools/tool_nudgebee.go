@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 )
@@ -36,7 +38,7 @@ type nudgebeeProviderErrorClassification struct {
 }
 
 var (
-	queryNudgebeeDocs                    = core.QueryRAGCollection
+	queryNudgebeeDocs                    = knowledge.QueryRAGCollection
 	nudgebeeNow                          = time.Now
 	nudgebeeHTMLTags                     = regexp.MustCompile(`(?i)</?[a-z](?:[^'">]|"[^"]*"|'[^']*')*?>`)
 	nudgebeeHTTPStatusCode               = regexp.MustCompile(`(?i)\b(?:http(?: status)?|status(?: code)?|response|returned|googleapi: error)\s*[:=]?\s*(401|403|502|503)\b`)
@@ -97,6 +99,30 @@ var nudgebeeAgentFeatureKeys = map[string]bool{
 	"opencostServerSide": true, "tracesEnabled": true, "grafanaEnabled": true,
 	"autoScalerEnabled": true, "nodeAgentCount": true, "logsConnectionProvider": true,
 	"traceProvider": true, "prometheusRetentionTime": true, "installationNamespace": true,
+	"clickhouseLogsConnection": true,
+}
+
+// nudgebeeAgentFeatures keeps the allowlisted keys of connection_status, plus
+// logsServedBy when the server's provider check found the cluster's logs come from
+// the agent's ClickHouse, and logsServedByFailed when that check also found it
+// unusable. Only the provider name and whether there was an error are read from the
+// check's stamp, never the error text.
+func nudgebeeAgentFeatures(connectionStatus map[string]any) map[string]any {
+	features := map[string]any{}
+	for key, value := range connectionStatus {
+		if nudgebeeAgentFeatureKeys[key] {
+			features[key] = value
+		}
+	}
+	stamp, _ := connectionStatus["providerStatus"].(map[string]any)
+	logs, _ := stamp["logs"].(map[string]any)
+	if logs["provider"] == "otel_clickhouse" && logs["source"] == "agent" {
+		features["logsServedBy"] = "otel_clickhouse"
+		if failed, _ := logs["error"].(string); failed != "" {
+			features["logsServedByFailed"] = true
+		}
+	}
+	return features
 }
 
 // NudgebeeAgentHealthGetTool returns the platform-recorded collector heartbeat
@@ -148,16 +174,11 @@ func (t NudgebeeAgentHealthGetTool) Call(nbCtx core.NbToolContext, input core.NB
 		if row == nil {
 			continue
 		}
-		features := map[string]any{}
 		connectionStatus, _ := row["connection_status"].(map[string]any)
 		if encoded, ok := row["connection_status"].(string); ok {
 			_ = json.Unmarshal([]byte(encoded), &connectionStatus)
 		}
-		for key, value := range connectionStatus {
-			if nudgebeeAgentFeatureKeys[key] {
-				features[key] = value
-			}
-		}
+		features := nudgebeeAgentFeatures(connectionStatus)
 		row["features"] = features
 		deploymentModel := nudgebeeDeploymentModel(row["type"])
 		row["deployment_model"] = deploymentModel
@@ -295,6 +316,16 @@ func nudgebeeFeatureHealth(features map[string]any) map[string]string {
 	}
 	for key, name := range connections {
 		result[name] = nudgebeeConnectionVerdict(features[key])
+	}
+	// logsConnection is the agent's Loki / Elasticsearch check. ClickHouse logs have
+	// their own: ClickHouse answers and the logs table is present. As on the agent page
+	// (app/src/utils/logsServedBy.js), the server's provider check finding them
+	// unusable reads as down whatever the agent's flag says.
+	if features["logsServedBy"] == "otel_clickhouse" {
+		result["logs"] = nudgebeeConnectionVerdict(features["clickhouseLogsConnection"])
+		if failed, _ := features["logsServedByFailed"].(bool); failed {
+			result["logs"] = "disconnected"
+		}
 	}
 	if serverManaged, _ := features["opencostServerSide"].(bool); serverManaged {
 		result["opencost"] = "server_managed"
@@ -844,7 +875,7 @@ func (NudgebeeIntegrationsListTool) InferToolRequestType(ctx *security.RequestCo
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeIntegrationsListTool) Description() string {
-	return "List configured Nudgebee integrations visible to the requesting user. Supports filtering by category (e.g., 'database', 'messaging', 'ticketing', 'observability_platform'), exact type, multiple types, status, or name substring. Defaults to 20 results (100 for category queries, max 100). If the response indicates truncation, use limit or narrow your filter. Read-only."
+	return "List configured Nudgebee integrations visible to the requesting user. Supports filtering by category (e.g., 'database', 'messaging', 'ticketing', 'observability_platform'), exact type, multiple types, status, or name substring. Defaults to 20 results (100 for category queries, max 100). If the response indicates truncation, use limit or narrow your filter. Shows what this tenant has configured, not which integration types or cloud services Nudgebee supports. Read-only."
 }
 func (NudgebeeIntegrationsListTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{Type: core.ToolSchemaTypeObject, Properties: map[string]core.ToolSchemaProperty{
@@ -1019,7 +1050,7 @@ func (NudgebeeIntegrationDiagnoseTool) Call(nbCtx core.NbToolContext, input core
 	if integrationID == "" {
 		return triageErrorResponse(errors.New("nudgebee_integration_diagnose requires an exact integration id")), nil
 	}
-	data, err := doApiServerActionRequest(nbCtx, "/rpc/integration", "integrations_diagnose_connection", map[string]any{
+	data, err := doApiServerActionRequest(nbCtx, "/rpc/integration", "integrations_diagnose_connection", "", map[string]any{
 		"request": map[string]any{"integration_id": integrationID},
 	}, ToolNudgebeeIntegrationDiagnose)
 	if err != nil {
@@ -1038,7 +1069,7 @@ func (NudgebeeDocsSearchTool) InferToolRequestType(ctx *security.RequestContext,
 	return nudgebeeReadRequestType(ctx, input, conversation)
 }
 func (NudgebeeDocsSearchTool) Description() string {
-	return "Search indexed Nudgebee product documentation. Use once for product concepts, features, setup, and instructions; never use it as evidence for current tenant counts, configuration, or status."
+	return "Search indexed Nudgebee product documentation. Use once for product concepts, features, setup, and instructions; never use it as evidence for current tenant counts, configuration, or status. A service or feature missing from the results is not evidence that Nudgebee does not support it."
 }
 func (NudgebeeDocsSearchTool) InputSchema() core.ToolSchema {
 	return DocsAgentTool{}.InputSchema()
@@ -1054,13 +1085,13 @@ func (NudgebeeDocsSearchTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 
 	started := time.Now()
 	userID := nbCtx.Ctx.GetSecurityContext().EffectiveUserIdForRPC()
-	searchCtx, traceID := core.WithRetrievalTraceID(nbCtx.Ctx.GetContext())
+	searchCtx, traceID := knowledge.WithRetrievalTraceID(nbCtx.Ctx.GetContext())
 	results := queryNudgebeeDocs(
 		searchCtx, userID, nbCtx.AccountId, "", input.Command, nudgebeeDocsModule, "",
 		nudgebeeDocsResultLimit, nbCtx.ConversationId, nbCtx.MessageId,
 		nbCtx.ParentAgentId, true, map[string]any{"source": nudgebeeDocsSource},
 	)
-	results = core.JudgeKBResults(nbCtx.Ctx, nbCtx.AccountId, userID, nbCtx.ConversationId, nbCtx.MessageId, input.Command, results, traceID)
+	results = knowledge.JudgeKBResults(nbCtx.Ctx, nbCtx.AccountId, userID, nbCtx.ConversationId, nbCtx.MessageId, input.Command, results, traceID)
 	data, references, selected, truncated := formatNudgebeeDocsResults(results)
 	if nbCtx.Ctx != nil {
 		nbCtx.Ctx.GetLogger().Info("nudgebee: product docs search completed",
@@ -1078,7 +1109,7 @@ func (NudgebeeDocsSearchTool) Call(nbCtx core.NbToolContext, input core.NBToolCa
 	}, nil
 }
 
-func formatNudgebeeDocsResults(results core.RAGSearchResults) (string, []core.NBToolResponseReference, int, bool) {
+func formatNudgebeeDocsResults(results knowledge.RAGSearchResults) (string, []core.NBToolResponseReference, int, bool) {
 	var blocks []string
 	var references []core.NBToolResponseReference
 	seenDocuments := make(map[string]bool)

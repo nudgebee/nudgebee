@@ -24,7 +24,9 @@ type ChangeInput struct {
 // Errors are logged but not returned, matching the fire-and-forget
 // semantics of the previous RPC webhook-based audit triggers.
 func LogChange(ctx *security.RequestContext, input ChangeInput) {
-	if ctx.GetSecurityContext() != nil && ctx.GetSecurityContext().IsSuperAdmin() {
+	// Only the synthetic server identity is skipped (its writes carry no human
+	// actor). A human super admin is audited like everyone else.
+	if ctx.GetSecurityContext() != nil && ctx.GetSecurityContext().IsServerInternal() {
 		return
 	}
 

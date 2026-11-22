@@ -36,6 +36,10 @@ const OptimizerWorkflowExecutionTimeout = 1 * time.Hour
 
 type OptimizerWorkflowInput struct {
 	AutoOptimizeID string
+	// TaskIDs, when set, are the approved tasks of a parked run: the workflow
+	// executes exactly these instead of planning. Runs started before this field
+	// existed decode it as empty and take the planning path, as they always did.
+	TaskIDs []string `json:",omitempty"`
 }
 
 // CollectPRResultsResult reports whether the run produced any GitOps PR tasks
@@ -54,11 +58,13 @@ func OptimizerWorkflow(ctx workflow.Context, input OptimizerWorkflowInput) error
 	}
 	ctx = workflow.WithActivityOptions(ctx, ao)
 
-	// 1. Generate Tasks
-	var taskIDs []string
-	err := workflow.ExecuteActivity(ctx, GenerateTasksActivityName, input.AutoOptimizeID).Get(ctx, &taskIDs)
-	if err != nil {
-		return fmt.Errorf("failed to generate tasks: %w", err)
+	// 1. Generate Tasks (an approved run already has them)
+	taskIDs := input.TaskIDs
+	if len(taskIDs) == 0 {
+		err := workflow.ExecuteActivity(ctx, GenerateTasksActivityName, input.AutoOptimizeID).Get(ctx, &taskIDs)
+		if err != nil {
+			return fmt.Errorf("failed to generate tasks: %w", err)
+		}
 	}
 
 	if len(taskIDs) == 0 {
@@ -74,7 +80,7 @@ func OptimizerWorkflow(ctx workflow.Context, input OptimizerWorkflowInput) error
 	}
 
 	// 3. Mark Complete — also sends the change-gated completion summary.
-	err = workflow.ExecuteActivity(ctx, CompleteAutoOptimizeActivityName, input.AutoOptimizeID, taskIDs).Get(ctx, nil)
+	err := workflow.ExecuteActivity(ctx, CompleteAutoOptimizeActivityName, input.AutoOptimizeID, taskIDs).Get(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to complete auto optimize: %w", err)
 	}

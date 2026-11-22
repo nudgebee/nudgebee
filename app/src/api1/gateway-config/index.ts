@@ -72,17 +72,32 @@ export interface GatewayRoutingRule {
   target: GatewayTarget;
 }
 
-export type GatewayMetric = 'requests' | 'tokens' | 'cost';
-export type GatewayPeriod = 'minute' | 'hour' | 'day' | 'month';
+export type GatewayMetric = 'requests' | 'tokens' | 'cost' | 'concurrent';
+/** '' only for the concurrent metric, which has no window. */
+export type GatewayPeriod = 'minute' | 'hour' | 'day' | 'month' | '';
 
 export interface GatewayRateLimit {
   id: string;
   /** Empty string = tenant-wide scope; otherwise a specific user_id. */
   user_id: string;
+  /** Set when the quota belongs to one API key; such rows are edited on the key. */
+  api_key_id?: string;
+  api_key_name?: string;
+  /** Set when the quota caps one model only. */
+  model?: string;
   metric: GatewayMetric;
   period: GatewayPeriod;
   limit_value: number;
   enabled: boolean;
+  /** Warn level, a percent (1–99) of limit_value. Never blocks. Not on concurrent. */
+  soft_pct?: number | null;
+  /** Settled use in the current window (count, tokens or USD) and when the window resets.
+   * Read-only, from the list call; absent for concurrent limits. */
+  used?: number;
+  resets_at?: string;
+  /** A concurrent limit each gateway pod enforces on its own (no Redis): the real cap is
+   * the limit times the number of pods. Read-only, from the list call. */
+  per_pod?: boolean;
 }
 
 /** Provider enum for the substitution TARGET / tier-mapping forms. Empty = "any"
@@ -110,7 +125,14 @@ export const GATEWAY_MATCH_PROVIDER_OPTIONS: { value: string; label: string }[] 
 export type GatewayAffinity = 'single' | 'prefix_hash';
 export const GATEWAY_AFFINITIES: GatewayAffinity[] = ['single', 'prefix_hash'];
 
-export const GATEWAY_METRICS: GatewayMetric[] = ['requests', 'tokens', 'cost'];
+export const GATEWAY_METRICS: GatewayMetric[] = ['requests', 'tokens', 'cost', 'concurrent'];
+/** Unit a limit value is metered in, for field labels; the gateway meters cost in USD. */
+export const GATEWAY_METRIC_UNIT: Record<GatewayMetric, string> = {
+  requests: 'requests',
+  tokens: 'tokens',
+  cost: 'USD',
+  concurrent: 'requests at once',
+};
 export const GATEWAY_PERIODS: GatewayPeriod[] = ['minute', 'hour', 'day', 'month'];
 
 // ─── Routing rules ─────────────────────────────────────────────────────────────
@@ -245,6 +267,40 @@ export async function deleteRateLimit(id: string, signal?: AbortSignal): Promise
   return unwrap<{ id: string }>(response, 'llm_gateway_delete_rate_limit');
 }
 
+// ─── Per-user access (#38963) ────────────────────────────────────────────────
+
+/** A user's gateway limits; null lists mean "any". `valid_until` is RFC3339. */
+export interface GatewayUserAccess {
+  user_id: string;
+  providers: string[] | null;
+  models: string[] | null;
+  endpoints: string[] | null;
+  suspended: boolean;
+  valid_until: string | null;
+}
+
+/** List the per-user gateway access rules for the current tenant. */
+export async function listUserAccess(signal?: AbortSignal): Promise<GatewayUserAccess[]> {
+  const query = `mutation ListUserAccess($request: json!) {
+    llm_gateway_list_user_access(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'ListUserAccess', { request: {} }, undefined, signal);
+  return unwrap<GatewayUserAccess[]>(response, 'llm_gateway_list_user_access') ?? [];
+}
+
+/** Create or replace one user's access rule (there is no delete: clear every field to remove). */
+export async function upsertUserAccess(row: GatewayUserAccess, signal?: AbortSignal): Promise<GatewayUserAccess | null> {
+  const query = `mutation UpsertUserAccess($request: json!) {
+    llm_gateway_upsert_user_access(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'UpsertUserAccess', { request: row }, undefined, signal);
+  return unwrap<GatewayUserAccess>(response, 'llm_gateway_upsert_user_access');
+}
+
 // ─── Data & privacy settings ───────────────────────────────────────────────────
 
 /**
@@ -314,4 +370,23 @@ export async function listTenantUsers(signal?: AbortSignal): Promise<GatewayUser
   }`;
   const response = await queryGraphQL(query, 'GatewayTenantUsers', {}, undefined, signal);
   return response?.data?.data?.users_list_by_tenant?.rows ?? [];
+}
+
+// ─── Model catalog (API-key restrictions) ─────────────────────────────────────
+
+export interface GatewayCatalogModel {
+  /** The name a key policy lists: a tenant mapping name or `provider/model`. */
+  id: string;
+  provider: string;
+}
+
+/** The model names an AI Gateway key can be restricted to (tier aliases excluded). */
+export async function listGatewayModels(signal?: AbortSignal): Promise<GatewayCatalogModel[]> {
+  const query = `mutation ListGatewayModels($request: json!) {
+    llm_gateway_list_models(request: $request) {
+      data
+    }
+  }`;
+  const response = await queryGraphQL(query, 'ListGatewayModels', { request: {} }, undefined, signal);
+  return unwrap<GatewayCatalogModel[]>(response, 'llm_gateway_list_models') ?? [];
 }

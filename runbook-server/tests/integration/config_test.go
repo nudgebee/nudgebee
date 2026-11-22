@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http" // Required for http.Status... constants
 	"nudgebee/runbook/internal/model"
+	configSvc "nudgebee/runbook/services/config"
+	"time"
 )
 
 // TestConfigsAndSecrets is an integration test for the configs and secrets feature.
@@ -135,6 +137,50 @@ func (s *IntegrationTestSuite) TestConfigsAndSecrets() {
 		s.Assert().Equal("*****", updatedSecret.Value) // Value should still be masked for API
 		s.Assert().Equal(updatedSecretLabels, updatedSecret.Labels)
 		s.Assert().Equal(updatedSecretMetadata["expires"], updatedSecret.Metadata["expires"])
+	})
+
+	// The Configs edit form pre-fills the masked "*****" a read returns; saving
+	// it untouched must keep the stored secret, not replace it with the mask.
+	s.Run("UntouchedSecretEditKeepsValue", func() {
+		const key = "masked_edit_secret"
+		s.T().Cleanup(func() { s.deleteConfig(key) })
+		s.createConfig(key, "QaCanary123", "secret", nil, nil)
+
+		printSecret := func() string {
+			wf, _, err := s.createAndActivateWorkflow(model.Workflow{
+				Name: fmt.Sprintf("masked-edit-%d", time.Now().UnixNano()),
+				Definition: model.WorkflowDefinition{
+					Version:  "v1",
+					Triggers: []model.Trigger{{Type: model.WorkflowTriggerManual}},
+					Tasks: []model.Task{{
+						ID:     "print_secret",
+						Type:   "core.print",
+						Params: map[string]any{"message": "d1={{ Secrets['" + key + "'] }}"},
+					}},
+				},
+			})
+			s.Require().NoError(err)
+			runID, err := s.executeWorkflow(wf.ID, map[string]any{})
+			s.Require().NoError(err)
+			details := s.waitForWorkflowCompletion(wf.ID, runID)
+			s.Require().Equal(model.WorkflowExecutionStatusCompleted, details.Status)
+			out, _ := details.Tasks[0].Output.(map[string]any)
+			return fmt.Sprintf("%v", out["data"])
+		}
+		s.Require().Equal("d1=QaCanary123", printSecret())
+
+		// Edit only the metadata, sending back the masked value as the form does.
+		masked := s.getConfig(key)
+		s.Require().Equal(configSvc.SecretMask, masked.Value)
+		s.createConfig(key, masked.Value, "secret", nil, map[string]any{"description": "edited"})
+
+		s.Assert().Equal("edited", s.getConfig(key).Metadata["description"])
+		s.Assert().Equal("d1=QaCanary123", printSecret(), "an untouched edit must keep the stored secret")
+
+		// The mask is refused where there is no stored secret to keep.
+		resp := s.request("POST", "/configs", map[string]any{"key": "no_such_secret", "value": configSvc.SecretMask, "type": "secret"})
+		s.Require().NoError(resp.Body.Close())
+		s.Assert().Equal(http.StatusBadRequest, resp.StatusCode)
 	})
 
 	s.Run("LabelFilteringEdgeCases", func() {

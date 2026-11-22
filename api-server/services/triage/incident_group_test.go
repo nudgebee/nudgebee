@@ -311,6 +311,8 @@ func TestAttachUnlocatedIncident_Scoped_E2E(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = dbConn.Close() }()
 	ctx := context.Background()
+	// The path under test is opt-in; the default is checked below.
+	t.Setenv(unlocatedGroupingEnvFlag, "true")
 
 	var tenant string
 	require.NoError(t, dbConn.GetContext(ctx, &tenant,
@@ -379,6 +381,17 @@ func TestAttachUnlocatedIncident_Scoped_E2E(t *testing.T) {
 	assert.False(t, foreignChild, "another namespace's incident is not this alert's incident")
 	_, linked := leaderLinkOf(foreign.Id)
 	assert.False(t, linked, "no link row across namespaces on co-timing alone")
+
+	// Off by default: an unplaceable alert in the incident's own namespace,
+	// started with it, stays alone unless the path is switched on.
+	t.Setenv(unlocatedGroupingEnvFlag, "")
+	unswitched := mkEvent(incidentNS, "reports", "DiskPressure", anchor.Add(5*time.Minute))
+	unswitchedChild, err := attachSameSubjectIncident(ctx, tx, unswitched)
+	require.NoError(t, err)
+	assert.False(t, unswitchedChild, "timing-only grouping is opt-in")
+	_, linked = leaderLinkOf(unswitched.Id)
+	assert.False(t, linked, "no link row on timing alone while the path is off")
+	t.Setenv(unlocatedGroupingEnvFlag, "true")
 
 	// The same alert inside the incident's own namespace still joins — the gate
 	// narrows this path, it does not disable it.

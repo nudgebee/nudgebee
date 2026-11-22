@@ -21,6 +21,7 @@ func init() {
 // as an LLM tool so the agent can discover infrastructure resources by name,
 // type, namespace, source, or labels.
 type KGSearchNodesTool struct {
+	core.ReadOnlyTool
 	accountId string
 }
 
@@ -41,7 +42,9 @@ func (t KGSearchNodesTool) Description() string {
 		`ContainerRegistry, ContainerImage, Artifact, DNSZone, DNSRecord, CDN, NetworkGateway, PrivateEndpoint, APIGateway, SecretVault, EncryptionKey, MonitoringService, LogAggregator, ServerlessFunction, ManagedCluster, BackupVault, BackupPolicy, PublicIP, SecurityService, EmailService, AIService, ServiceIdentity; ` +
 		`K8sService, Ingress, NetworkPolicy, ConfigMap, K8sSecret, PersistentVolumeClaim, PersistentVolume; ` +
 		`HelmChart, HelmRelease, Configuration, Repository. ` +
-		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "namespace":"...", "source":"k8s|aws|gcp|azure", "labels":"{\"app\":\"x\"}", "account_ids":["aws-prod"], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`namespace`" + ` without a query). ` +
+		`A node's type says what it is; its ROLE says what it does: a Workload or ComputeInstance can act as a database, cache, message queue and so on. ` +
+		"`roles`" + ` finds nodes by what they act as, including nodes whose type already is that role (` + "`roles:[\"database\"]`" + ` returns RDS/Cloud SQL Database nodes AND in-cluster or VM databases). For "find all databases / caches / queues" pass ` + "`roles`" + ` ALONE: combined with ` + "`node_types`" + ` both must match, which drops one side. ` +
+		`Input JSON: {"query":"redis% | exact", "node_types":["Workload"], "roles":["database"], "namespace":"...", "source":"k8s|aws|gcp|azure|selfhosted", "labels":"{\"app\":\"x\"}", "account_ids":["aws-prod"], "limit":20} — at least one filter is required (` + "`query`" + ` alone works, or ` + "`node_types`" + `/` + "`roles`" + `/` + "`namespace`" + ` without a query). ` +
 		"`account_ids`" + ` takes account NAMES or UUIDs, never the cloud provider's own account number.`
 }
 
@@ -58,13 +61,19 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 				Description: `Filter by node types. Examples: ["Workload"], ["Database"], ["LoadBalancer"].`,
 				Items:       map[string]any{"type": "string"},
 			},
+			"roles": {
+				Type: core.ToolSchemaTypeArray,
+				Description: `Filter by what a node acts as, whatever its type: a node tagged with the role (a redis Workload set to "cache", a VM set to "database") ` +
+					`or a node whose type is that role (a Database node for "database"). Pass it without node_types for "all databases / caches / queues".`,
+				Items: map[string]any{"type": "string", "enum": kgNodeRoleValuesAny()},
+			},
 			"namespace": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Kubernetes namespace filter.",
 			},
 			"source": {
 				Type:        core.ToolSchemaTypeString,
-				Description: "Data source: k8s, aws, gcp, azure.",
+				Description: "Data source: k8s, aws, gcp, azure, selfhosted (hosts scanned through a self-hosted VM account).",
 			},
 			"labels": {
 				Type:        core.ToolSchemaTypeString,
@@ -96,6 +105,7 @@ func (t KGSearchNodesTool) InputSchema() core.ToolSchema {
 type kgSearchInput struct {
 	Query      string   `json:"query"`
 	NodeTypes  []string `json:"node_types"`
+	Roles      []string `json:"roles"`
 	Namespace  string   `json:"namespace"`
 	Source     string   `json:"source"`
 	Labels     string   `json:"labels"`
@@ -144,6 +154,9 @@ func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 	}
 	if len(parsed.NodeTypes) > 0 {
 		apiParams["node_types"] = parsed.NodeTypes
+	}
+	if len(parsed.Roles) > 0 {
+		apiParams["roles"] = parsed.Roles
 	}
 	if parsed.Namespace != "" {
 		apiParams["namespace"] = parsed.Namespace
@@ -205,14 +218,25 @@ func (t KGSearchNodesTool) Call(nbCtx core.NbToolContext, input core.NBToolCallR
 func validateKGSearchInput(parsed kgSearchInput) *core.NBToolResponse {
 	if strings.TrimSpace(parsed.Query) == "" &&
 		len(parsed.NodeTypes) == 0 &&
+		len(parsed.Roles) == 0 &&
 		strings.TrimSpace(parsed.Namespace) == "" &&
 		strings.TrimSpace(parsed.Source) == "" &&
 		strings.TrimSpace(parsed.Labels) == "" &&
 		len(parsed.AccountIDs) == 0 {
 		return &core.NBToolResponse{
 			Status: core.NBToolResponseStatusError,
-			Data: "kg_search_nodes: at least one of query, node_types, namespace, source, labels, or account_ids must be non-empty. " +
+			Data: "kg_search_nodes: at least one of query, node_types, roles, namespace, source, labels, or account_ids must be non-empty. " +
 				"Empty query is only valid when another filter (e.g. node_types=[\"Database\"] + namespace=\"prod\") narrows the search.",
+		}
+	}
+	// An unknown role matches nothing, and an empty result reads as an
+	// authoritative "none exist"; say which values exist instead.
+	for _, r := range parsed.Roles {
+		if !isKGNodeRole(r) {
+			return &core.NBToolResponse{
+				Status: core.NBToolResponseStatusError,
+				Data:   fmt.Sprintf("kg_search_nodes: unknown role %q. Roles are: %s.", r, strings.Join(kgNodeRoleValues, ", ")),
+			}
 		}
 	}
 	return nil
@@ -248,6 +272,17 @@ func parseKGSearchInput(input core.NBToolCallRequest) (kgSearchInput, error) {
 				out.NodeTypes = append(out.NodeTypes, s)
 			}
 		}
+	}
+	if rs, ok := input.Arguments["roles"].([]any); ok && len(out.Roles) == 0 {
+		for _, v := range rs {
+			if s, ok := v.(string); ok && s != "" {
+				out.Roles = append(out.Roles, s)
+			}
+		}
+	}
+	// Roles are compared as the graph stores them.
+	for i, r := range out.Roles {
+		out.Roles[i] = strings.ToLower(strings.TrimSpace(r))
 	}
 	if aids, ok := input.Arguments["account_ids"].([]any); ok && len(out.AccountIDs) == 0 {
 		for _, v := range aids {

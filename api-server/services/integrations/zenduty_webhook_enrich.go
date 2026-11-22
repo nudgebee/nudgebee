@@ -203,7 +203,13 @@ func enrichWithZendutyAPI(sc *security.RequestContext, alert *core.EventIncoming
 		return
 	}
 
-	apiKey, err := getZendutyAPIKey(sc, tenantId)
+	// rawURL (the account's configured region host) is intentionally not threaded
+	// into the fetch calls below, which stay on zendutyAPIBaseURL/zendutyPayloadBaseURL
+	// (the global host). This enrichment is best-effort and already fails soft on any
+	// error (see LabelZendutyEnrichUnavailable), so a region-specific account loses
+	// label enrichment quality here, not functionality. Threading a per-tenant host
+	// through this retry/rate-limit-budgeted call chain safely needs its own change.
+	apiKey, _, err := getZendutyAPIKey(sc, tenantId)
 	if err != nil {
 		alert.Labels[LabelZendutyEnrichUnavailable] = "true"
 		sc.GetLogger().Debug("zendutywebhook: API enrichment skipped (no API key)",

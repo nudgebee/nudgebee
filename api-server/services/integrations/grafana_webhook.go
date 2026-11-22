@@ -30,6 +30,26 @@ func (m GrafanaWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels mapGrafanaAlertToEvent builds. Update it with the parser.
+func (m GrafanaWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Every label on the alert becomes a label under the same name.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "<alert label>", Source: "alerts[].labels.<name>"},
+			{Label: "generatorURL", Source: "alerts[].generatorURL"},
+			{Label: "dashboardURL", Source: "alerts[].dashboardURL"},
+			{Label: "panelURL", Source: "alerts[].panelURL"},
+			{Label: "silenceURL", Source: "alerts[].silenceURL"},
+			{Label: "service", Source: "the workload named by the alert's labels, when service is not set"},
+		},
+		Notes: []string{
+			"Annotations are not labels.",
+			"commonLabels and groupLabels are not read. A label must be on the alert itself.",
+			"status and title are not labels.",
+		},
+	}
+}
+
 func (m GrafanaWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

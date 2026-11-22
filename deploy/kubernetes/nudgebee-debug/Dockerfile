@@ -4,6 +4,15 @@
 # insufficient for ClickHouse). Every other client we install is glibc-friendly
 # on this base too.
 FROM ghcr.io/nudgebee/python:3.13-slim
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-debug" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee debug toolbox" \
+      description="Troubleshooting toolbox image used by Nudgebee to debug workloads in Kubernetes clusters."
 
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -59,6 +68,23 @@ RUN curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 5 \
     -o /usr/bin/rabbitmqadmin \
     "https://raw.githubusercontent.com/rabbitmq/rabbitmq-management/v3.8.9/bin/rabbitmqadmin" && \
     chmod +x /usr/bin/rabbitmqadmin
+
+# GitHub CLI (gh) — the runbook-server "GitHub CLI" step runs in this image with
+# the customer's GitHub token, so the release is pinned and checked against its
+# published sha256 per architecture.
+RUN ARCH=$([ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64") && \
+    GH_VERSION="2.102.0" && \
+    case "${ARCH}" in \
+      amd64) GH_SHA256="bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386" ;; \
+      arm64) GH_SHA256="7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484" ;; \
+    esac && \
+    curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 5 \
+    -o gh.tar.gz \
+    "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" && \
+    echo "${GH_SHA256}  gh.tar.gz" | sha256sum -c - && \
+    tar -xzf gh.tar.gz -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${ARCH}/bin/gh" && \
+    rm -f gh.tar.gz && \
+    gh --version
 
 WORKDIR /app
 COPY requirements.txt ./

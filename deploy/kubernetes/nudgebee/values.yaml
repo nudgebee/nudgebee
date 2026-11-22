@@ -59,6 +59,11 @@ nudgebee_secret:
   NUDGEBEE_ENCRYPTION_KEY: '__REPLACE__'
   NUDGEBEE_LICENSE: ''
   RELAY_SERVER_SECRET_KEY: ''
+  # Signs llm-server's workspace execution JWTs. Generated on first install and
+  # reused on upgrade when empty. With existingSecretName, add it to your secret
+  # (openssl rand -hex 32): llm-server refuses to start without it.
+  # Set explicitly for GitOps offline render (lookup returns empty there).
+  LLM_SERVER_JWT_SECRET: ''
   AWS_TEMPLATE_URL: 'https://nudgebee-prod-documents.s3.amazonaws.com/nudgebee-aws-cloud-formation.json'
   NUDGEBEE_INSTANCE_ROLE: ''
   AWS_ORG_TEMPLATE_URL: ''
@@ -178,7 +183,7 @@ postgresql:
     image:
       registry: 'ghcr.io/nudgebee'
       repository: postgres-exporter
-      tag: 'v0.20.1-nb2'
+      tag: 'v0.20.1-nb3'
     # ServiceMonitor and PrometheusRule are Prometheus Operator CRDs
     # (monitoring.coreos.com/v1). A cluster without the operator installed has
     # no such kinds, and the install fails with `no matches for kind
@@ -451,7 +456,11 @@ rabbitmq:
 
         - alert: RabbitmqTooManyReadyMessages
           expr: 'sum(rabbitmq_queue_messages_ready{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 100'
-          for: 15m
+          # anomaly_processing is an hourly batch, not a steady stream: the cron fans out
+          # thousands of jobs at :30 and drains in ~6 min (median, measured on prod over 7d).
+          # 15m paged 15x/7d there, almost all on healthy drains; 30m still catches genuine
+          # stalls (a 79-min backlog on 2026-09-17 pages either way). Part of #33700.
+          for: 30m
           labels:
             severity: warning
           annotations:
@@ -608,6 +617,12 @@ ml-k8s-server:
       memory: 1.5Gi
     limits:
       memory: 4Gi
+# The chart version these defaults belong to. The release workflow sets it with
+# Chart.yaml's version; don't set it yourself. An upgrade whose value differs
+# from the chart version is rendering against an older chart's defaults
+# (`helm upgrade --reuse-values`) and is stopped (templates/validate-upgrade.yaml).
+chartDefaultsVersion: '0.2'
+
 postgres_migrations:
   fullnameOverride: postgres_migrations
   image:
@@ -776,8 +791,10 @@ temporal:
       history.enableHostLevelEventsCache:
         - value: true
           constraints: {}
+      # Budget counts serialized bytes; in-memory is ~5x. At 180Mi it sat full while
+      # dev's heap hit ~1.75GB against a 2Gi limit (2026-10-05), so 64Mi.
       history.eventsHostLevelCacheMaxSizeBytes:
-        - value: 188743680 # 180Mi
+        - value: 67108864 # 64Mi
           constraints: {}
       frontend.validSearchAttributes:
         - value:

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 )
 
@@ -29,6 +30,45 @@ var logRetrievalFailureMarkers = []string{
 	"is waiting to start",
 	"not found in pod",
 	"previous terminated container",
+}
+
+// noLogsAnswerPatterns are the sentences the cluster uses to say a container has
+// no logs to give, as they arrive in a relay error or in kubectl's stderr.
+//
+// The first three are the kubelet's own (validateContainerLogStatus): the
+// container never started, it has no earlier instance, or it exited and its logs
+// went with it. The last is the agent's, for a subject it resolved to no pods.
+// Each is anchored on the whole sentence rather than a phrase, because this text
+// is matched inside error strings that can carry anything — "is terminated"
+// alone would also match a transport error that happens to say so. "is not
+// available" and a plain NotFound are deliberately absent: neither says the logs
+// do not exist.
+var noLogsAnswerPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`container "[^"]*" in pod "[^"]*" is waiting to start`),
+	regexp.MustCompile(`previous terminated container "[^"]*" in pod "[^"]*" not found`),
+	regexp.MustCompile(`container "[^"]*" in pod "[^"]*" is terminated`),
+	noPodsAnswerPattern,
+}
+
+// noPodsAnswerPattern is the one no-logs answer that rules out every container
+// instance at once: with no pod there is no live container to try instead.
+var noPodsAnswerPattern = regexp.MustCompile(`no pods found for workload`)
+
+// ClusterHasNoLogs reports whether text — a relay error, kubectl's stderr — is
+// the cluster answering that there are no logs to read, as opposed to the read
+// failing.
+//
+// The difference decides what happens next. A failed read is worth another
+// route; this answer is not, because every route ends at the same kubelet.
+// Treated as a failure, each one was reported as an error and then asked again
+// by the next route, which could only be told the same thing.
+func ClusterHasNoLogs(text string) bool {
+	for _, pattern := range noLogsAnswerPatterns {
+		if pattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsLogRetrievalFailure reports whether decoded pod-log output is one of the

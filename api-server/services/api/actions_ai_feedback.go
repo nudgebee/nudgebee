@@ -45,6 +45,29 @@ func handleAiFeedbackAction(actionPayload *ActionRequest, c *gin.Context, tracer
 		}
 		c.JSON(200, map[string]any{"data": resp})
 		return
+	case "ai_list_own_conversation_feedback":
+		var listOwnFeedbackRequest feedback.ListOwnConversationFeedbackRequest
+		if reqMap, ok := actionRequest["request"].(map[string]interface{}); ok {
+			actionRequest = reqMap
+		}
+		err := common.UnmarshalMapToStruct(actionRequest, &listOwnFeedbackRequest)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		rows, err := feedback.ListOwnConversationFeedback(ctx, listOwnFeedbackRequest)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, map[string]any{"rows": rows})
+		return
 	case "ai_save_conversation", "ai_create_saved_conversation":
 		var saveConversationRequest feedback.SaveOrDeleteConversationRequest
 		if actionRequest["request"] != nil {

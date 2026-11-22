@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/providers/constants"
@@ -433,7 +434,7 @@ func lookbackToMonthly(v float64, lookback cetypes.LookbackPeriodInDays) float64
 }
 
 func (a *awsCostExplorer) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return nil
+	return errors.ErrUnsupported
 }
 
 func (a *awsCostExplorer) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {

@@ -20,9 +20,8 @@ export function markerQuestion(marker: string): string {
   return `Reply with OK only. End to end marker ${marker}`;
 }
 
-// Logs in and lands on the full /ask-nudgebee page through the header's own Nubi
-// shortcut, which is what carries the accountId the rail's saved/waiting count
-// queries need. The long-form placeholder is the page's own chat box — the
+// Logs in and lands on the full /ask-nudgebee page through the left-rail Nubi
+// item. The long-form placeholder is the page's own chat box — the
 // floating panel renders a different one — so waiting on it also proves this is
 // the ConversationListV2 surface and not the drawer.
 export async function openAskNubiPage(page: Page): Promise<ChatHistoryContext> {
@@ -31,9 +30,12 @@ export async function openAskNubiPage(page: Page): Promise<ChatHistoryContext> {
   const locators = new ChatHistoryLocators(page);
 
   await loginPage.doFullLogin();
-  await locators.askNubiPageBtn.waitFor({ state: "visible", timeout: 30000 });
-  await locators.askNubiPageBtn.click();
-  await page.waitForURL(/\/ask-nudgebee/, { timeout: 60000 });
+  // Sign-in can already land on /ask-nudgebee, where there is nothing left to click.
+  if (!page.url().includes("/ask-nudgebee")) {
+    await locators.askNubiPageBtn.waitFor({ state: "visible", timeout: 30000 });
+    await locators.askNubiPageBtn.click();
+    await page.waitForURL(/\/ask-nudgebee/, { timeout: 60000 });
+  }
   await nubi.chatTextbox.waitFor({ state: "visible", timeout: 60000 });
 
   return { nubi, locators };

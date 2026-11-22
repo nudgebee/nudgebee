@@ -144,6 +144,7 @@ func resolveEventsViewPlaceholders(view, accountId string, skipDateFilter bool) 
 }
 
 type EventsExecuteTool struct {
+	core.ReadOnlyTool
 	// FullEvidence preserves the complete collected log body on the processed
 	// row instead of gutting it to mined error lines / a 500-byte tail. Set by
 	// programmatic single-event consumers (the event analyzer, the evidence
@@ -161,7 +162,7 @@ func (m EventsExecuteTool) GetType() core.NBToolType {
 }
 
 func (m EventsExecuteTool) Description() string {
-	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only SELECT/WITH/DESC/SHOW allowed; results limited to the last 30 days unless filtering by id."
+	return "Run a read-only SQL SELECT against the `events` table (columns: id, title, priority, computed_priority, urgency, subject_name/type/namespace, status, starts_at, evidences, …). Only a single SELECT on events (no joins, subqueries or CTEs); results limited to the last 30 days unless filtering by id."
 }
 
 func (m EventsExecuteTool) InputSchema() core.ToolSchema {
@@ -219,6 +220,15 @@ func appendLogCoverageNote(note string, additionalInfo map[string]any) string {
 			parts = append(parts, strings.TrimSpace(truncationNote))
 		}
 	}
+	// Last: readers cut this note from the end, and the span and truncation
+	// sentences say more about what the lines can show.
+	if group, _ := additionalInfo["log_group_name"].(string); strings.TrimSpace(group) != "" {
+		source := fmt.Sprintf("The collected log lines were read from log group %s", strings.TrimSpace(group))
+		if prefix, _ := additionalInfo["log_stream_prefix"].(string); strings.TrimSpace(prefix) != "" {
+			source += fmt.Sprintf(", streams starting with %s", strings.TrimSpace(prefix))
+		}
+		parts = append(parts, source+".")
+	}
 	if len(parts) == 0 {
 		return note
 	}
@@ -241,6 +251,19 @@ func formatErrorLogLine(entry map[string]any, message string) (string, bool) {
 	return strings.TrimSpace(ts) + "\t" + sev + "\t" + message, true
 }
 
+// anomalyCurrentLabel reads the event's anomaly_current label; labels arrive as a
+// JSON string from SQL or as a decoded map.
+func anomalyCurrentLabel(labels any) string {
+	m, ok := labels.(map[string]any)
+	if !ok {
+		if str, isStr := labels.(string); isStr && str != "" {
+			_ = json.Unmarshal([]byte(str), &m)
+		}
+	}
+	v, _ := m["anomaly_current"].(string)
+	return v
+}
+
 func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int, messagesMap map[string][]map[string]string) map[string]any {
 	investigateData := events.InvestigateData{}
 	if data["evidences"] != nil {
@@ -255,6 +278,16 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 		for _, evidence := range evidences {
+
+			if events.IsAnomalyRecord(evidence) {
+				if summary, ok := events.SummarizeAnomalyRecord(evidence); ok {
+					summary.SetLabelValue(anomalyCurrentLabel(data["labels"]))
+					investigateData.AnomalyDetection = &summary
+				} else {
+					slog.Warn("evidence: unreadable anomaly reference_value, skipping", "event_id", data["id"])
+				}
+				continue
+			}
 
 			if evidence.Type == "diff" {
 				evidenceData, ok := evidence.Data.(map[string]any)
@@ -754,6 +787,10 @@ func (m EventsExecuteTool) processRowWithMessages(data map[string]any, i, c int,
 			}
 		}
 
+		if investigateData.AnomalyDetection != nil {
+			investigateData.AnomalyDetection.NoteWindowCard(investigateData.MetricsData)
+		}
+
 		// Per-entry severity extraction (formatErrorLogLine) already filled
 		// ErrorLogData when the evidence carried structured severities; only
 		// fall back to mining the raw text when it did not.
@@ -907,6 +944,16 @@ func castIsoTimestampLiterals(sql string) string {
 }
 
 func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	// A lookup of one event by id runs on the account the event belongs to.
+	if matches := idLookupPredicateRe.FindAllStringSubmatch(input.Command, -1); len(matches) == 1 {
+		return onEventAccount(nbRequestContext, matches[0][1], func(c core.NbToolContext) (core.NBToolResponse, error) {
+			return m.call(c, input)
+		})
+	}
+	return m.call(nbRequestContext, input)
+}
+
+func (m EventsExecuteTool) call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext = nbRequestContext.ForTarget()
 	// Validate that the input is actually SQL, not descriptive text
 	if isDescriptiveText(input.Command) {
@@ -918,7 +965,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 
 	if !isValidSQL(input.Command) {
 		return core.NBToolResponse{
-			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high'' or 'DESC events'",
+			Data:   "Error: Invalid SQL query. Please provide a valid SQL SELECT statement. Example: 'SELECT * FROM events WHERE priority = 'high''",
 			Status: core.NBToolResponseStatusError,
 		}, nil
 	}
@@ -951,12 +998,12 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 	references := []core.NBToolResponseReference{}
 	if len(data) > 0 {
 		m.enrichData(data)
-		bytesData, marshalErr := common.MarshalJson(data)
+		enriched, marshalErr := sqlResultData(resp, data)
 		if marshalErr != nil {
 			slog.Error("events: failed to marshal enriched data", "error", marshalErr)
 			return core.NBToolResponse{}, marshalErr
 		}
-		resp.Data = string(bytesData)
+		resp.Data = enriched
 
 		for _, e := range data {
 			if idStr, ok := e["id"].(string); ok {

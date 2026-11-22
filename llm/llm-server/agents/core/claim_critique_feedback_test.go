@@ -37,6 +37,7 @@ func TestClaimFeedbackDecision(t *testing.T) {
 }
 
 func TestClaimFeedbackBothPlanners(t *testing.T) {
+	critiqueCallsInOrder(t)
 	pinClaimAuditOnly(t)
 	previousFeedback := config.Config.ClaimCritiqueFeedbackEnabled
 	t.Cleanup(func() {
@@ -83,6 +84,7 @@ func TestClaimFeedbackBothPlanners(t *testing.T) {
 }
 
 func TestClaimFeedbackReAct4UsesExistingBudget(t *testing.T) {
+	critiqueCallsInOrder(t)
 	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = true

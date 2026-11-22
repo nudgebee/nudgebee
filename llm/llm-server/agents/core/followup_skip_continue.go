@@ -10,17 +10,26 @@ import (
 )
 
 // followupSkipContinueTypes are the FollowupTypes eligible for
-// skip-and-continue (v1) — informational questions only. tool_confirmation,
-// tool_config, and account_select keep the hard-terminate path unchanged:
-// their "answer" field is interpreted as structured data downstream, not
-// free text, and a synthetic sentinel there has no safe, well-defined
-// meaning.
+// skip-and-continue (v1). tool_config and account_select keep the
+// hard-terminate path unchanged: their "answer" field is interpreted as
+// structured data downstream, not free text, and a synthetic sentinel there
+// has no safe, well-defined meaning. tool_confirmation is eligible too, but
+// skipping it is answered as a denial (see followupSkipDenial), never the
+// free-text sentinel.
 var followupSkipContinueTypes = map[FollowupType]bool{
 	FollowupTypeText:         true,
 	FollowupTypeSingleSelect: true,
 	FollowupTypeMultiSelect:  true,
 	FollowupTypeUserInput:    true,
+
+	FollowupTypeToolConfirmation: true,
 }
+
+// followupSkipDenial is the answer fed to a skipped tool_confirmation
+// follow-up: skipping an approval means "do not run it", so the planner
+// records a rejection and carries on with other work (executor_planner.go
+// treats anything but yes/ok/true as rejected).
+const followupSkipDenial = "no"
 
 // followupSkipSentinel is fed as the resumed agent's query when the user
 // skips an informational follow-up instead of answering it. It reaches the
@@ -110,8 +119,12 @@ func TrySkipAndContinueFollowup(ctx *security.RequestContext, accountId, convers
 			"error", mErr, "agent_id", agentId)
 	}
 
+	skipQuery := followupSkipSentinel
+	if followupType == FollowupTypeToolConfirmation {
+		skipQuery = followupSkipDenial
+	}
 	resumeResp, resumeErr := resumeFollowupLocked(ctx, NBAgentRequest{
-		Query:          followupSkipSentinel,
+		Query:          skipQuery,
 		AccountId:      accountId,
 		ConversationId: conversationId,
 		AgentId:        agentId,

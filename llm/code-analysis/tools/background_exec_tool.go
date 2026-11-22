@@ -328,7 +328,7 @@ func (t *BackgroundExecTool) start(ctx context.Context, params backgroundExecInp
 		if len(args) == 0 {
 			return core.CreateErrorResponse("Empty command", "Empty command")
 		}
-		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+		cmd = exec.CommandContext(ctx, resolveRepoTool(args[0], workingDir), args[1:]...)
 	}
 	cmd.Dir = workingDir
 
@@ -356,6 +356,10 @@ func (t *BackgroundExecTool) start(ctx context.Context, params backgroundExecInp
 	}
 	if commandInvokesGit(command) {
 		extraEnv = append(extraEnv, gitHTTPSAuthEnv(t.githubToken)...)
+	}
+	// Tools the repository's setup script installed (see repo_setup.go).
+	if toolsPath := repoToolsPathEnv(workingDir); toolsPath != "" {
+		extraEnv = append(extraEnv, toolsPath)
 	}
 	if len(extraEnv) > 0 {
 		cmd.Env = append(os.Environ(), extraEnv...)

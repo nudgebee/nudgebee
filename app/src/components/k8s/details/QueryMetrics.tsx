@@ -935,18 +935,19 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
             <>
               {showExtraOptions && (
                 <>
-                  {(metricsProvider === 'prometheus' ||
-                    metricsProvider === 'chronosphere' ||
-                    metricsProvider === 'datadog' ||
-                    metricsProvider === 'newrelic' ||
-                    metricsProvider === 'dynatrace' ||
-                    metricsProvider === 'solarwinds' ||
-                    metricsProvider === 'victoria-metrics' ||
-                    metricsProvider === 'splunk_observability_platform' ||
-                    metricsProvider === 'cubeapm' ||
-                    metricsProvider === 'signoz' ||
-                    metricsProvider === 'openobserve' ||
-                    metricsProvider === 'ES') && (
+                  {/*
+                   * Submit renders for whatever provider resolved, not for a list of
+                   * providers kept here. The list this replaces had to be appended to
+                   * for every new metrics backend and silently wasn't: OpenObserve
+                   * (#39356) and now Splunk Enterprise (#41386) each shipped with a
+                   * working backend and no Submit button, which leaves an editor that
+                   * cannot be run and no explanation on screen. The providers that can
+                   * serve metrics are decided by getMetricsSource in api-server, which
+                   * is also what fills `available_providers` behind the switcher above —
+                   * so anything offered there is runnable, and an unsupported provider
+                   * now answers with the backend's error instead of hiding the control.
+                   */}
+                  {!!metricsProvider && (
                     <>
                       <Button
                         loading={loading}
@@ -1160,37 +1161,36 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
             />
           )}
           {data.length > 0 && (
-            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 'var(--ds-space-2)', mb: 'var(--ds-space-2)' }}>
-              <Box
+            // Plain label beside the Toggle — wrapping both in a second track made the
+            // label read as a third button next to Chart / Table.
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                alignItems: 'center',
+                gap: 'var(--ds-space-2)',
+                mt: 'var(--ds-space-2)',
+                mb: 'var(--ds-space-2)',
+              }}
+            >
+              <Text
+                value='Display View:'
                 sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 'var(--ds-space-2)',
-                  padding: 'var(--ds-space-1) var(--ds-space-2)',
-                  backgroundColor: 'var(--ds-gray-alpha-100)',
-                  borderRadius: 'var(--ds-radius-md)',
-                  border: '1px solid var(--ds-gray-alpha-200)',
+                  fontSize: 'var(--ds-text-small)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  color: 'var(--ds-gray-600)',
+                  whiteSpace: 'nowrap',
                 }}
-              >
-                <Text
-                  value='Display View'
-                  sx={{
-                    fontSize: 'var(--ds-text-small)',
-                    fontWeight: 'var(--ds-font-weight-medium)',
-                    color: 'var(--ds-gray-600)',
-                    whiteSpace: 'nowrap',
-                  }}
-                />
-                <Toggle
-                  size='sm'
-                  options={[
-                    { value: 'chart', label: 'Chart' },
-                    { value: 'table', label: 'Table' },
-                  ]}
-                  activeValue={showChartView ? 'chart' : 'table'}
-                  onChange={(next) => setShowChartView(next === 'chart')}
-                />
-              </Box>
+              />
+              <Toggle
+                size='sm'
+                options={[
+                  { value: 'chart', label: 'Chart' },
+                  { value: 'table', label: 'Table' },
+                ]}
+                activeValue={showChartView ? 'chart' : 'table'}
+                onChange={(next) => setShowChartView(next === 'chart')}
+              />
             </Box>
           )}
           <Box sx={{ width: '100%', maxWidth: '100%', marginTop: 'var(--ds-space-4)' }}>

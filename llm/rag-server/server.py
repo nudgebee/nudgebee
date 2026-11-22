@@ -16,10 +16,13 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 from config import setup_logger
 from controllers.document_controller import load_module_docs
+from rag.core import replica_broadcast
 from rag.core.documents import collection as document_collection
 from rag.core.documents import (
     embedding_migration,
     kb_capability_backfill,
+    kb_document_seed,
+    kb_title_fill,
     module_retag_migration,
     platform_capability_sync,
 )
@@ -70,6 +73,34 @@ def _start_kb_capability_backfill():
         logger.info("KB capability backfill started in the background")
     except Exception as backfill_exc:  # defensive: migration must never block startup
         logger.exception(f"Could not start KB capability backfill (non-fatal): {backfill_exc}")
+
+
+def _start_kb_document_seed():
+    """Copy the per-page labels already on Qdrant chunks into Postgres, which owns
+    them (docs/kb-label-ownership-spec.md). No LLM calls; on by default, set
+    RAG_KB_DOCUMENT_SEED_ENABLED=false to turn it off.
+    """
+    if not kb_document_seed.is_enabled():
+        return
+    try:
+        kb_document_seed.start_background()
+        logger.info("KB document label seed started in the background")
+    except Exception as seed_exc:  # defensive: must never block startup
+        logger.exception(f"Could not start KB document label seed (non-fatal): {seed_exc}")
+
+
+def _start_kb_title_fill():
+    """Put each ServiceNow page's title on every chunk of the page. No LLM calls; on by
+    default, RAG_KB_TITLE_FILL_ENABLED=false turns it off. llm-server's runbook title rule
+    needs the title on whichever chunk a search hits.
+    """
+    if not kb_title_fill.is_enabled():
+        return
+    try:
+        kb_title_fill.start_background()
+        logger.info("KB title fill started in the background")
+    except Exception as fill_exc:  # defensive: must never block startup
+        logger.exception(f"Could not start KB title fill (non-fatal): {fill_exc}")
 
 
 def post_startup_task():
@@ -153,6 +184,8 @@ def post_startup_task():
             platform_capability_sync.sync_platform_capability_catalog()
 
             _start_kb_capability_backfill()
+            _start_kb_document_seed()
+            _start_kb_title_fill()
         except (
             ConnectionError,
             ResponseHandlingException,
@@ -191,6 +224,10 @@ async def lifespan(app: FastAPI):
     # Start the post-startup task in background thread
     thread = threading.Thread(target=post_startup_task, daemon=True)
     thread.start()
+
+    # Every replica holds per-pod caches, so every replica must hear about
+    # changes made on other pods and in other services (#40807).
+    replica_broadcast.start_replica_broadcast_subscriber()
 
     yield
 

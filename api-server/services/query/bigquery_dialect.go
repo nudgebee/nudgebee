@@ -25,7 +25,7 @@ func (d *bigQueryDialect) QuoteLiteral(s any) string {
 func (d *bigQueryDialect) FuncDateTruncate(dateUnit string, columnName string) string {
 	// BigQuery uses DATETIME_TRUNC or DATE_TRUNC depending on data type
 	// You could adjust this logic if you know the column type
-	return fmt.Sprintf("DATE_TRUNC(%s, %s)", columnName, strings.ToUpper(dateUnit))
+	return fmt.Sprintf("DATE_TRUNC(%s, %s)", columnName, strings.ToUpper(safeDateUnit(dateUnit)))
 }
 
 func (d *bigQueryDialect) FuncStringToDatetime(value string) string {

@@ -159,25 +159,15 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 func buildArgoCDFlags(configValues []core.ToolConfigValue) string {
 	var flags []string
 
-	insecure := true
 	grpcWeb := false
-	timeout := "30"
 	configFilePath := ""
 
 	// Parse configuration values
 	for _, cfg := range configValues {
 		switch cfg.Name {
-		case "insecure":
-			if strings.ToLower(cfg.Value) == "true" {
-				insecure = true
-			}
 		case "grpc_web":
 			if strings.ToLower(cfg.Value) == "true" {
 				grpcWeb = true
-			}
-		case "timeout":
-			if cfg.Value != "" {
-				timeout = cfg.Value
 			}
 		case "config_file_path":
 			if cfg.Value != "" {
@@ -192,17 +182,13 @@ func buildArgoCDFlags(configValues []core.ToolConfigValue) string {
 	// Add authentication token (ArgoCD CLI only supports token auth via flags)
 	flags = append(flags, "--auth-token $ARGOCD_AUTH_TOKEN")
 
-	// Add optional flags
-	if insecure {
-		flags = append(flags, "--insecure")
-	}
+	// Certificates are not verified yet: servers with self-signed certificates
+	// would fail, and the integration has no way to supply their CA.
+	flags = append(flags, "--insecure")
 
+	// Add optional flags
 	if grpcWeb {
 		flags = append(flags, "--grpc-web")
-	}
-
-	if timeout != "30" {
-		flags = append(flags, "--request-timeout", timeout+"s")
 	}
 
 	if configFilePath != "" {

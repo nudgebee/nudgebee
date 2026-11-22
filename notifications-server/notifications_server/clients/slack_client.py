@@ -36,7 +36,9 @@ class SlackClient(WebClient):
             team_id=team_id,
             exclude_archived=True,
             types="public_channel,private_channel",
-            limit=200,
+            # Slack's documented max page size for conversations.list — fewer round
+            # trips for a workspace with hundreds of channels (was 200).
+            limit=1000,
             **kwargs,
         )
 

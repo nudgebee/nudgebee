@@ -32,7 +32,7 @@ func init() {
 	})
 }
 
-type notebookTool struct{}
+type notebookTool struct{ core.ReadOnlyTool }
 
 func (t *notebookTool) Name() string             { return NotebookToolName }
 func (t *notebookTool) GetType() core.NBToolType { return core.NBToolTypeTool }

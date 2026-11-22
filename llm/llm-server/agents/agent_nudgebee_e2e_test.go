@@ -3,12 +3,14 @@
 package agents
 
 import (
-	agentasserts "nudgebee/llm/agents/asserts"
-	"nudgebee/llm/agents/core"
-	"nudgebee/llm/security"
 	"os"
 	"strings"
 	"testing"
+
+	agentasserts "nudgebee/llm/agents/asserts"
+	"nudgebee/llm/agents/core"
+	"nudgebee/llm/analytics"
+	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -125,6 +127,229 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				MaxToolCalls:                 1,
 				ExpectedFinalAnswerFragments: []string{"agent"},
 			},
+			// Product-docs answers. Each pins a fact that NuBi previously got wrong or
+			// that a docs page now states; a failure means retrieval or the docs drifted.
+			{
+				SessionId:                    "ut-nudgebee-docs-71",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Is Azure Cosmos DB supported in NudgeBee cloud accounts?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"microsoft.documentdb"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-72",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "How do I re-sync a Confluence knowledge base in NudgeBee?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"retrigger"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-73",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "In the NudgeBee knowledge base, what is the difference between SOP and Fact?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"sop", "fact"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-74",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "How do I make one NudgeBee agent always follow a specific short runbook on every run?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"prioritize knowledge", "always load"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-75",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "What is the Soul tab in b-Cortex used for?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"tone"},
+				ExpectedLLMClaims:            []string{"The answer describes Soul as a style profile the user writes (tone, verbosity, reasoning), not as a memory or persona NuBi learns."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-77",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Where does a NudgeBee custom tool actually run?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"pod"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-78",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Why can't I see the Create Rule button on the tenant-wide Triage Rules page?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"account"},
+				ExpectedLLMClaims:            []string{"The answer says triage rules are created from a specific cluster or cloud account's Triage Rules tab, not the tenant-wide page."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-79",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "How does NudgeBee decide whether an alert is P0, P1, P2 or P3?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"80", "60", "40"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-80",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "In a NudgeBee automation, how do I use the output of a previous task and read a secret?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"tasks[", "secrets."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-81",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "How do I read a field from the JSON body of an automation webhook in a task?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"webhook_json"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-82",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "My AWS account was connected in read-only mode. Can I still get real-time EventBridge events into NudgeBee?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"connect eventbridge"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-83",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "How do I stop or delete an Auto Optimize rule in NudgeBee?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"disable"},
+				ExpectedLLMClaims:            []string{"The answer says Auto Optimize rules cannot be deleted and are stopped by disabling them, which does not revert changes already applied."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-84",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "I added a self-hosted VM account and installed the proxy agent, but no VMs show up in Infra > VM. Why?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"discovery"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-85",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "My self-hosted NudgeBee install fails with Unknown key in nudgebee_secret. What does that mean?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"additional_env_vars"},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-86",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "If I close a Jira ticket that was created from a NudgeBee recommendation, what happens to the recommendation?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"closed"},
+				ExpectedLLMClaims:            []string{"The answer says the linked recommendation is closed when the ticket reaches a done or closed status, and reopened when the ticket is rejected or cancelled."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-87",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Can a NudgeBee application group include workloads from more than one cluster?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{},
+				ExpectedLLMClaims:            []string{"The answer says an application group is limited to a single cluster."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-88",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "If I turn on Memory across conversations in NudgeBee, where do I edit the account context?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"b-cortex"},
+				ExpectedLLMClaims:            []string{"The answer says account context is edited under b-Cortex Knowledge, not under Admin AI & Tools, when memory is on."},
+			},
+			{
+				SessionId:                    "ut-nudgebee-docs-89",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Which chat tools can I talk to NuBi from?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 3}},
+				MaxToolCalls:                 3,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"slack", "teams"},
+				ExpectedLLMClaims:            []string{"The answer says you can chat with NuBi from Slack and Microsoft Teams."},
+			},
+			// #42036: support questions must not turn a missing doc match or a
+			// partial list (configured integrations, event filters) into "not supported".
+			{
+				SessionId:                    "ut-nudgebee-docs-90",
+				AccountId:                    os.Getenv("TEST_ACCOUNT"),
+				UserId:                       os.Getenv("TEST_USER"),
+				Query:                        "Does Nudgebee support Azure Cosmos DB?",
+				ExpectedToolCalls:            []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:                 2,
+				RequireExternalReference:     true,
+				ExpectedFinalAnswerFragments: []string{"microsoft.documentdb"},
+				ForbiddenFinalFragments:      []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:            []string{"The answer says Nudgebee supports Azure Cosmos DB."},
+			},
+			{
+				SessionId:               "ut-nudgebee-docs-91",
+				AccountId:               os.Getenv("TEST_ACCOUNT"),
+				UserId:                  os.Getenv("TEST_USER"),
+				Query:                   "Does Nudgebee support AWS DynamoDB?",
+				ExpectedToolCalls:       []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:            2,
+				ForbiddenFinalFragments: []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:       []string{"The answer does not say that Nudgebee lacks support for AWS DynamoDB, and does not use the tenant's configured integrations as the list of supported services."},
+			},
+			{
+				SessionId:               "ut-nudgebee-docs-92",
+				AccountId:               os.Getenv("TEST_ACCOUNT"),
+				UserId:                  os.Getenv("TEST_USER"),
+				Query:                   "Does Nudgebee support Azure Cache for Redis?",
+				ExpectedToolCalls:       []expectedNudgebeeToolCall{{Name: "nudgebee_docs_search", MaxOccurrences: 2}},
+				MaxToolCalls:            2,
+				ForbiddenFinalFragments: []string{"not supported", "does not support", "doesn't support"},
+				ExpectedLLMClaims:       []string{"The answer says Nudgebee supports Azure Cache for Redis."},
+			},
 		}
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
@@ -162,7 +387,7 @@ func TestNudgebeeDebugAgent_Execute(t *testing.T) {
 				assert.NotEmpty(t, resp.References[0].Url)
 			}
 
-			detail, err := core.GetConversationDao().GetConversationAgentDetail(tc.SessionId, tc.AccountId, resp.AgentId, "")
+			detail, err := analytics.GetStore().GetConversationAgentDetail(tc.SessionId, tc.AccountId, resp.AgentId, "")
 			require.NoError(t, err)
 			require.NotEmpty(t, detail.ToolCalls, "Nubi must ground live-state answers in a tool call")
 			assert.LessOrEqual(t, len(detail.ToolCalls), tc.MaxToolCalls)
@@ -229,7 +454,7 @@ func TestNudgebeeAgent_AgentlessHealthPrecedence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, resp.Response)
 
-	detail, err := core.GetConversationDao().GetConversationAgentDetail(sessionID, accountID, resp.AgentId, "")
+	detail, err := analytics.GetStore().GetConversationAgentDetail(sessionID, accountID, resp.AgentId, "")
 	require.NoError(t, err)
 	require.Len(t, detail.ToolCalls, 1)
 	call := detail.ToolCalls[0]

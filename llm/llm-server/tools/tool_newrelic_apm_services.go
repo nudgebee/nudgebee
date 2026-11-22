@@ -16,7 +16,10 @@ func init() {
 	})
 }
 
-type NewRelicAPMServicesTool struct{}
+type NewRelicAPMServicesTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (t NewRelicAPMServicesTool) Name() string { return ToolNewRelicAPMServices }
 

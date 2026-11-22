@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/security"
 	"sort"
 	"strings"
+	"time"
 )
 
 // SplunkMetricSource implements MetricSource for Splunk Observability Cloud.
@@ -59,7 +60,7 @@ func (s *SplunkMetricSource) FetchMetricsQuery(ctx *security.RequestContext, req
 
 		ctx.GetLogger().Info("Splunk O11y SignalFlow Query", "key", queryKey, "program", program)
 
-		points, queryErr := integrations.ExecuteSignalFlow(cfg, program, startMs, endMs, resolutionMs)
+		points, stop, queryErr := integrations.ExecuteSignalFlow(cfg, program, startMs, endMs, resolutionMs)
 		if queryErr != nil {
 			ctx.GetLogger().Error("SplunkMetricSource.FetchMetricsQuery: SignalFlow failed",
 				"key", queryKey, "program", program, "error", queryErr)
@@ -72,10 +73,36 @@ func (s *SplunkMetricSource) FetchMetricsQuery(ctx *security.RequestContext, req
 		}
 
 		qr := s.convertSignalFlowToQueryResult(points, queryKey)
+		qr.Note = splunkSignalFlowStopNote(stop, points)
 		results.Results = append(results.Results, qr)
 	}
 
 	return results, nil
+}
+
+// splunkSignalFlowStopNote says when a SignalFlow stream ended early, so the series
+// cover only the start of the requested window (#39201). Empty for a complete stream.
+func splunkSignalFlowStopNote(stop integrations.SignalFlowStop, points []integrations.SignalFlowDataPoint) string {
+	var why string
+	switch stop {
+	case integrations.SignalFlowStopDeadline:
+		why = fmt.Sprintf("Splunk stopped streaming this query after %ds", int(integrations.SplunkO11yTimeout.Seconds()))
+	case integrations.SignalFlowStopAborted:
+		why = "Splunk aborted the channel for this query"
+	default:
+		return ""
+	}
+	var newest int64
+	for _, p := range points {
+		if p.TimestampMs > newest {
+			newest = p.TimestampMs
+		}
+	}
+	if newest == 0 {
+		return why + " before any data arrived, so the requested window is missing. Narrow the window or the program's filters."
+	}
+	return fmt.Sprintf("%s, so the series end at %s and the rest of the requested window is missing. "+
+		"Narrow the window or the program's filters.", why, time.UnixMilli(newest).UTC().Format(time.RFC3339))
 }
 
 // FetchMetricList returns available metric names from the Splunk O11y catalog.

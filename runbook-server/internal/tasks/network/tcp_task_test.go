@@ -2,6 +2,7 @@ package network
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"nudgebee/runbook/internal/tasks/testutils"
 	"testing"
@@ -97,5 +98,47 @@ func TestTcpTask_Execute(t *testing.T) {
 		assert.True(t, ok)
 		assert.False(t, resultMap["reachable"].(bool))
 		assert.NotEmpty(t, resultMap["error"])
+	})
+
+	t.Run("Numeric string port is trimmed and dialled", func(t *testing.T) {
+		params := map[string]any{
+			"host": "127.0.0.1",
+			"port": fmt.Sprintf(" %d ", port),
+		}
+
+		res, err := task.Execute(taskCtx, params)
+		assert.NoError(t, err)
+
+		resultMap, ok := res.(map[string]any)
+		assert.True(t, ok)
+		assert.True(t, resultMap["reachable"].(bool))
+		assert.Equal(t, fmt.Sprintf("%d", port), resultMap["port"])
+	})
+
+	t.Run("Service name port is still accepted", func(t *testing.T) {
+		// The dialer has always resolved names like "https"; saved steps using
+		// one must keep running, whatever the local port 443 answers.
+		res, err := task.Execute(taskCtx, map[string]any{
+			"host":    "127.0.0.1",
+			"port":    "https",
+			"timeout": "100ms",
+		})
+		assert.NoError(t, err)
+		resultMap, ok := res.(map[string]any)
+		assert.True(t, ok)
+		assert.Equal(t, "https", resultMap["port"])
+	})
+
+	t.Run("Invalid port fails the task before dialling", func(t *testing.T) {
+		for _, badPort := range []any{"443x", "", "  ", "0", "65536", "-1", "44.3", 0, 70000} {
+			res, err := task.Execute(taskCtx, map[string]any{
+				"host": "127.0.0.1",
+				"port": badPort,
+			})
+			assert.Nil(t, res, "port %v", badPort)
+			if assert.Error(t, err, "port %v", badPort) {
+				assert.Contains(t, err.Error(), "use a port number between 1 and 65535", "port %v", badPort)
+			}
+		}
 	})
 }

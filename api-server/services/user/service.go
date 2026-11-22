@@ -40,24 +40,32 @@ const GatewayTokenPrefix = "sk-nb-gw-"
 // future prefix. See TestLongestTokenFitsBcryptLimit, which guards this bound.
 const TokenRandomBytes = 28
 
-// createOrGetUser inserts a user or returns the existing one if username conflicts.
-// Returns the user model and whether it was newly created.
+// ErrBeeAccount refuses a sign-in, invitation, onboarding or credential for a bee
+// account: a bee acts only through the runs it is given, never as a logged-in user.
+var ErrBeeAccount = common.ErrorUnauthorized("a bee account cannot sign in, be invited or hold credentials")
+
+// createOrGetUser inserts a person or returns the existing user if username conflicts.
+// Returns the user model and whether it was newly created. An existing bee is refused,
+// so invitations and onboarding never reach a bee account.
 func createOrGetUser(dbms *database.DatabaseManager, displayName, status, username string, createdBy *string) (models.User, bool, error) {
 	var user models.User
 	err := dbms.Db.QueryRowx(
 		`INSERT INTO users (display_name, status, username, created_by, updated_by)
 		VALUES ($1, $2, $3, $4, $4)
 		ON CONFLICT ON CONSTRAINT users_username_key DO NOTHING
-		RETURNING id, username, display_name, status, created_at, updated_at, created_by, updated_by`,
+		RETURNING id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by`,
 		displayName, status, username, createdBy,
 	).StructScan(&user)
 	if err == sql.ErrNoRows {
 		// User already exists, fetch it
 		err = dbms.Db.QueryRowx(
-			`SELECT id, username, display_name, status FROM users WHERE username = $1`, username,
+			`SELECT id, username, display_name, status, kind FROM users WHERE username = $1`, username,
 		).StructScan(&user)
 		if err != nil {
 			return models.User{}, false, err
+		}
+		if user.Kind == models.UserKindBee {
+			return models.User{}, false, ErrBeeAccount
 		}
 		return user, false, nil
 	}
@@ -65,6 +73,21 @@ func createOrGetUser(dbms *database.DatabaseManager, displayName, status, userna
 		return models.User{}, false, err
 	}
 	return user, true, nil
+}
+
+// refuseBee returns ErrBeeAccount when userId is a bee account.
+func refuseBee(dbms *database.DatabaseManager, userId string) error {
+	var kind string
+	if err := dbms.Db.Get(&kind, `SELECT kind FROM users WHERE id = $1`, userId); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if kind == models.UserKindBee {
+		return ErrBeeAccount
+	}
+	return nil
 }
 
 // createUserTenant creates a tenant_users association, ignoring if already exists.
@@ -88,9 +111,22 @@ func createUserRole(dbms *database.DatabaseManager, userId, role, entityType, en
 	return err
 }
 
+// formatRoleLabel renders a tenant role for display in the invitation email.
+// Mirrors app/src/utils/common.ts formatUserRoleName — keep both in sync.
+func formatRoleLabel(role string) string {
+	switch role {
+	case security.AUTH_TENANT_ADMIN_ROLE:
+		return "Admin"
+	case security.AUTH_TENANT_READ_ADMIN_ROLE:
+		return "ReadOnly Admin"
+	default:
+		return "Member"
+	}
+}
+
 // sendTenantInvitationEmail sends an invitation email and sets the invited tenant
 // as the user's default. Replaces the RPC user_tenant_onboard_email event trigger.
-func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId string) {
+func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId, role string) {
 	// Detach from HTTP request context so this goroutine survives after the response is sent
 	ctx = security.NewRequestContext(context.WithoutCancel(ctx.GetContext()), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 
@@ -140,20 +176,28 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 		strings.TrimRight(config.Config.BaseUrl, "/"),
 		strings.ReplaceAll(url.QueryEscape(tenantObj.Name), "+", "%20"))
 
+	inviterName := ctx.GetSecurityContext().GetDisplayName()
+	roleLabel := formatRoleLabel(role)
+
+	subject := fmt.Sprintf("You were added to %s on %s", tenantObj.Name, config.Config.BrandingName)
+	if inviterName != "" {
+		subject = fmt.Sprintf("%s added you to %s on %s", inviterName, tenantObj.Name, config.Config.BrandingName)
+	}
+
 	message := map[string]any{
 		"kind":      "email",
 		"email":     []string{userObj.Username},
-		"subject":   config.Config.BrandingName + " invitation notification",
+		"subject":   subject,
 		"tenant_id": tenantObj.Id,
 		"type":      "invite",
 		"parameters": map[string]any{
+			"inviter_name":  inviterName,
+			"invitee_email": userObj.Username,
+			"role":          roleLabel,
 			"texts": map[string]any{
-				"login_button": "Go to " + config.Config.BrandingName,
-				"title":        "User Invitation",
 				"organization": map[string]any{
-					"id":            tenantObj.Id,
-					"name":          tenantObj.Name,
-					"currency_code": "$",
+					"id":   tenantObj.Id,
+					"name": tenantObj.Name,
 				},
 			},
 			"links": map[string]any{
@@ -186,6 +230,12 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		// custom grant now also reaches it, which makes the gate load-bearing:
 		// without it any grant holder could create a user, and `role` below writes
 		// user_roles, so they could mint a tenant_admin.
+		//
+		// Every authorization decision is made here, before the first write: a
+		// users:Write holder may create a user and add them to this tenant, but
+		// any tenant role in `role` (tenant_admin, tenant_admin_readonly — the
+		// only roles IsValidTenantRole admits, both tenant-wide privilege) needs a
+		// real tenant admin.
 		if !canAdministerUsers(context.GetSecurityContext()) {
 			return UserCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 		}
@@ -240,9 +290,6 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 
 	var userTenantId string
 	if context.GetSecurityContext().GetTenantId() != "" {
-		if !context.GetSecurityContext().IsTenantAdmin() && !context.GetSecurityContext().IsSuperAdmin() {
-			return UserCreateResponse{}, common.ErrorUnauthorized("Only tenant admins can add users to a tenant")
-		}
 		context.GetLogger().Info("AssignUser to tenant", "userId", userModel.Id, "tenantId", context.GetSecurityContext().GetTenantId())
 		err = createUserTenant(dbms, userModel.Id, context.GetSecurityContext().GetTenantId(), createdBy)
 		if err != nil {
@@ -277,7 +324,7 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		userTenantId = context.GetSecurityContext().GetTenantId()
 
 		// Send invitation email (replaces RPC user_tenant_onboard_email trigger)
-		go sendTenantInvitationEmail(context, userModel.Id, userTenantId)
+		go sendTenantInvitationEmail(context, userModel.Id, userTenantId, role)
 	} else if context.GetSecurityContext().IsSuperAdmin() && userRequest.Tenantname != "" {
 		// create and assign user to new tenant
 		resp, err := tenant.CreateTenant(context, tenant.TenantCreateRequest{
@@ -342,6 +389,15 @@ func DeleteUser(context *security.RequestContext, userId string) (UserDeleteResp
 		err = tx.Rollback()
 		if err != nil {
 			context.GetLogger().Error("Error rolling back transaction", "error", err)
+		}
+		return UserDeleteResponse{}, err
+	}
+
+	// The user's API keys take their AI Gateway access policies with them.
+	if _, err := tx.Exec("delete from llm_gateway_access_policies where user_id = $1::uuid::text", userId); err != nil {
+		context.GetLogger().Error("Error deleting llm_gateway_access_policies", "error", err)
+		if rbErr := tx.Rollback(); rbErr != nil {
+			context.GetLogger().Error("Error rolling back transaction", "error", rbErr)
 		}
 		return UserDeleteResponse{}, err
 	}
@@ -427,7 +483,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	if err != nil {
 		return models.User{}, err
 	}
-	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
+	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
 	if row.Err() != nil {
 		return models.User{}, row.Err()
 	}
@@ -439,6 +495,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	return tenant, nil
 }
 
+// GetUserByTenant returns the tenant's active people (report recipients); bees are left out.
 func GetUserByTenant(context *security.RequestContext, tenantId string) ([]models.User, error) {
 	users := []models.User{}
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -446,9 +503,10 @@ func GetUserByTenant(context *security.RequestContext, tenantId string) ([]model
 		return users, err
 	}
 	rows, err := manager.Db.Queryx(`
-        SELECT u.id, u.username, u.display_name, u.status, u.created_at, u.updated_at, u.created_by, u.updated_by
+        SELECT u.id, u.username, u.display_name, u.status, u.kind, u.created_at, u.updated_at, u.created_by, u.updated_by
         FROM users u
         WHERE u.status = 'active'
+        AND u.kind = 'person'
         AND u.id IN (
             SELECT tu.user
             FROM tenant_users tu
@@ -508,6 +566,9 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 	if user.Status != "active" {
 		return UserTokenCreateResponse{}, common.ErrorUnauthorized("User is not active")
 	}
+	if user.Kind == models.UserKindBee {
+		return UserTokenCreateResponse{}, ErrBeeAccount
+	}
 
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -522,6 +583,10 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 		return UserTokenCreateResponse{}, err
 	}
 	scopes, err := normalizeScopes(kind, tokenCreateRequest.Scopes)
+	if err != nil {
+		return UserTokenCreateResponse{}, err
+	}
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, scopes != nil, tokenCreateRequest.GatewayPolicy)
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
@@ -591,21 +656,24 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var keyID string
+	var key keyScope
 	if err := tx.QueryRowx(
-		`INSERT INTO user_auths ("user", tenant_id, name, credential, token_sha256, provider_type, provider, status, kind, accessed_at, expires_at, scopes)
-		 VALUES ($1, $2, $3, $4, $5, 'credentials', 'token', 'active', $6, NULL, $7, $8) RETURNING id::text`,
+		`INSERT INTO user_auths ("user", tenant_id, name, credential, token_sha256, provider_type, provider, status, kind, accessed_at, expires_at, scopes, token_suffix)
+		 VALUES ($1, $2, $3, $4, $5, 'credentials', 'token', 'active', $6, NULL, $7, $8, $9) RETURNING `+keyScopeColumns,
 		context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetTenantId(),
-		tokenCreateRequest.Name, hashedToken, tokenSha256, kind, expiresAt, scopesColumn(scopes)).Scan(&keyID); err != nil {
+		tokenCreateRequest.Name, hashedToken, tokenSha256, kind, expiresAt, scopesColumn(scopes), tokenSuffix(token)).Scan(key.scanTargets()...); err != nil {
+		return UserTokenCreateResponse{}, err
+	}
+	if err := replaceKeyGatewayPolicy(tx, key, gatewayPolicy); err != nil {
 		return UserTokenCreateResponse{}, err
 	}
 
 	for _, l := range tokenCreateRequest.Limits {
 		if _, err := tx.Exec(
-			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled, soft_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
 			context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-			keyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
+			key.KeyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct); err != nil {
 			return UserTokenCreateResponse{}, err
 		}
 	}
@@ -614,24 +682,19 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 		return UserTokenCreateResponse{}, err
 	}
 
-	audit.LogChange(context, audit.ChangeInput{
-		EventCategory: audit.EventCategoryUser,
-		EventType:     audit.EventTypeUserLoginCreate,
-		EventAction:   audit.EventActionCreate,
-		TargetID:      context.GetSecurityContext().GetUserId(),
-		TableName:     "user_auths",
-		NewData: map[string]any{"user": context.GetSecurityContext().GetUserId(), "name": tokenCreateRequest.Name,
+	audit.LogChange(context, keyAuditInput(context.GetSecurityContext().GetUserId(), audit.EventTypeUserLoginCreate,
+		audit.EventActionCreate, key, auditViaOwner, map[string]any{"name": tokenCreateRequest.Name,
 			"provider_type": "credentials", "provider": "token", "kind": kind, "expires_at": tokenCreateRequest.ExpiresAt,
-			"scopes": scopes},
-	})
+			"scopes": scopes, "gateway_policy": gatewayPolicy}))
 
 	// return token
 	return UserTokenCreateResponse{
-		Token:     token,
-		Name:      tokenCreateRequest.Name,
-		Kind:      kind,
-		ExpiresAt: tokenCreateRequest.ExpiresAt,
-		Scopes:    scopes,
+		Token:         token,
+		Name:          tokenCreateRequest.Name,
+		Kind:          kind,
+		ExpiresAt:     tokenCreateRequest.ExpiresAt,
+		Scopes:        scopes,
+		GatewayPolicy: gatewayPolicy,
 	}, nil
 }
 
@@ -685,12 +748,13 @@ func DeleteUserAuthToken(context *security.RequestContext, tokenDeleteRequest Us
 		deleteID = resolvedID
 	}
 
-	var deletedID string
+	var deleted keyScope
+	var deletedName, deletedKind string
 	err = tx.QueryRowx(
 		`DELETE FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
-		   AND provider_type = 'credentials' AND provider = 'token' RETURNING id::text`,
+		   AND provider_type = 'credentials' AND provider = 'token' RETURNING `+keyScopeColumns+`, name, kind`,
 		deleteID, context.GetSecurityContext().GetTenantId(),
-		context.GetSecurityContext().GetUserId()).Scan(&deletedID)
+		context.GetSecurityContext().GetUserId()).Scan(append(deleted.scanTargets(), &deletedName, &deletedKind)...)
 	if err == sql.ErrNoRows {
 		return UserTokenDeleteResponse{}, common.ErrorBadRequest("token not found")
 	}
@@ -698,10 +762,8 @@ func DeleteUserAuthToken(context *security.RequestContext, tokenDeleteRequest Us
 		return UserTokenDeleteResponse{}, err
 	}
 
-	// A revoked key must not leave quota rows behind: they would apply to nothing and
-	// still be loaded by the gateway on every refresh.
-	if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-		deletedID, context.GetSecurityContext().GetTenantId()); err != nil {
+	// A revoked key must not leave quota or policy rows behind.
+	if err := clearKeyRows(tx, deleted); err != nil {
 		return UserTokenDeleteResponse{}, err
 	}
 
@@ -709,14 +771,9 @@ func DeleteUserAuthToken(context *security.RequestContext, tokenDeleteRequest Us
 		return UserTokenDeleteResponse{}, err
 	}
 
-	audit.LogChange(context, audit.ChangeInput{
-		EventCategory: audit.EventCategoryUser,
-		EventType:     audit.EventTypeUserLoginDelete,
-		EventAction:   audit.EventActionDelete,
-		TargetID:      context.GetSecurityContext().GetUserId(),
-		TableName:     "user_auths",
-		OldData:       map[string]any{"user": context.GetSecurityContext().GetUserId(), "name": tokenDeleteRequest.Name, "provider_type": "credentials", "provider": "token"},
-	})
+	audit.LogChange(context, keyAuditInput(context.GetSecurityContext().GetUserId(), audit.EventTypeUserLoginDelete,
+		audit.EventActionDelete, deleted, auditViaOwner, map[string]any{"name": deletedName, "kind": deletedKind,
+			"provider_type": "credentials", "provider": "token"}))
 
 	return UserTokenDeleteResponse{Name: tokenDeleteRequest.Name, Status: "deleted"}, nil
 }
@@ -736,18 +793,23 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 		return UserTokenUpdateResponse{}, err
 	}
 
-	var kind string
+	var kind, name string
+	var scopes pq.StringArray
 	if err := databaseManager.Db.QueryRowx(
-		`SELECT kind FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
+		`SELECT kind, scopes, name FROM user_auths WHERE id = $1 AND tenant_id = $2 AND "user" = $3
 		   AND provider_type = 'credentials' AND provider = 'token'`,
 		request.Id, context.GetSecurityContext().GetTenantId(),
-		context.GetSecurityContext().GetUserId()).Scan(&kind); err != nil {
+		context.GetSecurityContext().GetUserId()).Scan(&kind, &scopes, &name); err != nil {
 		if err == sql.ErrNoRows {
 			return UserTokenUpdateResponse{}, common.ErrorBadRequest("token not found")
 		}
 		return UserTokenUpdateResponse{}, err
 	}
 	if err := validateLimitsForKind(kind, request.Limits); err != nil {
+		return UserTokenUpdateResponse{}, err
+	}
+	gatewayPolicy, err := normalizeGatewayPolicy(kind, len(scopes) > 0, request.GatewayPolicy)
+	if err != nil {
 		return UserTokenUpdateResponse{}, err
 	}
 	// An owner may only tighten what an admin configured — same ceiling rule as create,
@@ -781,40 +843,45 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Hold the key's row for the rest of the transaction, so a concurrent edit cannot merge
+	// its policy or limits with this one, and key the rows by the id as stored.
+	key, err := lockKeyForUpdate(tx, request.Id, context.GetSecurityContext().GetTenantId(),
+		context.GetSecurityContext().GetUserId())
+	if err == sql.ErrNoRows {
+		return UserTokenUpdateResponse{}, common.ErrorBadRequest("token not found")
+	}
+	if err != nil {
+		return UserTokenUpdateResponse{}, err
+	}
+
 	if request.ExpiresAt != nil {
 		if _, err := tx.Exec(`UPDATE user_auths SET expires_at = $1, updated_at = now() WHERE id = $2 AND tenant_id = $3 AND "user" = $4`,
-			expiresAt, request.Id, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId()); err != nil {
+			expiresAt, key.KeyID, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId()); err != nil {
+			return UserTokenUpdateResponse{}, err
+		}
+	}
+	// Omitted (nil) leaves the policy alone; a present one replaces all three lists, so a
+	// policy with no lists clears the key back to unrestricted. The gateway reads the rows on
+	// every request, so the change binds on the key's next call.
+	if request.GatewayPolicy != nil {
+		if err := replaceKeyGatewayPolicy(tx, key, gatewayPolicy); err != nil {
 			return UserTokenUpdateResponse{}, err
 		}
 	}
 	// Omitted (nil) leaves the limits alone; a present list, even [], replaces them all.
 	if request.Limits != nil {
-		if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-			request.Id, context.GetSecurityContext().GetTenantId()); err != nil {
+		if err := replaceKeyLimits(tx, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
+			key.KeyID, request.Limits); err != nil {
 			return UserTokenUpdateResponse{}, err
-		}
-		for _, l := range request.Limits {
-			if _, err := tx.Exec(
-				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
-				context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-				request.Id, l.Model, l.Metric, l.Period, l.Value); err != nil {
-				return UserTokenUpdateResponse{}, err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return UserTokenUpdateResponse{}, err
 	}
 
-	audit.LogChange(context, audit.ChangeInput{
-		EventCategory: audit.EventCategoryUser,
-		EventType:     audit.EventTypeUserUpdate,
-		EventAction:   audit.EventActionUpdate,
-		TargetID:      context.GetSecurityContext().GetUserId(),
-		TableName:     "user_auths",
-		NewData:       map[string]any{"id": request.Id, "expires_at": request.ExpiresAt, "limits": request.Limits},
-	})
+	audit.LogChange(context, keyAuditInput(context.GetSecurityContext().GetUserId(), audit.EventTypeUserUpdate,
+		audit.EventActionUpdate, key, auditViaOwner, map[string]any{"name": name, "kind": kind, "expires_at": request.ExpiresAt,
+			"limits": request.Limits, "gateway_policy": gatewayPolicy}))
 
 	return UserTokenUpdateResponse{Id: request.Id, Status: "updated"}, nil
 }
@@ -886,7 +953,7 @@ func SyncUserRoles(context *security.RequestContext, request UserSyncRolesReques
 	}
 
 	// Membership in the tenant is NOT enough to hand out tenant roles. This
-	// handler writes user_roles rows verbatim from request.TargetRoles, so
+	// handler writes user_roles rows from request.TargetRoles, so
 	// anyone who reaches it can mint themselves `tenant_admin` — a
 	// self-escalation. Two callers were able to:
 	//   - a dynamic-RBAC holder of `userroles:Execute` (userroles_sync classifies
@@ -899,6 +966,15 @@ func SyncUserRoles(context *security.RequestContext, request UserSyncRolesReques
 	// bypassGraphQLAsServer's super-admin JWT, which IsSuperAdmin() admits above.
 	if !mayAssignTenantRole(context.GetSecurityContext()) {
 		return UserSyncRolesResponse{}, common.ErrorUnauthorized("Assigning tenant roles requires a tenant admin")
+	}
+
+	// Being a tenant admin is not enough either: the roles table also holds
+	// super_admin, and every self sign-up is a tenant admin. Refuse anything a
+	// tenant admin may not hand out before writing a row.
+	for _, role := range request.TargetRoles {
+		if !syncableRole(role) {
+			return UserSyncRolesResponse{}, common.ErrorBadRequest(fmt.Sprintf("Role %q cannot be assigned through role sync", role))
+		}
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -1042,95 +1118,11 @@ func ListUserAuthTokens(context *security.RequestContext) (UserAuthTokenResponse
 	if err != nil {
 		return UserAuthTokenResponse{}, err
 	}
-
-	rows, err := databaseManager.Db.Queryx(
-		`SELECT id, name, provider, kind, status, created_at, accessed_at, expires_at, scopes
-		   FROM user_auths
-		  WHERE tenant_id = $1 AND "user" = $2 AND provider_type = 'credentials' AND provider = 'token'`,
-		context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId())
+	tokens, err := listTokens(databaseManager.Db, tokenFilter{
+		TenantID: context.GetSecurityContext().GetTenantId(), OwnerID: context.GetSecurityContext().GetUserId()})
 	if err != nil {
 		return UserAuthTokenResponse{}, err
 	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			context.GetLogger().Error("error closing rows", "error", err)
-		}
-	}()
-
-	var tokens []UserAuthToken
-	for rows.Next() {
-		var token UserAuthToken
-		err := rows.StructScan(&token)
-		if err != nil {
-			return UserAuthTokenResponse{}, err
-		}
-		tokens = append(tokens, token)
-	}
-
-	// One query for every key's limits, then fan out in memory — the list is small and
-	// this keeps it to two round trips regardless of key count.
-	var limitRows []struct {
-		APIKeyID string  `db:"api_key_id"`
-		Metric   string  `db:"metric"`
-		Period   string  `db:"period"`
-		Value    float64 `db:"value"`
-		Model    string  `db:"model"`
-	}
-	if err := databaseManager.Db.Select(&limitRows,
-		`SELECT api_key_id, metric, period, limit_value AS value, model
-		   FROM llm_gateway_rate_limits
-		  WHERE tenant_id = $1 AND user_id = $2 AND api_key_id <> '' AND enabled = true`,
-		context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId()); err != nil {
-		return UserAuthTokenResponse{}, err
-	}
-	byKey := map[string][]TokenLimit{}
-	for _, r := range limitRows {
-		byKey[r.APIKeyID] = append(byKey[r.APIKeyID], TokenLimit{Metric: r.Metric, Period: r.Period, Value: r.Value, Model: r.Model})
-	}
-	for i := range tokens {
-		tokens[i].Limits = byKey[tokens[i].Id]
-	}
-
-	// Calendar-month window, matching the limiter's month bucket, so the number the
-	// owner reads is the one the cap is measured against. The window is computed in UTC
-	// deliberately: the gateway's limiter buckets by t.UTC().Format("2006-01")
-	// (ratelimit/types.go), while date_trunc('month', now()) truncates in the session's
-	// timezone — on a non-UTC box those disagree near a month boundary.
-	var spendRows []struct {
-		APIKeyID string  `db:"api_key_id"`
-		Requests int64   `db:"requests"`
-		Tokens   int64   `db:"tokens"`
-		CostUsd  float64 `db:"cost_usd"`
-	}
-	// Filter by this user's key ids (not user_id) so idx_llm_gw_usage_api_key
-	// (tenant_id, api_key_id, created_at) serves the scan.
-	keyIDs := make([]string, 0, len(tokens))
-	for _, t := range tokens {
-		keyIDs = append(keyIDs, t.Id)
-	}
-	if len(keyIDs) > 0 {
-		if err := databaseManager.Db.Select(&spendRows,
-			`SELECT api_key_id, count(*) AS requests, COALESCE(sum(total_tokens),0) AS tokens,
-			        COALESCE(sum(cost_usd),0) AS cost_usd
-			   FROM llm_gateway_usage
-			  WHERE tenant_id = $1 AND api_key_id = ANY($2)
-			    AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
-			  GROUP BY api_key_id`,
-			context.GetSecurityContext().GetTenantId(), pq.Array(keyIDs)); err != nil {
-			return UserAuthTokenResponse{}, err
-		}
-	}
-	spendByKey := map[string]TokenUsage{}
-	for _, r := range spendRows {
-		spendByKey[r.APIKeyID] = TokenUsage{Requests: r.Requests, Tokens: r.Tokens, CostUsd: r.CostUsd}
-	}
-	for i := range tokens {
-		if u, ok := spendByKey[tokens[i].Id]; ok {
-			tokens[i].Usage = &u
-		}
-	}
-
 	return UserAuthTokenResponse{Tokens: tokens}, nil
 }
 
@@ -1206,6 +1198,16 @@ func CreateUserAuth(context *security.RequestContext, request UserCreateAuthRequ
 		return UserCreateAuthResponse{}, err
 	}
 
+	// A user_auths row is a way to sign in as its user: an OAuth row resolves a
+	// login by (provider, account_id) alone, so a row written onto someone else's
+	// user signs its author in as them. Only NextAuth's server-side callbacks
+	// write rows for an arbitrary user; anyone else may only add their own.
+	// Ids compare case-insensitively: a session may carry them upper-cased.
+	sc := context.GetSecurityContext()
+	if sc == nil || (!sc.IsServerInternal() && !strings.EqualFold(request.UserId, sc.GetUserId())) {
+		return UserCreateAuthResponse{}, common.ErrorUnauthorized("A login can only be added to your own account")
+	}
+
 	if !context.GetSecurityContext().IsSuperAdmin() {
 		if context.GetSecurityContext().GetUserId() == "" {
 			return UserCreateAuthResponse{}, fmt.Errorf("unauthorized")
@@ -1217,6 +1219,10 @@ func CreateUserAuth(context *security.RequestContext, request UserCreateAuthRequ
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
+		return UserCreateAuthResponse{}, err
+	}
+
+	if err := refuseBee(manager, request.UserId); err != nil {
 		return UserCreateAuthResponse{}, err
 	}
 
@@ -1289,6 +1295,15 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		return UserUpdateStatusResponse{}, err
 	}
 
+	allowed, err := maySuspend(context.GetSecurityContext(), manager, context.GetSecurityContext().GetTenantId(), request.UserId, request.Status)
+	if err != nil {
+		context.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("Error updating user status")
+	}
+	if !allowed {
+		return UserUpdateStatusResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
+
 	// Scope the write to the caller's tenant. `WHERE id = $1` alone is global, so
 	// any role that reaches this handler — and actions.yaml grants users_update_status
 	// to all six built-in roles — could deactivate a user in another tenant by id.
@@ -1319,6 +1334,11 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		TableName:     "users",
 		NewData:       map[string]any{"id": request.UserId, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(context, request.UserId, request.Status); err != nil {
+		context.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", request.UserId)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	return UserUpdateStatusResponse{Id: request.UserId}, nil
 }
@@ -1353,6 +1373,14 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 	if roleChanged && !mayAssignTenantRole(sc) {
 		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Changing a user's role requires a tenant admin")
 	}
+	allowed, err := maySuspend(sc, manager, sc.GetTenantId(), target.id, request.Status)
+	if err != nil {
+		ctx.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user profile")
+	}
+	if !allowed {
+		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
 
 	// Update display_name and status. Scoped by the id resolved within the tenant
 	// above — `WHERE username = $1` alone reaches every tenant.
@@ -1373,6 +1401,11 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		TableName:     "users",
 		NewData:       map[string]any{"username": request.Username, "display_name": request.DisplayName, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(ctx, target.id, request.Status); err != nil {
+		ctx.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", target.id)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	// Sync the tenant role only when the caller actually sent the field AND it
 	// differs from what the user already holds. A nil pointer means "role omitted
@@ -1406,13 +1439,11 @@ func DeleteUserAuth(context *security.RequestContext, request UserDeleteAuthRequ
 		return UserDeleteAuthResponse{}, err
 	}
 
-	if !context.GetSecurityContext().IsSuperAdmin() {
-		if context.GetSecurityContext().GetUserId() == "" {
-			return UserDeleteAuthResponse{}, fmt.Errorf("unauthorized")
-		}
-		if context.GetSecurityContext().GetTenantId() == "" {
-			return UserDeleteAuthResponse{}, fmt.Errorf("unauthorized")
-		}
+	// The row is deleted by id alone, whoever it belongs to, so only NextAuth's
+	// server-side callbacks may call this; a session could lock someone else out
+	// of their account. API keys are revoked through the token actions.
+	if sc := context.GetSecurityContext(); sc == nil || !sc.IsServerInternal() {
+		return UserDeleteAuthResponse{}, common.ErrorUnauthorized("Logins are removed only by the sign-in service")
 	}
 
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -1422,6 +1453,10 @@ func DeleteUserAuth(context *security.RequestContext, request UserDeleteAuthRequ
 
 	_, err = manager.Db.Exec(`DELETE FROM user_auths WHERE id = $1`, request.Id)
 	if err != nil {
+		return UserDeleteAuthResponse{}, err
+	}
+	// A deleted API key takes its AI Gateway access policy with it.
+	if _, err := manager.Db.Exec(`DELETE FROM llm_gateway_access_policies WHERE api_key_id = $1::uuid::text`, request.Id); err != nil {
 		return UserDeleteAuthResponse{}, err
 	}
 
@@ -1561,6 +1596,8 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = CASE WHEN provider = 'token' THEN tenant_id ELSE $1 END, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
 			request.TenantId, request.TokenSha256, request.AuthId)
 	} else {
+		// API keys (provider 'token') keep the tenant they were created in; moving them made them
+		// spend, bill and obey rules in whichever tenant their owner last opened (#40623).
 		result, err = manager.Db.Exec(
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2) AND provider <> 'token'`,
 			request.TenantId, request.Username)
@@ -1598,6 +1635,13 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 	// 1. Create or resolve existing user
 	var userId string
 	if request.ExistingUserId != "" {
+		dbms, err := database.GetDatabaseManager(database.Metastore)
+		if err != nil {
+			return UserOnboardResponse{}, err
+		}
+		if err := refuseBee(dbms, request.ExistingUserId); err != nil {
+			return UserOnboardResponse{}, err
+		}
 		userId = request.ExistingUserId
 	} else {
 		nameParts := strings.SplitN(request.DisplayName, " ", 2)
@@ -1738,4 +1782,43 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 		Status:  "Ok",
 		Message: "User onboarded successfully",
 	}, nil
+}
+
+// replaceKeyLimits swaps a key's quota rows for limits. A row whose metric, period, model,
+// value and warn level are unchanged keeps its budget-alert state (alerted_window/_pct), so
+// re-saving the key does not resend this window's alerts; a changed row may alert again.
+func replaceKeyLimits(tx *sqlx.Tx, tenantID, userID, keyID string, limits []TokenLimit) error {
+	type alertState struct {
+		Metric        string     `db:"metric"`
+		Period        string     `db:"period"`
+		Model         string     `db:"model"`
+		Value         float64    `db:"limit_value"`
+		SoftPct       *int       `db:"soft_pct"`
+		AlertedWindow *time.Time `db:"alerted_window"`
+		AlertedPct    *int       `db:"alerted_pct"`
+	}
+	var old []alertState
+	if err := tx.Select(&old,
+		`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2
+		 RETURNING metric, period, model, limit_value, soft_pct, alerted_window, alerted_pct`, keyID, tenantID); err != nil {
+		return err
+	}
+	samePct := func(a, b *int) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	for _, l := range limits {
+		var kept alertState
+		for _, o := range old {
+			if o.Metric == l.Metric && o.Period == l.Period && o.Model == l.Model && o.Value == l.Value && samePct(o.SoftPct, l.SoftPct) {
+				kept = o
+				break
+			}
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled,
+			     soft_pct, alerted_window, alerted_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10)`,
+			tenantID, userID, keyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct, kept.AlertedWindow, kept.AlertedPct); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -15,6 +15,12 @@ export type Environment = 'prod' | 'non_prod';
 
 export type SortKey = 'savings' | 'age' | 'confidence' | 'resource';
 
+// Findings open longer than this are surfaced in the Summary's "Flagged" column.
+// Not an SLA — there is no SLA field, config or policy anywhere in the
+// recommendation service — just a threshold this page draws the line at, so the
+// label says what it measures ("open over 14 days") rather than implying a commitment.
+export const AGING_DAYS = 14;
+
 export interface InsightItem {
   id: string;
   category: MainCategory;
@@ -309,10 +315,14 @@ export const generateNubiBriefing = (items: InsightItem[], totalDollars?: number
     return [
       { text: `${formatDollars(dollars, symbol)}/mo`, emphasis: 'money' },
       { text: ` in optimization opportunities across ${items.length} findings. ` },
-      { text: `${criticals}`, emphasis: 'alert' },
-      { text: ' are critical severity.' },
+      ...(criticals > 0
+        ? [{ text: `${criticals}`, emphasis: 'alert' as const }, { text: ' are critical severity.' }]
+        : [{ text: 'No critical severity.' }]),
       ...suffix,
     ];
+  }
+  if (items.length === 0) {
+    return [{ text: 'No findings match the current filters.' }, ...suffix];
   }
   return [
     { text: `${items.length} findings` },

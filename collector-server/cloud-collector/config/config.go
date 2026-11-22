@@ -140,6 +140,36 @@ type appConfig struct {
 	// DescribeConfigRuleEvaluationStatus sweeps instead of per-rule calls.
 	CloudCollectorAwsConfigRuleDiscoveryEnabled bool `mapstructure:"cloud_collector_aws_config_rule_discovery_enabled"`
 
+	// CloudCollectorCommitmentRecommendationsEnabled turns on the "commitments"
+	// recommendation pass (under-used, expiring and poorly covered Savings Plans
+	// and Reserved Instances). Off by default: the rows land in the shared
+	// recommendation table, so the Optimize page lists them from the next sync,
+	// and it has no catalog text or evidence view for these rules yet. While off
+	// the pass reports nothing, which also archives any rows raised while it was
+	// on.
+	CloudCollectorCommitmentRecommendationsEnabled bool `mapstructure:"cloud_collector_commitment_recommendations_enabled"`
+
+	// The disk performance rule flags disks whose provisioned IOPS or throughput is
+	// far above the 30-day observed peak. It is on by default; each cloud has a
+	// switch so the rule can be turned off for that cloud without a release, since
+	// it reads usage history from the cloud's metrics API during the recommendation
+	// sync. While a switch is off the rule reports nothing for that cloud, which
+	// also archives any rows raised while it was on.
+	CloudCollectorDiskPerformanceRuleAwsEnabled   bool `mapstructure:"cloud_collector_disk_performance_rule_aws_enabled"`
+	CloudCollectorDiskPerformanceRuleAzureEnabled bool `mapstructure:"cloud_collector_disk_performance_rule_azure_enabled"`
+	CloudCollectorDiskPerformanceRuleGcpEnabled   bool `mapstructure:"cloud_collector_disk_performance_rule_gcp_enabled"`
+	// Provisional thresholds of the disk performance rule: the headroom kept above
+	// the observed peak (generous, because the peak is a one-minute or five-minute
+	// figure while disks throttle per second), the peak utilization below which a setting counts as
+	// over-provisioned, and the smallest estimated monthly saving worth reporting.
+	CloudCollectorDiskPerformanceHeadroomPercent       float64 `mapstructure:"cloud_collector_disk_performance_headroom_percent"`
+	CloudCollectorDiskPerformanceMaxUtilizationPercent float64 `mapstructure:"cloud_collector_disk_performance_max_utilization_percent"`
+	CloudCollectorDiskPerformanceMinMonthlySavings     float64 `mapstructure:"cloud_collector_disk_performance_min_monthly_savings"`
+	// Bounds on one run of the disk performance rule, which shares the
+	// recommendation sync's time limit with every other rule of the account.
+	CloudCollectorDiskPerformanceMaxDisks          int `mapstructure:"cloud_collector_disk_performance_max_disks"`
+	CloudCollectorDiskPerformanceTimeBudgetSeconds int `mapstructure:"cloud_collector_disk_performance_time_budget_seconds"`
+
 	// EnableMultiSourceServicemap is the rollout toggle for the multi-source AWS
 	// service-map engine (VPC Flow Logs etc.) instead of the legacy AWS Config path.
 	// Env: ENABLE_MULTI_SOURCE_SERVICEMAP
@@ -244,6 +274,18 @@ func init() {
 
 	// Per-rule AWS Config discovery is off by default — see CloudCollectorAwsConfigRuleDiscoveryEnabled.
 	viper.SetDefault("cloud_collector_aws_config_rule_discovery_enabled", false)
+
+	// Commitment recommendations are off by default — see CloudCollectorCommitmentRecommendationsEnabled.
+	viper.SetDefault("cloud_collector_commitment_recommendations_enabled", false)
+	// The disk performance rule is on by default — see CloudCollectorDiskPerformanceRuleAwsEnabled.
+	viper.SetDefault("cloud_collector_disk_performance_rule_aws_enabled", true)
+	viper.SetDefault("cloud_collector_disk_performance_rule_azure_enabled", true)
+	viper.SetDefault("cloud_collector_disk_performance_rule_gcp_enabled", true)
+	viper.SetDefault("cloud_collector_disk_performance_headroom_percent", 50)
+	viper.SetDefault("cloud_collector_disk_performance_max_utilization_percent", 50)
+	viper.SetDefault("cloud_collector_disk_performance_min_monthly_savings", 1)
+	viper.SetDefault("cloud_collector_disk_performance_max_disks", 200)
+	viper.SetDefault("cloud_collector_disk_performance_time_budget_seconds", 300)
 
 	// Multi-source service-map engine is off by default — see EnableMultiSourceServicemap.
 	viper.SetDefault("enable_multi_source_servicemap", false)

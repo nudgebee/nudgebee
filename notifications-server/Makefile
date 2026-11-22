@@ -1,25 +1,25 @@
-# notifications-server (Python / Poetry)
-# Targets mirror the commands run in CI (.github/workflows/notifications.yaml).
+# notifications-server (Python / uv)
+# Targets mirror the commands run in CI (.github/workflows/notifications-*.yaml).
 .PHONY: install fmt lint typecheck test run clean
 
 install:
-	poetry install
+	uv sync --locked
 
 fmt:
-	poetry run black .
+	uv run black .
 
 lint:
-	poetry run black --check .
-	poetry run flake8 .
+	uv run black --check .
+	uv run flake8 .
 
 typecheck:
-	poetry run mypy notifications_server --namespace-packages
+	uv run mypy notifications_server --namespace-packages
 
 test:
-	poetry run pytest
+	uv run pytest
 
 run:
-	poetry run python -m notifications_server.server
+	uv run python -m notifications_server.server
 
 clean:
 	rm -rf .mypy_cache __pycache__ .pytest_cache dist build *.egg-info

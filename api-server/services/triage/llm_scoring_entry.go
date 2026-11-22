@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"nudgebee/services/config"
@@ -23,6 +25,10 @@ const systemUserID = "00000000-0000-0000-0000-000000000000"
 // mintTimeout bounds a background (re-)mint's LLM call so a hung llm-server can't leak the
 // goroutine. DB cleanup after a failed/timed-out mint runs on a fresh context, not this one.
 const mintTimeout = 2 * time.Minute
+
+// parkTimeout bounds the write that parks a class after a failed mint, so a stalled DB can't hold
+// the mint goroutine open.
+const parkTimeout = 10 * time.Second
 
 // classificationPromptVersion stamps every minted verdict. Bump it whenever classificationPrompt
 // changes in a way that should re-classify existing classes (new categories, recalibrated severity
@@ -62,16 +68,16 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event, corr
 			// class never reaches here (resolveHumanOverride short-circuits before ComputeScoreLLM),
 			// so a human pin is never re-minted.
 			if config.Config.FeatureLLMTriageRemintEnabled && v.PromptVersion < classificationPromptVersion {
-				triggerRemint(db, event, tenantID, classKey)
+				triggerRemint(ctx, db, event, tenantID, classKey)
 				lookup = "cache_stale_remint"
 			}
 		}
 	}
 	if verdict == nil {
-		verdict = fallbackVerdict(event)
-		if tenantID != "" {
-			triggerMint(db, event, tenantID, classKey)
+		if tenantID != "" && !triggerMint(ctx, db, event, tenantID, classKey) {
+			return nil, ErrNoVerdictPossible
 		}
+		verdict = fallbackVerdict(event)
 	}
 
 	// Deterministic guardrails correct the cached verdict for event-level facts it can't see
@@ -167,19 +173,89 @@ func getOccurrenceCount(ctx context.Context, db *sqlx.DB, eventID string) int {
 	return n
 }
 
-// triggerMint claims the class and, if claimed, mints its verdict asynchronously.
-func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
-	if !claimSignalClass(context.Background(), db, tenantID, classKey) {
-		return // another event/replica is already minting this class
+// mintAttemptsPerTenantPerDay caps how many LLM classification calls one replica starts for one
+// tenant in a day. A guard for a tenant nobody watches (its alert keys churn into thousands of
+// classes), not cost control: a mint costs about a cent. A var so tests can lower it.
+var mintAttemptsPerTenantPerDay = 1000
+
+// mintBudget counts mint attempts per tenant in this process. Per replica on purpose: it needs no
+// shared state, and replicas × cap is still a bound.
+type mintBudget struct {
+	mu      sync.Mutex
+	tenants map[string]*tenantMintBudget
+}
+
+type tenantMintBudget struct {
+	windowStart time.Time
+	attempts    int
+	lastWarned  time.Time
+}
+
+var mintAttempts = &mintBudget{tenants: map[string]*tenantMintBudget{}}
+
+// exhausted reports whether the tenant has used its attempts for the current day, warning at most
+// once an hour per tenant while it stays exhausted.
+func (b *mintBudget) exhausted(tenantID string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t := b.current(tenantID, now)
+	if t.attempts < mintAttemptsPerTenantPerDay {
+		return false
 	}
+	if now.Sub(t.lastWarned) >= time.Hour {
+		t.lastWarned = now
+		slog.Warn("signal-class mint cap reached; scoring this tenant's new classes with the legacy formula",
+			"tenant_id", tenantID, "attempts", t.attempts, "window_start", t.windowStart)
+	}
+	return true
+}
+
+// record counts one started mint attempt.
+func (b *mintBudget) record(tenantID string, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.current(tenantID, now).attempts++
+}
+
+// current returns the tenant's counter, starting a new day once the old window has passed.
+// Callers hold b.mu.
+func (b *mintBudget) current(tenantID string, now time.Time) *tenantMintBudget {
+	t, ok := b.tenants[tenantID]
+	if !ok || now.Sub(t.windowStart) >= 24*time.Hour {
+		t = &tenantMintBudget{windowStart: now}
+		b.tenants[tenantID] = t
+	}
+	return t
+}
+
+// ErrNoVerdictPossible means a class has no cached verdict and none is coming soon: its last mint
+// failed, or the tenant used up its mint attempts. ComputeScore scores the event with the legacy
+// formula instead of the fallback verdict, so a tenant without a working LLM keeps the priorities
+// it had before AI scoring (including P0, which the fallback verdict's band cannot reach).
+var ErrNoVerdictPossible = errors.New("triage: no verdict available for this signal class")
+
+// triggerMint claims the class and, if claimed, mints its verdict asynchronously. It returns
+// false when the class can't get a verdict for now (its last mint failed, or the tenant's mint
+// attempts are used up); true when a mint started here or is already running elsewhere.
+func triggerMint(ctx context.Context, db *sqlx.DB, event *models.Event, tenantID, classKey string) bool {
+	if mintAttempts.exhausted(tenantID, time.Now()) {
+		return false
+	}
+	if !claimSignalClass(ctx, db, tenantID, classKey) {
+		// Another event/replica is minting this class, or its last mint failed within the hour.
+		return !isSignalClassFailed(ctx, db, tenantID, classKey)
+	}
+	mintAttempts.record(tenantID, time.Now())
 	go func() {
 		// A mint must never crash the process. If anything in the mint path panics (e.g. a failed
-		// security-context build), recover and release the claim so the class can re-mint later.
+		// security-context build), recover and park the class so it retries in an hour.
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("signal-class mint panicked; recovered and released claim",
+				slog.Error("signal-class mint panicked; recovered and parked the class",
 					"class_key", classKey, "panic", r)
-				releaseClaim(context.Background(), db, tenantID, classKey)
+				parkCtx, parkCancel := context.WithTimeout(context.Background(), parkTimeout)
+				defer parkCancel()
+				markSignalClassFailed(parkCtx, db, tenantID, classKey)
 			}
 		}()
 		// Detached but BOUNDED: cap the LLM call so a hung llm-server can't leak this goroutine.
@@ -187,11 +263,13 @@ func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
 		defer cancel()
 		verdict, err := mintSignalVerdict(ctx, db, event)
 		if err != nil {
-			// Release the claim so a future event re-attempts (e.g. once the minter is wired
-			// or after a transient llm-server failure). Until then, fallback scoring is used.
+			// Park the class for an hour instead of releasing it: released, the very next alert
+			// re-claimed it, so a tenant with no working LLM made one failing call per alert.
 			// Cleanup runs on a fresh context — the mint context may already be timed out.
-			releaseClaim(context.Background(), db, tenantID, classKey)
-			slog.WarnContext(ctx, "signal-class mint failed; released claim",
+			parkCtx, parkCancel := context.WithTimeout(context.Background(), parkTimeout)
+			defer parkCancel()
+			markSignalClassFailed(parkCtx, db, tenantID, classKey)
+			slog.WarnContext(ctx, "signal-class mint failed; retrying the class in an hour",
 				"class_key", classKey, "error", err)
 			return
 		}
@@ -210,16 +288,21 @@ func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
 		// conservative fallback before the mint completed, so they pick up the real verdict.
 		rescoreFreshlyMintedClass(context.Background(), db, tenantID, classKey)
 	}()
+	return true
 }
 
 // triggerRemint flips a stale active verdict to 'reminting' (CAS) and, if it won the claim, mints
 // a fresh verdict asynchronously. The old verdict keeps serving until the new one is promoted; on
 // failure the row is reverted to active so the old verdict is preserved (never lost to a transient
 // llm-server error).
-func triggerRemint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
-	if !claimRemint(context.Background(), db, tenantID, classKey, classificationPromptVersion) {
+func triggerRemint(ctx context.Context, db *sqlx.DB, event *models.Event, tenantID, classKey string) {
+	if mintAttempts.exhausted(tenantID, time.Now()) {
+		return // the stale verdict keeps serving
+	}
+	if !claimRemint(ctx, db, tenantID, classKey, classificationPromptVersion) {
 		return // another serve already claimed the re-mint, or it's no longer stale
 	}
+	mintAttempts.record(tenantID, time.Now())
 	go func() {
 		// A re-mint must never crash the process; recover and revert so the old verdict keeps serving.
 		defer func() {
@@ -270,6 +353,11 @@ const rescoreMaxOnMint = 30
 // Bounded + async
 // (called from the mint goroutine on a fresh context); matches the class by the class_key stored in
 // score_factors (exact, no re-derivation).
+//
+// The created_at bound is what makes this cheap: it lets the planner walk the tenant's recent
+// events by (tenant, created_at) instead of every open event. An index on score_factors
+// is not an option — every firing rewrites that column, and the index would cost those writes
+// their HOT updates. An open fallback event older than 48h is left to its next firing.
 func rescoreFreshlyMintedClass(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
 	if tenantID == "" || classKey == "" {
 		return
@@ -281,6 +369,7 @@ func rescoreFreshlyMintedClass(ctx context.Context, db *sqlx.DB, tenantID, class
 		  AND score_factors->>'class_key' = $2
 		  AND COALESCE(score_factors->>'verdict_source', '') = 'fallback'
 		  AND nb_status IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'ACTION_REQUIRED')
+		  AND created_at > now() - interval '48 hours'
 		  AND updated_at > now() - interval '24 hours'
 		ORDER BY updated_at DESC
 		LIMIT $3`, tenantID, classKey, rescoreMaxOnMint); err != nil {
@@ -305,15 +394,6 @@ func rescoreFreshlyMintedClass(ctx context.Context, db *sqlx.DB, tenantID, class
 	}
 	slog.InfoContext(ctx, "rescore-on-mint: refreshed fallback events with minted verdict",
 		"class_key", classKey, "candidates", len(ids), "rescored", rescored)
-}
-
-// releaseClaim removes a still-minting placeholder so the class can be re-claimed later.
-func releaseClaim(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
-	if _, err := db.ExecContext(ctx,
-		`DELETE FROM triage_signal_class WHERE tenant_id = $1 AND class_key = $2 AND status = 'minting'`,
-		tenantID, classKey); err != nil {
-		slog.WarnContext(ctx, "failed to release signal-class claim", "class_key", classKey, "error", err)
-	}
 }
 
 // mintSignalVerdict asks the LLM to categorize a never-seen signal class into a SignalVerdict.
@@ -392,6 +472,10 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 		return *p
 	}
 	var b strings.Builder
+	if check, ok := cloudWatchCheckOf(jsonObject(event.Labels)); ok {
+		writeCloudWatchCheckContext(&b, event, check)
+		return b.String()
+	}
 	fmt.Fprintf(&b, "- title: %q\n", event.Title)
 	fmt.Fprintf(&b, "- aggregation_key: %s\n", get(event.AggregationKey))
 	fmt.Fprintf(&b, "- source: %s\n", get(event.Source))
@@ -411,6 +495,37 @@ func buildEventContext(event *models.Event, facts workloadFacts) string {
 	}
 	renderWorkloadFacts(&b, facts)
 	return b.String()
+}
+
+// alarmComparison finds how CloudWatch compared the datapoints with the threshold, in the
+// fixed wording of an alarm's state reason. Longest phrases first, so "greater than or equal
+// to" is not read as "greater than".
+var alarmComparison = regexp.MustCompile(`(greater than or equal to|less than or equal to|greater than|less than)`)
+
+// writeCloudWatchCheckContext renders a CloudWatch metric alarm as the check its class is keyed
+// on (cloudWatchCheck). The title, alarm name and state reason are left out: they name one
+// instance or host and carry its datapoints, and the verdict is served to every resource the
+// check runs on.
+func writeCloudWatchCheckContext(b *strings.Builder, event *models.Event, check cloudWatchCheck) {
+	fmt.Fprintf(b, "- alarm: CloudWatch %s %s (%s)", check.Namespace, check.Metric, check.Statistic)
+	reason, _ := jsonObject(event.Labels)["aws_event_state_reason"].(string)
+	if reason == "" {
+		reason = deref(event.Description)
+	}
+	if m := alarmComparison.FindString(strings.ToLower(reason)); m != "" {
+		fmt.Fprintf(b, " %s", m)
+	} else {
+		fmt.Fprint(b, " compared with")
+	}
+	fmt.Fprintf(b, " threshold %s", check.Threshold)
+	if check.DimensionKind != "" {
+		fmt.Fprintf(b, ", per %s", check.DimensionKind)
+	}
+	fmt.Fprint(b, "\n")
+	fmt.Fprintf(b, "- source: %s\n", deref(event.Source))
+	fmt.Fprintf(b, "- finding_type: %s\n", deref(event.FindingType))
+	fmt.Fprintf(b, "- priority(source): %s\n", deref(event.Priority))
+	fmt.Fprintf(b, "- subject: %s in namespace %s\n", deref(event.SubjectType), deref(event.SubjectNamespace))
 }
 
 // groundingGuidance instructs the classifier to prefer the observed workload facts (rendered by

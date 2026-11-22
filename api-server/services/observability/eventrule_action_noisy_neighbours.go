@@ -3,6 +3,7 @@ package observability
 import (
 	"errors"
 	"fmt"
+	"math"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/security"
 	"sort"
@@ -72,6 +73,20 @@ const (
 	// count as having hit it. Below 100 because the peak is the last scrape before
 	// the kill, not the allocation that triggered it.
 	subjectAtOwnLimitPct = 90
+
+	// subjectPeakStepSeconds is how finely the subject's own memory peak is sampled.
+	// The window's derived step is 60s, and a peak over minute-spaced points sees only
+	// the sample each minute boundary lands on: a pod that climbs to its limit between
+	// two boundaries and is killed before the next is read at the previous one. On the
+	// cases that reported a pod at 63-84% of its limit when it was at 96-100%, this
+	// step recovers the peak. 15s is the shortest common scrape interval.
+	//
+	// Only the subject is read this finely. The node total is a sum of each
+	// container's own peak, which already overstates the node's peak at any one
+	// moment; a finer step finds higher peaks in every container and overstates it
+	// further — measured on the same kills, up to 20 points above the node's real
+	// peak against 15 at the derived step — and the node verdict keys on that total.
+	subjectPeakStepSeconds = 15
 )
 
 // oom_cause values on the card for OOM-kill events. Incident grouping reads the
@@ -88,6 +103,9 @@ const (
 // the account's backend, so what remains worth testing is what the card does with
 // what comes back.
 var fetchNoisyNeighbourMetrics = fetchNoisyNeighbours
+
+// Indirected so a test can see the requests the card sends to the layer.
+var fetchNoisyNeighbourUtilisation = FetchMetricUtilisation
 
 func (a *noisyNeighboursAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
 	if !noisyNeighboursAggKeys[ctx.GetEvent().AggregationKey] {
@@ -169,15 +187,8 @@ func (a *noisyNeighboursAction) Execute(ctx playbooks.PlaybookActionContext, raw
 // this verdict to decide whether those kills are one incident, so the verdict
 // cannot be derived from them.
 func oomCause(d *noisyNeighbourData) string {
-	for _, row := range d.Neighbours {
-		if row["is_subject"] != true {
-			continue
-		}
-		used, _ := row["memory_used"].(float64)
-		limit, _ := row["memory_limit"].(float64)
-		if limit > 0 && used >= limit*subjectAtOwnLimitPct/100 {
-			return oomCauseOwnLimit
-		}
+	if _, pct, ok := subjectNearestItsLimit(d); ok && pct >= subjectAtOwnLimitPct {
+		return oomCauseOwnLimit
 	}
 	if !d.SubjectMeasured || d.NodeAllocatable <= 0 {
 		return oomCauseUndetermined
@@ -186,6 +197,33 @@ func oomCause(d *noisyNeighbourData) string {
 		return oomCauseNodeMemory
 	}
 	return oomCauseUndetermined
+}
+
+// subjectNearestItsLimit is the subject's container that peaked closest to its own
+// memory limit, with that peak as a percentage of the limit. ok is false when none of
+// the subject's containers has a limit recorded. The verdict and the insight that
+// states it both read this, so they cannot name different containers.
+func subjectNearestItsLimit(d *noisyNeighbourData) (row map[string]any, pct float64, ok bool) {
+	for _, r := range d.Neighbours {
+		if r["is_subject"] != true {
+			continue
+		}
+		used, _ := r["memory_used"].(float64)
+		limit, _ := r["memory_limit"].(float64)
+		if limit <= 0 {
+			continue
+		}
+		// A NaN reading is no reading. Taken as the first row it would win, and every
+		// later comparison against it is false, hiding a container that hit its limit.
+		p := used / limit * 100
+		if math.IsNaN(p) {
+			continue
+		}
+		if !ok || p > pct {
+			row, pct, ok = r, p, true
+		}
+	}
+	return row, pct, ok
 }
 
 type noisyNeighbourData struct {
@@ -261,12 +299,13 @@ var (
 // implementation took the latest sample instead, so Prometheus numbers move slightly
 // and the two providers now agree, which they did not before.
 func fetchNoisyNeighbours(ctx *security.RequestContext, accountID, nodeName, podName, namespace string, start, end time.Time) (*noisyNeighbourData, error) {
-	ask := func(keys []string, aggregate string) (map[string][]latestSample, error) {
-		output, err := FetchMetricUtilisation(ctx, GetUtilisationTrendRequest{
+	ask := func(keys []string, aggregate string, step int) (map[string][]latestSample, error) {
+		output, err := fetchNoisyNeighbourUtilisation(ctx, GetUtilisationTrendRequest{
 			AccountId: accountID,
 			StartTime: start.UnixMilli(),
 			EndTime:   end.UnixMilli(),
 			Aggregate: aggregate,
+			Step:      step,
 			Request: map[string]any{
 				"kind":      "node",
 				"node_name": nodeName,
@@ -279,7 +318,7 @@ func fetchNoisyNeighbours(ctx *security.RequestContext, accountID, nodeName, pod
 		return latestValuesByKey(output), nil
 	}
 
-	memory, err := ask(noisyNeighbourMemoryKeys, "max")
+	memory, err := ask(noisyNeighbourMemoryKeys, "max", 0)
 	if err != nil {
 		// A provider that cannot answer these keys is not an error the event should
 		// carry: the card is skipped with the reason logged, which is what the
@@ -288,7 +327,14 @@ func fetchNoisyNeighbours(ctx *security.RequestContext, accountID, nodeName, pod
 			"account_id", accountID, "node", nodeName, "error", err)
 		return nil, nil
 	}
-	cpu, err := ask(noisyNeighbourCPUKeys, "avg")
+	// The subject's own peak, sampled finely. Without it the card can miss the climb
+	// that killed the pod, and the verdict calls a pod at its limit a node shortage.
+	subjectPeak, err := ask([]string{"container_memory_working_set_by_pod"}, "max", subjectPeakStepSeconds)
+	if err != nil {
+		ctx.GetLogger().Info("noisy_neighbours_enricher: fine subject reading unavailable; using the window's step",
+			"account_id", accountID, "node", nodeName, "error", err)
+	}
+	cpu, err := ask(noisyNeighbourCPUKeys, "avg", 0)
 	if err != nil {
 		ctx.GetLogger().Info("noisy_neighbours_enricher: cpu metrics unavailable; rendering the card without them",
 			"account_id", accountID, "node", nodeName, "error", err)
@@ -297,6 +343,7 @@ func fetchNoisyNeighbours(ctx *security.RequestContext, accountID, nodeName, pod
 
 	results := map[string][]latestSample{
 		"top_pods":     memory["container_memory_working_set_by_pod"],
+		"subject_peak": subjectPeak["container_memory_working_set_by_pod"],
 		"mem_requests": memory["container_memory_request_by_pod"],
 		"mem_limits":   memory["container_memory_limit_by_pod"],
 
@@ -342,7 +389,7 @@ func buildNoisyNeighbourData(nodeName, podName, namespace string, results map[st
 
 	neighbours := []map[string]any{}
 	if vec, ok := results["top_pods"]; ok {
-		for _, s := range vec {
+		for _, s := range withSubjectPeak(vec, results["subject_peak"], podName, namespace) {
 			pod := s.Metric["pod"]
 			ns := s.Metric["namespace"]
 			container := s.Metric["container"]
@@ -444,6 +491,31 @@ func buildNoisyNeighbourData(nodeName, podName, namespace string, results map[st
 	// which is a different question from "where does the pod I am looking at sit".
 	data.SubjectMeasured = markNoisyNeighboursSubject(data, podName, namespace)
 	return data, nil
+}
+
+// withSubjectPeak swaps the subject's samples for its finely sampled peak, when there
+// is one, for the rows the card lists. The node total is still summed from the coarse
+// samples — see subjectPeakStepSeconds.
+func withSubjectPeak(coarse, fine []latestSample, podName, namespace string) []latestSample {
+	isSubject := func(s latestSample) bool {
+		return s.Metric["pod"] == podName && s.Metric["namespace"] == namespace
+	}
+	var subject []latestSample
+	for _, s := range fine {
+		if isSubject(s) {
+			subject = append(subject, s)
+		}
+	}
+	if len(subject) == 0 {
+		return coarse
+	}
+	out := make([]latestSample, 0, len(coarse)+len(subject))
+	for _, s := range coarse {
+		if !isSubject(s) {
+			out = append(out, s)
+		}
+	}
+	return append(out, subject...)
 }
 
 // trimKeepingSubject cuts a ranked list to the top N but never drops the pod the
@@ -573,20 +645,41 @@ func noisyNeighboursResponse(podName, namespace string, rawParams map[string]any
 // doing the arithmetic. The card shipped with an empty insight list on all 752 of
 // the cards measured over 14 days.
 //
-// Every line states only what was measured. In particular there is no "your pod
-// exceeded its own limit" line: three quarters of these events have no memory
-// limit recorded for the subject at all, so that claim cannot be earned here.
+// Every line states only what was measured. The pod's own limit is named only when
+// oomCause says the pod reached it, which needs a limit recorded for the subject —
+// three quarters of these events have none, so it cannot be the default reading.
 func noisyNeighboursInsights(d *noisyNeighbourData) []playbooks.PlaybookActionResponseInsight {
 	insights := []playbooks.PlaybookActionResponseInsight{}
 
-	// The strongest signal first: other pods died on this machine, minutes apart.
-	// It is not co-timing — it is the same node killing more than one tenant.
-	if n := len(d.CoKilled); n > 0 {
+	// The card's own verdict first. Without it the headline was chosen from node
+	// figures alone, so a pod killed at its own limit on a busy node was told the
+	// node was to blame — and on-call went to the neighbours instead of the limit.
+	ownLimit := d.OOMCause == oomCauseOwnLimit
+	if ownLimit {
+		row, pct, _ := subjectNearestItsLimit(d)
+		used, _ := row["memory_used"].(float64)
+		limit, _ := row["memory_limit"].(float64)
+		// formatBytes, not formatBytesGiB: container limits are often well under a GiB,
+		// where two GiB decimals print a 128Mi limit as 0.12 GiB.
 		insights = append(insights, playbooks.PlaybookActionResponseInsight{
-			Message: fmt.Sprintf("%s also OOM-killed on this node within %d minutes: %s. One full machine, not %d unrelated faults.",
-				pluralPods(n), coLocatedWindowMinutes, describeCoKilled(d.CoKilled), n+1),
+			Message: fmt.Sprintf("This pod reached its own memory limit: container %v peaked at %s of its %s limit (%.0f%%) before it was killed. The limit stopped it, not the node — raise the limit or find what grew.",
+				row["name"], formatBytes(used), formatBytes(limit), pct),
 			Severity: "HIGH",
 		})
+	}
+
+	// Other pods died on this machine, minutes apart. It is not co-timing — it is the
+	// same node killing more than one tenant. Reported either way, but called one full
+	// machine only when this pod was not stopped by its own limit.
+	if n := len(d.CoKilled); n > 0 {
+		message := fmt.Sprintf("%s also OOM-killed on this node within %d minutes: %s.",
+			pluralPods(n), coLocatedWindowMinutes, describeCoKilled(d.CoKilled))
+		severity := "MEDIUM"
+		if !ownLimit {
+			message += fmt.Sprintf(" One full machine, not %d unrelated faults.", n+1)
+			severity = "HIGH"
+		}
+		insights = append(insights, playbooks.PlaybookActionResponseInsight{Message: message, Severity: severity})
 	}
 
 	if d.NodeAllocatable > 0 {
@@ -602,6 +695,17 @@ func noisyNeighboursInsights(d *noisyNeighbourData) []playbooks.PlaybookActionRe
 		// investigation agent, that oversubscription killed the pod.
 		nodeShort := usedPct >= nodeMemoryShortPct || len(d.CoKilled) > 0
 		switch {
+		// The pod was stopped by its own limit, which the first line says. A full node
+		// is still worth knowing, but as context: the oversubscription and headroom
+		// lines below name the node as the cause.
+		case ownLimit && usedPct >= nodeMemoryShortPct:
+			insights = append(insights, playbooks.PlaybookActionResponseInsight{
+				Message: fmt.Sprintf("Node memory also peaked at %.0f%% of allocatable (%s of %s) in the window before the kill.",
+					usedPct, formatBytesGiB(d.NodeUsed), formatBytesGiB(d.NodeAllocatable)),
+				Severity: "MEDIUM",
+			})
+		// Short only through the co-kills, which their own line already reports.
+		case ownLimit && nodeShort:
 		// Oversubscribed beats every other reading once the node did run out: the
 		// pods on it are allowed to take more memory than it has, which is how it got
 		// there. `kubectl describe node` puts requests and limits side by side for

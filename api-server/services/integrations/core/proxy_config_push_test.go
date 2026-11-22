@@ -94,3 +94,126 @@ func TestIsProxyIntegration_ConfigAware(t *testing.T) {
 		})
 	}
 }
+
+// Prometheus is dual-mode but keeps the one-per-account rule in direct mode, so
+// the type-only predicate stays false while the config-aware one follows
+// connection_mode.
+func TestPrometheus_ProxyEligibility(t *testing.T) {
+	assert.False(t, IsProxyIntegrationType("prometheus"))
+	assert.True(t, IsProxyCapableType("prometheus"))
+
+	vm := []IntegrationConfigValue{{Name: "connection_mode", Value: "vm_agent"}}
+	direct := []IntegrationConfigValue{{Name: "connection_mode", Value: "direct"}}
+	assert.True(t, IsProxyIntegration("prometheus", vm))
+	assert.False(t, IsProxyIntegration("prometheus", direct))
+	assert.False(t, IsProxyIntegration("prometheus", nil), "rows saved before connection_mode existed are direct")
+}
+
+func TestBuildSingleDatasourceConfig_Prometheus(t *testing.T) {
+	ds, err := BuildSingleDatasourceConfig("prometheus", []IntegrationConfigValue{
+		{Name: "connection_mode", Value: "vm_agent"},
+		{Name: "prometheus_url", Value: "https://prom.corp:9090/"},
+		{Name: "auth_type", Value: "basic"},
+		{Name: "prometheus_username", Value: "writer"},
+		{Name: "prometheus_password", Value: "s3cret"},
+		{Name: "prometheus_additional_labels", Value: `cluster="x"`},
+		{Name: "default_metrics_provider", Value: "true"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "prometheus", ds.Type)
+	assert.Equal(t, "http-proxy", ds.ProxyType)
+	assert.Equal(t, "https://prom.corp:9090", ds.Config["base_url"])
+	assert.Equal(t, "basic", ds.Config["auth_type"])
+	assert.Equal(t, map[string]string{"username": "writer", "password": "s3cret"}, ds.Credentials)
+
+	// Nothing prometheus_* and no secret may remain in the plain config map.
+	for k := range ds.Config {
+		assert.NotContains(t, k, "prometheus_", "config key %q leaked", k)
+	}
+	assert.NotContains(t, ds.Config, "default_metrics_provider")
+	assert.NotContains(t, ds.Config, "connection_mode")
+}
+
+func TestNormalizePrometheusProxyDatasource_Auth(t *testing.T) {
+	t.Run("bearer", func(t *testing.T) {
+		cfg := map[string]any{"prometheus_url": "http://p:9090", "auth_type": "bearer_token", "prometheus_bearer_token": "tok"}
+		creds := map[string]string{}
+		normalizePrometheusProxyDatasource(cfg, creds)
+		assert.Equal(t, "bearer", cfg["auth_type"])
+		assert.Equal(t, "tok", creds["bearer_token"])
+	})
+	t.Run("none sends no auth_type", func(t *testing.T) {
+		cfg := map[string]any{"prometheus_url": "http://p:9090", "auth_type": "none"}
+		normalizePrometheusProxyDatasource(cfg, map[string]string{})
+		assert.NotContains(t, cfg, "auth_type")
+	})
+}
+
+func TestLoki_ProxyEligibility(t *testing.T) {
+	assert.False(t, IsProxyIntegrationType("loki"), "direct Loki keeps the one-per-account rule")
+	assert.True(t, IsProxyCapableType("loki"))
+
+	vm := []IntegrationConfigValue{{Name: "connection_mode", Value: "vm_agent"}}
+	assert.True(t, IsProxyIntegration("loki", vm))
+	assert.False(t, IsProxyIntegration("loki", nil), "rows saved before connection_mode existed are direct")
+}
+
+func TestBuildSingleDatasourceConfig_Loki(t *testing.T) {
+	ds, err := BuildSingleDatasourceConfig("loki", []IntegrationConfigValue{
+		{Name: "connection_mode", Value: "vm_agent"},
+		{Name: "loki_url", Value: "https://loki.corp:3100/"},
+		{Name: "loki_auth_type", Value: "bearer_token"},
+		{Name: "loki_bearer_token", Value: "tok"},
+		{Name: "loki_tenant_id", Value: "team-a"},
+		{Name: "loki_headers", Value: `{"X-Team":"platform"}`},
+		{Name: "default_log_provider", Value: "true"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "loki", ds.Type)
+	assert.Equal(t, "http-proxy", ds.ProxyType)
+	assert.Equal(t, "https://loki.corp:3100", ds.Config["base_url"])
+	assert.Equal(t, "bearer", ds.Config["auth_type"])
+	// The tenant id is not a forager credential: the server sends X-Scope-OrgID per request.
+	assert.Equal(t, map[string]string{"bearer_token": "tok"}, ds.Credentials)
+
+	for k := range ds.Config {
+		assert.NotContains(t, k, "loki_", "config key %q leaked", k)
+	}
+	assert.NotContains(t, ds.Config, "default_log_provider")
+	assert.NotContains(t, ds.Config, "connection_mode")
+}
+
+func TestNormalizeLokiProxyDatasource_NoAuth(t *testing.T) {
+	cfg := map[string]any{"loki_url": "http://l:3100", "loki_auth_type": "none"}
+	creds := map[string]string{}
+	normalizeLokiProxyDatasource(cfg, creds)
+	assert.Equal(t, map[string]any{"base_url": "http://l:3100"}, cfg)
+	assert.Empty(t, creds)
+}
+
+func TestSignoz_ProxyEligibility(t *testing.T) {
+	assert.False(t, IsProxyIntegrationType("signoz"), "direct SigNoz keeps the one-per-account rule")
+	assert.True(t, IsProxyCapableType("signoz"))
+
+	vm := []IntegrationConfigValue{{Name: "connection_mode", Value: "vm_agent"}}
+	assert.True(t, IsProxyIntegration("signoz", vm))
+	assert.False(t, IsProxyIntegration("signoz", nil), "rows saved before connection_mode existed are direct")
+}
+
+// The forager's SigNoz datasource is unauthenticated: the login email and password
+// must stay on the server, so none of them may reach the forager's config or credentials.
+func TestBuildSingleDatasourceConfig_Signoz(t *testing.T) {
+	ds, err := BuildSingleDatasourceConfig("signoz", []IntegrationConfigValue{
+		{Name: "connection_mode", Value: "vm_agent"},
+		{Name: "signoz_mode", Value: "self_hosted"},
+		{Name: "signoz_url", Value: "http://10.0.0.9:3301/"},
+		{Name: "signoz_username", Value: "ops@corp.example"},
+		{Name: "signoz_password", Value: "hunter2"},
+		{Name: "default_log_provider", Value: "true"},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "signoz", ds.Type)
+	assert.Equal(t, "http-proxy", ds.ProxyType)
+	assert.Equal(t, map[string]any{"base_url": "http://10.0.0.9:3301"}, ds.Config)
+	assert.Empty(t, ds.Credentials)
+}

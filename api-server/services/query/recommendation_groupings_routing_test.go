@@ -51,6 +51,14 @@ func TestRecommendationGroupingsRouting(t *testing.T) {
 			Columns: cols("count"),
 			Where:   QueryWhereClause{Binary: BinaryWhereClause{"is_primary_recommendation": {Eq: true}}},
 		}, lean},
+		{"a created_at age filter keeps the fast path", QueryRequest{
+			Columns: cols("count"),
+			Where:   QueryWhereClause{Binary: BinaryWhereClause{"created_at": {Lt: "2026-01-01T00:00:00Z"}}},
+		}, fast},
+		{"an aged savings roll-up needs the window but no join", QueryRequest{
+			Columns: cols("count", "sum_estimated_savings"),
+			Where:   QueryWhereClause{Binary: BinaryWhereClause{"created_at": {Lt: "2026-01-01T00:00:00Z"}}},
+		}, lean},
 		{"a display column forces the join", QueryRequest{Columns: cols("count", "sum_estimated_savings", "resource_cloud_service")}, full},
 		{"resource_names aggregates resource_name, so it forces the join", QueryRequest{
 			Columns: cols("vuln_id", "count", "resource_names"),
@@ -158,7 +166,8 @@ func TestRecommendationGroupings_StatusAndRuleNamePushdownGatedToWindowSafety(t 
 			require.Contains(t, sql, "ROW_NUMBER", "expected this request shape to take a windowed (lean/full) path")
 			// (bare "r.status" also appears in the window's own ORDER BY tie-break)
 			assert.NotContains(t, sql, "r.status = 'Archive'", "status must stay out of the CTE's WHERE on a windowed path")
-			assert.NotContains(t, sql, "r.rule_name", "rule_name must stay out of the CTE on a windowed path unless it's exactly 'image_scan'")
+			// (bare "r.rule_name" also appears in the namespace projection)
+			assert.NotContains(t, sql, " AND r.rule_name", "rule_name must stay out of the CTE on a windowed path unless it's exactly 'image_scan'")
 			assert.Contains(t, sql, tc.wantIn, "the filter must still be applied somewhere (the outer WHERE), not silently dropped")
 		})
 	}

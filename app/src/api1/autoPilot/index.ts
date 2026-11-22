@@ -95,7 +95,7 @@ query AutoPilotAggregate($where1: AutoPilotGroupingsWhereRequest, $where2: AutoP
 
 export const GET_AUTO_PILOT_APPROVALS = `
 query getAutopilotApprovals($where: AutoPilotApprovalsWhereRequest) {
-  auto_pilot_approvals: autooptimize_list_approvals(where: $where) {
+  auto_pilot_approvals: autooptimize_list_approvals(where: $where, order_by: [{column: "created_at", order: desc}]) {
     rows {
       id
       created_at
@@ -107,74 +107,34 @@ query getAutopilotApprovals($where: AutoPilotApprovalsWhereRequest) {
       autopilot_id
       attributes
       approval_status_description
+      reviewer_display_name
     }
   }
 }
 `;
 
-export const UPDATE_AUTOPILOT_APPOVAL_STATUS = `
-mutation updateAutoPilotApprovalStatus($id: uuid!,$accountId: uuid!, $reviewComment: String,$status: String!) {
-  update_status_auto_pilot_approval(arg1: {account_id: $accountId, approval_id: $id, status: $status, reviewer_comments: $reviewComment}) {
+export const DECIDE_AUTO_OPTIMIZE_APPROVAL = `
+mutation decideAutoOptimizeApproval($id: uuid!, $accountId: uuid!, $status: String!, $reviewerComments: String) {
+  autooptimize_update_approval(arg1: {id: $id, account_id: $accountId, status: $status, reviewer_comments: $reviewerComments}) {
     id
+    status
+    message
   }
 }
 `;
 
-export const GET_AUTO_PILOT_APPROVALS_POLICY = `
-query getAutoPilotApprovalsPolicy($where: AutoPilotApprovalPolicyWhereRequest, $limit: Int, $offset: Int) {
-  auto_pilot_approval_policy: autooptimize_list_approval_policies(where: $where, limit: $limit, offset: $offset) {
+export const GET_APPROVAL_TASKS = `
+query getApprovalTasks($where: AutoPilotTaskWhereRequest) {
+  auto_pilot_task: autooptimize_list_tasks(where: $where) {
     rows {
-      account_id
-      created_at
-      created_by
       id
-      policy_attributes
-      updated_at
-      updated_by
-      account_name
-      created_by_display_name
-      updated_by_display_name
-    }
-  }
-}
-`;
-
-export const CREATE_AUTO_PILOT_POLICY = `
-mutation createAutopilotPolicy($accountId: uuid!, $minimumApproval:Int, $reviewees:[uuid], $reviewers: [uuid] ){
-    create_auto_pilot_policy(arg1: {account_id: $accountId, minimum_approval: $minimumApproval, reviewees: $reviewees, reviewers: $reviewers}) {
-      id
-  }
-}
-`;
-
-export const UPDATE_AUTO_PILOT_POLICY = `
-mutation updateAutopilotPolicy($policyId : uuid! ,$accountId: uuid!, $minimumApproval:Int, $reviewees:[uuid], $reviewers: [uuid] ){
-    update_auto_pilot_policy(arg1: {id:$policyId, account_id: $accountId, minimum_approval: $minimumApproval, reviewees: $reviewees, reviewers: $reviewers}) {
-      id
-  }
-}
-`;
-
-export const GET_AUTO_PILOT_POLICY_BY_PK = `
-query getAutoPilotPolicyByPk ($id:uuid!) {
-  auto_pilot_approval_policy_by_pk(id: $id) {
-    account_id
-    cloud_account {
-      account_name
-    }
-    policy_attributes
-    auto_pilot_reviewers {
-      id
-      reviwer_user {
-        id
-        username
-      }
-    }
-    auto_pilot_reviewees {
-      user {
-        id
-        username
-      }
+      name
+      status
+      reason
+      recommendation_id
+      meta
+      resource_filter
+      attributes
     }
   }
 }
@@ -218,13 +178,6 @@ query getAutoOptimizeNames{
   }
 }
 `;
-
-export const DELETE_AUTO_PILOT_POLICY = `
-mutation deleteAutoPilotApprovalPolicy($id: uuid!, $accountId: uuid!) {
-  auto_pilot_approval_policy_delete(arg1: {id: $id, account_id: $accountId}) {
-    id
-  }
-}`;
 
 export const GET_AUTOPILOT_APPROVAL_STATUS_BY_ID = `
 query getAutoPilotApprovalStatusById($where: AutoPilotApprovalsWhereRequest, $whereAgg: AutoPilotApprovalsGroupingsWhereRequest, $limit: Int, $offset: Int) {
@@ -426,6 +379,7 @@ const apiAutoPilot = {
     const rows = response?.data?.data?.auto_pilot_approvals?.rows || [];
     const data = rows.map((item: any) => ({
       ...item,
+      attributes: typeof item.attributes === 'string' ? safeJSONParse(item.attributes) : item.attributes,
       auto_pilot_approval_status: {
         status: item.status,
         description: item.approval_status_description,
@@ -436,85 +390,49 @@ const apiAutoPilot = {
       errors: response?.data?.errors,
     };
   },
-  async updateAutoPilotApprovalStatus(id: string, accountId: string, reviewComment: string, status: string) {
+  async decideAutoOptimizeApproval(id: string, accountId: string, status: 'APPROVED' | 'REJECTED', reviewerComments: string) {
     if (accountId === 'demo')
       return {
         data: null,
         errors: [{ message: 'Demo account does not have access.' }],
       };
-    const response = await queryGraphQL(UPDATE_AUTOPILOT_APPOVAL_STATUS, 'updateAutoPilotApprovalStatus', {
-      id: id,
-      accountId: accountId,
-      status: status,
-      reviewComment: reviewComment,
+    const response = await queryGraphQL(DECIDE_AUTO_OPTIMIZE_APPROVAL, 'decideAutoOptimizeApproval', {
+      id,
+      accountId,
+      status,
+      reviewerComments: reviewerComments || null,
     });
     return {
-      data: response?.data?.data,
+      data: response?.data?.data?.autooptimize_update_approval,
       errors: response?.data?.errors,
     };
   },
-  async getAutoPilotPolicies(limit: number, offset: number) {
-    const response = await queryGraphQL(GET_AUTO_PILOT_APPROVALS_POLICY, 'getAutoPilotApprovalsPolicy', {
-      where: {},
-      limit: limit,
-      offset: offset,
-    });
-    const rows = response?.data?.data?.auto_pilot_approval_policy?.rows || [];
-    const data = rows.map((item: any) => ({
-      ...item,
-      policy_attributes: typeof item.policy_attributes === 'string' ? safeJSONParse(item.policy_attributes) : item.policy_attributes,
-      cloud_account: { account_name: item.account_name },
-      create_by_user: { display_name: item.created_by_display_name },
-      update_by_user: { display_name: item.updated_by_display_name },
+  async getApprovalTasks(taskIds: string[]) {
+    if (!taskIds?.length) return [];
+    const response = await queryGraphQL(GET_APPROVAL_TASKS, 'getApprovalTasks', { where: { id: { _in: taskIds } } });
+    const rows = response?.data?.data?.auto_pilot_task?.rows || [];
+    return rows.map((task: any) => ({
+      ...task,
+      meta: typeof task.meta === 'string' ? safeJSONParse(task.meta) : task.meta,
+      resource_filter: typeof task.resource_filter === 'string' ? safeJSONParse(task.resource_filter) : task.resource_filter,
+      attributes: typeof task.attributes === 'string' ? safeJSONParse(task.attributes) : task.attributes,
     }));
-    return {
-      data: { auto_pilot_approval_policy: data },
-      errors: response?.data?.errors,
-    };
   },
-  async createAutoPilotPolicy(accountId: string, minimumApproval: number, reviewees: string[], reviewers: string[]) {
-    if (accountId === 'demo')
-      return {
-        data: null,
-        errors: [{ message: 'Demo account does not have access.' }],
-      };
-    const response = await queryGraphQL(CREATE_AUTO_PILOT_POLICY, 'createAutopilotPolicy', {
-      accountId: accountId,
-      minimumApproval: minimumApproval,
-      reviewees: reviewees,
-      reviewers: reviewers,
+  // Ids of the given automations that have a run waiting for approval right now.
+  async getAutoPilotIdsWaitingForApproval(autoPilotIds: string[]) {
+    const waiting = new Set<string>();
+    if (!autoPilotIds?.length) return waiting;
+    const response = await queryGraphQL(GET_AUTO_PILOT_APPROVALS, 'getAutopilotApprovals', {
+      where: { autopilot_id: { _in: autoPilotIds }, status: { _eq: 'PENDING' }, auto_pilot_type: { _eq: 'auto_optimize' } },
     });
-
-    return {
-      data: response?.data?.data,
-      errors: response?.data?.errors,
-    };
-  },
-  async updateAutoPilotPolicy(policyId: string, accountId: string, minimumApproval: number, reviewees: string[], reviewers: string[]) {
-    if (accountId === 'demo')
-      return {
-        data: null,
-        errors: [{ message: 'Demo account does not have access.' }],
-      };
-    const response = await queryGraphQL(UPDATE_AUTO_PILOT_POLICY, 'updateAutopilotPolicy', {
-      policyId: policyId,
-      accountId: accountId,
-      minimumApproval: minimumApproval,
-      reviewees: reviewees,
-      reviewers: reviewers,
+    const now = Date.now();
+    (response?.data?.data?.auto_pilot_approvals?.rows || []).forEach((row: any) => {
+      const attributes = typeof row.attributes === 'string' ? safeJSONParse(row.attributes) : row.attributes;
+      if (attributes?.expires_at && new Date(attributes.expires_at).getTime() > now) {
+        waiting.add(row.autopilot_id);
+      }
     });
-
-    return {
-      data: response?.data?.data,
-      errors: response?.data?.errors,
-    };
-  },
-  async getAutoPilotPolicyByPk(policyId: string) {
-    const response = await queryGraphQL(GET_AUTO_PILOT_POLICY_BY_PK, 'getAutoPilotPolicyByPk', { id: policyId });
-    return {
-      data: response?.data?.data,
-      errors: response?.data?.errors,
-    };
+    return waiting;
   },
   async getAutoPilotByPk(id: string) {
     const formattedQuery = GET_AUTO_PILOT_BY_PK.replaceAll('__WHERE__', gqlStringify({ id: { _eq: id } }));
@@ -550,18 +468,6 @@ const apiAutoPilot = {
     const response = await queryGraphQL(GET_AUTO_OPTIMIZE_NAMES.replaceAll('__WHERE__', gqlStringify(where)), 'getAutoOptimizeNames');
     return {
       data: response?.data?.data?.auto_pilot?.rows,
-      errors: response?.data?.errors,
-    };
-  },
-  async deleteAutoPilotPolicy(id: string, accountId: string) {
-    if (accountId === 'demo')
-      return {
-        data: null,
-        errors: [{ message: 'Demo account does not have access.' }],
-      };
-    const response = await queryGraphQL(DELETE_AUTO_PILOT_POLICY, 'deleteAutoPilotApprovalPolicy', { id: id, accountId: accountId });
-    return {
-      data: response?.data?.data,
       errors: response?.data?.errors,
     };
   },

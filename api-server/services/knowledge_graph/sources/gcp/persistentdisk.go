@@ -20,7 +20,7 @@ var persistentDiskSchema = core.SpecificTypeSchema{
 		{Name: "disk_status", Indexed: true},
 		{Name: "size_gb"},
 		{Name: "access_mode"},
-		{Name: "attached_instances"},
+		{Name: "attached_instances", Shape: core.PropertyShapeList},
 	},
 }
 

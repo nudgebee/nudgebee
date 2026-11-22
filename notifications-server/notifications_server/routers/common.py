@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from notifications_server import engine, sync_engine, slack_app, teams_app
 from notifications_server.configs.settings import settings
@@ -17,7 +18,9 @@ from notifications_server.schemas.message import (
 )
 from notifications_server.services.channel_watch import ChannelWatchService
 from notifications_server.services.common import CommonService
+from notifications_server.services import remediation_thread
 from notifications_server.services.message import MessageService
+from notifications_server.services.ms_teams.team_binding import NOT_FOUND, disconnect_team, disconnect_workspace
 from notifications_server.services.rules import NotificationRulesService
 from notifications_server.services.route_check import RouteCheckService
 from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
@@ -136,6 +139,11 @@ async def list_channels(request: Request, body: HasuraActionPayload):
         return JSONResponse({"error": {"message": "Unable to list channels"}})
 
 
+def _list_users_sync(platform, tenant):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.list_users(platform, tenant)
+
+
 @router.post("/users/list", dependencies=[Depends(verify_action_token)])
 async def list_users(request: Request, body: HasuraActionPayload):
     try:
@@ -143,14 +151,16 @@ async def list_users(request: Request, body: HasuraActionPayload):
         if not tenant:
             return JSONResponse({"error": {"message": ERROR_TENANT_NOT_FOUND}})
 
-        platform = body.input.platform
-
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            users = controller.list_users(platform, tenant)
-            return JSONResponse(content=users)
+        # Slack paging and the DB lookup block; keep them off the event loop (#41063).
+        users = await run_in_threadpool(_list_users_sync, body.input.platform, tenant)
+        if isinstance(users, dict) and isinstance(users.get("error"), dict):
+            code = users["error"].get("code")
+            status = 429 if code == "rate_limited" else 500 if code == "internal_error" else 502
+            return JSONResponse(users, status_code=status)
+        return JSONResponse(content=users)
     except Exception:
         LOG.exception("Error in list_users endpoint")
-        return JSONResponse({"error": {"message": "Unable to list users"}})
+        return JSONResponse({"error": {"message": "Unable to list users"}}, status_code=500)
 
 
 def _list_watchable_sync(tenant, team_id):
@@ -239,6 +249,11 @@ async def unwatch_channel(request: Request, body: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to disable channel watch"}}, status_code=500)
 
 
+def _join_channel_sync(**kwargs):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.join_channel(**kwargs)
+
+
 @router.post("/channels/join", status_code=201, dependencies=[Depends(verify_action_token)])
 async def join_channel(request: Request, payload: Dict[Any, Any], background_tasks: BackgroundTasks):
     try:
@@ -278,23 +293,23 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 status_code=400,
             )
 
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            result = controller.join_channel(
-                platform=platform.lower(),
-                account_id=account_id,
-                tenant_id=tenant_id,
-                channel_id=channel_id,
-                session_id=session_id,
-                bind_session_id=bind_session_id,
-                team_id=team_id,
-                text=text,
-                bind_account=bind_account,
-            )
+        result = await run_in_threadpool(
+            _join_channel_sync,
+            platform=platform.lower(),
+            account_id=account_id,
+            tenant_id=tenant_id,
+            channel_id=channel_id,
+            session_id=session_id,
+            bind_session_id=bind_session_id,
+            team_id=team_id,
+            text=text,
+            bind_account=bind_account,
+        )
 
-            if "error" in result:
-                return JSONResponse(result, status_code=400)
+        if "error" in result:
+            return JSONResponse(result, status_code=400)
 
-            return JSONResponse(content=result)
+        return JSONResponse(content=result)
     except Exception:
         LOG.exception("Error in join_channel endpoint")
         return JSONResponse({"error": {"message": "Unable to join channel"}}, status_code=500)
@@ -451,7 +466,12 @@ async def send_channel_message(request: Request, payload: Dict[Any, Any]):
 
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             result = controller.send_channel_message(
-                platform=platform.lower(), tenant_id=tenant_id, channel_id=channel_id, session_id=session_id, text=text
+                platform=platform.lower(),
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                session_id=session_id,
+                text=text,
+                account_id=payload.get("account_id"),
             )
 
             if "error" in result:
@@ -504,6 +524,7 @@ async def send_direct_message(request: Request, payload: Dict[Any, Any]):
                 user_id=user_id,
                 text=text,
                 team_id=team_id,
+                account_id=payload.get("account_id"),
             )
 
             if "error" in result:
@@ -546,15 +567,63 @@ async def send_test_notification(request: Request, body: Dict[Any, Any]):
         return JSONResponse({"success": False, "error": "Unexpected error"})
 
 
+def _disconnect_ms_teams_sync(tenant):
+    with Session(sync_engine) as session:
+        return disconnect_workspace(session, tenant)
+
+
+@router.post("/integrations/ms-teams/disconnect", dependencies=[Depends(verify_action_token)])
+async def disconnect_ms_teams(request: Request, body: Dict[Any, Any]):
+    """Disconnect Microsoft Teams from the caller's workspace: every team bound
+    to it is released, and their channel mappings and the connection removed."""
+    tenant = body.get("session_variables", {}).get("tenant_id") or request.headers.get("tenant")
+    if not tenant:
+        return JSONResponse({"success": False, "error": ERROR_TENANT_NOT_FOUND})
+    try:
+        released = await run_in_threadpool(_disconnect_ms_teams_sync, tenant)
+    except Exception:
+        LOG.exception("Error disconnecting Microsoft Teams for tenant %s", tenant)
+        return JSONResponse({"success": False, "error": "Unable to disconnect Microsoft Teams"})
+    LOG.info("Microsoft Teams disconnected for tenant %s; %s teams released", tenant, released)
+    return JSONResponse({"success": True, "released_teams": released})
+
+
+def _disconnect_ms_teams_team_sync(tenant, team_id):
+    with Session(sync_engine) as session:
+        return disconnect_team(session, tenant, team_id)
+
+
+@router.post("/integrations/ms-teams/disconnect-team", dependencies=[Depends(verify_action_token)])
+async def disconnect_ms_teams_team(request: Request, body: Dict[Any, Any]):
+    """Disconnect one Microsoft Teams team from the caller's workspace. Only a
+    team bound to that workspace can be disconnected."""
+    tenant = body.get("session_variables", {}).get("tenant_id") or request.headers.get("tenant")
+    if not tenant:
+        return JSONResponse({"success": False, "error": ERROR_TENANT_NOT_FOUND})
+    team_id = (body.get("input") or {}).get("team_id")
+    if not team_id:
+        return JSONResponse({"success": False, "error": "team_id is required"})
+    try:
+        result = await run_in_threadpool(_disconnect_ms_teams_team_sync, tenant, team_id)
+    except Exception:
+        LOG.exception("Error disconnecting Microsoft Teams team %s for tenant %s", team_id, tenant)
+        return JSONResponse({"success": False, "error": "Unable to disconnect the team"})
+    if result == NOT_FOUND:
+        return JSONResponse({"success": False, "error": "This team isn't connected to this workspace"})
+    LOG.info("Microsoft Teams team %s disconnected for tenant %s", team_id, tenant)
+    return JSONResponse({"success": True})
+
+
 @router.post("/integrations/messaging/invalidate-cache", dependencies=[Depends(verify_action_token)])
 async def invalidate_messaging_cache(body: Dict[Any, Any]):
     """Drop a tenant's cached messaging installs. Called by api-server on
     webhook messaging integration (ms_teams_webhook, slack_webhook)
-    create/update/delete so the change is routable without the cache TTL."""
+    create/update/delete, and on Slack/Discord config saves, so the change
+    applies without the cache TTL."""
     tenant = body.get("tenant_id")
     if not tenant:
         raise HTTPException(status_code=400, detail="tenant_id is required")
-    _get_message_service().cache.delete_cached_installations(tenant)
+    await _get_message_service().cache.aio.delete_cached_installations(tenant)
     return JSONResponse({"success": True})
 
 
@@ -574,7 +643,7 @@ async def notify_google_chat_binding(body: Dict[Any, Any]):
     # A bind/unbind adds or removes the tenant's synthesized google_chat install, so
     # drop the cached installations to pick up the change on the next send.
     if tenant:
-        _get_message_service().cache.delete_cached_installations(tenant)
+        await _get_message_service().cache.aio.delete_cached_installations(tenant)
     if event == "bound":
         text = f"✅ This space is now connected to {settings.urls.branding_name}. Mention me to get started."
         result = GoogleChatAppClient.post_message(space=space_id, message=text, tenant=tenant)
@@ -664,12 +733,12 @@ async def invalidate_rules_cache(body: Dict[Any, Any]):
     tenant = body.get("tenant_id")
     if not tenant:
         raise HTTPException(status_code=400, detail="tenant_id is required")
-    NotificationRulesService(engine).invalidate_cached_rules(tenant)
+    await NotificationRulesService(engine).invalidate_cached_rules(tenant)
     return JSONResponse({"success": True})
 
 
 @router.post("/emails/send", status_code=201, dependencies=[Depends(verify_action_token)])
-async def send_email(payload: Dict[Any, Any]):
+async def send_email(request: Request, payload: Dict[Any, Any]):
     """
     Send an email to one or more recipients.
 
@@ -731,6 +800,7 @@ async def send_email(payload: Dict[Any, Any]):
                 reply_to=reply_to,
                 cc=cc,
                 bcc=bcc,
+                tenant_id=request.headers.get("tenant"),
             )
 
             if not result.get("success"):
@@ -852,3 +922,19 @@ async def get_thread_messages(request: Request, payload: GetThreadMessagesReques
         messages=result["messages"],
         has_more=result.get("has_more", False),
     )
+
+
+@router.post("/remediation/thread", dependencies=[Depends(verify_action_token)], status_code=200)
+async def post_remediation_thread(payload: remediation_thread.Posts):
+    """llm-server's remediation posts for one alert (#40734): its plan, or a note, in the alert's Slack thread."""
+    try:
+        status = await run_in_threadpool(remediation_thread.deliver, payload)
+    except Exception:
+        LOG.exception("Remediation posts failed for event %s", payload.event_id)
+        raise HTTPException(status_code=502, detail="Posting failed")
+    if status == "failed":
+        raise HTTPException(status_code=502, detail="Slack took none of the posts")
+    if status == "busy":
+        # Another send for the same thread is being posted: not delivered, so llm-server sends it again.
+        return JSONResponse(status_code=409, content={"status": "busy"})
+    return {"status": status}

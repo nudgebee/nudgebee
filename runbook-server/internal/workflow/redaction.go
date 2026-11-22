@@ -1,20 +1,13 @@
 package workflow
 
 import (
-	"net/url"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model"
 	"regexp"
-	"sort"
 	"strings"
 )
 
 const RedactedValue = "***REDACTED***"
-
-// ScrubbedValue replaces a credential's literal value inside free text.
-const ScrubbedValue = "***"
-
-// minScrubLength keeps short values such as "true" or "8080" from blanking unrelated text.
-const minScrubLength = 6
 
 // secretRefPattern matches template references to Secrets in both Jinja and Go template syntax.
 // Examples: {{ Secrets['key'] }}, {{ Secrets.key }}, {{.Secrets.key}}
@@ -219,7 +212,7 @@ func RedactExecutionSecrets(details *model.WorkflowExecutionDetails, wfDef model
 	}
 	RedactSecretsFromTasks(details.Tasks, wfDef)
 	ScrubTaskValues(details.Tasks, secretValues)
-	details.Error = ScrubSecretValues(details.Error, secretValues)
+	details.Error = logsafe.ScrubSecretValues(details.Error, secretValues)
 }
 
 // ScrubTaskValues replaces credential values in task inputs, rendered params and
@@ -231,68 +224,9 @@ func ScrubTaskValues(tasks []model.TaskExecutionDetails, secretValues []string) 
 	}
 	for i := range tasks {
 		task := &tasks[i]
-		task.Input, _ = scrubValue(task.Input, secretValues).(map[string]any)
-		task.RenderedParams, _ = scrubValue(task.RenderedParams, secretValues).(map[string]any)
-		task.Error = ScrubSecretValues(task.Error, secretValues)
+		task.Input, _ = logsafe.ScrubValue(task.Input, secretValues).(map[string]any)
+		task.RenderedParams, _ = logsafe.ScrubValue(task.RenderedParams, secretValues).(map[string]any)
+		task.Error = logsafe.ScrubSecretValues(task.Error, secretValues)
 		ScrubTaskValues(task.Children, secretValues)
 	}
-}
-
-// scrubValue returns a copy of v with credential values replaced in every string.
-func scrubValue(v any, secretValues []string) any {
-	switch t := v.(type) {
-	case string:
-		return ScrubSecretValues(t, secretValues)
-	case map[string]any:
-		if t == nil {
-			return t
-		}
-		out := make(map[string]any, len(t))
-		for k, val := range t {
-			out[ScrubSecretValues(k, secretValues)] = scrubValue(val, secretValues)
-		}
-		return out
-	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = scrubValue(val, secretValues)
-		}
-		return out
-	}
-	return v
-}
-
-// SecretValues returns the literal forms a secret can take inside text: the raw
-// value and its URL-encoded forms, longest first so a secret containing another
-// is replaced whole. Values shorter than minScrubLength are skipped.
-func SecretValues(secrets map[string]any) []string {
-	seen := make(map[string]bool)
-	for _, v := range secrets {
-		s, ok := v.(string)
-		if !ok || len(s) < minScrubLength {
-			continue
-		}
-		seen[s] = true
-		seen[url.QueryEscape(s)] = true
-		seen[url.PathEscape(s)] = true
-	}
-	values := make([]string, 0, len(seen))
-	for s := range seen {
-		values = append(values, s)
-	}
-	sort.Slice(values, func(i, j int) bool {
-		if len(values[i]) != len(values[j]) {
-			return len(values[i]) > len(values[j])
-		}
-		return values[i] < values[j]
-	})
-	return values
-}
-
-// ScrubSecretValues replaces every known credential value in text with ***.
-func ScrubSecretValues(text string, secretValues []string) string {
-	for _, v := range secretValues {
-		text = strings.ReplaceAll(text, v, ScrubbedValue)
-	}
-	return text
 }

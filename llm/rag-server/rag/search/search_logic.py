@@ -38,17 +38,24 @@ def _search_single_collection_by_vector(
     ``rag.search.filters.build_field_condition`` — kept as one code path so
     callers can mix predicate shapes in a single request. The memory-v2
     read path needs this to combine ``agent_module`` equality with an
-    ``expires_at`` freshness range in one call.
+    ``expires_at`` freshness range in one call. A filter with ``must`` /
+    ``should`` / ``must_not`` clauses is built by ``build_filter_from_dict``
+    instead, which is the only way to exclude values.
     """
     try:
         query_filter = None
         if metadata_filter:
             from qdrant_client.models import Filter
 
-            from rag.search.filters import build_field_condition
+            from rag.search.filters import build_field_condition, build_filter_from_dict, is_structured_filter
 
-            conditions = [build_field_condition(key, value) for key, value in metadata_filter.items()]
-            query_filter = Filter(must=conditions)  # type: ignore[arg-type]
+            if is_structured_filter(metadata_filter):
+                # Explicit must/should/must_not clauses, e.g. excluding a source.
+                # Raises on a malformed clause rather than searching without it.
+                query_filter = build_filter_from_dict(metadata_filter)
+            else:
+                conditions = [build_field_condition(key, value) for key, value in metadata_filter.items()]
+                query_filter = Filter(must=conditions)  # type: ignore[arg-type]
 
         response = client.query_points(
             collection_name=collection_name,

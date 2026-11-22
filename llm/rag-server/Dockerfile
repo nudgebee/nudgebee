@@ -60,6 +60,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # `production` image used for runtime
 FROM uv-base AS production
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-rag-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee RAG server" \
+      description="Retrieval-augmented generation server for the Nudgebee platform."
 
 # Copy conda environment from builder
 COPY --from=uv-base /opt/conda /opt/conda

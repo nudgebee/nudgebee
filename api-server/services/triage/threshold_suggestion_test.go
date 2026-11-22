@@ -1177,7 +1177,7 @@ func TestQualityOnlyRecommendation(t *testing.T) {
 		want           string
 	}{
 		{"firing history alone never maps to disable", "disable_alert", ""},
-		{"increase_duration passes through", "increase_duration", "increase_duration"},
+		{"increase_duration without a wait to set goes to review", "increase_duration", "review_alert"},
 		{"investigate maps to review_alert", "investigate", "review_alert"},
 		{"tune_threshold degrades to review_alert without a metric", "tune_threshold", "review_alert"},
 		{"no_action is not actionable", "no_action", ""},
@@ -1185,11 +1185,15 @@ func TestQualityOnlyRecommendation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, qualityOnlyRecommendation(&AlertQualityScore{Recommendation: tt.recommendation}))
+			assert.Equal(t, tt.want, qualityOnlyRecommendation(&AlertQualityScore{Recommendation: tt.recommendation}, nil))
 		})
 	}
+	t.Run("increase_duration passes through with a wait to set", func(t *testing.T) {
+		wait := &waitAdvice{CurrentSeconds: 30, SuggestedMinutes: 3}
+		assert.Equal(t, "increase_duration", qualityOnlyRecommendation(&AlertQualityScore{Recommendation: "increase_duration"}, wait))
+	})
 	t.Run("nil quality is not actionable", func(t *testing.T) {
-		assert.Equal(t, "", qualityOnlyRecommendation(nil))
+		assert.Equal(t, "", qualityOnlyRecommendation(nil, nil))
 	})
 }
 
@@ -1249,39 +1253,74 @@ func TestComputeDurationRecommendation(t *testing.T) {
 		{
 			name:       "transient + threshold suggestion — tune_both",
 			suggestion: ThresholdSuggestion{EstimatedReduction: 50},
-			alertDef:   AlertDefinition{Period: 300, EvaluationPeriods: 1}, // 5 min window
+			alertDef:   AlertDefinition{Period: 300, EvaluationPeriods: 1}, // waits 5 min today
 			quality: &AlertQualityScore{
 				TransientRate:  0.85,
-				DurationP90:    420, // 7 min P90
+				TotalCount:     60,
+				ResolvedCount:  60,
+				ShortFirings:   shortFirings(2, 10, 20, 48, 51), // most clear within 5 min
 				Classification: "false_positive",
 			},
 			wantRecType:   "tune_both",
-			wantDuration:  15, // ceil(7*1.5/5)*5 = ceil(2.1)*5 = 15
+			wantDuration:  10, // 5 min today + 5 min
 			wantHasReason: true,
 		},
 		{
 			name:       "transient + no threshold reduction — increase_duration only",
 			suggestion: ThresholdSuggestion{EstimatedReduction: 5},
-			alertDef:   AlertDefinition{Period: 300, EvaluationPeriods: 1},
+			alertDef:   AlertDefinition{ForSeconds: 30, forKnown: true}, // Prometheus rule, for: 30s
 			quality: &AlertQualityScore{
 				TransientRate:  0.9,
-				DurationP90:    300, // 5 min P90
+				TotalCount:     50,
+				ResolvedCount:  50,
+				ShortFirings:   shortFirings(44, 45, 45, 45, 45), // cleared within a minute
 				Classification: "false_positive",
 			},
 			wantRecType:   "increase_duration",
-			wantDuration:  10, // ceil(5*1.5/5)*5 = ceil(1.5)*5 = 10
+			wantDuration:  2, // 30s + 1m, written as whole minutes
 			wantHasReason: true,
 		},
 		{
-			name:       "transient but current window already sufficient — tune_threshold",
+			name:       "transient, rule fires at once today — the suggested wait is the extra wait",
+			suggestion: ThresholdSuggestion{EstimatedReduction: 0},
+			alertDef:   AlertDefinition{ForSeconds: 0, forKnown: true},
+			quality: &AlertQualityScore{
+				TransientRate:  0.8,
+				TotalCount:     30,
+				ResolvedCount:  30,
+				ShortFirings:   shortFirings(5, 23, 24, 24, 24),
+				Classification: "false_positive",
+			},
+			wantRecType:   "increase_duration",
+			wantDuration:  2,
+			wantHasReason: true,
+		},
+		{
+			name:       "transient but the rule's wait is not known — no wait advice",
 			suggestion: ThresholdSuggestion{EstimatedReduction: 40},
-			alertDef:   AlertDefinition{Period: 300, EvaluationPeriods: 3}, // 15 min window
+			alertDef:   AlertDefinition{},
 			quality: &AlertQualityScore{
 				TransientRate:  0.85,
-				DurationP90:    300, // P90=5min, suggested=10, but current=15 already covers it
+				TotalCount:     40,
+				ResolvedCount:  40,
+				ShortFirings:   shortFirings(30, 34, 34, 34, 34),
 				Classification: "noisy_but_real",
 			},
 			wantRecType:  "tune_threshold",
+			wantDuration: 0,
+		},
+		{
+			name:       "transient but a longer wait would pass 30 minutes — no wait advice",
+			suggestion: ThresholdSuggestion{EstimatedReduction: 5},
+			alertDef:   AlertDefinition{ForSeconds: 1800, forKnown: true},
+			quality: &AlertQualityScore{
+				TransientRate:  0.9,
+				TotalCount:     40,
+				ResolvedCount:  40,
+				ShortFirings:   shortFirings(0, 0, 0, 30, 36),
+				Classification: "false_positive",
+			},
+			wantRecType:  "none",
 			wantDuration: 0,
 		},
 		{
@@ -1317,19 +1356,6 @@ func TestComputeDurationRecommendation(t *testing.T) {
 			},
 			wantRecType:  "none",
 			wantDuration: 0,
-		},
-		{
-			name:       "duration capped at 30 minutes",
-			suggestion: ThresholdSuggestion{EstimatedReduction: 5},
-			alertDef:   AlertDefinition{Period: 300, EvaluationPeriods: 1},
-			quality: &AlertQualityScore{
-				TransientRate:  0.9,
-				DurationP90:    1800, // 30 min P90
-				Classification: "false_positive",
-			},
-			wantRecType:   "increase_duration",
-			wantDuration:  30, // would be ceil(30*1.5/5)*5=45 but capped at 30
-			wantHasReason: true,
 		},
 	}
 

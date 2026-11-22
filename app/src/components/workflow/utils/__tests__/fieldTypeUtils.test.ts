@@ -1,4 +1,11 @@
-import { filterTicketOptionsBySubType, getDropdownOptionsForField, resolveFieldType } from '../fieldTypeUtils';
+import {
+  filterTicketOptionsBySubType,
+  getDropdownOptionsForField,
+  isWebhookProvider,
+  notConnectedHint,
+  notConnectedLabel,
+  resolveFieldType,
+} from '../fieldTypeUtils';
 
 const TICKET_CONFIGS = [
   { label: 'Jira Prod', value: 'jira-1', tool: 'jira' },
@@ -50,6 +57,19 @@ describe('getDropdownOptionsForField', () => {
   });
 });
 
+describe('Send IM provider options', () => {
+  it('names webhook providers as the notification rules picker does', () => {
+    const options = getDropdownOptionsForField('provider', { options: ['slack', 'ms_teams_webhook', 'google_chat_webhook'] }, dropdownData);
+    expect(options.map((o) => o.label)).toEqual(['Slack', 'Teams webhook', 'Google Chat webhook']);
+  });
+
+  it('tells a webhook provider from an app', () => {
+    expect(isWebhookProvider('slack_webhook')).toBe(true);
+    expect(isWebhookProvider('slack')).toBe(false);
+    expect(isWebhookProvider(undefined)).toBe(false);
+  });
+});
+
 describe('resolveFieldType', () => {
   // events.add_evidence declares json_data and rows as JSON; without this they
   // fell through to a single-line text box, which is where hand-written
@@ -66,5 +86,26 @@ describe('resolveFieldType', () => {
 
   it('renders a field with options as a dropdown', () => {
     expect(resolveFieldType('type', { type: 'string', options: ['markdown', 'json', 'table'] })).toBe('dropdown');
+  });
+});
+
+describe('not-connected picker text', () => {
+  it('names the app that is not connected', () => {
+    expect(notConnectedLabel('ms_teams')).toBe("Microsoft Teams isn't connected");
+    expect(notConnectedLabel('slack')).toBe("Slack isn't connected");
+  });
+
+  it('offers the webhook provider only to Send IM', () => {
+    expect(notConnectedHint('notifications.im', 'ms_teams')).toBe('Connect Microsoft Teams in Integrations, or pick the Teams webhook provider.');
+    expect(notConnectedHint('notifications.im', 'slack')).toBe('Connect Slack in Integrations, or pick the Slack webhook provider.');
+  });
+
+  it('points an approval at another provider, since a webhook carries no buttons', () => {
+    expect(notConnectedHint('core.approval', 'ms_teams')).toBe('Connect Microsoft Teams in Integrations, or pick another provider.');
+  });
+
+  it('only asks to connect the app for steps with no other way to send', () => {
+    expect(notConnectedHint('notifications.add_reaction', 'ms_teams')).toBe('Connect Microsoft Teams in Integrations.');
+    expect(notConnectedHint('notifications.read_thread', 'slack')).toBe('Connect Slack in Integrations.');
   });
 });

@@ -16,7 +16,7 @@ import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { toast as snackbar } from '@ui/Toast';
 import { usePagination } from '@hooks/usePagination';
 import { toSeverityLevel } from '@utils/common';
-import { hasPermission, hasWriteAccess } from '@lib/auth';
+import { canCreateTicket, hasWriteAccess } from '@lib/auth';
 import apiVm, { SEVERITY_ORDER, VmVulnerability, VmVulnerabilityGroup, VmVulnerabilityGrouping } from '@api1/vm';
 import SecurityFindingPanel from '@components/recommendations/security/SecurityFindingPanel';
 import { fromVmRow } from '@components/recommendations/security/securityFinding';
@@ -31,11 +31,12 @@ import { ds } from '@utils/colors';
 const HEADERS = [
   { name: 'Severity', width: '8%' },
   { name: 'Vulnerability', width: '16%' },
-  { name: 'Package', width: '19%' },
-  { name: 'Installed', width: '17%' },
-  { name: 'Fixed In', width: '17%' },
+  { name: 'Package', width: '15%' },
+  { name: 'Installed', width: '15%' },
+  { name: 'Fixed In', width: '15%' },
   { name: 'CVSS', width: '5%' },
   { name: 'Last Seen', width: '10%' },
+  { name: 'Status', width: '8%' },
   { name: 'Actions', width: '8%' },
 ];
 
@@ -44,12 +45,13 @@ const HEADERS = [
 const HEADERS_WITH_ACCOUNT = [
   { name: 'Account', width: '12%' },
   { name: 'Severity', width: '8%' },
-  { name: 'Vulnerability', width: '15%' },
-  { name: 'Package', width: '16%' },
-  { name: 'Installed', width: '15%' },
-  { name: 'Fixed In', width: '15%' },
+  { name: 'Vulnerability', width: '12%' },
+  { name: 'Package', width: '13%' },
+  { name: 'Installed', width: '13%' },
+  { name: 'Fixed In', width: '13%' },
   { name: 'CVSS', width: '5%' },
   { name: 'Last Seen', width: '8%' },
+  { name: 'Status', width: '8%' },
   { name: 'Actions', width: '8%' },
 ];
 
@@ -92,19 +94,20 @@ const GROUP_HEADERS: Record<string, Array<{ name: string; width: string }>> = {
 };
 
 /**
- * Row actions. Create Ticket needs write access to the finding's account or the
- * tickets:Write grant — disabled rather than dropped, with the requirement named
- * in the label because a disabled menu item can't carry a tooltip. Applying the
- * patch is not built yet (the agent has no patch runner), so it's a placeholder.
+ * Row actions. Create Ticket needs read access to the finding's account or the
+ * tickets:Write grant (@lib/auth#canCreateTicket, #40211) — disabled rather than
+ * dropped, with the requirement named in the label because a disabled menu item
+ * can't carry a tooltip. Applying the patch is not built yet (the agent has no
+ * patch runner), so it's a placeholder.
  */
-const menuItems = (canCreateTicket: boolean, finding: VmVulnerability) => {
+const menuItems = (ticketAllowed: boolean, finding: VmVulnerability) => {
   const dismissEntry = dismissMenuEntry(finding.status, hasWriteAccess(finding.account_id));
   const existingTicket = finding.ticket?.ticket_id;
   return [
     {
       id: 'create-ticket',
-      label: existingTicket ? `Ticket: ${existingTicket}` : canCreateTicket ? 'Create Ticket' : 'Create Ticket · requires tickets:Write',
-      disabled: !!existingTicket || !canCreateTicket,
+      label: existingTicket ? `Ticket: ${existingTicket}` : ticketAllowed ? 'Create Ticket' : 'Create Ticket · requires account access',
+      disabled: !!existingTicket || !ticketAllowed,
     },
     {
       id: 'apply-patch',
@@ -230,10 +233,6 @@ const VmVulnerabilities = ({
     [askNubi, accountsById]
   );
 
-  // With a multi-account scope the check falls back to tenant-level write; the
-  // ticket itself is always created against the finding's own account.
-  const canCreateTicket = hasWriteAccess(Array.isArray(accountId) ? undefined : accountId) || hasPermission('tickets', 'Write');
-
   // Embedded instances never show the tabs, so grouping stays 'all' for them.
   const isGrouped = grouping !== 'all';
   // Embedded scope comes from the row that opened it and cannot be changed;
@@ -296,18 +295,16 @@ const VmVulnerabilities = ({
   }, [fetchRows]);
 
   // Filter options are the VMs and packages that actually carry a finding —
-  // filtering by one that has none would only ever produce an empty table. Read
-  // once per account; the toolbar they feed only exists on the top-level view.
+  // filtering by one that has none would only ever produce an empty table. VMs
+  // are read once per account; the toolbar they feed only exists on the
+  // top-level view.
   useEffect(() => {
     if (embedded || !accountId) return undefined;
     let cancelled = false;
-    const options = (grouping: 'vm' | 'package') =>
-      apiVm.listVulnerabilityGroups({ accountId, grouping, limit: FILTER_OPTION_LIMIT, offset: 0, includeTotal: false, orderBy: 'count' });
-    Promise.all([options('vm'), options('package')])
-      .then(([vms, packages]) => {
-        if (cancelled) return;
-        setVmOptions(vms.rows.map((group) => ({ label: group.label || group.key, value: group.key })));
-        setPackageOptions(packages.rows.filter((group) => group.key).map((group) => ({ label: group.label, value: group.key })));
+    apiVm
+      .listVulnerabilityGroups({ accountId, grouping: 'vm', limit: FILTER_OPTION_LIMIT, offset: 0, includeTotal: false, orderBy: 'count' })
+      .then((vms) => {
+        if (!cancelled) setVmOptions(vms.rows.map((group) => ({ label: group.label || group.key, value: group.key })));
       })
       .catch((error) => {
         if (!cancelled) console.error('Failed to load VM vulnerability filter options:', error);
@@ -316,6 +313,43 @@ const VmVulnerabilities = ({
       cancelled = true;
     };
   }, [accountId, embedded]);
+
+  // Packages follow the VM filter: with a VM picked, a package that VM does not
+  // have could only match nothing. They follow the status view too, so the
+  // Dismissed view offers (and keeps) packages seen only among dismissed findings.
+  const packageOptionStatus = statusFilter === 'Dismissed' ? 'Dismissed' : undefined;
+  useEffect(() => {
+    if (embedded || !accountId) return undefined;
+    let cancelled = false;
+    apiVm
+      .listVulnerabilityGroups({
+        accountId,
+        grouping: 'package',
+        cloudResourceId: vmFilter || undefined,
+        status: packageOptionStatus ? [packageOptionStatus] : undefined,
+        limit: FILTER_OPTION_LIMIT,
+        offset: 0,
+        includeTotal: false,
+        orderBy: 'count',
+      })
+      .then((packages) => {
+        if (cancelled) return;
+        const options = packages.rows.filter((group) => group.key).map((group) => ({ label: group.label, value: group.key }));
+        setPackageOptions(options);
+        // Picking a VM that lacks the selected package drops that package rather
+        // than leave a filter that empties the table. Only when the list is
+        // complete: past the cap, a missing package proves nothing.
+        if (vmFilter && packages.rows.length < FILTER_OPTION_LIMIT) {
+          setPackageFilter((current) => (current && !options.some((option) => option.value === current) ? null : current));
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) console.error('Failed to load VM vulnerability filter options:', error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [accountId, embedded, vmFilter, packageOptionStatus]);
 
   const dismissal = useRecommendationDismissal(() => {
     setPanelFinding(null);
@@ -380,6 +414,13 @@ const VmVulnerabilities = ({
           { component: <CellText text={payload.cvss_v3_score != null ? String(payload.cvss_v3_score) : undefined} /> },
           { component: <Datetime value={finding.updated_at} /> },
           {
+            component: finding.status ? (
+              <Label size='sm' tone={finding.status === 'Open' ? 'info' : 'neutral'} text={finding.status} />
+            ) : (
+              <CellText text='—' />
+            ),
+          },
+          {
             component: (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
                 <AskNubiIconButton
@@ -389,7 +430,7 @@ const VmVulnerabilities = ({
                 />
                 <ThreeDotsMenu
                   id={`vm-vulnerability-actions-${finding.id}`}
-                  menuItems={menuItems(canCreateTicket, finding)}
+                  menuItems={menuItems(canCreateTicket(finding.account_id), finding)}
                   data={finding}
                   onMenuClick={onMenuClick}
                   menuWidth={260}
@@ -399,7 +440,7 @@ const VmVulnerabilities = ({
           },
         ];
       }),
-    [rows, accountsById, showVm, vmUnderVulnerability, assistantName, canCreateTicket, onMenuClick, askAboutFinding]
+    [rows, accountsById, showVm, vmUnderVulnerability, assistantName, onMenuClick, askAboutFinding]
   );
 
   // Which filter the drill-down applies is the only thing that differs per
@@ -413,8 +454,10 @@ const VmVulnerabilities = ({
   // An empty result reads as "no open vulnerabilities" (good news) only when
   // nothing narrowed the query — otherwise it just means the filter (severity,
   // status, VM, package, or a deep-link scope) matched nothing, which
-  // CustomTable's showUpdatedEmptyData path can't tell apart on its own.
-  const isFiltered = Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
+  // CustomTable's showUpdatedEmptyData path can't tell apart on its own. An
+  // embedded table has no toolbar: its scope is the row it opened from, and an
+  // empty VM row means that VM has no findings yet — not a filter to clear.
+  const isFiltered = !embedded && Boolean(severity || vmFilter || packageFilter || scopeLabel || statusFilter === 'Dismissed');
 
   const groupData = groups.map((group) => {
     const groupSeverity = severityFromWeight(group.max_severity_weight);

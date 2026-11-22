@@ -28,9 +28,11 @@ func init() { core.RegisterSpecificTypeSchema(pagerdutyUserSchema) }
 // the PagerDuty user's own ID (not the email) — this is the value Identity Sync
 // records as integration_user_accounts.external_user_id (see
 // integrations/pagerduty.go::ListUsers, which maps core.ExternalUser{ID: u.ID, ...}),
-// and it's what sources/identity_enricher.go matches SAME_AS edges against. `name`
-// stays the human-readable display name since it drives the node's unique key
-// (BaseSource.GenerateUniqueKey hashes on properties["name"]).
+// and it's what sources/identity_enricher.go matches SAME_AS edges against. It also
+// drives the node's unique key (BaseSource.GenerateUniqueKey keys UserAccount on
+// properties["username"]), so renaming a user in PagerDuty no longer re-keys the node
+// and two users sharing a display name no longer collapse into one. `name` stays the
+// human-readable display name, which the UI shows alongside the id.
 func (s *PagerDutySource) newUserNode(user gopagerduty.User, req *core.SourceBuildRequest) *core.DbNode {
 	properties := map[string]interface{}{
 		"specific_type": "PagerDutyUser",

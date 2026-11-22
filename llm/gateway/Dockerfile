@@ -16,6 +16,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 # --- runtime ---
 FROM ghcr.io/nudgebee/alpine:3.22
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-llm-gateway" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee LLM gateway" \
+      description="Gateway that routes and governs LLM requests for the Nudgebee platform."
 # Bumping OS_PKG_EPOCH changes this layer's cache key so the registry cache
 # can't serve a stale package layer (same convention as api-server/services).
 ARG OS_PKG_EPOCH=2026-W44

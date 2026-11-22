@@ -29,6 +29,24 @@ function throwIfRefused(response: any, where?: TraceWhereClause) {
   if (message) throw new Error(message);
 }
 
+/**
+ * Normalises a workload/namespace filter value to the list the `_in` operator takes.
+ *
+ * These filters are fed by two kinds of dropdown: the multi-selects hand over a
+ * `string[]`, the single-select `Service` picker a bare `string`. Blank entries are
+ * dropped in both shapes, so "nothing selected" reads the same whether it arrives as
+ * `''` or `['']` and becomes no predicate rather than a filter for the empty string.
+ * No dropdown offers a blank option - all four option lists are stripped of them before
+ * they render - so this is about staying honest if one ever appears, not a live case.
+ *
+ * Exported for the unit test; `traceV2` is the caller that needs it.
+ */
+export function toFilterList(value: string | string[] | undefined | null): string[] {
+  if (value === undefined || value === null) return [];
+  const list = Array.isArray(value) ? value : [value];
+  return list.filter((v) => v !== '');
+}
+
 function mergeWhere(binary: Record<string, any>, where?: TraceWhereClause) {
   for (const [column, operators] of Object.entries(where || {})) {
     binary[column] = { ...(binary[column] || {}), ...operators };
@@ -37,10 +55,13 @@ function mergeWhere(binary: Record<string, any>, where?: TraceWhereClause) {
 
 interface TraceV2Params {
   accountId: string;
-  namespace: string[];
-  workload: string[];
-  destinationNamespace: string[];
-  destinationWorkload: string[];
+  // The four workload/namespace filters arrive either as a list (the multi-select
+  // `Src./Dest. Workload` dropdowns) or as a bare string (the single-select `Service`
+  // dropdown). `toFilterList` below normalises them, so callers may pass either.
+  namespace: string | string[];
+  workload: string | string[];
+  destinationNamespace: string | string[];
+  destinationWorkload: string | string[];
   destinationName: string;
   limit: number;
   offset: number;
@@ -126,6 +147,18 @@ const apiTrace = {
       return tracesMock.traceV2.data;
     }
 
+    // The Traces tab's `Service` filter is a single-select, so it hands these in as a
+    // bare string where the multi-select dropdowns hand in a list (#41493). Normalise
+    // once, here, because everything below reads them as a list: `_in` takes a list of
+    // values - a scalar was a 400 on Splunk Enterprise and a silently unscoped result on
+    // SolarWinds and Cloud Trace (#41419) - and `?.[0]` on a string is its first
+    // CHARACTER, so the `fromWorkload` test below matched `qa-payment-s3` against
+    // `qa-ledger` on a shared `q`.
+    const namespaces = toFilterList(namespace);
+    const workloads = toFilterList(workload);
+    const destinationNamespaces = toFilterList(destinationNamespace);
+    const destinationWorkloads = toFilterList(destinationWorkload);
+
     const query: any = {};
     const orderBy: any[] = [];
     if (sortCol) {
@@ -135,33 +168,33 @@ const apiTrace = {
       });
     }
     const or = [];
-    if (namespace?.[0] == destinationNamespace?.[0] && workload?.[0] == destinationWorkload?.[0] && fromWorkload) {
+    if (namespaces?.[0] == destinationNamespaces?.[0] && workloads?.[0] == destinationWorkloads?.[0] && fromWorkload) {
       or.push(
         {
           _binary: {
-            destination_workload_name: { _in: destinationWorkload },
-            destination_workload_namespace: { _in: destinationNamespace },
+            destination_workload_name: { _in: destinationWorkloads },
+            destination_workload_namespace: { _in: destinationNamespaces },
           },
         },
         {
           _binary: {
-            workload_name: { _in: workload },
-            workload_namespace: { _in: namespace },
+            workload_name: { _in: workloads },
+            workload_namespace: { _in: namespaces },
           },
         }
       );
     } else {
-      if (namespace && namespace.length > 0) {
-        query['workload_namespace'] = { _in: namespace };
+      if (namespaces.length > 0) {
+        query['workload_namespace'] = { _in: namespaces };
       }
-      if (workload && workload.length > 0) {
-        query['workload_name'] = { _in: workload };
+      if (workloads.length > 0) {
+        query['workload_name'] = { _in: workloads };
       }
-      if (destinationNamespace && destinationNamespace.length > 0) {
-        query['destination_workload_namespace'] = { _in: destinationNamespace };
+      if (destinationNamespaces.length > 0) {
+        query['destination_workload_namespace'] = { _in: destinationNamespaces };
       }
-      if (destinationWorkload && destinationWorkload.length > 0) {
-        query['destination_workload_name'] = { _in: destinationWorkload };
+      if (destinationWorkloads.length > 0) {
+        query['destination_workload_name'] = { _in: destinationWorkloads };
       }
     }
     if (destinationName) {

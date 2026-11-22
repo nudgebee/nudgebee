@@ -69,6 +69,23 @@ func TestToEvidenceNodesKeepsOnlyAllowlistedProperties(t *testing.T) {
 	}
 }
 
+// The node standing for a VPC's unidentified addresses must stay recognisable
+// in the evidence: correlation reads the card and must not walk through it.
+func TestToEvidenceNodesKeepsUnresolvedAddressSubtype(t *testing.T) {
+	nodes := ToEvidenceNodes([]KgNode{{
+		ID:       "hub",
+		NodeType: NodeTypeExternalService,
+		Properties: map[string]any{
+			"name":            "Unidentified addresses (vpc-0123456789abcdef0)",
+			"subtype":         UnresolvedVPCAddressSubtype,
+			"discovered_from": "vpc_flow_logs",
+		},
+	}})
+	if len(nodes) != 1 || nodes[0].Properties["subtype"] != UnresolvedVPCAddressSubtype {
+		t.Fatalf("subtype not carried into the evidence: %+v", nodes)
+	}
+}
+
 // TestToEvidenceNodesOmitsAbsentAndNilProperties keeps the projection from
 // re-adding bytes as nulls: a cloud node has no namespace/kind, and sources
 // occasionally store an explicit nil.

@@ -2,6 +2,7 @@
 import { Page, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
+import { ensureSessions } from "../memoryFixtures";
 import { SessionsLocators } from "./sessionsLocators";
 
 // The three type labels the tab can filter by. SESSION_FILTERS in
@@ -26,6 +27,8 @@ export async function openSessionsTab(page: Page): Promise<SessionsLocators> {
   const locators = new SessionsLocators(page);
 
   await loginPage.doFullLogin();
+  // Two, because one case compares two rows; a tenant that already has them is not asked anything.
+  await ensureSessions(page, 2);
   await nubi.openPanel();
   await nubi.bcortexBtn.click();
   await locators.sessionsTab.waitFor({ state: "visible", timeout: 20000 });

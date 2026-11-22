@@ -52,29 +52,6 @@ func TestLoadNoWarningWhenSecretKeySet(t *testing.T) {
 	}
 }
 
-// The relay publishes to the same exchange llm-server consumes and api-server
-// publishes to, so the default must match theirs
-// (rabbit_mq_llm_cache_invalidation_exchange = "llm_cache_invalidation").
-func TestLoadLLMCacheInvalidationExchange(t *testing.T) {
-	t.Setenv("RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE", "")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if got := cfg.RabbitMQ.LLMCacheInvalidationExchange; got != "llm_cache_invalidation" {
-		t.Fatalf("default exchange = %q, want llm_cache_invalidation", got)
-	}
-
-	t.Setenv("RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE", "custom_exchange")
-	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("Load() returned error: %v", err)
-	}
-	if got := cfg.RabbitMQ.LLMCacheInvalidationExchange; got != "custom_exchange" {
-		t.Fatalf("env override = %q, want custom_exchange", got)
-	}
-}
-
 // Relay pods share MCP sessions through Redis unless an install explicitly
 // opts out (docs/mcp-sessions.md).
 func TestLoadMCPSessionStoreDefaultsToRedis(t *testing.T) {

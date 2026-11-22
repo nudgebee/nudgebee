@@ -130,12 +130,21 @@ func TestResolveQueryWindowAnchorsOnIncidentTime(t *testing.T) {
 
 func TestIsTerminatedContainerAggKeyCoversTheDeadContainerClasses(t *testing.T) {
 	for _, k := range []string{
-		"report_crash_loop", "pod_oom_killer_enricher", "image_pull_backoff_reporter",
-		"job_failure", "KubeJobFailed", "KubePodCrashLooping", "KubeContainerWaiting",
+		"report_crash_loop", "pod_oom_killer_enricher", "KubePodCrashLooping", "KubeContainerWaiting",
 	} {
 		assert.True(t, IsTerminatedContainerAggKey(k), k)
 	}
 	assert.False(t, IsTerminatedContainerAggKey("HighP95Latency"))
+
+	// No container ever started, so there is no previous one to read.
+	assert.False(t, IsTerminatedContainerAggKey("image_pull_backoff_reporter"))
+	assert.True(t, IsNeverStartedContainerAggKey("image_pull_backoff_reporter"))
+	assert.False(t, IsNeverStartedContainerAggKey("report_crash_loop"))
+
+	// Subject is the Job, which job_pod_enricher reads; a finished Job's pod has
+	// no previous container either.
+	assert.False(t, IsTerminatedContainerAggKey("job_failure"))
+	assert.False(t, IsTerminatedContainerAggKey("KubeJobFailed"))
 }
 
 func TestNeedsIncidentTimeAnchorIsNarrowerThanTheLogSet(t *testing.T) {
@@ -154,8 +163,40 @@ func TestNeedsIncidentTimeAnchorIsNarrowerThanTheLogSet(t *testing.T) {
 	assert.False(t, NeedsIncidentTimeAnchor("job_failure"))
 	assert.False(t, NeedsIncidentTimeAnchor("KubeJobFailed"))
 
-	for _, k := range []string{"image_pull_backoff_reporter", "job_failure", "KubeJobFailed"} {
-		assert.True(t, IsTerminatedContainerAggKey(k),
-			"%s should still get the dead container's logs, just not an anchor lookup", k)
+	assert.True(t, IsTerminatedContainerAggKey("KubePodCrashLooping"),
+		"should still get the dead container's logs, just not an anchor lookup")
+}
+
+func TestClusterHasNoLogs(t *testing.T) {
+	const viaRelay = "relay: unable to execute relay query -  logs_enricher: read logs: "
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"no previous container", viaRelay + `previous terminated container "web" in pod "web-7d4b9c5f6-x2x7q" not found`, true},
+		{"config error before start", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: CreateContainerConfigError`, true},
+		{"image pull back-off", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: trying and failing to pull image`, true},
+		{"image pull error", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: image can't be pulled`, true},
+		{"init containers still running", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is waiting to start: PodInitializing`, true},
+		{"exited, logs gone", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is terminated`, true},
+		{"subject has no pods", "relay: unable to execute relay query -  logs_enricher: no pods found for workload", true},
+		{"kubectl stderr behind its pod-selection notice",
+			"Found 5 pods, using pod/web-7d4b9c5f6-x2x7q\nError from server (BadRequest): container \"web\" in pod \"web-7d4b9c5f6-x2x7q\" is terminated\n", true},
+
+		// The read failed, or the answer does not say the logs are absent.
+		{"container state unknown", viaRelay + `container "web" in pod "web-7d4b9c5f6-x2x7q" is not available`, false},
+		{"pod gone", viaRelay + `pods "web-7d4b9c5f6-x2x7q" not found`, false},
+		{"job gone", `error: error from server (NotFound): jobs.batch "report-29856814" not found in namespace "shop"`, false},
+		{"kubectl timed out", "error: timed out waiting for the condition", false},
+		{"relay unreachable", "unable to consume relay API", false},
+		{"not a kubernetes namespace", `relay: unable to execute relay query -  logs_enricher: list pods: invalid namespace "org/repo": [may not contain '/']`, false},
+		{"a transport error that happens to say terminated", "relay: session is terminated", false},
+		{"empty", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClusterHasNoLogs(tc.in))
+		})
 	}
 }

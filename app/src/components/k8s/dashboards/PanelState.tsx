@@ -93,7 +93,21 @@ const PanelState: React.FC<Props> = ({ tone, title, description, icon, action })
       <Box>
         <Typography sx={{ fontSize: 13, fontWeight: ds.weight.semibold, color: palette.titleColor, lineHeight: 1.35 }}>{title}</Typography>
         {description && (
-          <Typography variant='caption' sx={{ color: ds.gray[500], display: 'block', mt: ds.space[0] }}>
+          // A provider's reason can be a URL or a JSON body with no spaces: it wraps anywhere, and past three
+          // lines the rest is on hover rather than pushed out of the panel.
+          <Typography
+            variant='caption'
+            title={description}
+            sx={{
+              color: ds.gray[500],
+              display: '-webkit-box',
+              WebkitLineClamp: 3,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+              overflowWrap: 'anywhere',
+              mt: ds.space[0],
+            }}
+          >
             {description}
           </Typography>
         )}

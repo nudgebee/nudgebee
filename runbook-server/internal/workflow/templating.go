@@ -3,19 +3,20 @@ package workflow
 import (
 	"bytes"
 	"fmt"
+	"nudgebee/runbook/internal/gonjasafe"
 	"nudgebee/runbook/internal/model"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 
-	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/exec"
 )
 
 // compiledTemplateCache memoises parsed Gonja templates keyed by their source
-// string. Parsing (gonja.FromString) is pure CPU and, on the render hot path,
+// string. Parsing (gonjasafe.FromString) is pure CPU and, on the render hot path,
 // runs inline in the Temporal workflow goroutine via renderGonja. Without
 // memoisation a workflow with many tasks — or a large matrix fan-out — re-parses
 // the same template strings on every render, and that accumulated inline CPU is
@@ -37,7 +38,7 @@ func compileGonjaTemplate(tpl string) (*exec.Template, error) {
 		ct := cached.(compiledTemplate)
 		return ct.tpl, ct.err
 	}
-	t, err := gonja.FromString(tpl)
+	t, err := gonjasafe.FromString(tpl)
 	compiledTemplateCache.Store(tpl, compiledTemplate{tpl: t, err: err})
 	return t, err
 }
@@ -53,6 +54,7 @@ type TemplateContext struct {
 	State          map[string]any // Unified context for all persistent workflow state
 	Self           map[string]any // Context for the current task's own data
 	templateEngine string
+	timeSource     func() time.Time
 }
 
 func NewTemplateContextWithEngine(inputs []model.Input, runtimeInputs map[string]any, engine string) *TemplateContext {
@@ -96,6 +98,7 @@ func NewTemplateContextWithEngine(inputs []model.Input, runtimeInputs map[string
 		Vars:           inputMap, // Initialize Vars with inputs
 		State:          make(map[string]any),
 		templateEngine: engine,
+		timeSource:     time.Now,
 	}
 }
 
@@ -113,7 +116,7 @@ func (c *TemplateContext) Render(tpl string) (string, error) {
 
 // renderGo renders a template string using Go's text/template engine.
 func (c *TemplateContext) renderGo(tpl string) (string, error) {
-	t, err := template.New("").Parse(tpl)
+	t, err := template.New("").Funcs(template.FuncMap{"shq": func(v any) (string, error) { return shellQuote(fmt.Sprint(v)) }}).Parse(tpl)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +139,12 @@ func (c *TemplateContext) renderGonja(tpl string) (str string, err error) {
 
 	// Built-in dynamic values evaluated once per render, so a subject like
 	// `Error Log Summary_{{ datetime }}` resolves to a stable string at task time.
-	nowUTC := time.Now().UTC()
+	var nowUTC time.Time
+	if c.timeSource == nil {
+		nowUTC = time.Now().UTC()
+	} else {
+		nowUTC = c.timeSource().UTC()
+	}
 
 	// Create the context map
 	data := map[string]interface{}{
@@ -148,7 +156,7 @@ func (c *TemplateContext) renderGonja(tpl string) (str string, err error) {
 		"Vars":          c.Vars,
 		"State":         c.State,
 		"Self":          c.Self,
-		"now":           func() time.Time { return time.Now().UTC() },
+		"now":           func() time.Time { return nowUTC },
 		"date":          nowUTC.Format("02012006"),
 		"date_iso":      nowUTC.Format("2006-01-02"),
 		"date_us":       nowUTC.Format("01/02/2006"),
@@ -202,13 +210,15 @@ func (c *TemplateContext) RenderMap(m map[string]any) (map[string]any, error) {
 
 func (c *TemplateContext) Clone() *TemplateContext {
 	clone := &TemplateContext{
-		Inputs:  make(map[string]any),
-		Tasks:   make(map[string]map[string]any),
-		Secrets: make(map[string]any),
-		Configs: make(map[string]any),
-		Vars:    make(map[string]any), // Initialize Vars in clone
-		State:   make(map[string]any), // Initialize State in clone
-		Self:    make(map[string]any), // Initialize Self in clone
+		Inputs:         make(map[string]any),
+		Tasks:          make(map[string]map[string]any),
+		Secrets:        make(map[string]any),
+		Configs:        make(map[string]any),
+		Vars:           make(map[string]any), // Initialize Vars in clone
+		State:          make(map[string]any), // Initialize State in clone
+		Self:           make(map[string]any), // Initialize Self in clone
+		templateEngine: c.templateEngine,
+		timeSource:     c.timeSource,
 	}
 	for k, v := range c.Inputs {
 		clone.Inputs[k] = v
@@ -232,6 +242,80 @@ func (c *TemplateContext) Clone() *TemplateContext {
 		clone.Self[k] = v
 	}
 	return clone
+}
+
+var (
+	shellSafeValue  = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+	templateExprRe  = regexp.MustCompile(`(?s)\{\{(-?)(.*?)(-?)\}\}`)
+	shellOperatorRe = regexp.MustCompile(`^(;|&&|\|\||&|\|)$`)
+	// goNonPrinting matches Go template actions that print nothing (control
+	// flow, comments, variable declarations); wrapping them would break the template.
+	goNonPrinting = regexp.MustCompile(`^\s*(/\*|(if|else|end|range|with|template|define|block|break|continue)\b|\$\w+\s*:?=)`)
+)
+
+// shellQuote makes v a single shell word. Values made only of plain characters
+// pass through unchanged; anything else is single-quoted. A bare operator is
+// refused: the agent re-tokenises the command, so even quoted it would read as
+// an operator.
+func shellQuote(v string) (string, error) {
+	if shellOperatorRe.MatchString(v) {
+		return "", fmt.Errorf("value %q cannot be used as a command argument", v)
+	}
+	if v == "" {
+		return "''", nil
+	}
+	if shellSafeValue.MatchString(v) {
+		return v, nil
+	}
+	return "'" + strings.ReplaceAll(v, "'", `'"'"'`) + "'", nil
+}
+
+// RenderCommand renders a CLI task's command template with every substituted
+// value quoted as one argument, so an input can never add an operator or an
+// extra flag. Only the template's own text is trusted.
+func (c *TemplateContext) RenderCommand(tpl string) (string, error) {
+	quoted := templateExprRe.ReplaceAllStringFunc(tpl, func(m string) string {
+		sub := templateExprRe.FindStringSubmatch(m)
+		if c.templateEngine == "go" {
+			if goNonPrinting.MatchString(sub[2]) {
+				return m
+			}
+			return "{{" + sub[1] + " shq (" + sub[2] + ") " + sub[3] + "}}"
+		}
+		return "{{" + sub[1] + " (" + sub[2] + ") | shq " + sub[3] + "}}"
+	})
+	return c.Render(quoted)
+}
+
+// cliCommandTasks are the task types whose "command" param is parsed by a
+// shell-like tokeniser on the agent.
+var cliCommandTasks = map[string]bool{"k8s.cli": true, "cloud.k8s.cli": true, "cicd.argocd.cli": true}
+
+// ProcessTaskParams is ProcessValue for a task's params, quoting the command of
+// CLI tasks (see RenderCommand).
+func ProcessTaskParams(taskType string, params map[string]any, ctx *TemplateContext) (any, error) {
+	cmd, ok := params["command"].(string)
+	if !cliCommandTasks[taskType] || !ok {
+		return ProcessValue(params, ctx)
+	}
+	rest := make(map[string]any, len(params))
+	for k, v := range params {
+		if k != "command" {
+			rest[k] = v
+		}
+	}
+	processed, err := ProcessValue(rest, ctx)
+	if err != nil {
+		return nil, err
+	}
+	out, _ := processed.(map[string]any)
+	if out == nil {
+		out = map[string]any{}
+	}
+	if out["command"], err = ctx.RenderCommand(cmd); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func Render(tpl string, ctx *TemplateContext) (string, error) {

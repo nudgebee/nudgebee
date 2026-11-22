@@ -22,11 +22,13 @@ make run
 ## Request path
 
 `auth.Middleware` (`auth/`) → pipeline in `proxy/handler.go`:
-`routeStage` → `ratelimitStage` → `resolverStage` → `filterStage` → passthrough → metering.
+`routeStage` → `policyStage` → `ratelimitStage` → `resolverStage` → `filterStage` → passthrough → metering.
 
 - **Auth** resolves the token via `user_auths` (`auth/user_auths.go`). Only keys with
   `kind IN ('gateway','all')`, `status='active'` and an unexpired `expires_at` authenticate.
 - **Route** may rewrite the model (alias / tier / substitution / failover targets).
+- **Policy** enforces per-key model/provider/endpoint restrictions and re-checks tenant block
+  rules on the routed target ([`docs/key-restrictions.md`](docs/key-restrictions.md)).
 - Key kinds, expiry and per-key limits are created and validated in api-server
   (`api-server/services/user/token_policy.go`); the gateway only reads them.
 

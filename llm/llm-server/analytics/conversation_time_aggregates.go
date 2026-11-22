@@ -1,0 +1,105 @@
+package analytics
+
+import (
+	"fmt"
+	"time"
+
+	"nudgebee/llm/config"
+	"nudgebee/llm/security"
+)
+
+// EventDetailsRetrievalTitle is excluded from productivity aggregates because
+// it represents an internal event lookup, not a user-facing investigation.
+// Mirrors the constant used by the frontend troubleshoot summary widget.
+const EventDetailsRetrievalTitle = "Event details retrieval by ID"
+
+// EventDetailsRetrievalTitlePrefix covers the same internal lookup under its
+// other title, which appends the event id and so can never match an exact
+// string. That id also makes the title UUID-bearing, so an EventScoped rollup
+// counted these lookups as investigations until this prefix was excluded.
+const EventDetailsRetrievalTitlePrefix = "Get the details of Event with id"
+
+type ConversationTimeAggregatesRequest struct {
+	AccountIds []string `json:"account_ids"`
+	UserId     string   `json:"user_id"`
+
+	// StartDate / EndDate are inclusive bounds on llm_conversations.created_at
+	// (RFC3339) — when the work started, not when the row was last touched.
+	// The frontend supplies UTC ISO timestamps for the window it is showing.
+	StartDate string `json:"start_date" validate:"required"`
+	EndDate   string `json:"end_date" validate:"required"`
+
+	// Sources scopes to specific ConversationSource values (e.g.
+	// ["Investigation"] for the auto tab, ["UserInvestigation"] for manual).
+	// Empty includes all sources.
+	Sources []string `json:"sources,omitempty"`
+
+	// EventScoped narrows to conversations whose title contains a UUID,
+	// matching the auto-investigation tab semantics in groupings_v2.
+	EventScoped bool `json:"event_scoped,omitempty"`
+}
+
+// ConversationTimeAggregatesResponse exposes both the rolled-up time numbers
+// and the productivity tunables so the frontend renders consistent values
+// without owning either source of truth.
+type ConversationTimeAggregatesResponse struct {
+	CompletedCount              int     `json:"completed_count"`
+	TotalCount                  int     `json:"total_count"`
+	TotalWallTimeSeconds        float64 `json:"total_wall_time_seconds"`
+	TotalAgentActiveTimeSeconds float64 `json:"total_agent_active_time_seconds"`
+	TotalToolTimeSeconds        float64 `json:"total_tool_time_seconds"`
+
+	// ManualBaselineMinutes is the assumed time a human investigator would
+	// spend per task; productivity = (baseline - avg AI time) / baseline.
+	ManualBaselineMinutes int `json:"manual_baseline_minutes"`
+
+	// EngineerHourlyRateUsd converts saved hours into the cost-saved widget.
+	EngineerHourlyRateUsd float64 `json:"engineer_hourly_rate_usd"`
+}
+
+// HandleConversationTimeAggregatesApi rolls up wall / agent-active / tool
+// time across many conversations for the troubleshoot dashboard. It
+// intentionally returns raw seconds plus the productivity tunables — the
+// frontend still renders averages and percentages, but it no longer owns the
+// arithmetic on raw conversation timestamps.
+func HandleConversationTimeAggregatesApi(ctx *security.RequestContext, request ConversationTimeAggregatesRequest) (ConversationTimeAggregatesResponse, error) {
+	startDate, err := time.Parse(time.RFC3339, request.StartDate)
+	if err != nil {
+		return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: invalid start_date: %w", err)
+	}
+	endDate, err := time.Parse(time.RFC3339, request.EndDate)
+	if err != nil {
+		return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: invalid end_date: %w", err)
+	}
+
+	// Shared with the other cost/usage dashboard handlers.
+	accountIDs, err := resolveAccessibleAccounts(ctx, request.AccountIds, "ai_conversations")
+	if err != nil {
+		return ConversationTimeAggregatesResponse{}, fmt.Errorf("HandleConversationTimeAggregatesApi: %w", err)
+	}
+
+	filter := ConversationTimeAggregatesFilter{
+		AccountIDs:            accountIDs,
+		StartDate:             startDate,
+		EndDate:               endDate,
+		Sources:               request.Sources,
+		ExcludedTitles:        []string{EventDetailsRetrievalTitle},
+		ExcludedTitlePrefixes: []string{EventDetailsRetrievalTitlePrefix},
+		EventScoped:           request.EventScoped,
+	}
+
+	aggregates, err := GetStore().GetConversationTimeAggregates(filter)
+	if err != nil {
+		return ConversationTimeAggregatesResponse{}, err
+	}
+
+	return ConversationTimeAggregatesResponse{
+		CompletedCount:              aggregates.CompletedCount,
+		TotalCount:                  aggregates.TotalCount,
+		TotalWallTimeSeconds:        aggregates.TotalWallTimeSeconds,
+		TotalAgentActiveTimeSeconds: aggregates.TotalAgentActiveTimeSeconds,
+		TotalToolTimeSeconds:        aggregates.TotalToolTimeSeconds,
+		ManualBaselineMinutes:       config.Config.ProductivityManualBaselineMinutes,
+		EngineerHourlyRateUsd:       config.Config.ProductivityEngineerHourlyRateUsd,
+	}, nil
+}

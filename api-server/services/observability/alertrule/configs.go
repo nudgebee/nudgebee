@@ -10,6 +10,7 @@ import (
 
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/promclient"
+	"nudgebee/services/integrations/promforager"
 	"nudgebee/services/integrations/signozclient"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
@@ -62,9 +63,16 @@ func hasIntegrationWithSource(sc *security.RequestContext, accountId, integratio
 //
 //go:noinline
 func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountId, integrationType, source string) ([]integrationConfigValue, error) {
+	values, _, err := listIntegrationConfigValuesAndID(sc, accountId, integrationType, source)
+	return values, err
+}
+
+// listIntegrationConfigValuesAndID also returns the integration row id, which
+// the forager uses as the datasource key when the row defines none.
+func listIntegrationConfigValuesAndID(sc *security.RequestContext, accountId, integrationType, source string) ([]integrationConfigValue, string, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get database manager: %w", err)
+		return nil, "", fmt.Errorf("failed to get database manager: %w", err)
 	}
 
 	tenantId := sc.GetSecurityContext().GetTenantId()
@@ -92,7 +100,7 @@ func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountI
 	var integrationId string
 	err = dbms.Db.QueryRow(query, args...).Scan(&integrationId)
 	if err != nil {
-		return nil, fmt.Errorf("integration %s not found for account %s: %w", integrationType, accountId, err)
+		return nil, "", fmt.Errorf("integration %s not found for account %s: %w", integrationType, accountId, err)
 	}
 
 	rows, err := dbms.Db.Queryx(
@@ -100,7 +108,7 @@ func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountI
 		FROM integration_config_values
 		WHERE integration_id = $1`, integrationId)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get config values: %w", err)
+		return nil, "", fmt.Errorf("failed to get config values: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -119,7 +127,7 @@ func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountI
 		})
 	}
 
-	return values, nil
+	return values, integrationId, nil
 }
 
 // decryptConfigValue decrypts a config value if it's encrypted.
@@ -305,6 +313,12 @@ func getLokiConfigs(sc *security.RequestContext, accountId string) (*lokiRulerCo
 			return nil, fmt.Errorf("failed to decrypt loki config %s: %w", c.Name, err)
 		}
 		switch c.Name {
+		case "connection_mode":
+			// Rules are read and written over Loki's ruler API from this process; a Loki
+			// behind a forager is not reachable here, and the forager carries no rules API.
+			if value == "vm_agent" {
+				return nil, fmt.Errorf("loki alert rules are not supported for a Loki reached through a forager")
+			}
 		case "loki_url":
 			cfg.Url = strings.TrimRight(strings.TrimSpace(value), "/")
 		case "loki_rules_url":
@@ -529,6 +543,54 @@ func getChronosphereConfigs(sc *security.RequestContext, accountId string) (stri
 	return chronoUrl, bearerToken, nil
 }
 
+// getPrometheusUserConfig loads the account's user-source Prometheus row into the
+// shared client config. Like getLokiConfigs, this reads the row locally: the
+// package cannot import integrations (eventrule → alertrule → integrations →
+// eventrule), so the row is read here and handed to promclient, which holds the
+// one auth implementation the metric queries also use.
+func getPrometheusUserConfig(sc *security.RequestContext, accountId string) (promclient.PrometheusUserConfig, error) {
+	// Same hazard as getCubeAPMConfigs: the cloud_account_id filter is conditional
+	// and the query ends in LIMIT 1, so an empty accountId resolves to an arbitrary
+	// user Prometheus in the tenant and the rule lands in the wrong account's ruler.
+	// CreateEventRule reaches here with an empty account for super admins, whom
+	// HasAccountAccess lets through for any account id.
+	if accountId == "" {
+		return promclient.PrometheusUserConfig{}, fmt.Errorf("account_id is required to resolve a Prometheus integration")
+	}
+
+	configs, integrationID, err := listIntegrationConfigValuesAndID(sc, accountId, "prometheus", "user")
+	if err != nil {
+		return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to get prometheus integration: %w", err)
+	}
+
+	values := make(map[string]string, len(configs))
+	for _, c := range configs {
+		value, err := decryptConfigValue(c)
+		if err != nil {
+			return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to decrypt prometheus config %s: %w", c.Name, err)
+		}
+		values[c.Name] = value
+	}
+
+	cfg, err := promclient.NewPrometheusUserConfig(values)
+	if err != nil {
+		return cfg, fmt.Errorf("prometheus integration has invalid settings: %w", err)
+	}
+	if cfg.URL == "" {
+		return cfg, fmt.Errorf("missing required prometheus configuration values")
+	}
+	if cfg.ViaForager {
+		// Same datasource key the metric-query loader uses: the row's own
+		// datasource_key, else the integration id.
+		datasourceKey := values["datasource_key"]
+		if datasourceKey == "" {
+			datasourceKey = integrationID
+		}
+		cfg.ProxyTransport = promforager.NewTransport(accountId, datasourceKey, values["agent_type"])
+	}
+	return cfg, nil
+}
+
 // cubeAPMConn holds CubeAPM connection config for alert-rule management.
 //
 // Duplicated from integrations.CubeAPMConfig rather than reused: this package
@@ -639,41 +701,73 @@ func cubeAPMAdminHeaders(token string) map[string]string {
 	return headers
 }
 
-// getPrometheusUserConfig loads the account's user-source Prometheus row into the
-// shared client config. Like getLokiConfigs, this reads the row locally: the
-// package cannot import integrations (eventrule → alertrule → integrations →
-// eventrule), so the row is read here and handed to promclient, which holds the
-// one auth implementation the metric queries also use.
-func getPrometheusUserConfig(sc *security.RequestContext, accountId string) (promclient.PrometheusUserConfig, error) {
-	// Same hazard as getCubeAPMConfigs: the cloud_account_id filter is conditional
-	// and the query ends in LIMIT 1, so an empty accountId resolves to an arbitrary
-	// user Prometheus in the tenant and the rule lands in the wrong account's ruler.
-	// CreateEventRule reaches here with an empty account for super admins, whom
-	// HasAccountAccess lets through for any account id.
+// solarWindsConn holds the SolarWinds connection config for alert-rule management.
+//
+// Duplicated from integrations.GetSolarWindsConfigs rather than reused, for the
+// same reason cubeAPMConn is: this package cannot import integrations
+// (integrations → event → triage → alertrule is an import cycle).
+type solarWindsConn struct {
+	APIToken   string
+	DataCenter string
+}
+
+// SolarWinds data centers, mirroring integrations/solarwinds.go. An unknown one
+// is rejected rather than interpolated, because the result would be a hostname
+// that does not resolve and an error that blames the network.
+var solarWindsDataCenters = map[string]bool{
+	"na-01": true, "na-02": true, "eu-01": true, "ap-01": true,
+}
+
+// solarWindsDefaultDataCenter matches the integrations package's default for an
+// integration saved before the field existed.
+const solarWindsDefaultDataCenter = "na-01"
+
+// getSolarWindsConfigs returns the SolarWinds connection config for alert-rule
+// management.
+func getSolarWindsConfigs(sc *security.RequestContext, accountId string) (solarWindsConn, error) {
+	// listIntegrationConfigValues is always tenant-scoped, but its
+	// cloud_account_id filter is conditional and the query ends in LIMIT 1 — so an
+	// empty accountId returns an arbitrary SolarWinds integration from the tenant
+	// rather than none, and an alert would be read or written in the wrong
+	// account's SolarWinds organisation.
 	if accountId == "" {
-		return promclient.PrometheusUserConfig{}, fmt.Errorf("account_id is required to resolve a Prometheus integration")
+		return solarWindsConn{}, fmt.Errorf("account_id is required to resolve a SolarWinds integration")
 	}
 
-	configs, err := listIntegrationConfigValuesWithSource(sc, accountId, "prometheus", "user")
+	configs, err := listIntegrationConfigValues(sc, accountId, "solarwinds")
 	if err != nil {
-		return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to get prometheus integration: %w", err)
+		return solarWindsConn{}, fmt.Errorf("failed to list solarwinds integration configs: %w", err)
 	}
 
-	values := make(map[string]string, len(configs))
+	conn := solarWindsConn{DataCenter: solarWindsDefaultDataCenter}
 	for _, c := range configs {
 		value, err := decryptConfigValue(c)
 		if err != nil {
-			return promclient.PrometheusUserConfig{}, fmt.Errorf("failed to decrypt prometheus config %s: %w", c.Name, err)
+			return solarWindsConn{}, fmt.Errorf("failed to decrypt solarwinds config %s: %w", c.Name, err)
 		}
-		values[c.Name] = value
+		switch c.Name {
+		case "api_token":
+			conn.APIToken = strings.TrimSpace(value)
+		case "data_center":
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				conn.DataCenter = trimmed
+			}
+		}
 	}
 
-	cfg, err := promclient.NewPrometheusUserConfig(values)
-	if err != nil {
-		return cfg, fmt.Errorf("prometheus integration has invalid settings: %w", err)
+	if conn.APIToken == "" {
+		return solarWindsConn{}, fmt.Errorf("the SolarWinds integration for account %s has no api_token", accountId)
 	}
-	if cfg.URL == "" {
-		return cfg, fmt.Errorf("missing required prometheus configuration values")
+	if !solarWindsDataCenters[conn.DataCenter] {
+		return solarWindsConn{}, fmt.Errorf("unknown SolarWinds data center %q on the integration for account %s", conn.DataCenter, accountId)
 	}
-	return cfg, nil
+	return conn, nil
+}
+
+// graphQLURL is the /v1/tfproxy endpoint for this connection's data center.
+//
+// The base-URL shape is duplicated from integrations.SolarWindsAPIBaseURL for
+// the import-cycle reason above; keep the two in step.
+func (c solarWindsConn) graphQLURL() string {
+	return fmt.Sprintf("https://api.%s.cloud.solarwinds.com/v1/tfproxy", c.DataCenter)
 }

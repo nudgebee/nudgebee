@@ -8,6 +8,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -677,10 +678,10 @@ Evidence Timeseries analysis for the event:
 	}
 	mc := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, finalMessage)}
 
-	completion, err := core.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, AgentEvidenceAnalysis, false, mc, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, AgentEvidenceAnalysis, false, mc, false, llms.WithTemperature(0.0))
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("llm: unable to generate content", "error", err)
-		return "", core.ErrLlmUnableToGenerate(err)
+		return "", llmruntime.ErrLlmUnableToGenerate(err)
 	}
 	content := ""
 	if len(completion.Choices) > 0 {
@@ -1248,10 +1249,10 @@ func (m EvidenceInsightsTool) Call(nbRequestContext toolcore.NbToolContext, inpu
 		}
 
 		mc := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, finalMessage)}
-		completion, err := core.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, AgentEvidenceAnalysis, false, mc, false, llms.WithTemperature(0.0))
+		completion, err := llmruntime.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, AgentEvidenceAnalysis, false, mc, false, llms.WithTemperature(0.0))
 		if err != nil {
 			nbRequestContext.Ctx.GetLogger().Error("llm: unable to generate content", "error", err)
-			return toolcore.NBToolResponse{}, core.ErrLlmUnableToGenerate(err)
+			return toolcore.NBToolResponse{}, llmruntime.ErrLlmUnableToGenerate(err)
 		}
 		content := ""
 		if len(completion.Choices) > 0 {
@@ -1292,6 +1293,6 @@ func (m EvidenceInsightsTool) Call(nbRequestContext toolcore.NbToolContext, inpu
 	}, nil
 }
 
-func (l AgentEventAnalysis) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l AgentEventAnalysis) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

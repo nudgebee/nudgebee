@@ -7,6 +7,15 @@
 # clean. EE deploys still override PYTHON_BASE via --build-arg.
 ARG PYTHON_BASE=ghcr.io/nudgebee/nudgebee-python:3.12
 FROM ${PYTHON_BASE} AS python-base
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-notifications-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee notifications server" \
+      description="Delivers alerts and notifications for the Nudgebee platform."
 # Bumping OS_PKG_EPOCH changes this layer's cache key so the registry cache
 # can't serve a stale package layer (same convention as api-server/services).
 ARG OS_PKG_EPOCH=2026-W44
@@ -19,12 +28,14 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && \
 WORKDIR /usr/src/app
 
 # Copy only dependency files first for caching
-COPY poetry.lock pyproject.toml ./
+COPY uv.lock pyproject.toml ./
 
-# Install dependencies (excluding dev dependencies)
+# Install the runtime dependencies exactly as pinned in uv.lock into the system
+# interpreter (UV_PROJECT_ENVIRONMENT=/usr/local). --locked fails the build when
+# uv.lock is out of date with pyproject.toml instead of re-resolving; --inexact
+# keeps the base image's own packages; the project itself is not installed.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=cache,target=/root/.cache/pip \
-    uv pip install --system --requirements pyproject.toml
+    UV_PROJECT_ENVIRONMENT=/usr/local uv sync --locked --inexact --no-dev --no-install-project
 
 # Drop pip from the runtime image. Dependencies are installed with uv and
 # nothing calls pip at runtime, but pip vendors its own msgpack, urllib3 and

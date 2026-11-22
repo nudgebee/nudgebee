@@ -70,6 +70,11 @@ func TestRepoCloneErrorHint_Patterns(t *testing.T) {
 			want:     "does not exist on the remote",
 		},
 		{
+			name:     "branch missing, as the clone step reports a failed fetch",
+			rawError: "failed to fetch branch fix/retry: fatal: couldn't find remote ref refs/heads/fix/retry: exit status 128",
+			want:     "does not exist on the remote",
+		},
+		{
 			name:     "disk full — infra issue, not model-recoverable",
 			rawError: "fatal: fetch-pack: unable to write to disk: No space left on device",
 			want:     "Not recoverable",

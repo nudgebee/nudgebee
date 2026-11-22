@@ -42,7 +42,7 @@ func CleanupLLMTokenUsageShortTerm(ctx *security.RequestContext) error {
 			config.Config.LLMTokenUsageCleanupMaxOutputTokens,
 			cleanupBatchSize),
 	}
-	return executeBatchedMetastoreJob(ctx, job.Name, job.Query)
+	return executeBatchedMetastoreJob(ctx, job.Name, job.Query, job.MaxBatches)
 }
 
 // CleanupLLMTokenUsageCatchAll nulls out the prompt/response bodies on every
@@ -68,5 +68,5 @@ func CleanupLLMTokenUsageCatchAll(ctx *security.RequestContext) error {
 			config.Config.LLMTokenUsageCleanupCatchAllDays,
 			cleanupBatchSize),
 	}
-	return executeBatchedMetastoreJob(ctx, job.Name, job.Query)
+	return executeBatchedMetastoreJob(ctx, job.Name, job.Query, job.MaxBatches)
 }

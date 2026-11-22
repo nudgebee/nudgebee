@@ -6,14 +6,10 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { DeleteIconRed as deleteIcon, downloadIcon, EditIcon, K8sIcon } from '@assets';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button } from '@ui/Button';
-import { DropdownMenu } from '@ui/DropdownMenu';
 import { Modal } from '@ui/Modal';
 import { snackbar } from '@ui/Toast';
 import SearchInput from '@ui/SearchInput';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
-import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
@@ -26,7 +22,10 @@ import DashboardView from './DashboardView';
 import { PANEL_PARAM } from './panelLink';
 import DashboardSkeleton from './DashboardSkeleton';
 import ImportDashboardModal from './ImportDashboardModal';
+import GenerateDashboardModal from './GenerateDashboardModal';
 import TemplateGalleryModal from './TemplateGalleryModal';
+import CreateDashboardOptionsModal from './CreateDashboardOptionsModal';
+import { NUBI_DRAFT_PARAM, takeStashedDashboard, type StashedDashboardDraft } from './generatedDashboard';
 
 type Mode = { name: 'list' } | { name: 'view'; id: string } | { name: 'create' };
 
@@ -93,20 +92,24 @@ const CustomDashboards: React.FC = () => {
   // submitted one feeds the request, so typing costs nothing until Enter.
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState<{ dashboard: Dashboard; bindings: DashboardBinding[] } | null>(null);
+  const [selected, setSelected] = useState<{ dashboard: Dashboard; bindings: DashboardBinding[]; editing?: boolean } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Dashboard | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const [createOptionsOpen, setCreateOptionsOpen] = useState(false);
   /** Connecting the first cluster, from the empty state below. */
   const [showAddClusterModal, setShowAddClusterModal] = useState(false);
   /** An unsaved dashboard — blank, or built from a template — waiting to be authored. */
   const [draftDashboard, setDraftDashboard] = useState<Dashboard | null>(null);
   /**
-   * Opens the next viewed dashboard straight in edit mode. Set by the listing's
-   * edit action, which means "edit this", not "look at this".
+   * The dashboard the listing's edit action asked to open in edit mode — "edit
+   * this", not "look at this". An id, used up by the one open it was said about,
+   * rather than a flag: the route can swap the open dashboard in place (the
+   * header search), and a flag turned that into "edit whichever opens next".
    */
-  const [openEditing, setOpenEditing] = useState(false);
+  const editOnOpen = useRef<string | null>(null);
 
   // Mirrors the backend gate: anyone who can write to at least one account may author dashboards, and the
   // panels they may point at are checked per account on save.
@@ -169,6 +172,9 @@ const CustomDashboards: React.FC = () => {
   // parameter, and this is the single place that turns it into a loaded dashboard.
   useEffect(() => {
     if (!router.isReady) return undefined;
+    // "Edit this" was said about one dashboard. Once the route names anything else — another dashboard,
+    // or the listing — the request is over, even when its own open was cut short and never used it.
+    if (editOnOpen.current !== routeId) editOnOpen.current = null;
     if (!routeId) {
       if (modeRef.current.name === 'view') setMode({ name: 'list' });
       return undefined;
@@ -179,12 +185,14 @@ const CustomDashboards: React.FC = () => {
     const signal = { cancelled: false };
     apiDashboards.getDashboard(routeId).then((res) => {
       if (signal.cancelled) return;
+      const editing = editOnOpen.current === routeId;
+      editOnOpen.current = null;
       if (res.errors || !res.data) {
         snackbar.error('Could not open that dashboard.');
         setRouteId(null);
         return;
       }
-      setSelected({ dashboard: res.data.dashboard, bindings: res.data.bindings || [] });
+      setSelected({ dashboard: res.data.dashboard, bindings: res.data.bindings || [], editing });
       setMode({ name: 'view', id: routeId });
     });
     return () => {
@@ -192,9 +200,49 @@ const CustomDashboards: React.FC = () => {
     };
   }, [router.isReady, routeId, setRouteId]);
 
+  // "Open as dashboard" on a Nubi conversation lands here with the generated
+  // draft in sessionStorage. It goes through Generate's own preview — the same
+  // panel check and notes a fresh generation gets — and from there to the editor,
+  // unsaved until Save. Leaving an editor with unsaved work to get here is held
+  // by DashboardView's own route guard, which the push trips.
+  const nubiDraftRequested = router.isReady && router.query[NUBI_DRAFT_PARAM] === 'nubi';
+  const nubiDraftHandled = useRef(false);
+  const [nubiDraft, setNubiDraft] = useState<StashedDashboardDraft | null>(null);
+  useEffect(() => {
+    // Once the param is gone the next hand-off (Nubi's popup sits over this
+    // page, so it can come without a remount) must be taken too.
+    if (!nubiDraftRequested) {
+      nubiDraftHandled.current = false;
+      return;
+    }
+    if (nubiDraftHandled.current) return;
+    nubiDraftHandled.current = true;
+    const [pathAndQuery, hash] = (router.asPath || '').split('#');
+    const [path, queryString] = (pathAndQuery || '').split('?');
+    const params = new URLSearchParams(queryString);
+    params.delete(NUBI_DRAFT_PARAM);
+    const query = params.toString();
+    router.replace(`${path}${query ? `?${query}` : ''}${hash ? `#${hash}` : ''}`, undefined, { shallow: true });
+
+    const stashed = takeStashedDashboard();
+    if (!stashed) {
+      snackbar.error('The generated dashboard was not found. Open it again from the conversation.');
+      return;
+    }
+    if (!hasWriteAccess(stashed.accountId)) {
+      snackbar.error('You do not have permission to create dashboards for that account.');
+      return;
+    }
+    // The preview lives on the listing; a draft already open in the editor is
+    // closed for it (the route guard has had its say by now).
+    setDraftDashboard(null);
+    setMode({ name: 'list' });
+    setNubiDraft(stashed);
+  }, [nubiDraftRequested, router]);
+
   /** Opens a dashboard for authoring — the same screen as viewing it, already in edit mode. */
   const openForEdit = (id: string) => {
-    setOpenEditing(true);
+    editOnOpen.current = id;
     setRouteId(id);
   };
 
@@ -408,11 +456,8 @@ const CustomDashboards: React.FC = () => {
         dashboard={selected.dashboard}
         accounts={accountOptions}
         canEdit={canWrite && !selected.dashboard.is_builtin}
-        initialEditing={openEditing}
-        onBack={() => {
-          setOpenEditing(false);
-          setRouteId(null);
-        }}
+        initialEditing={selected.editing}
+        onBack={() => setRouteId(null)}
         // Panels, title and description are edited in place; each save answers
         // with the stored dashboard, which becomes what this page holds.
         onChange={(saved) => setSelected((prev) => ({ dashboard: saved, bindings: prev?.bindings || [] }))}
@@ -528,45 +573,16 @@ const CustomDashboards: React.FC = () => {
         <ListingLayout.Toolbar
           actions={
             canWrite ? (
-              // Same shape as the in-dashboard Add panel menu: one button, three
-              // ways to start, so the toolbar reads as one action instead of
-              // three competing buttons.
-              <DropdownMenu
-                align='end'
-                trigger={
-                  <Button
-                    icon={<KeyboardArrowDownIcon sx={{ fontSize: 18 }} />}
-                    iconPlacement='end'
-                    id='new-dashboard-btn'
-                    data-testid='new-dashboard-btn'
-                  >
-                    New dashboard
-                  </Button>
-                }
-                items={[
-                  {
-                    id: 'open-template-gallery-btn',
-                    label: 'Use a template',
-                    icon: <LibraryBooksOutlinedIcon sx={{ fontSize: 17 }} />,
-                    onSelect: () => setTemplatesOpen(true),
-                  },
-                  {
-                    id: 'open-import-dashboard-btn',
-                    label: 'Import dashboard',
-                    icon: <UploadFileOutlinedIcon sx={{ fontSize: 17 }} />,
-                    onSelect: () => setImportOpen(true),
-                  },
-                  {
-                    id: 'new-blank-dashboard-btn',
-                    label: 'Blank dashboard',
-                    icon: <AddOutlinedIcon sx={{ fontSize: 17 }} />,
-                    onSelect: () => {
-                      setDraftDashboard(BLANK_DASHBOARD);
-                      setMode({ name: 'create' });
-                    },
-                  },
-                ]}
-              />
+              // One button, and a chooser of the ways to start — the same shape
+              // as the Automation page's "Create a New Automation".
+              <Button
+                icon={<AddOutlinedIcon sx={{ fontSize: 18 }} />}
+                onClick={() => setCreateOptionsOpen(true)}
+                id='new-dashboard-btn'
+                data-testid='new-dashboard-btn'
+              >
+                New dashboard
+              </Button>
             ) : null
           }
         >
@@ -591,6 +607,21 @@ const CustomDashboards: React.FC = () => {
         </ListingLayout.Body>
       </ListingLayout>
 
+      <CreateDashboardOptionsModal
+        open={createOptionsOpen}
+        onClose={() => setCreateOptionsOpen(false)}
+        onSelect={(option) => {
+          setCreateOptionsOpen(false);
+          if (option === 'template') setTemplatesOpen(true);
+          else if (option === 'generate') setGenerateOpen(true);
+          else if (option === 'import') setImportOpen(true);
+          else {
+            setDraftDashboard(BLANK_DASHBOARD);
+            setMode({ name: 'create' });
+          }
+        }}
+      />
+
       <TemplateGalleryModal
         open={templatesOpen}
         accountOptions={accountOptions}
@@ -607,13 +638,30 @@ const CustomDashboards: React.FC = () => {
         open={importOpen}
         accountOptions={accountOptions}
         onClose={() => setImportOpen(false)}
-        // Straight into edit mode: an import lands panels the author has never
-        onImported={(saved) => {
+        // Same draft path as a template: nothing exists until the editor's Save,
+        // so backing out and discarding leaves no dashboard behind.
+        onDraft={(draft) => {
           setImportOpen(false);
-          setSelected({ dashboard: saved, bindings: [] });
-          setOpenEditing(true);
-          setMode({ name: 'view', id: saved.id });
-          setRouteId(saved.id);
+          setDraftDashboard(draft);
+          setMode({ name: 'create' });
+        }}
+      />
+
+      <GenerateDashboardModal
+        open={generateOpen || Boolean(nubiDraft)}
+        accountOptions={accountOptions}
+        initialDraft={nubiDraft}
+        onClose={() => {
+          setGenerateOpen(false);
+          setNubiDraft(null);
+        }}
+        // Same draft path again: the generated dashboard is reviewed and saved in
+        // the editor, never written by the agent.
+        onDraft={(draft) => {
+          setGenerateOpen(false);
+          setNubiDraft(null);
+          setDraftDashboard(draft);
+          setMode({ name: 'create' });
         }}
       />
 

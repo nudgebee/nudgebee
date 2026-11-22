@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -55,10 +56,36 @@ func (p *IAMRecommendationsProvider) IsGlobal() bool {
 	return true
 }
 
+// awsUniqueIDLen is the length of every AWS unique identifier: a 4-char prefix
+// plus 16 base32-ish chars. Used as a cheap pre-check so the regex below is not
+// evaluated for an ordinary tag key.
+const awsUniqueIDLen = 20
+
+// awsUniqueIDPattern matches a tag key that is an AWS unique identifier rather
+// than a name someone chose. The AWS console stores an access key's description
+// as a tag on the key's IAM user keyed by the access key ID, so access key IDs
+// arrive here as ordinary user tags; storing them publishes a credential
+// identifier as a tag name wherever tags are shown.
+//
+// The prefix set mirrors the redaction scrubbers in audit/redact.go.
+var awsUniqueIDPattern = regexp.MustCompile(`^(?:AKIA|ASIA|AGPA|AIDA|AROA|ANPA|ANVA)[0-9A-Z]{16}$`)
+
+// isAWSUniqueIDTagKey reports whether a tag key is an AWS unique identifier
+// (access key ID, user ID, role ID, …), which must not be stored as a tag.
+func isAWSUniqueIDTagKey(key string) bool {
+	return len(key) == awsUniqueIDLen && awsUniqueIDPattern.MatchString(key)
+}
+
 func (p *IAMRecommendationsProvider) GetResources(ctx providers.CloudProviderContext, account providers.Account, _ string) ([]providers.Resource, error) {
-	client, err := getIAMClient(ctx, account)
-	if err != nil {
-		return nil, err
+	var client IAMClientAPI
+	if p.IAMClient != nil {
+		client = p.IAMClient // Use mock for testing, as GetRecommendations does
+	} else {
+		realClient, err := getIAMClient(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		client = realClient
 	}
 
 	var resources []providers.Resource
@@ -82,6 +109,11 @@ func (p *IAMRecommendationsProvider) GetResources(ctx providers.CloudProviderCon
 				ctx.GetLogger().Warn("failed to list tags for iam user", "user", *user.UserName, "error", err)
 			} else {
 				for _, tag := range tagsOutput.Tags {
+					// Skip AWS-generated identifier keys (see isAWSUniqueIDTagKey);
+					// the tag value is only the access key's description.
+					if isAWSUniqueIDTagKey(*tag.Key) {
+						continue
+					}
 					tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
 				}
 			}
@@ -120,6 +152,9 @@ func (p *IAMRecommendationsProvider) GetResources(ctx providers.CloudProviderCon
 				ctx.GetLogger().Warn("failed to list tags for iam role", "role", *role.RoleName, "error", err)
 			} else {
 				for _, tag := range tagsOutput.Tags {
+					if isAWSUniqueIDTagKey(*tag.Key) {
+						continue
+					}
 					tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
 				}
 			}

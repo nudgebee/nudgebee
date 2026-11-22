@@ -56,6 +56,22 @@ func (e *plannerExecutor) writeTargetOf(tool toolcore.NBTool, action NBAgentPlan
 		return fromConfig(tool.Name(), selected)
 	}
 
+	// Tools that name an account by id (automations run on theirs). One that
+	// is not the conversation's own is always the write's destination, even
+	// when it cannot be described: answering "origin" would approve and
+	// authorize the write on an account it does not land on.
+	if scoped, ok := tool.(toolcore.AccountArgTool); ok {
+		account := scoped.RequestedAccountID(action.ToolInput)
+		if account == "" || account == origin {
+			return nil
+		}
+		target := toolcore.ExecutionTarget{Name: account, AccountID: account}
+		if described := tools.AccountTarget(account); described != nil {
+			target = *described
+		}
+		return &writeTarget{Target: target}
+	}
+
 	// Tools that follow a target (databases, VMs, …): the call's `target`,
 	// else the one handed to this agent.
 	if decl, _ := toolcore.AccountScopeOf(tool.Name()); decl.Scope != toolcore.AccountScopeFollowsTarget {
@@ -114,11 +130,15 @@ func confirmationQuestionWithTarget(question string, action NBAgentPlannerToolAc
 // destinationOf is where a write lands, for the approval card: the other
 // account when it lands elsewhere, else the conversation's own account and
 // the integration the call runs with there (the one it names, else the one
-// already chosen: picked, or the only one). Nil when
+// already chosen: picked, or the only one); for an MCP tool, its integration. Nil when
 // the conversation's account cannot be named; the card then keeps its old text.
 func (e *plannerExecutor) destinationOf(tool toolcore.NBTool, action NBAgentPlannerToolAction, target *writeTarget) *writeTarget {
 	if target != nil {
 		return target
+	}
+	// An MCP tool's call goes to its integration, not to the account's cluster.
+	if named, ok := tool.(toolcore.MCPIntegrationNamer); ok && named.MCPIntegrationName() != "" {
+		return &writeTarget{Target: toolcore.ExecutionTarget{Provider: "mcp", Name: named.MCPIntegrationName(), AccountID: e.agentRequest.AccountId}}
 	}
 	own := tools.AccountTarget(e.agentRequest.AccountId)
 	if own == nil || own.Name == "" {
@@ -173,6 +193,13 @@ func (e *plannerExecutor) confirmationKeyOf(nameToTool map[string]toolcore.NBToo
 // another. A write that does not switch keeps its key.
 func (e *plannerExecutor) approvalKey(tool toolcore.NBTool, action NBAgentPlannerToolAction, target *writeTarget) string {
 	key := confirmationKeyWithTarget(confirmationKeyForAction(tool, action), target)
+	if runsSkillCode(e.agentRequest.AccountId, e.agentRequest.ConversationId, action.Tool, action.ToolInput) {
+		// A skill's code is approved per command: a shell command's key is
+		// otherwise the tool or its cluster, so a "yes" to one script (or to
+		// a file read written as python3 -c, or to a kubectl write on the
+		// same cluster) would run every later one unasked.
+		return key + "#" + strings.TrimSpace(action.ToolInput)
+	}
 	if target == nil && e.namesWhereItRunsAnyway(tool, action, key) {
 		// "kubectl --context k8s-dev" in a k8s-dev conversation is the same
 		// write as without it; one approval covers both.

@@ -40,6 +40,11 @@ type Props = {
   headingSx: Record<string, unknown>;
   // Whether the section rendered, so the tab can drop "No fixes are available".
   onVisibilityChange?: (visible: boolean) => void;
+  // Render only the mute dialog, opened each time muteRequest changes (the remediation loop's "More actions" menu
+  // opens it); onCanMuteChange says whether there is anything to mute.
+  dialogOnly?: boolean;
+  muteRequest?: number;
+  onCanMuteChange?: (canMute: boolean) => void;
 };
 
 const captionSx = { fontSize: ds.text.caption, color: ds.gray[600] };
@@ -56,6 +61,9 @@ export default function EventAlertControlsSection({
   triageRulesHref,
   headingSx,
   onVisibilityChange,
+  dialogOnly = false,
+  muteRequest = 0,
+  onCanMuteChange,
 }: Props) {
   const { title: brand } = useBrandingConfig();
   const [controls, setControls] = useState<EventAlertControls | null>(null);
@@ -93,6 +101,19 @@ export default function EventAlertControlsSection({
   useEffect(() => {
     onVisibilityChange?.(visible);
   }, [visible, onVisibilityChange]);
+
+  const canMute = Boolean(controls && visible && canWrite && mutableScopes(controls).length > 0);
+  useEffect(() => {
+    onCanMuteChange?.(canMute);
+  }, [canMute, onCanMuteChange]);
+  useEffect(() => {
+    if (!dialogOnly || !muteRequest || !controls) return;
+    setScope(mutableScopes(controls)[0]?.scope || '');
+    setDuration(DEFAULT_MUTE_DURATION);
+    setMuteOpen(true);
+    // Opens on a new request only, not when the controls reload.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [muteRequest]);
 
   if (!controls || !visible) {
     return null;
@@ -190,6 +211,38 @@ export default function EventAlertControlsSection({
       : []),
   ];
 
+  const muteModal = (
+    <Modal
+      open={muteOpen}
+      handleClose={() => setMuteOpen(false)}
+      title={`Mute ${alertName}${brand ? ` in ${brand}` : ''}`}
+      confirmText='Mute'
+      onConfirm={confirmMute}
+      confirmDisabled={!scope}
+      loader={busy}
+      backdropClickClose={!busy}
+    >
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
+        <Select
+          label='Which alerts'
+          options={scopeOptions}
+          value={scope || null}
+          onChange={(v: string) => setScope(v as EventMuteScopeName)}
+          clearable={false}
+          required
+        />
+        <Select label='For how long' options={MUTE_DURATION_OPTIONS} value={duration} onChange={setDuration} clearable={false} required />
+        <Text
+          value='New alerts are still recorded, marked Suppressed: no notifications, automations or AI analysis. The rule itself is not changed.'
+          sx={captionSx}
+        />
+      </Box>
+    </Modal>
+  );
+  if (dialogOnly) {
+    return muteModal;
+  }
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }} data-testid='event-alert-controls'>
       <Text value='Stop this alert' sx={headingSx} />
@@ -275,32 +328,7 @@ export default function EventAlertControlsSection({
         )}
       </Box>
 
-      <Modal
-        open={muteOpen}
-        handleClose={() => setMuteOpen(false)}
-        title={`Mute ${alertName}${brand ? ` in ${brand}` : ''}`}
-        confirmText='Mute'
-        onConfirm={confirmMute}
-        confirmDisabled={!scope}
-        loader={busy}
-        backdropClickClose={!busy}
-      >
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
-          <Select
-            label='Which alerts'
-            options={scopeOptions}
-            value={scope || null}
-            onChange={(v: string) => setScope(v as EventMuteScopeName)}
-            clearable={false}
-            required
-          />
-          <Select label='For how long' options={MUTE_DURATION_OPTIONS} value={duration} onChange={setDuration} clearable={false} required />
-          <Text
-            value='New alerts are still recorded, marked Suppressed: no notifications, automations or AI analysis. The rule itself is not changed.'
-            sx={captionSx}
-          />
-        </Box>
-      </Modal>
+      {muteModal}
 
       <Modal
         open={toggleOpen}

@@ -12,6 +12,7 @@ import (
 	_ "nudgebee/collector/cloud/providers/aws"
 	_ "nudgebee/collector/cloud/providers/gcloud"
 
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -206,6 +207,141 @@ func TestResourceCreatedAtPrefersCloudCreationTime(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, resourceCreatedAt(tc.cloudCreatedOn, tc.firstStored))
+		})
+	}
+}
+
+func TestSplitUnevaluatedRecommendations(t *testing.T) {
+	account := providers.Account{CloudProvider: "AWS", AccountNumber: "123456789012"}
+	stored := providers.Recommendation{
+		RuleName: "orphaned_volume", ResourceServiceName: "AmazonEC2", ResourceType: "storage", ResourceId: "vol-1", ResourceRegion: "us-east-1", Savings: 10,
+	}
+	placeholder := providers.Recommendation{
+		RuleName: "disk_performance_overprovisioned", Unevaluated: true,
+		ResourceServiceName: "AmazonEC2", ResourceType: "storage", ResourceId: "vol-2", ResourceRegion: "us-east-1",
+	}
+
+	t.Run("placeholders are taken out and turned into keys", func(t *testing.T) {
+		toStore, keys := splitUnevaluatedRecommendations(account, []providers.Recommendation{stored, placeholder})
+
+		assert.Equal(t, []providers.Recommendation{stored}, toStore)
+		// The key is the rule name joined to the account object id the row for this
+		// rule and resource is stored under.
+		accountObjectId := buildExternalResourceId("AWS", "123456789012", "us-east-1", "AmazonEC2", "storage", "vol-2", "")
+		assert.Equal(t, []string{"disk_performance_overprovisioned\x1f" + accountObjectId}, keys)
+	})
+
+	t.Run("without placeholders nothing changes", func(t *testing.T) {
+		items := []providers.Recommendation{stored}
+		toStore, keys := splitUnevaluatedRecommendations(account, items)
+		assert.Equal(t, items, toStore)
+		assert.Nil(t, keys)
+
+		toStore, keys = splitUnevaluatedRecommendations(account, nil)
+		assert.Nil(t, toStore)
+		assert.Nil(t, keys)
+	})
+
+	t.Run("only placeholders leaves nothing to store", func(t *testing.T) {
+		toStore, keys := splitUnevaluatedRecommendations(account, []providers.Recommendation{placeholder})
+		assert.Empty(t, toStore)
+		assert.Len(t, keys, 1)
+	})
+
+	t.Run("the same resource under another rule gets a different key", func(t *testing.T) {
+		other := placeholder
+		other.RuleName = "orphaned_volume"
+		_, keys := splitUnevaluatedRecommendations(account, []providers.Recommendation{placeholder, other})
+		require.Len(t, keys, 2)
+		assert.NotEqual(t, keys[0], keys[1])
+	})
+}
+
+func TestArchiveOpenRecommendationsQuery(t *testing.T) {
+	// The statement every sync has always run, kept byte for byte when no rule
+	// reported an unevaluated resource.
+	const unchanged = `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and ((resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) and (recommendation ->> 'service_name') is null) or lower(recommendation ->> 'service_name') = $2)`
+
+	t.Run("no protected rows", func(t *testing.T) {
+		query, args := archiveOpenRecommendationsQuery("acc-1", "AmazonEC2", nil)
+		assert.Equal(t, unchanged, query)
+		assert.Equal(t, []any{"acc-1", "amazonec2"}, args)
+	})
+
+	t.Run("protected rows are excluded from the archive", func(t *testing.T) {
+		keys := []string{"disk_performance_overprovisioned\x1fobj-1", "disk_performance_overprovisioned\x1fobj-2"}
+		query, args := archiveOpenRecommendationsQuery("acc-1", "AmazonEC2", keys)
+
+		assert.Equal(t, unchanged+` and not ((rule_name || chr(31) || coalesce(account_object_id, '')) = ANY($3::text[]))`, query)
+		require.Len(t, args, 3)
+		assert.Equal(t, "acc-1", args[0])
+		assert.Equal(t, "amazonec2", args[1])
+		assert.Equal(t, pq.Array(keys), args[2])
+	})
+}
+
+func TestRecommendationResourcesQuery(t *testing.T) {
+	const base = `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
+	from cloud_resourses
+	where account = $1`
+
+	tests := []struct {
+		name     string
+		provider string
+		service  string
+		where    string
+		args     []any
+	}{
+		{
+			// An unattached disk is stored Inactive and is what the
+			// remove-disk rule is about, so only deleted disks are left out.
+			name:     "azure disks keep inactive rows",
+			provider: "Azure",
+			service:  "microsoft.compute/disks",
+			where:    ` and lower(status) != 'deleted' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/disks"},
+		},
+		{
+			name:     "other azure services stay active only",
+			provider: "Azure",
+			service:  "microsoft.compute/virtualmachines",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/virtualmachines"},
+		},
+		{
+			name:     "a disk service on another provider stays active only",
+			provider: "AWS",
+			service:  "microsoft.compute/disks",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/disks"},
+		},
+		{
+			name:     "aws services stay active only",
+			provider: "AWS",
+			service:  "AmazonEC2",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "amazonec2"},
+		},
+		{
+			name:     "gcp recommender reads every non-deleted row",
+			provider: "GCP",
+			service:  "recommender",
+			where:    ` and lower(status) != 'deleted'`,
+			args:     []any{"acc-1"},
+		},
+		{
+			name:     "recommender on another provider stays scoped to its service",
+			provider: "Azure",
+			service:  "recommender",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "recommender"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query, args := recommendationResourcesQuery("acc-1", tt.provider, tt.service)
+			assert.Equal(t, base+tt.where, query)
+			assert.Equal(t, tt.args, args)
 		})
 	}
 }

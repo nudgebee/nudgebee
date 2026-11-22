@@ -1,14 +1,15 @@
 import * as React from 'react';
+import { AI_TOOLS_MODULES } from '@components/llm/admin/aiToolsModules';
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { useTenantBranding } from '@hooks/useTenantBranding';
+import { useTenantBranding, toAssistantLabel } from '@hooks/useTenantBranding';
 import Box from '@mui/material/Box';
 import { Button, Container, Typography, Menu, MenuItem, IconButton, Popover } from '@mui/material';
 import { useRouter } from 'next/router';
-import { signOut } from 'next-auth/react';
+import { logout } from '@lib/logout';
 import Head from 'next/head';
 import Link from 'next/link';
 import { renderSlot } from '@lib/slots';
-import { userManagementFilters } from '@lib/authHooks';
+import { NAV_COUNTS_EVENT, navSections, userManagementFilters } from '@lib/authHooks';
 
 // Internal Imports
 import { LayoutHeaderActionSlot } from '@shared/layout/LayoutHeaderActionSlot';
@@ -21,6 +22,8 @@ import {
   isGrantsOnlyUser,
   isUiFeatureEnabled,
   hasPermission,
+  canOpenGatewayConfig,
+  hasGrantOnAccount,
   missingPermissionMessage,
 } from '@lib/auth';
 import {
@@ -31,6 +34,7 @@ import {
   AdminIcon,
   ProfileOutlineIcon,
   WhiteOptimizeIcon,
+  WhiteGatewayIcon,
   WorkflowIconWhite,
   AllEventsIcon,
   SearchBlueIcon,
@@ -59,21 +63,25 @@ import {
 } from '@assets';
 import Header1 from '@shared/header/Header1';
 import ErrorBoundary from '@shared/ErrorBoundary';
+import Loader from '@shared/Loader';
 import SafeIcon from '@shared/icons/SafeIcon';
 import FirstLoginTour from '@components/onboarding/FirstLoginTour';
 import PendingAgentInstallBanner, { PendingAgentInstallBannerHostContext } from '@components/integrations/PendingAgentInstallBanner';
 import SectionFirstVisitTour from '@components/onboarding/SectionFirstVisitTour';
 import Tooltip from '@ui/Tooltip';
+import Chip from '@ui/Chip';
+import { Divider } from '@ui/Divider';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { tenantSwitcher } from '@lib/tenantSwitcherService';
 import { useData } from '@context/DataContext';
 import { useSetupGate, SETUP_ROUTE } from '@context/SetupGateContext';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
 import NubiBrainNav from './NubiBrainNav';
+import { MAIN_RAIL_WIDTH } from './railWidths';
 import { ds } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
-const COLLAPSED_WIDTH = 76;
+const COLLAPSED_WIDTH = MAIN_RAIL_WIDTH;
 
 const FLYOUT_CLOSE_DELAY_MS = 150;
 const NAV_ITEM_HIGHLIGHT_BG = `color-mix(in srgb, ${ds.background[100]} 10%, transparent)`;
@@ -81,6 +89,8 @@ const SIDEBAR_FLYOUT_BG = `color-mix(in srgb, var(--ds-sidebar-bg, var(--ds-bran
 const SIDEBAR_FLYOUT_TEXT = `color-mix(in srgb, ${ds.background[100]} 72%, transparent)`;
 const NAV_ITEM_HOVER_BG = SIDEBAR_FLYOUT_BG;
 const FLYOUT_ITEM_HOVER_BG = `color-mix(in srgb, ${ds.background[100]} 14%, transparent)`;
+const FLYOUT_GROUP_TEXT = `color-mix(in srgb, ${ds.background[100]} 50%, transparent)`;
+const FLYOUT_DIVIDER = `color-mix(in srgb, ${ds.background[100]} 12%, transparent)`;
 const FLYOUT_ICON_PX = 20;
 
 /**
@@ -181,8 +191,12 @@ const navigateTo = (router, targetPath) => {
   router.push(targetPath);
 };
 
-/** True when the route currently rendered is the one this sub-item points at. */
-const isSubItemActive = (subPath, router) => {
+/** True when the route currently rendered is the one this sub-item points at. A
+ * sub-item with `activePaths` is active on exactly those routes. */
+const isSubItemActive = (subPath, router, activePaths) => {
+  if (activePaths) {
+    return activePaths.includes(router.pathname);
+  }
   const [base, hash] = subPath.split('#');
   if (!router.pathname.startsWith(base)) {
     return false;
@@ -217,7 +231,7 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
       disableScrollLock
       slotProps={{ paper: { onMouseEnter, onMouseLeave, sx: styles.flyoutPaper } }}
     >
-      {item.subItems.map((sub) => {
+      {item.subItems.map((sub, i) => {
         const row = (
           <MenuItem
             id={sub.id}
@@ -225,7 +239,7 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
             component={sub.disabled ? 'div' : Link}
             href={sub.disabled ? undefined : sub.path}
             disabled={sub.disabled}
-            selected={isSubItemActive(sub.path, router)}
+            selected={isSubItemActive(sub.path, router, sub.activePaths)}
             onClick={(e) => {
               e.preventDefault();
               if (sub.disabled) {
@@ -239,14 +253,34 @@ const SubNavFlyout = ({ item, anchorEl, onMouseEnter, onMouseLeave, onNavigate }
               <SafeIcon src={sub.icon} alt='' width={FLYOUT_ICON_PX} height={FLYOUT_ICON_PX} />
             </Box>
             {sub.text}
+            {sub.count > 0 && (
+              <Box component='span' sx={styles.flyoutItemCount}>
+                <Chip size='xs' tone='warning' id={`${sub.id}-count`}>
+                  {sub.count}
+                </Chip>
+              </Box>
+            )}
           </MenuItem>
         );
-        return sub.disabled && sub.disabledTooltip ? (
-          <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
-            <span style={{ display: 'block' }}>{row}</span>
-          </Tooltip>
-        ) : (
-          row
+        const entry =
+          sub.disabled && sub.disabledTooltip ? (
+            <Tooltip key={sub.text} title={sub.disabledTooltip} placement='right'>
+              <span style={{ display: 'block' }}>{row}</span>
+            </Tooltip>
+          ) : (
+            row
+          );
+        // A row whose `group` differs from the row above opens a new section:
+        // a divider (except at the top) and the group's heading.
+        if (!sub.group || sub.group === item.subItems[i - 1]?.group) {
+          return entry;
+        }
+        return (
+          <React.Fragment key={sub.text}>
+            {i > 0 && <Divider color={FLYOUT_DIVIDER} sx={styles.flyoutDivider} />}
+            <Typography sx={styles.flyoutGroupLabel}>{sub.group}</Typography>
+            {entry}
+          </React.Fragment>
         );
       })}
     </Popover>
@@ -325,7 +359,7 @@ const PageLayout = ({ children }) => {
   // A tenant with no cloud accounts is held on the Setup Center — see
   // SetupGateContext. Dimming the rail is the visible half; the redirect in
   // that provider is what actually enforces it.
-  const { locked: navLocked } = useSetupGate();
+  const { locked: navLocked, loading: gateLoading } = useSetupGate();
 
   // State
   const [anchorElUser, setAnchorElUser] = useState(null);
@@ -367,7 +401,14 @@ const PageLayout = ({ children }) => {
   // Derived Values
   const session = getUserSession();
   const { selectedCluster } = useData();
-  const { baseTitle, logoUrl: brandingLogoUrl, faviconUrl: brandingFaviconUrl, loading: brandingLoading } = useTenantBranding();
+  const {
+    baseTitle,
+    logoUrl: brandingLogoUrl,
+    faviconUrl: brandingFaviconUrl,
+    loading: brandingLoading,
+    assistantName,
+    nubiIconUrl,
+  } = useTenantBranding();
 
   // Logo and favicon come from the branding config, with no house-brand fallback.
   // The `!brandingLoading` gates below hold both until the config resolves, so
@@ -382,8 +423,8 @@ const PageLayout = ({ children }) => {
   const favicon = brandingFaviconUrl;
 
   const avatarSubMenu = useMemo(() => {
-    return generateMenuItems(session?.hasMultipleTenantAccess || false);
-  }, []);
+    return generateMenuItems(session?.hasMultipleTenantAccess || false, navLocked);
+  }, [navLocked]);
 
   // LLM_ANALYSER is a per-tenant feature flag, not a UI_ENABLE_* deployment
   // toggle, so it can only be resolved client-side — same pattern as
@@ -396,18 +437,63 @@ const PageLayout = ({ children }) => {
       .catch(() => setLlmAnalyserEnabled(false));
   }, []);
 
+  // Sections an extension registers (navSections), shown when their feature flag
+  // is on. A page change reuses counts read in the last minute; refreshNavCounts()
+  // reads them again at once, so a count moves as soon as what it counts is acted on.
+  const [extraSections, setExtraSections] = useState([]);
+  const [countsAsked, setCountsAsked] = useState(0);
+  const countsRead = useRef({ asked: -1, at: 0, bySection: {} });
+  useEffect(() => {
+    const onCounts = () => setCountsAsked((n) => n + 1);
+    window.addEventListener(NAV_COUNTS_EVENT, onCounts);
+    return () => window.removeEventListener(NAV_COUNTS_EVENT, onCounts);
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    const read = countsRead.current;
+    const reuse = read.asked === countsAsked && Date.now() - read.at < 60_000;
+    if (!reuse) {
+      countsRead.current = { asked: countsAsked, at: Date.now(), bySection: {} };
+    }
+    const bySection = countsRead.current.bySection;
+    Promise.all(
+      navSections().map(async (section) => {
+        if (section.feature && !(await hasFeatureAccess(section.feature).catch(() => false))) {
+          return null;
+        }
+        if (section.loadCounts && !bySection[section.id]) {
+          // A failed read is not kept: the next page change asks again.
+          bySection[section.id] = section.loadCounts().catch(() => {
+            delete bySection[section.id];
+            return {};
+          });
+        }
+        const counts = section.loadCounts ? await bySection[section.id] : {};
+        return { ...section, subItems: section.subItems.map((sub) => ({ ...sub, count: counts[sub.id] })) };
+      })
+    ).then((sections) => {
+      if (cancelled) {
+        return;
+      }
+      const next = sections.filter(Boolean);
+      // Keep the same array when nothing changed, so the menu is not rebuilt on every page.
+      const key = (list) => JSON.stringify(list.map((s) => [s.id, s.subItems.map((sub) => sub.count)]));
+      setExtraSections((prev) => (key(prev) === key(next) ? prev : next));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [router.pathname, countsAsked]);
+
   const menuItems = useMemo(() => {
     const isAdmin = !!(session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin'));
     const canReadAccount = hasReadAccess(selectedCluster?.value);
     // Each sub-item carries the module it actually reads. This used to be implicit
     // — the parent's single `recommendations` gate stood in for the whole section —
-    // but the parent now also opens for `llm:Read` (AI Gateway below), and without
-    // per-sub-item modules that grant would light up Summary / Recommendations /
-    // Resolutions / Auto Optimize too, which it does not entitle. The two
-    // feature-flagged entries below are conditionally INCLUDED rather than gated,
-    // so for a grants-only user their `module` is redundant with the condition
-    // that admitted them — AI Gateway still carries one so the entry stays gated
-    // on its own if that condition is ever loosened. LLM Analyser's surface spans
+    // but the parent opens for `autooptimize` too, and without per-sub-item modules
+    // that grant would light up Summary / Recommendations / Resolutions too, which
+    // it does not entitle. The feature-flagged entry below is conditionally
+    // INCLUDED rather than gated. LLM Analyser's surface spans
     // several `ai_*` sub-modules with no single right answer, and its `canReadAccount`
     // condition is already false for every grants-only user, so it declares none
     // rather than guess one and hide the tab from a legitimate holder.
@@ -445,30 +531,46 @@ const PageLayout = ({ children }) => {
       ...(llmAnalyserEnabled && canReadAccount
         ? [{ text: 'LLM Analyser', path: '/optimise#llm-analyser', id: 'sidenav-optimise-cost-analyser', icon: LLMConsumptionIcon }]
         : []),
-      // `llm` is a TENANT-scoped module (@lib/permissionCatalog): the gateway usage
-      // API resolves the tenant from the session and takes no account, so the
-      // per-account `canReadAccount` check cannot see an `llm:Read` grant — a
-      // grants-only holder has empty session account ids by design, so it returns
-      // false and the entry disappeared for exactly the users who were granted it.
-      ...(isUiFeatureEnabled('llmGateway') && (canReadAccount || hasPermission('llm', 'Read'))
-        ? [{ text: 'AI Gateway', path: '/optimise#ai-gateway', id: 'sidenav-optimise-ai-gateway', module: 'llm', icon: IntegrationsIcon }]
+    ];
+
+    // AI Gateway's sections (GROUPS in GatewayUsage.tsx). No `module`: every tenant role
+    // reads its own gateway usage. Configure opens Admin → AI & Tools, so admins only.
+    const aiGatewaySections = [
+      { text: 'Connect', path: '/ai-gateway#connect', id: 'sidenav-ai-gateway-connect', icon: IntegrationsIcon },
+      { text: 'Monitor', path: '/ai-gateway#monitor', id: 'sidenav-ai-gateway-monitor', icon: dashboardIcon1 },
+      { text: 'Activity', path: '/ai-gateway#activity', id: 'sidenav-ai-gateway-activity', icon: SummaryIconBlue },
+      { text: 'Governance', path: '/ai-gateway#governance', id: 'sidenav-ai-gateway-governance', icon: SecuritytoolsBlue },
+      ...(canOpenGatewayConfig()
+        ? [{ text: 'Configure', path: '/user-management#ai-tools/gateway', id: 'sidenav-ai-gateway-configure', icon: SettingsIcon }]
         : []),
     ];
 
     const items = [
+      // Nubi sits above Home. /ask-nudgebee renders its own sub-nav (New chat,
+      // Chats, AI & Tools) docked to this rail — see AskNudgebeeLayoutV2.
+      {
+        path: '/ask-nudgebee',
+        icon: nubiIconUrl,
+        text: toAssistantLabel(assistantName),
+        id: 'nubi-sidenavbutton',
+        module: 'ai_conversations',
+      },
       {
         path: '/home',
-        // /overview belongs to no other rail item, so Home lights up for it.
-        activePaths: ['/overview'],
+        // /overview and /dashboards belong to no other rail item, so Home
+        // lights up for them.
+        activePaths: ['/overview', '/dashboards'],
         icon: homeIcon1,
         text: 'Home',
         id: 'home-sidenavbutton',
-        // Union of what the section's rows need, same reason Optimize declares
-        // one: gating the parent on `insights` alone greys it out for a holder
-        // of only `k8s:Read` or `cloud:Read`, and a disabled parent gets
-        // pointerEvents:'none' — its flyout never opens, so the row they ARE
-        // entitled to stays unreachable.
-        modules: ['insights', 'k8s', 'cloud'],
+        // No parent-level `modules` gate: unlike Optimize's rows, this section's
+        // rows don't share one module family — Dashboard List/Application
+        // Grouping need none at all (see their comment below) — so a parent gate
+        // would disable the whole flyout, and a disabled parent gets
+        // pointerEvents:'none', for a grants-only user who happens to hold none
+        // of insights/k8s/cloud even though the Dashboards rows stay reachable
+        // for everyone. Per-sub-item gating below is what actually decides each
+        // row, and the always-open Dashboards rows keep the parent open too.
         // Account Overview is the fleet-wide summary at /overview — one card per
         // connected account across every provider (K8s, AWS, Azure, GCP,
         // CloudFoundry, self-hosted VMs). It reads as a landing surface rather
@@ -477,28 +579,30 @@ const PageLayout = ({ children }) => {
         // because the page draws on both the k8s and cloud modules — either
         // grant entitles something on it, and each section only renders the
         // accounts the backend actually returns.
+        // Unlike the other flyouts, these rows span three pages, so `group` splits
+        // them under the same Overview / Dashboards headings global search uses.
         subItems: [
-          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1 },
+          { text: 'Home', path: '/home', id: 'sidenav-home-home', module: 'insights', icon: homeIcon1, group: 'Overview' },
           {
             text: 'Account Overview',
             path: '/overview#overview',
             id: 'sidenav-home-account-overview',
             modules: ['k8s', 'cloud'],
             icon: KubernetesClusterIcon,
+            group: 'Overview',
           },
-        ],
-      },
-      // No `module`: a dashboard panel may query any connected account, so the
-      // page itself gates on nothing — each panel's query is authorised per
-      // account by the backend it reads.
-      {
-        path: '/dashboards',
-        icon: dashboardIcon1,
-        text: 'Dashboards',
-        id: 'dashboards-sidenavbutton',
-        subItems: [
-          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1 },
-          { text: 'Application Grouping', path: '/dashboards#groups', id: 'sidenav-dashboards-groups', icon: ApplicationsIcon },
+          // Dashboards used to be its own rail item; folded in here to cut down
+          // the number of top-level icons. No `module`: a dashboard panel may
+          // query any connected account, so the page itself gates on nothing —
+          // each panel's query is authorised per account by the backend it reads.
+          { text: 'Dashboard List', path: '/dashboards#list', id: 'sidenav-dashboards-list', icon: dashboardIcon1, group: 'Dashboards' },
+          {
+            text: 'Application Grouping',
+            path: '/dashboards#groups',
+            id: 'sidenav-dashboards-groups',
+            icon: ApplicationsIcon,
+            group: 'Dashboards',
+          },
         ],
       },
       {
@@ -507,18 +611,52 @@ const PageLayout = ({ children }) => {
         icon: troubleshootIcon1,
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
-        module: 'events',
+        // Union of the modules its rows declare (events / ai_conversations / kg),
+        // same reasoning as Optimize below — so the flyout opens for any grant
+        // that entitles something inside it, and each row's own module decides
+        // what is actually reachable once it is open.
+        modules: ['events', 'ai_conversations', 'kg'],
         subItems: [
-          { text: 'All Events', path: '/troubleshoot#all-events', id: 'sidenav-troubleshoot-all-events', icon: AllEventsIcon },
-          { text: 'Investigations', path: '/troubleshoot#investigations', id: 'sidenav-troubleshoot-investigations', icon: SearchBlueIcon },
+          {
+            text: 'All Events',
+            path: '/troubleshoot#all-events',
+            id: 'sidenav-troubleshoot-all-events',
+            icon: AllEventsIcon,
+            module: 'events',
+          },
+          // module matches the page's own gate (canAccessInvestigations,
+          // troubleshoot/index.jsx) -- without it the flyout showed this
+          // enabled for a grants-only user the page still turns away with a
+          // permission-denied placeholder.
+          {
+            text: 'Investigations',
+            path: '/troubleshoot#investigations',
+            id: 'sidenav-troubleshoot-investigations',
+            icon: SearchBlueIcon,
+            module: 'ai_conversations',
+          },
           {
             text: 'Event Resolutions',
             path: '/troubleshoot#event-resolutions',
             id: 'sidenav-troubleshoot-event-resolutions',
             icon: RecommendationResolutionIcon,
+            module: 'events',
           },
-          { text: 'Knowledge Graph', path: '/troubleshoot#kg', id: 'sidenav-troubleshoot-kg', icon: ServiceMapsIcon },
-          { text: 'Analytics', path: '/troubleshoot#analytics', id: 'sidenav-troubleshoot-analytics', icon: GroupedEventsIcon },
+          // module matches the page's own gate (canAccessKg, troubleshoot/index.jsx).
+          {
+            text: 'Knowledge Graph',
+            path: '/troubleshoot#kg',
+            id: 'sidenav-troubleshoot-kg',
+            icon: ServiceMapsIcon,
+            module: 'kg',
+          },
+          {
+            text: 'Analytics',
+            path: '/troubleshoot#analytics',
+            id: 'sidenav-troubleshoot-analytics',
+            icon: GroupedEventsIcon,
+            module: 'events',
+          },
         ],
       },
       {
@@ -548,9 +686,22 @@ const PageLayout = ({ children }) => {
         // The union of the modules its sub-items declare, so the section opens for
         // any grant that entitles something inside it — and the sub-item gates
         // decide what is actually reachable once it is open.
-        modules: ['recommendations', 'autooptimize', 'llm'],
+        modules: ['recommendations', 'autooptimize'],
         subItems: optimizeSections,
       },
+      // Tenant-level, not per-account: the gateway usage actions admit every tenant role
+      // (tenant_usage included) and scope rows to the caller, so no account check.
+      ...(isUiFeatureEnabled('llmGateway')
+        ? [
+            {
+              path: '/ai-gateway',
+              icon: WhiteGatewayIcon,
+              text: 'AI Gateway',
+              id: 'ai-gateway-sidenavbutton',
+              subItems: aiGatewaySections,
+            },
+          ]
+        : []),
       {
         path: '/kubernetes',
         activePaths: ['/cloud-account', '/vm'],
@@ -629,7 +780,7 @@ const PageLayout = ({ children }) => {
             text: 'AI & Tools',
             path: '/user-management#ai-tools',
             id: 'sidenav-admin-ai-tools',
-            modules: ['ai', 'integrations', 'llm', 'egressfilter'],
+            modules: AI_TOOLS_MODULES,
             icon: AgentIcon,
           },
           {
@@ -661,29 +812,45 @@ const PageLayout = ({ children }) => {
         ],
       });
     }
+    for (const section of extraSections) {
+      const at = items.findIndex((item) => item.id === section.before);
+      items.splice(at === -1 ? items.length : at, 0, section);
+    }
     if (!isGrantsOnlyUser(selectedCluster?.value)) return items;
     // An entry is reachable when the user holds :Read on ANY of the modules behind
-    // it. Almost every entry has exactly one (`module`); `Optimize` declares two
-    // (`modules`) because its AI Gateway sub-item is a tenant-scoped `llm` surface
-    // with nothing to do with the `recommendations` module the rest of the section
-    // reads. Gating the section on `recommendations` alone greyed the parent out
-    // for an `llm:Read` holder — and a disabled parent gets pointerEvents:'none',
-    // so its flyout never opens and the granted sub-item stayed unreachable even
-    // though the sub-item itself was enabled. The tooltip names the primary module.
+    // it. Almost every entry has exactly one (`module`); a section whose sub-items
+    // read different modules declares them all (`modules`). Gating it on one alone
+    // greys the parent out for a holder of another — and a disabled parent gets
+    // pointerEvents:'none', so its flyout never opens and a granted sub-item stays
+    // unreachable even though the sub-item itself is enabled. The tooltip names
+    // every module in the union — naming only the first (e.g. "spend:Read" on an
+    // entry any of spend/recommendations/autooptimize would unlock) wrongly
+    // implies that one specific grant is required.
+    const tooltipForModules = (modules) =>
+      modules.length > 1
+        ? `You need one of these permissions: ${modules.map((m) => `"${m}:Read"`).join(', ')}. Ask an admin to grant it.`
+        : missingPermissionMessage(`${modules[0]}:Read`);
     const gate = (entry) => {
       const modules = entry.modules ?? (entry.module ? [entry.module] : []);
-      return modules.length > 0 && !modules.some((m) => hasPermission(m, 'Read'))
-        ? { ...entry, disabled: true, disabledTooltip: missingPermissionMessage(`${modules[0]}:Read`) }
-        : entry;
+      if (modules.length === 0 || modules.some((m) => hasPermission(m, 'Read') || hasGrantOnAccount(m, 'Read', selectedCluster?.value))) {
+        return entry;
+      }
+      return { ...entry, disabled: true, disabledTooltip: tooltipForModules(modules) };
     };
     return items.map((item) => {
       const subItems = item.subItems?.map(gate);
       const gated = gate({ ...item, ...(subItems ? { subItems } : {}) });
-      return gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)
-        ? gated
-        : { ...gated, disabled: true, disabledTooltip: subItems[0].disabledTooltip };
+      if (gated.disabled || !subItems?.length || subItems.some((sub) => !sub.disabled)) {
+        return gated;
+      }
+      // Every sub-item is disabled (and the parent itself has no `module`, e.g.
+      // Infra) -- name every distinct module across them (k8s:Read + cloud:Read),
+      // not just the first sub-item's, which would wrongly suggest only that one
+      // grant unlocks the section.
+      const allModules = [...new Set(item.subItems.flatMap((sub) => sub.modules ?? (sub.module ? [sub.module] : [])))];
+      return { ...gated, disabled: true, disabledTooltip: tooltipForModules(allModules) };
     });
-  }, [selectedCluster?.value, session, llmAnalyserEnabled]);
+  }, [selectedCluster?.value, session, llmAnalyserEnabled, assistantName, nubiIconUrl, extraSections]);
 
   // Route/Page Type Detection
   const pageFlags = useMemo(
@@ -700,12 +867,13 @@ const PageLayout = ({ children }) => {
     [router.pathname]
   );
 
-  const isPlainLayout = pageFlags.isAskNudgebee || pageFlags.isWorkflow;
+  const isPlainLayout = pageFlags.isWorkflow;
   const isPaddedLayout = !(pageFlags.isAskNudgebee || pageFlags.isInvestigate || pageFlags.isAskNudgebeeV2);
 
   // Note: This one is still calculated on render as it's used for the top logo link
   // If you want to optimize this too, you'd need to make the logo a Button with onClick handler similar to above
-  const homeUrl = useMemo(() => getDynamicPath('/home', router), [router]);
+  // The logo goes to the default landing page, Nubi — the same place `/` sends a fresh sign-in.
+  const homeUrl = useMemo(() => getDynamicPath('/ask-nudgebee', router), [router]);
 
   // Handlers
   const handleSwitchAccountClose = () => setOpenSwitchAccount(false);
@@ -743,7 +911,7 @@ const PageLayout = ({ children }) => {
     setAnchorElUser(null);
     switch (subMenu) {
       case 'Logout':
-        signOut({ callbackUrl: '/' });
+        logout('/');
         break;
       case 'Switch Tenant':
         setOpenSwitchAccount(true);
@@ -778,7 +946,7 @@ const PageLayout = ({ children }) => {
             }
           </Head>
           {/* Mounted here too so the AccountGuard "Switch Tenant" CTA works
-              on plain-layout pages (e.g. ask-nudgebee). */}
+              on plain-layout pages (e.g. the workflow builder). */}
           <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
           {children}
         </>
@@ -844,7 +1012,9 @@ const PageLayout = ({ children }) => {
                           to stay a direct child of .inner-side-drawer to render at that position.
                           Wrapping the whole .map() output (separators included) in the dimming
                           Box below used to push every separator to the left edge instead. */}
-                      {['Troubleshoot', 'Infra', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
+                      {['troubleshoot-sidenavbutton', 'infra-sidenavbutton', 'tickets-sidenavbutton'].includes(item.id) && (
+                        <Box sx={styles.subSeparator} />
+                      )}
                       <Box sx={navLocked ? { pointerEvents: 'none', opacity: 0.35, filter: 'grayscale(1)' } : undefined}>
                         <SideDrawerButton
                           item={item}
@@ -964,15 +1134,18 @@ const PageLayout = ({ children }) => {
             )}
 
             <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
-              {!isRenderedInIframe() && !pageFlags.isWorkflow && (
+              {/* Nubi's page has its own title bar and account picker in the composer. */}
+              {!isRenderedInIframe() && !pageFlags.isWorkflow && !pageFlags.isAskNudgebee && (
                 <ErrorBoundary resetKey={router.pathname}>
                   <Header1 />
                 </ErrorBoundary>
               )}
               <Box
                 sx={{
-                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
-                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
+                  // Nubi runs edge to edge beside its sub-nav, with no page gutter.
+                  maxWidth: pageFlags.isAskNudgebee ? 'none' : `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
+                  width: pageFlags.isAskNudgebee ? '100%' : `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
+                  minWidth: 0,
                   px: pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
@@ -986,27 +1159,40 @@ const PageLayout = ({ children }) => {
                 }}
               >
                 <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
-                  {/* Reminder for a Kubernetes account whose install command was never
-                      run. Lives here, not on one page: the add-cluster modal is reachable
-                      from the header everywhere, so the reminder has to follow the user.
-                      Suppressed on /setup specifically — not on `navLocked`, which is not
-                      the same condition. The K8s wizard's own account-create callback
-                      (`refreshReadiness` in SetupCenter) re-reads the gate the instant step
-                      1 submits, so `navLocked` flips false while the user is still on
-                      /setup watching step 2 (the install command, waiting for the agent).
-                      Gating on navLocked would let this banner render at exactly that
-                      moment, stacked on the card's own "waiting for agent" state for the
-                      same account. The route is the one thing that stays true for as long
-                      as the duplicate would.
-                      A page with a tab strip claims it and renders it below the tabs. */}
-                  {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && (
-                    <ErrorBoundary resetKey={router.asPath}>
-                      <PendingAgentInstallBanner />
-                    </ErrorBoundary>
+                  {gateLoading && router.pathname !== SETUP_ROUTE ? (
+                    <Loader />
+                  ) : (
+                    <Box
+                      sx={navLocked && router.pathname !== SETUP_ROUTE ? { pointerEvents: 'none', opacity: 0.35, filter: 'grayscale(1)' } : undefined}
+                    >
+                      {/* Reminder for a Kubernetes account whose install command was never
+                          run. Lives here, not on one page: the add-cluster modal is reachable
+                          from the header everywhere, so the reminder has to follow the user.
+
+                          Suppressed on /setup specifically — not on `navLocked`, which is not
+                          the same condition. The K8s wizard's own account-create callback
+                          (`refreshReadiness` in SetupCenter) re-reads the gate the instant step
+                          1 submits, so `navLocked` flips false while the user is still on
+                          /setup watching step 2 (the install command, waiting for the agent).
+                          Gating on navLocked would let this banner render at exactly that
+                          moment, stacked on the card's own "waiting for agent" state for the
+                          same account. The route is the one thing that stays true for as long
+                          as the duplicate would.
+
+                          A page with a tab strip claims it and renders it below the tabs.
+
+                          Also off on Nubi's page: its header and composer are fixed-position
+                          and would sit over a banner stacked above the chat. */}
+                      {bannerClaims === 0 && router.pathname !== SETUP_ROUTE && !pageFlags.isAskNudgebee && (
+                        <ErrorBoundary resetKey={router.asPath}>
+                          <PendingAgentInstallBanner />
+                        </ErrorBoundary>
+                      )}
+                      <PendingAgentInstallBannerHostContext.Provider value={bannerHost}>
+                        <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
+                      </PendingAgentInstallBannerHostContext.Provider>
+                    </Box>
                   )}
-                  <PendingAgentInstallBannerHostContext.Provider value={bannerHost}>
-                    <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
-                  </PendingAgentInstallBannerHostContext.Provider>
                 </Container>
               </Box>
             </Box>
@@ -1104,6 +1290,9 @@ const styles = {
       '&:hover': { backgroundColor: FLYOUT_ITEM_HOVER_BG },
     },
   },
+  flyoutItemCount: {
+    ml: 'auto',
+  },
   flyoutItemIcon: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -1115,6 +1304,18 @@ const styles = {
     transition: `opacity ${ds.motion.micro} ${ds.motion.ease}`,
     '& img, & svg': { filter: 'brightness(0) invert(1)' },
   },
+  // Same type treatment as the ds menus' section header (OverlaySection), dimmed
+  // for the dark panel, and inset to line up with the row icons below it.
+  flyoutGroupLabel: {
+    mx: ds.space[2],
+    padding: `${ds.space[2]} ${ds.space[3]} ${ds.space[1]}`,
+    fontSize: ds.text.caption,
+    fontWeight: ds.weight.semibold,
+    color: FLYOUT_GROUP_TEXT,
+    textTransform: 'uppercase',
+    letterSpacing: '0.02em',
+  },
+  flyoutDivider: { mx: ds.space[4], my: ds.space[2] },
   body: {
     transition: 'ease 0.2s',
     flexGrow: 1,

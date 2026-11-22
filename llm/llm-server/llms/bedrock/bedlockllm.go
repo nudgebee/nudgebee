@@ -101,6 +101,12 @@ func processMessages(ctx context.Context, messages []llms.MessageContent) ([]bed
 
 	for _, m := range messages {
 		for _, part := range m.Parts {
+			// A cache marker applies to the message its inner part becomes.
+			var cacheControl *llms.CacheControl
+			if cc, ok := part.(llms.CachedContent); ok {
+				part, cacheControl = cc.ContentPart, cc.CacheControl
+			}
+			n := len(bedrockMsgs)
 			switch part := part.(type) {
 			case llms.TextContent:
 				bedrockMsgs = append(bedrockMsgs, bedrockclient.Message{
@@ -126,7 +132,7 @@ func processMessages(ctx context.Context, messages []llms.MessageContent) ([]bed
 						Content: "[An image attachment could not be loaded.]",
 						Type:    "text",
 					})
-					continue
+					break
 				}
 				bedrockMsgs = append(bedrockMsgs, bedrockclient.Message{
 					Role:     m.Role,
@@ -164,6 +170,9 @@ func processMessages(ctx context.Context, messages []llms.MessageContent) ([]bed
 				})
 			default:
 				return nil, errors.New("unsupported message type")
+			}
+			if cacheControl != nil && len(bedrockMsgs) > n {
+				bedrockMsgs[len(bedrockMsgs)-1].CacheControl = cacheControl
 			}
 		}
 	}

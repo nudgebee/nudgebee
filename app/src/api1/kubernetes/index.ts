@@ -1,4 +1,6 @@
-import { queryGraphQL, gqlStringify, hitRelayServer } from '@lib/HttpService';
+import { queryGraphQL, gqlStringify, unwrapGraphQL } from '@lib/HttpService';
+import { isAccessDenied } from '@lib/accessDenied';
+import { eventSearchClause } from '@lib/eventSearch';
 
 import {
   getStartOfYear,
@@ -7,11 +9,12 @@ import {
   getEndOfDay,
   getStartOfMonth,
   getEndOfMonth,
+  getStartOfLastMonth,
   getYesterday,
   formatDateTime,
 } from '@lib/datetime';
 import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
-import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common';
+import { parseHttpResponseBodyMessage, safeJSONParse, ALERT_STATUS_OPTIONS, deriveGroupAlertStatus } from 'src/utils/common';
 import getMockData from '@api1/mock';
 import observability from '@api1/observability';
 import { getClusterData } from '@context/DataContext';
@@ -739,9 +742,32 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 }
 `;
 
+// Asks the assistant for a plan in the background (remediation loop, #40734): `plan` when there is none,
+// `recheck` when the plan is out of date, `replan` with the person's reasons and note. Queued; returns at once.
+export const AI_GENERATE_REMEDIATION_PLAN = `
+mutation AiGenerateRemediationPlan($accountId: String!, $eventId: String!, $mode: String!, $reasons: [String!], $note: String) {
+  ai_generate_remediation_plan(account_id: $accountId, event_id: $eventId, mode: $mode, reasons: $reasons, note: $note) {
+    data
+  }
+}
+`;
+
+// A person confirms the remediation loop's "Likely fixed" verdict of a run and resolves the event (#40734).
+export const EVENTS_APPLY_REMEDIATION_RESOLVE = `
+mutation EventsApplyRemediationResolve($accountId: String!, $eventId: String!, $runId: String!) {
+  events_apply_remediation_resolve(account_id: $accountId, event_id: $eventId, run_id: $runId) {
+    events {
+      event_id
+      prev_status
+      new_status
+    }
+  }
+}
+`;
+
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String, $acknowledgeUnknown: Boolean, $planVersion: String, $reason: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action, acknowledge_unknown: $acknowledgeUnknown, plan_version: $planVersion, reason: $reason) {
     data
   }
 }
@@ -773,11 +799,7 @@ export const priorityFilter = [
   { value: 'INFO', label: 'Info' },
 ];
 
-export const statusFilter = [
-  { value: 'FIRING', label: 'Firing' },
-  { value: 'RESOLVED', label: 'Resolved' },
-  { value: 'CLOSED', label: 'Closed' },
-];
+export const statusFilter = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
 
 export const GET_RESOURCE_ATTRIBUTES = `
 query GetResourceAttributes {
@@ -932,10 +954,11 @@ function buildEventFilterParams(query: any) {
   if (query?.searchByLabel) {
     filterParams['labels'] = { _contains: query.searchByLabel };
   }
-  if (query?.messageSearch?.trim()) {
+  const searchClause = eventSearchClause(query?.messageSearch);
+  if (searchClause) {
     // Use `and` so we don't clobber an existing exact-match `title` filter
     // set by a drilldown defaultQuery.
-    and.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+    and.push(searchClause);
   }
   if (query?.resource_ids) {
     filterParams['resource_id'] = { _in: query.resource_ids };
@@ -1051,6 +1074,44 @@ function filterDemoEvents(events: any[], query: any): any[] {
     }
     return true;
   });
+}
+
+// The overview renders two tiles per cluster that both need this rollup
+// (ClusterViewCard for MTD / last month / forecast, KubernetesSaving for the
+// savings potential). Share one request per account while it is pending so the
+// page sends N calls for N clusters, not 2N. Nothing is cached past settle.
+const yearlySavingInFlight = new Map<string, Promise<any>>();
+
+async function fetchK8sClusterYearlySaving(accountId: string) {
+  try {
+    const currentDate = new Date();
+    // Pinned to the 1st: stepping back a month from the 29th–31st with setMonth
+    // overflows into the current month (Oct 31 -> "Sep 31" -> Oct 1).
+    const lastMonthStart = getStartOfLastMonth(currentDate);
+    const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
+      accountId1: accountId,
+      startDate: getStartOfMonth(currentDate),
+      endDate: getEndOfMonth(currentDate),
+      yearStartDate: getStartOfYear(currentDate),
+      yearEndDate: getEndOfYear(currentDate),
+      lmStartDate: getStartOfMonth(lastMonthStart),
+      lmEndDate: getEndOfMonth(lastMonthStart),
+    });
+    return {
+      data: {
+        yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0]?.sum_estimated_savings || 0) * 12,
+        current_year_projected_spend: getExpectedYearlyExpense(
+          getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+          response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
+        ),
+        current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
+        previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
+        mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
+      },
+    };
+  } catch (error) {
+    return error;
+  }
 }
 
 const apiKubernetes = {
@@ -1239,7 +1300,14 @@ const apiKubernetes = {
       return error;
     }
   },
-  async getEventsSimilarDataAndInsights(aggregation_key: string, service_key: string, id: string, end_date: string | null = null, account_id = '') {
+  async getEventsSimilarDataAndInsights(
+    aggregation_key: string,
+    service_key: string,
+    id: string,
+    end_date: string | null = null,
+    account_id = '',
+    signal?: AbortSignal
+  ) {
     try {
       // The event's start is UTC and may be written without a zone, so it is read as UTC here.
       const end = end_date ? new Date(/([Zz]|[+-]\d{2}:?\d{2})$/.test(end_date) ? end_date : `${end_date}Z`) : new Date();
@@ -1248,22 +1316,28 @@ const apiKubernetes = {
       }
       const DAY_MS = 24 * 60 * 60 * 1000;
 
-      const response = await queryGraphQL(EVENT_SIMILAR_AND_INSIGHTS, 'eventsSimilarAndInsightData', {
-        id: id,
-        // Without the account, the counts covered every account in the tenant: two accounts
-        // watching one cluster have the same service key, and their alerts were added together.
-        account_id,
-        aggregation_key: aggregation_key,
-        service_key: service_key,
-        // Anchored on the event, not on now: with `endDate` set to the event's
-        // start and these set from today, the range inverted on any event older
-        // than the window and the count silently came back 0.
-        // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
-        // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
-        sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
-        sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
-        endDate: end.toISOString(),
-      });
+      const response = await queryGraphQL(
+        EVENT_SIMILAR_AND_INSIGHTS,
+        'eventsSimilarAndInsightData',
+        {
+          id: id,
+          // Without the account, the counts covered every account in the tenant: two accounts
+          // watching one cluster have the same service key, and their alerts were added together.
+          account_id,
+          aggregation_key: aggregation_key,
+          service_key: service_key,
+          // Anchored on the event, not on now: with `endDate` set to the event's
+          // start and these set from today, the range inverted on any event older
+          // than the window and the count silently came back 0.
+          // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
+          // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
+          sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
+          sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
+          endDate: end.toISOString(),
+        },
+        undefined,
+        signal
+      );
       const d = response?.data?.data;
       return {
         data: {
@@ -1280,9 +1354,6 @@ const apiKubernetes = {
   },
   async listk8ClusterData() {
     try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date(currentDate);
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const accountGroups: Record<string, any> = {};
 
       const response = await queryGraphQL(LIST_k8_CLUSTER_DATA, 'listK8ClusterData', {});
@@ -1325,8 +1396,6 @@ const apiKubernetes = {
   async listk8ClusterEventsData(accountId: string) {
     if (accountId === 'demo') return null;
     try {
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
       const response = await queryGraphQL(GET_CLUSTER_EVENTS, 'getClusterEvents', {
         todayEnd: getEndOfDay(new Date()),
         yesterdayStart: getStartOfDay(getYesterday(new Date())),
@@ -1345,40 +1414,17 @@ const apiKubernetes = {
   },
   async listk8ClustersYearlySaving(accountId: string) {
     if (accountId === 'demo') return null;
-    try {
-      const currentDate = new Date();
-      const lastMonthStart = new Date();
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-      const response = await queryGraphQL(LIST_k8_CLUSTER_YEARLY_SAVING, 'listK8ClusterYearlySaving', {
-        accountId1: accountId,
-        startDate: getStartOfMonth(currentDate),
-        endDate: getEndOfMonth(currentDate),
-        yearStartDate: getStartOfYear(currentDate),
-        yearEndDate: getEndOfYear(currentDate),
-        lmStartDate: getStartOfMonth(lastMonthStart),
-        lmEndDate: getEndOfMonth(lastMonthStart),
-      });
-      return {
-        data: {
-          yearly_recommendation_saving: (response?.data?.data?.recommendation_aggregate?.rows?.[0].sum_estimated_savings || 0) * 12,
-          current_year_projected_spend: getExpectedYearlyExpense(
-            getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-            response?.data?.data?.yearly_spends_aggregate?.rows?.[0]?.spend_amount || 0
-          ),
-          current_month_projected_spend: getBudgetExpectedMonthlyExpense(response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0),
-          previous_cost: response?.data?.data?.lm_spends_aggregate?.rows?.[0]?.spend_amount || 0,
-          mtd_cost: response?.data?.data?.spends_aggregate?.rows?.[0]?.spend_amount || 0,
-        },
-      };
-    } catch (error) {
-      console.log('Your Error is', error);
-      return error;
+    let pending = yearlySavingInFlight.get(accountId);
+    if (!pending) {
+      pending = fetchK8sClusterYearlySaving(accountId).finally(() => yearlySavingInFlight.delete(accountId));
+      yearlySavingInFlight.set(accountId, pending);
     }
+    return pending;
   },
 
   async getk8ClusterData(accountId: string) {
     const currentDate = new Date();
-    const lastMonthStart = new Date();
+    const lastMonthStart = getStartOfLastMonth(currentDate);
     if (accountId == 'demo') {
       const dashboardDemo = await getMockData('k8s-dashboard');
       return {
@@ -1423,8 +1469,6 @@ const apiKubernetes = {
     }
 
     try {
-      lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-
       const [clusterRes, recommendationRes, spendRes, eventRes] = await Promise.all([
         queryGraphQL(GET_k8_CLUSTER_GROUPINGS, 'get_k8_cluster_groupings', {
           accountId1: accountId,
@@ -1989,8 +2033,10 @@ query list_k8_issues_count {
       fingerprint?: string;
       source?: string[];
       nb_priority?: string;
+      latest_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
+      search?: string;
     } = {
       account_id: 'demo',
       onlyGroupingCount: false,
@@ -2010,10 +2056,7 @@ query list_k8_issues_count {
         let allGroupings = data.event_groupings || [];
         if (query?.status) {
           const statuses = Array.isArray(query.status) ? query.status : [query.status];
-          allGroupings = allGroupings.filter((g: any) => {
-            const derivedStatus = g.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
-            return statuses.includes(derivedStatus);
-          });
+          allGroupings = allGroupings.filter((g: any) => statuses.includes(deriveGroupAlertStatus(g.distinct_status)));
         }
         if (query?.priority) {
           const priorities = Array.isArray(query.priority) ? query.priority : [query.priority];
@@ -2134,9 +2177,19 @@ query list_k8_issues_count {
       } else if (query['source'] && !Array.isArray(query['source'])) {
         filterParams['source'] = { _eq: query['source'] };
       }
+      // The rank of a group is the rank of its newest event (the one its row
+      // shows), and so is its source severity. A filter on either must match
+      // that one value. Matching any event in the group instead puts a group
+      // that was re-scored into every rank it passed through, and the filtered
+      // lists then add up to more rows than the unfiltered one.
+      const havingParams: any = {};
       if (query['nb_priority']) {
-        filterParams['computed_priority'] = { _eq: query['nb_priority'] };
+        havingParams['latest_computed_priority'] = { _eq: query['nb_priority'] };
       }
+      if (query['latest_priority']) {
+        havingParams['latest_priority'] = { _eq: query['latest_priority'] };
+      }
+      const havingCols = Object.keys(havingParams);
       if (query['nb_status']) {
         if (Array.isArray(query['nb_status'])) {
           filterParams['nb_status'] = { _in: query['nb_status'] };
@@ -2146,6 +2199,10 @@ query list_k8_issues_count {
       }
       if (query.is_new_issue !== undefined) {
         filterParams['is_new_issue'] = { _eq: query.is_new_issue };
+      }
+      const searchClause = eventSearchClause(query.search);
+      if (searchClause) {
+        filterParams['_and'] = [searchClause];
       }
 
       const endDate = query.end_date;
@@ -2162,13 +2219,13 @@ query list_k8_issues_count {
 
       let LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__ __COLUMN_TRANSFORMATIONS__){
     rows{
       __COLS__
     }
   }
 
-  event_groupings_aggregate: event_groupings_v2(where:__WHERE__, group_by:[], column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:["event_count"]){
+  event_groupings_aggregate: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__COUNT_GROUP_BY__, column_transformations:[{name: "event_count", expr: "distinct", args: __GROUP_BY__}], columns:__COUNT_COLS__){
     rows{
       event_count
     }
@@ -2178,7 +2235,7 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       if (query.onlyGroupingCount) {
         LIST_K8_EVENTS_GROUPINGS = `
 query k8s_event_groupings($limit:Int,$offset:Int){
-  event_groupings: event_groupings_v2(where:__WHERE__, group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
+  event_groupings: event_groupings_v2(where:__WHERE__,__HAVING__ group_by:__GROUP_BY__, limit:$limit,offset:$offset,order_by:__ORDER_BY__, column_transformations:[{name: "created_at", expr: "date_unit", args: ["day"]}]){
     rows{
       __COLS__
     }
@@ -2187,6 +2244,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
 `;
       }
       let formattedQuery = LIST_K8_EVENTS_GROUPINGS.replaceAll('__WHERE__', gqlStringify(filterParams));
+      formattedQuery = formattedQuery.replaceAll('__HAVING__', havingCols.length ? ` having:${gqlStringify(havingParams)},` : '');
+      // The total counts the groups. With a having it has to count the groups
+      // that pass it, which the engine answers when the count is grouped by the
+      // filtered columns: one row, since each is pinned to a single value.
+      formattedQuery = formattedQuery.replaceAll('__COUNT_GROUP_BY__', gqlStringify(havingCols));
+      formattedQuery = formattedQuery.replaceAll('__COUNT_COLS__', gqlStringify([...havingCols, 'event_count']));
       formattedQuery = formattedQuery.replaceAll('__GROUP_BY__', gqlStringify(groupBy));
       formattedQuery = formattedQuery.replaceAll('__COLS__', cols.join(' '));
       formattedQuery = formattedQuery.replaceAll(
@@ -2205,12 +2268,14 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         limit: limit,
         offset: offset,
       });
+      const aggregateRows = response?.data?.data?.event_groupings_aggregate?.rows;
       return {
         data: {
           event_groupings: response?.data?.data?.event_groupings?.rows,
           event_groupings_aggregate: {
             aggregate: {
-              count: response?.data?.data?.event_groupings_aggregate?.rows?.[0]?.event_count,
+              // A total filtered by a having has no row when no group passes it.
+              count: aggregateRows?.[0]?.event_count ?? (havingCols.length && aggregateRows ? 0 : undefined),
             },
           },
         },
@@ -2917,6 +2982,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         : { cloud_resourses: [] };
       return {
         data,
+        // Lets callers tell "no pod found" apart from "denied the read" -- both
+        // otherwise resolve to the same empty cloud_resourses.
+        accessDenied: isAccessDenied(response),
       };
     } catch (error) {
       console.log('Your Error is', error);
@@ -3312,42 +3380,6 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       return error;
     }
   },
-  async hitRelayServer(data?: any, query_type_hint?: string) {
-    if (data.body.account_id === 'demo') {
-      const relayDemo = await getMockData('k8s-relay');
-      if (data.body.action_name === 'query_loki' && query_type_hint) {
-        return relayDemo['log_query'];
-      } else if (data.body.action_name === 'service_map') {
-        return relayDemo['service_map'];
-      } else if (data.body.action_name === 'prometheus_enricher' && data.body.action_params?.promql_query?.includes('container_log_messages_total')) {
-        return relayDemo['log_groups'];
-      } else if (
-        data.body.action_name == 'prometheus_enricher' &&
-        data.body.action_params.promql_query.includes('container_sensitive_log_messages_total')
-      ) {
-        return relayDemo['container_sensitive_log_messages_total'];
-      } else if (data.body.action_name === 'prometheus_enricher') {
-        return relayDemo['prometheus_enricher'];
-      } else if (data.body.action_name === 'prometheus_labels') {
-        return relayDemo['prometheus_labels'];
-      } else if (data.body.action_name === 'get_silences') {
-        return relayDemo['get_silences'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'services') {
-        return relayDemo['k8s_services'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'persistentvolumeclaims') {
-        return relayDemo['k8s_persistentvolumeclaims'];
-      } else if (data.body.action_name === 'get_resource' && data.body.action_params?.resource_type === 'persistentvolumes') {
-        return relayDemo['k8s_persistentvolumes'];
-      }
-    }
-    try {
-      const response: any = await hitRelayServer(data);
-      return response?.data;
-    } catch (error) {
-      console.error('failed to fetch data from relay', error);
-      return error;
-    }
-  },
   async getInsights(accountId: string[], source: string[], resource_ids: string[]) {
     try {
       const where: any = { status: { _neq: 'CLOSED' } };
@@ -3566,6 +3598,36 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     });
     return response?.data?.data?.ai_remediation_generate?.data;
   },
+  async askRemediationPlan({
+    accountId,
+    eventId,
+    mode,
+    reasons = [],
+    note = '',
+  }: {
+    accountId: string;
+    eventId: string;
+    mode: 'plan' | 'recheck' | 'replan';
+    reasons?: string[];
+    note?: string;
+  }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_GENERATE_REMEDIATION_PLAN, 'AiGenerateRemediationPlan', {
+      accountId,
+      eventId,
+      mode,
+      reasons: reasons.length ? reasons : null,
+      note: note || null,
+    });
+    // Throws with the server's reason (e.g. the 24 h plan cap), so the tab can show it.
+    return unwrapGraphQL(response, 'Could not ask for the fix.')?.ai_generate_remediation_plan?.data;
+  },
+  // Resolves the event in the person's name, labelled with the run's verdict; throws with the server's reason.
+  async confirmRemediationResolve({ accountId, eventId, runId }: { accountId: string; eventId: string; runId: string }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(EVENTS_APPLY_REMEDIATION_RESOLVE, 'EventsApplyRemediationResolve', { accountId, eventId, runId });
+    return unwrapGraphQL(response, 'Could not resolve the event.')?.events_apply_remediation_resolve;
+  },
   async getRemediation(accountId: string, eventId: string) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_GET, 'AiRemediationGet', {
@@ -3582,7 +3644,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     slot?: string,
     // The action's execute command, sent on a verify run so the server can attach the result to the
     // attempt it checked rather than filing it as an attempt of its own.
-    executeCommand?: string
+    executeCommand?: string,
+    // The plan action, sent with slot "manual" or "decline" to name a step.
+    action?: string,
+    // acknowledgeUnknown: the person confirmed that the last run of this command, whose outcome is unknown,
+    // may have run. planVersion: the plan version the person reviewed; every decision carries it.
+    // reason: the person's optional reason for declining.
+    opts: { acknowledgeUnknown?: boolean; planVersion?: string; reason?: string } = {}
   ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
@@ -3592,8 +3660,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       configName: configName || null,
       slot: slot || null,
       executeCommand: executeCommand || null,
+      action: action || null,
+      acknowledgeUnknown: opts.acknowledgeUnknown || null,
+      planVersion: opts.planVersion || null,
+      reason: opts.reason || null,
     });
-    return response?.data?.data?.ai_remediation_execute?.data;
+    // Throws with the server's reason on a rejected request (a 400), so the panel can show it.
+    return unwrapGraphQL(response, 'Remediation request failed.')?.ai_remediation_execute?.data;
   },
   async scanImage({ accountId, namespace, workloadName }: { accountId: string; namespace: string; workloadName: string }) {
     if (accountId === 'demo') return null;

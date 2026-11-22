@@ -3,6 +3,7 @@ package recommendation
 import (
 	"encoding/json"
 	"nudgebee/services/config"
+	"nudgebee/services/notification"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -64,6 +65,7 @@ func queryProactiveAccountRecommendations(db *sqlx.DB, tenantID string) ([]proac
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
 					AND r.status = 'Open'
 					AND r.category <> 'Security'
 					AND r.finops_band = 'Act Now'

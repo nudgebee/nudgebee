@@ -143,11 +143,29 @@ describe('a panel with thresholds', () => {
   /*
    * The editor drops thresholds when the visualisation changes, but an imported
    * panel can still carry them onto a chart — which has a value per series, and
-   * so nothing the tint could honestly be about.
+   * so the tint is about a LINE, and the badge says which.
    */
-  it('ignores steps carried onto a chart', async () => {
+  it('judges a chart line by line and names the line that crossed', async () => {
+    // A chart judges only lines that are current, so the sample is from now, not a fixed date.
+    const now = Math.floor(Date.now() / 1000);
+    metricsQuery.mockResolvedValue({
+      data: { data: { metrics_list: { results: [{ query_key: 'A', payload: [{ metric: {}, timestamps: [now - 30, now], values: [85, 90] }] }] } } },
+    });
     mount(steps([80, 'red']), 'timeseries');
     await screen.findByTestId('line-chart');
+    const card = screen.getByTestId('dashboard-panel-1');
+    await waitFor(() => expect(card).toHaveAttribute('data-threshold', 'red'));
+    expect(within(card).getByTestId('panel-threshold-1')).toHaveTextContent('≥ 80');
+  });
+
+  it('leaves a chart plain when no line crosses', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    metricsQuery.mockResolvedValue({
+      data: { data: { metrics_list: { results: [{ query_key: 'A', payload: [{ metric: {}, timestamps: [now - 30, now], values: [85, 90] }] }] } } },
+    });
+    mount(steps([95, 'red']), 'timeseries');
+    await screen.findByTestId('line-chart');
+    await waitFor(() => expect(metricsQuery).toHaveBeenCalled());
     expect(screen.getByTestId('dashboard-panel-1')).not.toHaveAttribute('data-threshold');
     expect(screen.queryByTestId('panel-threshold-1')).not.toBeInTheDocument();
   });

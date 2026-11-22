@@ -978,7 +978,7 @@ func TestOptimizationRuleNamesAreTheOnesProducersWrite(t *testing.T) {
 }
 
 func TestPrepareRecommendationQueryFiltersOnTheSharedRuleList(t *testing.T) {
-	q := prepareRecommendationQuery("tenant", nil)
+	q := prepareRecommendationQuery("tenant", nil, nil)
 
 	var filtered []string
 	for _, clause := range q.Where.And {
@@ -1000,6 +1000,25 @@ func TestPrepareRecommendationQueryFiltersOnTheSharedRuleList(t *testing.T) {
 	for i, name := range optimizationRuleNames {
 		if filtered[i] != name {
 			t.Errorf("rule %d: query filters on %q, the shared list says %q", i, filtered[i], name)
+		}
+	}
+}
+
+func TestBatchRuleMatchesPriority(t *testing.T) {
+	cases := []struct {
+		ruleSeverity, priority string
+		want                   bool
+	}{
+		{"", "HIGH", true},
+		{"", "LOW", true},
+		{"high", "HIGH", true},
+		{"HIGH", "HIGH", true},
+		{"high", "MEDIUM", false},
+		{"high", "", false},
+	}
+	for _, c := range cases {
+		if got := batchRuleMatchesPriority(c.ruleSeverity, c.priority); got != c.want {
+			t.Errorf("batchRuleMatchesPriority(%q, %q) = %v, want %v", c.ruleSeverity, c.priority, got, c.want)
 		}
 	}
 }

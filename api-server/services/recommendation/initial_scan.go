@@ -73,6 +73,14 @@ func TriggerInitialScans(ctx *security.RequestContext, accountId, tenantId strin
 		return nil
 	}
 
+	// Returns before the marker is written, so an account disabled when its agent
+	// first connects still gets the batch on a connect after it is re-enabled.
+	if a.Status != "active" {
+		ctx.GetLogger().Info("initial scan: account is not active, skipping",
+			"account_id", accountId, "status", a.Status)
+		return nil
+	}
+
 	ctx.GetLogger().Info("initial scan: triggering server-side scans",
 		"account_id", accountId, "tenant_id", tenantId, "jobs", len(initialScanJobNames))
 

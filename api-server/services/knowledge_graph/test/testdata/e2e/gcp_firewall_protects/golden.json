@@ -37,7 +37,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-fw"
+        "name": "my-fw",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",
@@ -73,7 +74,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-vpc"
+        "name": "my-vpc",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",

@@ -1,7 +1,11 @@
 package model
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -105,7 +109,52 @@ const (
 	AutopilotTaskStatusComplete  AutopilotTaskStatus = "Complete"
 	AutopilotTaskStatusFailed    AutopilotTaskStatus = "Failed"
 	AutopilotTaskStatusSkipped   AutopilotTaskStatus = "Skipped"
+	// AutopilotTaskStatusPendingApproval is a task planned by a run that requires
+	// approval. It is never executed in this status; approving the run moves it to
+	// Scheduled.
+	AutopilotTaskStatusPendingApproval AutopilotTaskStatus = "Pending_Approval"
 )
+
+// AutoOptimizeApprovalStatus mirrors the auto_pilot_approval_status enum table.
+type AutoOptimizeApprovalStatus string
+
+const (
+	AutoOptimizeApprovalStatusPending   AutoOptimizeApprovalStatus = "PENDING"
+	AutoOptimizeApprovalStatusApproved  AutoOptimizeApprovalStatus = "APPROVED"
+	AutoOptimizeApprovalStatusRejected  AutoOptimizeApprovalStatus = "REJECTED"
+	AutoOptimizeApprovalStatusExpired   AutoOptimizeApprovalStatus = "EXPIRED"
+	AutoOptimizeApprovalStatusCancelled AutoOptimizeApprovalStatus = "CANCELLED"
+)
+
+// AutoOptimizeApprovalType is the auto_pilot_type of an auto optimize approval.
+const AutoOptimizeApprovalType = "auto_optimize"
+
+// AutoOptimizeApprovalWindow is how long a run's approval stays open. After it,
+// the run's planned tasks are skipped and the next due run plans afresh.
+const AutoOptimizeApprovalWindow = 24 * time.Hour
+
+// AutoOptimizeApprovalAttributes is the attributes column of a run's approval.
+type AutoOptimizeApprovalAttributes struct {
+	TaskIDs   []uuid.UUID `json:"task_ids"`
+	ExpiresAt time.Time   `json:"expires_at"`
+	// PlanFingerprint is AutoOptimize.PlanFingerprint at planning time. Approving
+	// is refused once the automation's plan-affecting settings no longer match.
+	PlanFingerprint string `json:"plan_fingerprint"`
+}
+
+// AutoOptimizeApproval is one gated run waiting for, or past, a decision.
+type AutoOptimizeApproval struct {
+	ID               uuid.UUID                      `json:"id"`
+	AutoPilotID      uuid.UUID                      `json:"autopilot_id"`
+	TenantID         uuid.UUID                      `json:"tenant_id"`
+	AccountID        uuid.UUID                      `json:"account_id"`
+	Status           AutoOptimizeApprovalStatus     `json:"status"`
+	ReviewerID       *uuid.UUID                     `json:"reviewer_id,omitempty"`
+	ReviewerComments *string                        `json:"reviewer_comments,omitempty"`
+	CreatedAt        time.Time                      `json:"created_at"`
+	UpdatedAt        *time.Time                     `json:"updated_at,omitempty"`
+	Attributes       AutoOptimizeApprovalAttributes `json:"attributes"`
+}
 
 // ScheduledTaskStaleAfter bounds how long a task may sit in Scheduled and still
 // hold its recommendation back from a fresh run.
@@ -189,6 +238,9 @@ type TicketConfig struct {
 type AutoOptimizeAttributes struct {
 	GitOpsConfig GitOpsConfig `json:"git_ops_config"`
 	TicketConfig TicketConfig `json:"ticket_config"`
+	// RequireApproval makes each run plan its changes and wait for an account
+	// editor to approve them before anything is applied.
+	RequireApproval bool `json:"require_approval,omitempty"`
 }
 
 // AutoOptimize represents the main configuration entity.
@@ -262,6 +314,21 @@ type Recommendation struct {
 	AccountObjectID      *string        `json:"account_object_id,omitempty"`
 	UpdatedBy            *uuid.UUID     `json:"updated_by,omitempty"`
 	FinopsScore          *float64       `json:"finops_score,omitempty" db:"finops_score"`
+}
+
+// RecommendationSnapshot is a recommendation's current state, read when a
+// parked run is approved to decide which of its tasks still apply.
+type RecommendationSnapshot struct {
+	Status      string
+	IsDismissed bool
+	Content     map[string]any
+}
+
+// StillApplicable reports whether a task planned against this recommendation
+// may still run: not dismissed, closed or archived.
+func (r RecommendationSnapshot) StillApplicable() bool {
+	return !r.IsDismissed &&
+		(r.Status == string(RecommendationStatusOpen) || r.Status == string(RecommendationStatusInProgress))
 }
 
 type RecommendationWithResource struct {
@@ -353,6 +420,10 @@ type AutoOptimizeTaskAttributes struct {
 	// reports a large change and then correctly does nothing. Without the reason
 	// those two readings cannot be reconciled by anyone debugging it.
 	PRDecision string `json:"pr_decision,omitempty"`
+	// PlannedRecommendationHash is PlannedValuesHash of the recommendation when a
+	// gated run planned this task. Approving skips the task if the recommended
+	// values have moved since, rather than apply a plan the data no longer backs.
+	PlannedRecommendationHash string `json:"planned_recommendation_hash,omitempty"`
 }
 
 // PRAction values, mirroring the api-server's recommendation.PRAction. Only the
@@ -422,6 +493,9 @@ type AutoOptimizeRequestModel struct {
 	DryRun             bool                         `json:"dryrun"`
 	GitOps             GitOpsConfig                 `json:"gitops"`
 	Ticket             TicketConfig                 `json:"ticket_config"`
+	// RequireApproval is a pointer so an update that omits it keeps the stored
+	// value instead of switching the approval gate off.
+	RequireApproval *bool `json:"require_approval,omitempty"`
 }
 
 // ResourceFilterRequest used for updating resource maps.
@@ -477,4 +551,76 @@ func (m *AutoOptimizeRequestModel) GetAutoOptimizeName() string {
 		return base
 	}
 	return "Auto optimize"
+}
+
+// RequiresApproval reports whether a run of this automation must be approved
+// before it applies anything. Dry runs apply nothing, and continuous rightsizing
+// is decided by the agent at apply time, so there is no plan to review first.
+func (ao AutoOptimize) RequiresApproval() bool {
+	return ao.Attributes.RequireApproval &&
+		ao.Status == AutoOptimizeStatusActive &&
+		ao.Category != "continuous_rightsize"
+}
+
+// PlanFingerprint hashes the settings that decide what a run plans and how it
+// applies it. Notification settings, the schedule and the name are left out:
+// changing them does not change a parked plan.
+func (ao AutoOptimize) PlanFingerprint() string {
+	filters := make([]string, 0, len(ao.ResourceFilters))
+	for _, f := range ao.ResourceFilters {
+		filters = append(filters, f.String())
+	}
+	sort.Strings(filters)
+	b, _ := json.Marshal(struct {
+		Category string         `json:"category"`
+		Rule     map[string]any `json:"rule"`
+		Filters  []string       `json:"filters"`
+		GitOps   GitOpsConfig   `json:"git_ops"`
+		Ticket   TicketConfig   `json:"ticket"`
+	}{ao.Category, ao.Rule, filters, ao.Attributes.GitOpsConfig, ao.Attributes.TicketConfig})
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// PlannedValuesHash hashes the part of a recommendation that decides what a
+// task of this category applies, so approving can tell a moved recommendation
+// from a rescan. It is empty when there is nothing stable to compare: replica
+// plans read a time-series forecast for the next hour and volume plans read
+// current usage, both of which change every scan by design, so those tasks are
+// applied as reviewed.
+//
+// The whole recommendation is not hashed: each container entry also carries
+// scan metrics and notes (metric, info, priority, ...) that change on every
+// rescan even when the recommended values don't, and updated_at is bumped by a
+// trigger on every write.
+func PlannedValuesHash(category string, content map[string]any) string {
+	if category != "vertical_rightsize" || len(content) == 0 {
+		return ""
+	}
+	projection := map[string]any{}
+	for key, val := range content {
+		switch v := val.(type) {
+		case []any:
+			var entries []any
+			for _, e := range v {
+				m, ok := e.(map[string]any)
+				if !ok {
+					continue
+				}
+				entries = append(entries, map[string]any{
+					"resource":    m["resource"],
+					"allocated":   m["allocated"],
+					"recommended": m["recommended"],
+				})
+			}
+			projection[key] = entries
+		default:
+			if key == "cpu" || key == "memory" {
+				projection[key] = v
+			}
+		}
+	}
+	b, _ := json.Marshal(projection)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

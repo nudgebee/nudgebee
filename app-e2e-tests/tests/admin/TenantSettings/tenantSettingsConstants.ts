@@ -71,15 +71,6 @@ export const HIDE_FLAG_IDS_LABEL = "Hide flag ids";
 // tab on this flag.
 export const FEATURE_LLM_ANALYSER = "AI usage and cost tab";
 
-// LLM_FUNCTION's row on the same table — display_name from the same V900 migration.
-// Read by the Nubi Functions suite's one-time precondition check (functionsHelper.ts),
-// since b-Cortex drops its My Functions tab when this flag is off.
-export const FEATURE_LLM_FUNCTION = "Custom AI functions";
-
-// The row's description copy from featureRecommendedContent() in TenantSettings.jsx.
-// Used only as the fallback handle for that row, for a rename of the display name.
-export const FEATURE_LLM_FUNCTION_DESCRIPTION = "Lets your team author and edit custom AI functions and attach them to alerts.";
-
 // Toast copy from handleSaveSettings — the two validation guards return before
 // any network write, which is what makes the negative cases safe to run against
 // a shared tenant.

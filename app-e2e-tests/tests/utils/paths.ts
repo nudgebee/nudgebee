@@ -19,4 +19,3 @@ export const AUTH_STATE_PATH = path.join(AUTH_STATE_DIR, "state.json");
 // the next run — and never exists at all for a VS Code ▶ Run Test, which does
 // not execute global-setup.
 export const TENANT_FILE_PATH = path.join(AUTH_STATE_DIR, "current-tenant.txt");
-export const LLM_FUNCTION_FLAG_VERIFIED_PATH = path.join(AUTH_STATE_DIR, "llm-function-flag-verified.txt");

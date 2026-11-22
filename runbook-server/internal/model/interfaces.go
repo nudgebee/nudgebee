@@ -21,6 +21,12 @@ type WorkflowStore interface {
 	CreateWorkflowWithInitialVersion(ctx context.Context, tenantID, accountID string, wf Workflow) (workflowID string, version *WorkflowVersion, err error)
 	List(ctx context.Context, tenantID string, accountIDs []string, request ListWorkflowRequest) ([]Workflow, int, error)
 	Find(ctx context.Context, tenantID, accountID, id string) (*Workflow, error)
+	// GetRunAsUserID returns the owner a workflow's unattended runs act as
+	// ("" when none is recorded); SetRunAsUserID records it.
+	GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error)
+	SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error
+	// FindAccountID returns the account a workflow belongs to (sql.ErrNoRows when absent).
+	FindAccountID(ctx context.Context, tenantID, id string) (string, error)
 	FindByName(ctx context.Context, tenantID, accountID, name string) (*Workflow, error)
 	FindByIntegrationName(ctx context.Context, tenantID, accountID, integrationName string) (*Workflow, error)
 	// ListByIntegrationName returns every Active workflow whose definition.triggers
@@ -42,6 +48,13 @@ type WorkflowStore interface {
 	// draft. Callers still filter on the manual-trigger requirement, which lives
 	// inside the returned definition.
 	ListAIInvocableWorkflows(ctx context.Context, tenantID, accountID string) ([]AIInvocableWorkflow, error)
+	// ListAIToolCandidates returns, across the given accounts, the automations
+	// that are or could be offered to the AI assistant (see AIToolCandidate),
+	// each with its LIVE definition so the caller can say whether it is offered.
+	ListAIToolCandidates(ctx context.Context, tenantID string, accountIDs []string) ([]AIToolCandidate, error)
+	// UpdateAISettings sets only a workflow's two AI flags: no new version, and
+	// the definition is untouched.
+	UpdateAISettings(ctx context.Context, tenantID, accountID, id, updatedBy string, aiInvocable, aiAutoApprove bool) error
 	Update(ctx context.Context, tenantID, accountID, id string, wf Workflow) error
 	// UpdateInternal persists a workflow's definition WITHOUT touching the audit
 	// columns (updated_by / updated_at). Use for internal touch-ups that are not

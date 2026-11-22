@@ -62,11 +62,15 @@ func GetGithubAppInstallationToken(ctx context.Context, installationID int64) (s
 		return "", fmt.Errorf("failed to parse private key: %w", err)
 	}
 
-	// JWT for GitHub App
+	// JWT for GitHub App. GitHub requires exp to be no more than 10 minutes
+	// out; using exactly 10 leaves zero margin for clock skew or request
+	// latency between signing here and GitHub validating it, and GitHub
+	// rejects the token outright if it tips over ("'Expiration time' claim
+	// ('exp') is too far in the future") - 9 minutes leaves headroom.
 	now := time.Now()
 	claims := jwt.RegisteredClaims{
 		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)),
-		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+		ExpiresAt: jwt.NewNumericDate(now.Add(9 * time.Minute)),
 		Issuer:    appID,
 	}
 

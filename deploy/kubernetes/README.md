@@ -54,7 +54,9 @@ The chart's `$knownKeys` validator (in `nudgebee/templates/secrets-nudgebee.yaml
 | `nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY`   | 32-byte hex (`openssl rand -hex 32`). Encrypts integration credentials at rest. **Losing it makes previously encrypted DB rows unreadable** — generate once, store in your secret manager. The chart `fail`s if empty or left as `__REPLACE__`. |
 | `nudgebee_secret.BASE_URL`                  | Public URL the app is reachable at (e.g. `https://nudgebee.acme.io`). Used as the OAuth redirect base and in email links. |
 
-`NEXTAUTH_SECRET` and `ACTION_API_SERVER_TOKEN` are **auto-generated** by the chart on fresh installs (lookup-or-generate pattern) and reused on upgrade — you don't need to set them. GitOps users who do offline render (Argo CD, Flux) must set them explicitly because `lookup` returns empty.
+`NEXTAUTH_SECRET`, `ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, `LLM_SERVER_TOKEN` and `LLM_SERVER_JWT_SECRET` are **auto-generated** by the chart on fresh installs (lookup-or-generate pattern) and reused on upgrade — you don't need to set them for a chart-managed Secret. The service tokens are distinct per destination. GitOps users who do offline render (Argo CD, Flux) must set these values explicitly or use an externally managed Secret that contains them, because `lookup` returns empty during offline rendering.
+
+If you supply the shared `nudgebee` Secret yourself, include non-empty `ACTION_API_SERVER_TOKEN` and `CLOUD_COLLECTOR_SERVER_TOKEN` values. Each caller and destination reads the matching value from that Secret; a missing value makes private routes return 503. It must also hold `LLM_SERVER_TOKEN`, `LLM_SERVER_JWT_SECRET` and `RELAY_SERVER_SECRET_KEY` (`openssl rand -hex 32` each): llm-server refuses to start without the last two.
 
 ### Often-set
 
@@ -116,6 +118,27 @@ Equivalents for the other bundled subcharts:
 | Redis     | `REDIS_SERVER_HOST` / `_PORT` / `REDIS_USER_NAME` / `REDIS_USER_PASSWORD` |
 | ClickHouse | `CLICKHOUSE_HOST` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`          |
 | Qdrant    | (set the Qdrant client URL via the relevant service's env)              |
+
+### Postgres user permissions for Nubi's database tools
+
+Nubi's database tools (events, anomaly, recommendations, resolutions, security) run the SQL the AI writes as a read-only role, `nb_llm_sql_tools`, that can read only the current account's rows of the views in schema `nb_llm_tools`. Migrations create the schema and views; the role needs these permissions:
+
+| Database user | Needs |
+|---|---|
+| The user in `APP_DATABASE_URL` (runs migrations) | `CREATEROLE`, or superuser, so migration V1112 can create the role. The bundled Postgres runs migrations as a superuser. |
+| The user llm-server connects as (`LLM_SERVER_DB_URL`, defaults to `APP_DATABASE_URL`) | Membership in `nb_llm_sql_tools` (on PostgreSQL 16+, with the `SET` option, which a plain `GRANT` gives). V1112 grants it to the migration user; grant it yourself if `LLM_SERVER_DB_URL` uses a different user. |
+| `nb_llm_sql_tools` | `NOLOGIN`, `USAGE` on schema `nb_llm_tools`, `SELECT` on the views in it. Nothing else. |
+
+Without the role, migrations still succeed (V1112 logs a NOTICE), but those tools refuse every query until it exists. To set it up by hand, after migrations have run, as a superuser:
+
+```sql
+CREATE ROLE nb_llm_sql_tools NOLOGIN;
+GRANT nb_llm_sql_tools TO <llm-server db user>;
+GRANT USAGE ON SCHEMA nb_llm_tools TO nb_llm_sql_tools;
+GRANT SELECT ON ALL TABLES IN SCHEMA nb_llm_tools TO nb_llm_sql_tools;
+```
+
+Check it with `SELECT pg_has_role('<llm-server db user>', 'nb_llm_sql_tools', 'SET');` (use `'MEMBER'` before PostgreSQL 16); it must return `true`. Setting `LLM_SERVER_AGENT_SQL_SCOPED_ROLE=false` on llm-server runs the tools as llm-server's own user instead, which can read the whole database; only use it if the role cannot be created.
 
 ## Monitoring (Prometheus Operator)
 
@@ -224,7 +247,7 @@ Before flipping production traffic onto the install:
 - [ ] **Observability sidecars** (Datadog / NewRelic agents / Prometheus exporters) wired in if you run them — Nudgebee already exposes Prometheus metrics on each service's `/metrics`.
 - [ ] **HPA / KEDA** (optional) — bundled charts don't add autoscalers by default.
 - [ ] **Image registry mirrored**, if you don't want to fetch from `ghcr.io/nudgebee` at deploy time.
-- [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_SECRET` and `ACTION_API_SERVER_TOKEN` — offline rendering can't use the chart's lookup-or-generate fallback.
+- [ ] **For GitOps (Argo CD / Flux):** explicitly set `NEXTAUTH_SECRET`, `ACTION_API_SERVER_TOKEN`, `CLOUD_COLLECTOR_SERVER_TOKEN`, `LLM_SERVER_TOKEN` and `LLM_SERVER_JWT_SECRET`, or reference an external shared Secret containing them — offline rendering can't use the chart's lookup-or-generate fallback.
 
 ## Upgrade flow
 
@@ -237,7 +260,16 @@ helm upgrade nudgebee oci://ghcr.io/nudgebee/charts/nudgebee \
 
 A post-install / post-upgrade Helm hook runs DB migrations via golang-migrate (see [`api-server/migrations/README.md`](../../api-server/migrations/README.md)). If the migration job fails, the Helm release is marked failed — fix the root cause and retry the upgrade. Pass `--atomic` if you want Helm to automatically roll back on failure.
 
+Don't use `--reuse-values`: it keeps the previous chart's defaults, including the app image tags each release pins, so the release would keep running the old images. The chart stops such an upgrade with an error. Pass your values file (`-f`) as above, or `--reset-then-reuse-values`.
+
 To pin a specific chart version, add `--version <X.Y.Z>`. `helm history nudgebee -n nudgebee` shows past releases for rollback (`helm rollback nudgebee <revision>`).
+
+### Upgrading from 1.12 or older
+
+1.13 deploys the official PostgreSQL, RabbitMQ and Redis images instead of the Bitnami subcharts.
+
+- **There is no rollback to 1.12 once RabbitMQ 4 has started.** RabbitMQ 3.13 can't boot on 4.x data (`timeout_waiting_for_khepri_projections`). Recover by upgrading to 1.13 again; no data is lost. The RabbitMQ pod never becomes ready on 3.13, so the StatefulSet won't replace it on its own: run `kubectl delete pod -n nudgebee rabbitmq-0` after the upgrade starts.
+- The first PostgreSQL start on the new image checks the text indexes and refreshes each database's recorded collation version before it accepts connections. It takes seconds on a typical install; on a very large database it gives up after a few minutes, leaving a harmless warning and the command to run later in its log.
 
 ## Troubleshooting
 
@@ -254,10 +286,17 @@ Set `global.imagePullSecrets` and provide credentials via `nudgebee_registry_sec
 `nudgebee_secret.BASE_URL` doesn't match the ingress host. Update + re-run `helm upgrade`.
 
 **Bootstrap admin password**
-On a fresh install, the chart provisions a dummy-credentials admin so you can log in once. Retrieve with:
+The chart enables a bootstrap login pinned to the required `admin.email`; other
+email addresses cannot use it. The password is generated per installation and
+preserved across upgrades. Retrieve it with:
 ```bash
 kubectl -n nudgebee get secret nudgebee \
   -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 -d
+```
+After configuring and verifying SSO, LDAP, or magic-link authentication, disable
+the bootstrap login:
+```bash
+helm upgrade ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
 ```
 
 ## Going deeper

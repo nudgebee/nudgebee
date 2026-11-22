@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"nudgebee/services/config"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,8 +205,10 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 		}
 		userBody = esWrapBareQueryClause(userBody)
 		if _, ok := userBody["size"]; !ok {
-			userBody["size"] = 10000
+			userBody["size"] = esMetricsDefaultSize
 		}
+		esDefaultNewestFirst(userBody)
+		esDefaultSearchTimeout(userBody)
 		if startMillis > 0 && endMillis > 0 {
 			userQuery, ok := userBody["query"].(map[string]any)
 			if !ok {
@@ -236,25 +240,84 @@ func buildESMetricsQueryBody(queryType, queryDSL string, startMillis, endMillis 
 	if startMillis > 0 && endMillis > 0 {
 		filters = append(filters, esMetricsTimeRangeClause(startMillis, endMillis))
 	}
-	return map[string]any{
-		"size": 10000,
+	body := map[string]any{
+		"size": esMetricsDefaultSize,
 		"query": map[string]any{
 			"bool": map[string]any{
 				"filter": filters,
 			},
 		},
-	}, nil
+	}
+	esDefaultNewestFirst(body)
+	esDefaultSearchTimeout(body)
+	return body, nil
+}
+
+// esMetricsSearchTimeout bounds how long Elasticsearch works on one metric
+// query. Our HTTP client gives up at 30s, but without this the cluster keeps
+// running the search: an agent-written aggregation (terms inside a 1m
+// date_histogram over days) could load a customer's cluster for minutes.
+const esMetricsSearchTimeout = "20s"
+
+// esDefaultSearchTimeout sets the server-side search timeout unless the query
+// sets its own. A timed-out search returns what it has with timed_out: true,
+// which esTimedOutNote reports.
+func esDefaultSearchTimeout(body map[string]any) {
+	if _, ok := body["timeout"]; !ok {
+		body["timeout"] = esMetricsSearchTimeout
+	}
+}
+
+// esNewestFirstSort orders raw metric documents newest first on either time
+// field the window filter accepts (esMetricsTimeRangeClause). unmapped_type
+// keeps an index without one of the fields from failing the search.
+// A fresh value per call: request bodies must not share mutable maps.
+func esNewestFirstSort() []any {
+	return []any{
+		map[string]any{"@timestamp": map[string]any{"order": "desc", "unmapped_type": "date"}},
+		map[string]any{"time": map[string]any{"order": "desc", "unmapped_type": "long"}},
+	}
+}
+
+// esDefaultNewestFirst sorts a document-returning query newest first unless it
+// already has a sort. Unsorted, a query matching more documents than its size
+// returned an arbitrary slice: on dev, 44% of capped results held a single
+// timestamp of a multi-hour window (#39201). Sorted, the cap keeps the most
+// recent part of the window, and esDocCapNote says which part that is.
+//
+// Skipped when the body has a sort, aggregations (their series already cover the
+// whole window), or an option Elasticsearch rejects alongside sort. An index
+// pattern mixing @timestamp-only and time-only documents still fills the cap
+// with @timestamp documents first; rare enough to leave.
+func esDefaultNewestFirst(body map[string]any) {
+	for _, key := range []string{"sort", "aggs", "aggregations", "rescore", "knn", "rank", "retriever", "collapse", "search_after"} {
+		if _, ok := body[key]; ok {
+			return
+		}
+	}
+	if size, ok := body["size"].(float64); ok && size == 0 {
+		return
+	}
+	if size, ok := body["size"].(int); ok && size == 0 {
+		return
+	}
+	body["sort"] = esNewestFirstSort()
 }
 
 // esQueryFieldNames extracts the field names a DSL query filters on. Walks the parsed
 // body looking for the leaf clauses that name a field — {"term":{"<field>":…}},
 // {"exists":{"field":"<field>"}}, and friends — at any depth, so nested bool/must_not
-// structures are covered.
+// structures are covered. Aggregations are read as aggregations, by esAggFieldNames:
+// a terms aggregation's {"field": …, "size": …} is not a terms query on fields named
+// "field" and "size".
 func esQueryFieldNames(node any, out map[string]bool) {
 	switch v := node.(type) {
 	case map[string]any:
 		for k, child := range v {
 			switch k {
+			case "aggs", "aggregations":
+				esAggFieldNames(child, out)
+				continue
 			case "term", "terms", "match", "match_phrase", "wildcard", "prefix", "regexp", "range", "fuzzy":
 				// {"term": {"<field>": <value>}}
 				if m, ok := child.(map[string]any); ok {
@@ -275,6 +338,41 @@ func esQueryFieldNames(node any, out map[string]bool) {
 	case []any:
 		for _, child := range v {
 			esQueryFieldNames(child, out)
+		}
+	}
+}
+
+// esAggFieldNames extracts the fields an aggregation definition ({"<name>": {"<type>":
+// {"field": …}, "aggs": {…}}}) reads. An absent field there is as silent as in a
+// filter: its buckets are simply empty. Filter-type aggregations hold queries, which
+// esQueryFieldNames reads.
+func esAggFieldNames(node any, out map[string]bool) {
+	aggs, ok := node.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, def := range aggs {
+		body, ok := def.(map[string]any)
+		if !ok {
+			continue
+		}
+		for kind, params := range body {
+			switch kind {
+			case "aggs", "aggregations":
+				esAggFieldNames(params, out)
+			case "filter", "filters":
+				esQueryFieldNames(params, out)
+			case "meta":
+				// Caller's own annotations, not settings.
+			default:
+				// Metadata fields such as _index are valid in an aggregation but are
+				// not in the index's field list, so they are left out.
+				if m, ok := params.(map[string]any); ok {
+					if f, ok := m["field"].(string); ok && !strings.HasPrefix(f, "_") {
+						out[f] = true
+					}
+				}
+			}
 		}
 	}
 }
@@ -372,7 +470,18 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		requested, _ = req.Request["metric_name"].(string)
 	}
 	index := resolveESMetricsIndex(requested, cfg)
+	return runESMetricsQueries(cfg, index, req)
+}
 
+// runESMetricsQueries runs req's queries against index. Split from FetchMetricsQuery,
+// which only resolves the account's config, so it can run against a real cluster in
+// tests.
+func runESMetricsQueries(cfg *ElasticsearchConfig, index string, req FetchMetricsRequest) (OutputMetricQuery, error) {
+	// Discovery describes the data instead of querying it (agent tool only).
+	if mode, _ := req.Request[esDiscoverRequestKey].(string); mode != "" {
+		dataset, _ := req.Request["dataset"].(string)
+		return OutputMetricQuery{Results: []QueryResult{esDiscover(cfg, index, mode, dataset, req.StartTime, req.EndTime)}}, nil
+	}
 	var results []QueryResult
 	queryType, _ := req.Request["query_type"].(string)
 	// Batch callers (rightsizing, and any other non-interactive consumer) skip the
@@ -380,12 +489,26 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 	// note, which costs a full _mapping fetch per request, and the rendered-body log
 	// line, which for those callers can carry a thousand pod names per query.
 	batch, _ := req.Request["batch"].(bool)
+	// Only the agent's query tool asks for zero-match samples. Pages, dashboard panels
+	// and playbook actions send the same request and have no reader for one, so for
+	// them a miss must not cost extra searches.
+	wantSample, _ := req.Request[esZeroMatchSampleRequestKey].(bool)
 
 	// Resolved at most once per request and shared by every query in it: the mapping
 	// lookup is a network round trip, and req.Queries can hold several entries.
 	var indexFields []OutputMetricLabels
 	var indexFieldsErr error
 	var fetchedIndexFields bool
+	indexFieldList := func() ([]OutputMetricLabels, error) {
+		if !fetchedIndexFields {
+			indexFields, indexFieldsErr = esFetchMetricFields(cfg, index)
+			fetchedIndexFields = true
+		}
+		return indexFields, indexFieldsErr
+	}
+	// Zero-match samples cost extra searches; a request with many empty queries reads
+	// samples for the first few only.
+	samplesRun := 0
 
 	for queryKey, queryDSL := range req.Queries {
 		queryBody, buildErr := buildESMetricsQueryBody(queryType, queryDSL, req.StartTime, req.EndTime)
@@ -401,13 +524,20 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			continue
 		}
 
+		// An index known to reject the default sort is queried without it rather
+		// than failing, and being rerun, on every query.
+		if sortSpec, ok := queryBody["sort"]; ok && reflect.DeepEqual(sortSpec, esNewestFirstSort()) &&
+			esSortRejectedRecently(cfg.Url, index) {
+			delete(queryBody, "sort")
+		}
+
 		renderedJSON, _ := json.Marshal(queryBody)
 		renderedQuery := string(renderedJSON)
 
 		// Mirrors the "ES log query" line so both paths are greppable the same way:
 		// resolved index, full URL, the window, and the rendered body — enough to
 		// replay the exact request by hand against the cluster.
-		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+		esURL := esIndexURL(cfg.Url, index, "_search")
 		if !batch {
 			slog.Info("ES metrics query", "index", index, "url", esURL,
 				"query_key", queryKey, "query_type", queryType,
@@ -427,6 +557,25 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		}
 
 		bodyBytes, err := readResponse(resp, "metric query")
+		if err == nil && esShardsRejectedDefaultSort(queryBody, bodyBytes) {
+			// Unsortable time field in some index: Elasticsearch answers 200 but drops
+			// that shard. Rerun unsorted so no data is lost to the default sort.
+			err = errDefaultSortRejected
+		}
+		if err != nil && esRejectedDefaultSort(queryBody, err) {
+			// A matched index maps a time field to a type that cannot be sorted:
+			// run the query as it was before the default sort existed.
+			delete(queryBody, "sort")
+			if resp, err = esRequestJSON("POST", esURL, queryBody, cfg); err == nil { //nolint:bodyclose
+				bodyBytes, err = readResponse(resp, "metric query")
+			}
+			if err == nil {
+				// Only once the unsorted rerun worked: the sort was the problem.
+				esMarkSortRejected(cfg.Url, index)
+			}
+			renderedJSON, _ = json.Marshal(queryBody)
+			renderedQuery = string(renderedJSON)
+		}
 		if err != nil {
 			errStr := err.Error()
 			results = append(results, QueryResult{
@@ -465,7 +614,36 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 			DocsMatched: &docsMatched,
 		}
 		if len(payload) == 0 && stats.DocsMatched > 0 {
-			qr.Note = esNoSeriesNote(stats)
+			if stats.HasAggregations && stats.HitsReturned == 0 {
+				qr.Note = esEmptyAggregationNote(stats)
+			} else {
+				qr.Note = esNoSeriesNote(stats)
+			}
+		}
+		if note := esDocCapNote(stats, queryBody, req.StartTime, req.EndTime); note != "" && len(payload) > 0 {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		if note := esLabelFieldsNote(stats.LabelFields); note != "" && len(payload) > 0 {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		if note := esTimedOutNote(string(bodyBytes)); note != "" {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		if note := esShardFailureNote(string(bodyBytes)); note != "" {
+			qr.Note = esJoinNotes(qr.Note, note)
+		}
+		// Nothing matched: show the agent real documents rather than leave it to guess
+		// whether the filter or the data is wrong.
+		if wantSample && !batch && stats.DocsMatched == 0 && config.Config.ESMetricsZeroMatchSampleEnabled {
+			if samplesRun < esSampleMaxPerRequest {
+				samplesRun++
+				sample := esZeroMatchSample(cfg, index, queryBody["query"], req.StartTime, req.EndTime, indexFieldList)
+				qr.Sample = sample.Sample
+				qr.Note = sample.Note
+			} else {
+				qr.Note = "The query matched no documents. No sample documents were read for it: earlier queries in " +
+					"this request already returned them for this index."
+			}
 		}
 		// A capped result must say it is capped. Reported alongside a non-empty
 		// payload, unlike the note above: the caller is holding real series and has
@@ -485,10 +663,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		// matches inside a filter, nothing is excluded inside a must_not. The second
 		// returns a plausible row count from a query that filtered on nothing at all,
 		// so it is reported even when the payload is non-empty.
-		if !fetchedIndexFields {
-			indexFields, indexFieldsErr = esFetchMetricFields(cfg, index)
-			fetchedIndexFields = true
-		}
+		indexFields, indexFieldsErr = indexFieldList()
 		if indexFieldsErr != nil {
 			// Say the check did not run. Skipping it quietly reads as "every field in
 			// this query exists", which is the one thing we cannot tell.
@@ -504,8 +679,9 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 				"The query references fields that do not exist in %s: %s. "+
 					"Elasticsearch does not error on these — inside a filter they match nothing, and inside a "+
 					"must_not they exclude nothing, so the result may look filtered when it was not. "+
-					"Note that `__name__` is never a queryable field: it is this backend's label for a numeric "+
-					"field path, so select that metric with {\"exists\":{\"field\":\"<path>\"}} instead.",
+					"Note that `__name__` is never a queryable field: it is a label this backend builds, either "+
+					"a numeric field's path (select it with {\"exists\":{\"field\":\"<path>\"}}) or the value of "+
+					"a metric-name field (filter that field).",
 				index, strings.Join(unknown, ", "))
 		}
 		results = append(results, qr)
@@ -617,8 +793,17 @@ func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]Out
 			"query": map[string]any{
 				"bool": map[string]any{
 					"filter": []any{
-						map[string]any{"range": map[string]any{
-							esLabelValuesTimeField: map[string]any{"gte": esLabelValuesWindow},
+						// `@timestamp` or `time`, the two time fields metric queries accept:
+						// a filter on `@timestamp` alone returned nothing for indexes that
+						// carry only `time`.
+						map[string]any{"bool": map[string]any{
+							"minimum_should_match": 1,
+							"should": []any{
+								map[string]any{"range": map[string]any{esLabelValuesTimeField: map[string]any{"gte": esLabelValuesWindow}}},
+								// Plain epoch millis, not date math: an index that maps `time` as a
+								// number would reject "now-24h" and fail the whole aggregation.
+								map[string]any{"range": map[string]any{"time": map[string]any{"gte": time.Now().Add(-24 * time.Hour).UnixMilli()}}},
+							},
 						}},
 					},
 				},
@@ -650,7 +835,7 @@ func esFetchLabelValues(cfg *ElasticsearchConfig, index, reqLabel string) ([]Out
 	// `name.keyword` works. So: try the suffixed field, then fall back on either an
 	// error OR an empty result.
 	queryLabelValues := func(field string) ([]OutputMetricsLabelValues, error) {
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(field), cfg) //nolint:bodyclose
+		resp, err := esRequestJSON("POST", esIndexURL(cfg.Url, index, "_search"), buildDSL(field), cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to query metric label values: %w", err)
 		}
@@ -739,7 +924,7 @@ func esFetchMetricFields(cfg *ElasticsearchConfig, index string) ([]OutputMetric
 	}
 
 	// Fetch field names from the index mapping.
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
+	resp, err := esRequest("GET", esIndexURL(cfg.Url, index, "_mapping"), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metrics labels: %w", err)
 	}
@@ -1272,6 +1457,43 @@ var esDatasetParsers = map[string]func(src map[string]any) (points []esSeriesPoi
 	"aws.cloudwatch_metrics": awsCloudwatchMetricsetSeries,
 }
 
+// esDatasetLabelFields maps a label a dataset parser emits to the document field
+// it came from, for parsers whose labels are not field paths. Labels stay short
+// because dashboards, alerts and rightsizing store label keys; the mapping goes
+// to the caller in a note so a follow-up query filters on the real field (#39201).
+var esDatasetLabelFields = map[string]func(label string) string{
+	"aws.cloudwatch_metrics": func(label string) string {
+		switch label {
+		case "__name__":
+			return "metricset.metric_name"
+		case "unit":
+			return "metricset.unit"
+		case "statistic":
+			return "metricset.value.max / metricset.value.min / metricset.value.sum ÷ metricset.value.count (avg)"
+		default:
+			return "metricset.dimensions." + label
+		}
+	},
+}
+
+// esLabelFieldsNote lists each short label's source field, sorted, or "" when
+// no parser with short labels contributed.
+func esLabelFieldsNote(fields map[string]string) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	labels := make([]string, 0, len(fields))
+	for l := range fields {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	parts := make([]string, 0, len(labels))
+	for _, l := range labels {
+		parts = append(parts, l+" = "+fields[l])
+	}
+	return "The aws.cloudwatch_metrics series use short labels; to filter or group, use these document fields: " + strings.Join(parts, "; ") + "."
+}
+
 // awsCloudwatchMetricsetSeries reads the Elastic AWS "cloudwatch_metrics" shape:
 //
 //	metricset: {metric_name, dimensions{...}, unit, timestamp,
@@ -1759,6 +1981,15 @@ type esParseStats struct {
 	// caller states it: a capped result that does not say it is capped reads as the
 	// complete answer, which is the defect this whole path exists to remove.
 	GenericTruncation string
+	// TotalIsLowerBound is hits.total.relation == "gte": more documents matched
+	// than DocsMatched says. FirstTs/LastTs bound the parsed points (epoch s).
+	TotalIsLowerBound bool
+	FirstTs, LastTs   int64
+	// HasAggregations: the response carried an aggregations section.
+	HasAggregations bool
+	// LabelFields maps short series labels to the document fields they came from
+	// (see esDatasetLabelFields); empty when every label is already a field path.
+	LabelFields map[string]string
 }
 
 func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
@@ -1820,6 +2051,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	// "matched nothing" and "matched but every hit was discarded" are the same
 	// observation. Tracked per reason so the log names which shape assumption failed.
 	var droppedNoTimestamp, droppedNonNumericValue int
+	labelFields := map[string]string{}
 	// fallbackHits counts documents only the generic numeric-leaf walk could read.
 	// A non-zero count names a shape that deserves an esDatasetParsers entry.
 	var fallbackHits int
@@ -1859,17 +2091,27 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		// projection cannot hide it. Datasets with no registered parser — and
 		// documents that do not match the shape their dataset implies — fall through
 		// to the detection chain below unchanged.
-		if parse, known := esDatasetParsers[esIndexDataset(hit.Index)]; known {
-			if points, datasetTs, matched := parse(src); matched {
-				// The shape carries its own observation time; the generic `ts` above
-				// is the ingest time for these documents.
-				if datasetTs > 0 {
-					ts = datasetTs
+		if dataset := esIndexDataset(hit.Index); dataset != "" {
+			if parse, known := esDatasetParsers[dataset]; known {
+				if points, datasetTs, matched := parse(src); matched {
+					// The shape carries its own observation time; the generic `ts` above
+					// is the ingest time for these documents.
+					if datasetTs > 0 {
+						ts = datasetTs
+					}
+					fieldOf := esDatasetLabelFields[dataset]
+					for _, pt := range points {
+						add(pt.Labels, ts, pt.Value)
+						if fieldOf != nil {
+							for l := range pt.Labels {
+								if _, seen := labelFields[l]; !seen {
+									labelFields[l] = fieldOf(l)
+								}
+							}
+						}
+					}
+					continue
 				}
-				for _, pt := range points {
-					add(pt.Labels, ts, pt.Value)
-				}
-				continue
 			}
 		}
 
@@ -2076,7 +2318,22 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 	if returned > 0 {
 		sampleFields = esSourceFieldNames(esResp.Hits.Hits[0].Source)
 	}
+	var firstTs, lastTs int64
+	for _, r := range results {
+		for _, ts := range r.Timestamps {
+			if firstTs == 0 || ts < firstTs {
+				firstTs = ts
+			}
+			if ts > lastTs {
+				lastTs = ts
+			}
+		}
+	}
 	return results, esParseStats{
+		TotalIsLowerBound:  esHitsTotalIsLowerBound(string(bodyBytes)),
+		HasAggregations:    len(esResp.Aggregations) > 0,
+		FirstTs:            firstTs,
+		LastTs:             lastTs,
 		DocsMatched:        esHitsTotal(string(bodyBytes)),
 		HitsReturned:       returned,
 		SeriesParsed:       len(results),
@@ -2084,6 +2341,7 @@ func parseESMetricsHitsWithStats(bodyBytes []byte, queryEndMs int64) ([]Result, 
 		DroppedNoValue:     droppedNonNumericValue,
 		SampleSourceFields: sampleFields,
 		GenericTruncation:  esJoinNotes(esGenericTruncationNote(genericLeavesTruncated, genericSeriesTruncated), esTermsTruncationNote(termsDocsDropped)),
+		LabelFields:        labelFields,
 	}, nil
 }
 
@@ -2219,7 +2477,7 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 
 			renderedQuery := group.rendered
 
-			esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
+			esURL := esIndexURL(cfg.Url, index, "_search")
 			slog.Info("ES utilisation query", "index", index, "url", esURL,
 				"metric", metricKey, "scope", scope, "sources", len(plan.Sources), "step_sec", stepSec,
 				"start_ms", req.StartTime, "end_ms", req.EndTime)
@@ -2288,4 +2546,181 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 	wg.Wait()
 
 	return OutputMetricQuery{Results: results}, nil
+}
+
+// esHitsTotalIsLowerBound reports hits.total.relation == "gte": Elasticsearch
+// stopped counting (10,000 by default), so more documents matched.
+func esHitsTotalIsLowerBound(rawJSON string) bool {
+	var probe struct {
+		Hits struct {
+			Total struct {
+				Relation string `json:"relation"`
+			} `json:"total"`
+		} `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(rawJSON), &probe); err != nil {
+		return false
+	}
+	return probe.Hits.Total.Relation == "gte"
+}
+
+// esDocCapNote says when a raw-document query read fewer documents than it
+// matched, and which part of the requested window the series cover. Without it
+// a 10,000-document slice of a 6 h window read as the whole window: 254 of 258
+// capped results on dev carried no sign of it (#39201). Empty when not capped.
+func esDocCapNote(stats esParseStats, body map[string]any, startMs, endMs int64) string {
+	if _, ok := body["aggs"]; ok {
+		return "" // aggregation series cover the whole window; the note would misdescribe them
+	}
+	if _, ok := body["aggregations"]; ok {
+		return ""
+	}
+	// Only the default cap: a deliberate small size ("size":1 for the latest value) is not a gap.
+	if stats.HitsReturned < esMetricsDefaultSize || (!stats.TotalIsLowerBound && stats.DocsMatched <= int64(stats.HitsReturned)) {
+		return ""
+	}
+	matched := fmt.Sprintf("%d", stats.DocsMatched)
+	if stats.TotalIsLowerBound {
+		matched = "more than " + matched
+	}
+	which, span := "the newest", ", so these series cover only %s to %s"
+	if sortSpec, ok := body["sort"]; !ok {
+		// Unsorted (e.g. an index that rejected the default sort): an arbitrary slice.
+		which, span = "an arbitrary set of", ", spread unevenly between %s and %s"
+	} else if !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
+		which = "the first (in the query's sort order)"
+	}
+	const layout = "2006-01-02 15:04 UTC"
+	note := fmt.Sprintf("The query matched %s documents but only %s %d were read", matched, which, stats.HitsReturned)
+	if stats.FirstTs > 0 && stats.LastTs > 0 {
+		note += fmt.Sprintf(span,
+			time.Unix(stats.FirstTs, 0).UTC().Format(layout), time.Unix(stats.LastTs, 0).UTC().Format(layout))
+		if startMs > 0 && endMs > 0 {
+			note += fmt.Sprintf(" of the requested %s to %s", time.UnixMilli(startMs).UTC().Format(layout), time.UnixMilli(endMs).UTC().Format(layout))
+		}
+	}
+	return note + ". Values outside that span were not read: narrow the filters (one entity, fewer fields) or shorten the window before reporting peaks, averages or trends for the whole window."
+}
+
+// esMetricsDefaultSize is how many raw documents a metric query reads when it
+// does not set a size.
+const esMetricsDefaultSize = 10000
+
+// esRejectedDefaultSort reports whether a failed search carried the default
+// sort and Elasticsearch's error points at sorting (a time field mapped as text,
+// or date vs date_nanos across indices).
+func esRejectedDefaultSort(body map[string]any, err error) bool {
+	if err == nil {
+		return false
+	}
+	sortSpec, ok := body["sort"]
+	if !ok || !reflect.DeepEqual(sortSpec, esNewestFirstSort()) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return err == errDefaultSortRejected || strings.Contains(msg, "sort") || strings.Contains(msg, "fielddata")
+}
+
+var errDefaultSortRejected = errors.New("shard failed on the default sort")
+
+// esSortRejectedTTL is how long an index that rejected the default sort is
+// queried without it. Mappings rarely change; the TTL bounds how long a fixed
+// mapping still gets unsorted (arbitrary-slice) answers.
+const esSortRejectedTTL = time.Hour
+
+// esSortRejected holds the indices, keyed by cluster URL and index string, whose
+// mapping rejected the default sort, with when that stops applying. Without it
+// every query on such an index ran twice (#39201).
+var esSortRejected sync.Map // string → time.Time
+
+func esSortRejectedKey(clusterURL, index string) string {
+	return clusterURL + "\x00" + index
+}
+
+func esMarkSortRejected(clusterURL, index string) {
+	esSortRejected.Store(esSortRejectedKey(clusterURL, index), time.Now().Add(esSortRejectedTTL))
+}
+
+// esSortRejectedRecently reports whether the index rejected the default sort
+// within esSortRejectedTTL, dropping an expired entry.
+func esSortRejectedRecently(clusterURL, index string) bool {
+	key := esSortRejectedKey(clusterURL, index)
+	v, ok := esSortRejected.Load(key)
+	if !ok {
+		return false
+	}
+	if time.Now().After(v.(time.Time)) {
+		esSortRejected.CompareAndDelete(key, v)
+		return false
+	}
+	return true
+}
+
+// esShardFailures reads _shards from a search response: how many failed of how
+// many, and the first failure's reason.
+func esShardFailures(raw string) (failed, total int, reason string) {
+	var probe struct {
+		Shards struct {
+			Total    int `json:"total"`
+			Failed   int `json:"failed"`
+			Failures []struct {
+				Reason any `json:"reason"` // an object with a reason, or a plain string
+			} `json:"failures"`
+		} `json:"_shards"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return 0, 0, ""
+	}
+	if len(probe.Shards.Failures) > 0 {
+		switch r := probe.Shards.Failures[0].Reason.(type) {
+		case string:
+			reason = r
+		case map[string]any:
+			reason, _ = r["reason"].(string)
+		}
+	}
+	return probe.Shards.Failed, probe.Shards.Total, reason
+}
+
+// esShardsRejectedDefaultSort: the search succeeded but some shard failed on
+// the default sort (e.g. "match_only_text fields do not support sorting").
+func esShardsRejectedDefaultSort(body map[string]any, bodyBytes []byte) bool {
+	failed, _, reason := esShardFailures(string(bodyBytes))
+	return failed > 0 && esRejectedDefaultSort(body, errors.New(reason))
+}
+
+// esShardFailureNote says when some shards failed: Elasticsearch still answers
+// 200 with the other shards' documents, which otherwise read as the whole answer.
+func esShardFailureNote(raw string) string {
+	failed, total, reason := esShardFailures(raw)
+	if failed == 0 {
+		return ""
+	}
+	if reason != "" {
+		reason = " (" + reason + ")"
+	}
+	return fmt.Sprintf("%d of %d shards failed%s, so these results are partial: documents on the failed shards were not read.", failed, total, reason)
+}
+
+// esEmptyAggregationNote is for a size:0 aggregation whose documents matched but
+// whose buckets or metric values came back empty (a null avg/max): almost always
+// a field name that does not exist in these documents. Unlike esNoSeriesNote it
+// asks for a corrected query, because rewriting is the fix here (#39201).
+func esEmptyAggregationNote(stats esParseStats) string {
+	return fmt.Sprintf("The query matched %d document(s) but its aggregation returned no buckets or only empty values. "+
+		"Check that the aggregated and grouped fields exist in these documents (sample one, or list the fields), then rerun with the correct field names.", stats.DocsMatched)
+}
+
+// esTimedOutNote says when Elasticsearch stopped the search at its time limit:
+// it still answers 200 with whatever it had gathered, which otherwise reads as
+// the whole answer.
+func esTimedOutNote(raw string) string {
+	var probe struct {
+		TimedOut bool `json:"timed_out"`
+	}
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil || !probe.TimedOut {
+		return ""
+	}
+	return "Elasticsearch stopped this query at its time limit, so these results are partial. " +
+		"Narrow the window or filters, or use a coarser date_histogram interval or fewer terms buckets."
 }

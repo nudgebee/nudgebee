@@ -342,13 +342,46 @@ func requestedMetricName(req FetchMetricsLabelValueRequest) string {
 	return strings.TrimSpace(m)
 }
 
+// requestedLabelMatchers reads the optional other label=value filters the query
+// builder already has selected (Grafana-style chaining),
+// so e.g. a `pod` value lookup made after `namespace=foo` only returns pods that
+// exist in that namespace. Entries this account can't render as a PromQL matcher
+// (missing label/value, or an operator injectPromQLMatchers doesn't support yet,
+// like _in/_not_in) are skipped rather than failing the whole lookup.
+func requestedLabelMatchers(req FetchMetricsLabelValueRequest) []LabelMatcher {
+	raw, _ := req.Request["label_matchers"].([]any)
+	matchers := make([]LabelMatcher, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		label, _ := m["label"].(string)
+		value, _ := m["value"].(string)
+		if label == "" || value == "" {
+			continue
+		}
+		operator, _ := m["operator"].(string)
+		switch operator {
+		case "_eq", "_neq", "_regex":
+		default:
+			continue
+		}
+		matchers = append(matchers, LabelMatcher{Label: label, Operator: operator, Value: value})
+	}
+	return matchers
+}
+
 func (s *PrometheusMetricSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
 	// Scope the lookup to the requested metric when there is one. The
 	// prometheus_labels action takes only a label name, so it returns the
 	// label's values across the whole cluster; the proxy path accepts a
 	// match[] selector, the same mechanism FetchMetricList already uses.
 	if metric := requestedMetricName(req); metric != "" {
-		match := metricNameSelector(metric)
+		match, err := injectPromQLMatchers(metricNameSelector(metric), requestedLabelMatchers(req), nil)
+		if err != nil {
+			return nil, err
+		}
 		path := fmt.Sprintf("prometheus-v2/api/v1/label/%s/values?match[]=%s",
 			url.PathEscape(req.Label), url.QueryEscape(match))
 

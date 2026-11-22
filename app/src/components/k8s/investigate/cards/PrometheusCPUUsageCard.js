@@ -24,7 +24,7 @@ class PrometheusCPUUsageCard {
       this.prometheusCPUUsage = result;
       if (result) {
         this.renderContent = true;
-        this.insightData = summarizeCpu(result.series);
+        this.insightData = summarizeCpu(result.series, result.reason);
       }
     }
     return this.renderContent;

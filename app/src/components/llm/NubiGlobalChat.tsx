@@ -5,6 +5,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import { createPortal } from 'react-dom';
 import CustomDrawer from '@shared/CustomDrawer';
@@ -14,13 +15,25 @@ import CloudProviderIcon from '@shared/icons/CloudIcon';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button } from '@ui/Button';
 import Tooltip from '@ui/Tooltip';
-import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
+import Loader from '@shared/Loader';
 import { useTenantBranding, useBrandingConfig } from '@hooks/useTenantBranding';
 import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import { useNubiGlobalChat, NUBI_GLOBAL_CHAT_SHORTCUT_LABEL, isNubiFullPageRoute, isNubiLauncherHiddenRoute } from '@context/NubiGlobalChatContext';
 import { buildNubiWelcomeTemplates } from '@components/llm/NubiWelcome';
+import { hasPermission, isGrantsOnlyUser } from '@lib/auth';
 import { ds } from '@utils/colors';
+
+// The chat engine renders only inside the open drawer (MUI unmounts a closed
+// drawer's contents), but this component is mounted by _app on every page, so a
+// static import shipped the engine's whole tree — CodeMirror, chart.js, date
+// pickers, reactflow, markdown — in the first-load bundle of every route. Fetch
+// it on first open instead.
+// Typed loosely: the generator is untyped JSX, and its call site below already casts its props.
+const KubernetesLLMResponseGenerator = dynamic<any>(() => import('@components/llm/KubernetesLLMResponseGeneratorV2'), {
+  ssr: false,
+  loading: () => <Loader style={{ position: 'static', height: '100%', width: '100%' }} />,
+});
 
 const LAUNCHER_SIZE = 56;
 
@@ -113,8 +126,12 @@ const NubiGlobalChat: React.FC = () => {
   }, [completedWhileClosed]);
 
   // The dedicated Nubi page is this same chat at full size — don't stack a
-  // launcher/drawer on top of it.
-  if (!mounted || isNubiFullPageRoute(router.pathname)) {
+  // launcher/drawer on top of it. Also matches the sidebar's and /ask-nudgebee's
+  // own gate (module: 'ai_conversations') -- without this, a grants-only user
+  // Nubi is hidden from everywhere else could still open it via this floating
+  // launcher.
+  const canUseNubi = !isGrantsOnlyUser() || hasPermission('ai_conversations', 'Read');
+  if (!mounted || isNubiFullPageRoute(router.pathname) || !canUseNubi) {
     return null;
   }
 
@@ -601,6 +618,7 @@ const NubiGlobalChat: React.FC = () => {
               source={chatContext?.source || 'ask_nudgbee_chat'}
               sessionId={chatContext?.sessionId || ''}
               query={chatContext?.query || ''}
+              draft={chatContext?.draft || ''}
               categorySource={chatContext?.categorySource || ''}
               eventId={chatContext?.eventId || ''}
               newChatSignal={newChatSignal as any}

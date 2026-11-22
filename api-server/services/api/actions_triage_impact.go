@@ -394,11 +394,18 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 		c.JSON(400, common.ErrorActionBadRequest("event not found"))
 		return
 	}
+	if ev.CloudAccountId == nil || *ev.CloudAccountId == "" {
+		c.JSON(400, common.ErrorActionBadRequest("event has no account ID"))
+		return
+	}
+	if !requireTriageAccountAccess(c, ctx, *ev.CloudAccountId, "events", security.SecurityAccessTypeRead) {
+		return
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to get database manager", "error", err)
-		c.JSON(400, common.ErrorActionBadRequest("database connection failed"))
+		c.JSON(500, common.ErrorActionInternal("database connection failed"))
 		return
 	}
 
@@ -465,7 +472,7 @@ func handleEventGetImpact(h *ActionRequest, c *gin.Context, ctx *security.Reques
 	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 0)
 	if err != nil || impact == nil {
 		ctx.GetLogger().Error("Failed to compute blast radius", "error", err, "event_id", eventID, "node_id", nodeID)
-		c.JSON(400, common.ErrorActionBadRequest("failed to compute blast radius"))
+		c.JSON(500, common.ErrorActionInternal("failed to compute blast radius"))
 		return
 	}
 
@@ -639,6 +646,144 @@ type tierItem struct {
 	StartsAt        string        `json:"starts_at,omitempty"`
 	DtSeconds       int           `json:"dt_seconds"`
 	Evidence        *tierEvidence `json:"evidence,omitempty"`
+	// Changes says what a cause-tier config change changed (triage.ChangeLines).
+	// Without it the item is a title — "ConfigMap demo/x was changed" — and an
+	// investigation that does not open the event cannot weigh it.
+	Changes []string `json:"changes,omitempty"`
+}
+
+// changeSpan collects the edits a config-change item folds, fed newest-first,
+// so the item can say what the run of edits changed rather than what its newest
+// edit did — a later edit can be the revert of the one that broke things.
+// Edits after the alert are left out: they did not cause it.
+type changeSpan struct {
+	earliestID, latestID string // among edits at or before the alert
+	edits                int
+	earliestAnyID        string // the earliest edit overall
+	all                  int
+}
+
+func (s *changeSpan) add(r windowRow, rootTime time.Time) {
+	s.all++
+	s.earliestAnyID = r.id.ID
+	if r.startsAt.After(rootTime) {
+		return
+	}
+	if s.edits == 0 {
+		s.latestID = r.id.ID
+	}
+	s.earliestID = r.id.ID
+	s.edits++
+}
+
+// changeBounds names the edits whose recorded objects bound a run's net change.
+type changeBounds struct {
+	earliestID, latestID string
+	edits                int
+}
+
+// bounds falls back to the whole run when every edit came after the alert.
+func (s changeSpan) bounds(repID string) changeBounds {
+	if s.edits > 0 {
+		return changeBounds{s.earliestID, s.latestID, s.edits}
+	}
+	return changeBounds{s.earliestAnyID, repID, s.all}
+}
+
+const (
+	// maxChangeItems bounds the evidence read to the config changes nearest the
+	// alert (the list is newest-first); the byte budget is spent by then.
+	maxChangeItems = 8
+	// maxChangesBytes is the total the Changes lines may add to the assembly.
+	// The investigation prompt inlines the assembly under an 8 KB cap with the
+	// cause tier ahead of impact, so unbounded change lines would push the
+	// impact tier out of the prompt.
+	maxChangesBytes = 1500
+	// maxChangeEvidenceBytes skips events whose stored evidence is larger than
+	// this (as stored, so after compression).
+	maxChangeEvidenceBytes = 2 << 20
+)
+
+// attachConfigChangeLines fills Changes on the cause-tier config changes from
+// what their events recorded. Additive like the rest of the assembly: on any
+// error the items keep their titles and nothing else changes.
+func attachConfigChangeLines(log *slog.Logger, db *sqlx.DB, accountID string, items []tierItem, bounds []changeBounds) {
+	n := min(len(items), len(bounds), maxChangeItems)
+	if db == nil || n == 0 {
+		return
+	}
+	ids := make([]string, 0, 2*n)
+	for _, b := range bounds[:n] {
+		ids = append(ids, b.latestID)
+		if b.earliestID != b.latestID {
+			ids = append(ids, b.earliestID)
+		}
+	}
+	// Only the two blocks ParseRecordedChange reads, and nothing from an event
+	// whose evidence is too large to be worth parsing on a panel load: a
+	// ConfigMap can hold 1 MiB a side, recorded twice.
+	rows, err := db.Query(`
+		SELECT id::text,
+		       (SELECT jsonb_agg(e) FROM jsonb_array_elements(evidences) e WHERE e->>'type' IN ('json', 'diff'))
+		FROM events
+		WHERE cloud_account_id = $1::uuid AND id = ANY($2::uuid[])
+		  AND jsonb_typeof(evidences) = 'array'
+		  AND pg_column_size(evidences) <= $3`,
+		accountID, pq.Array(ids), maxChangeEvidenceBytes)
+	if err != nil {
+		if log != nil {
+			log.Warn("incident assembly: config change evidence query failed", "error", err, "account", accountID)
+		}
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	recorded := make(map[string]triage.RecordedChange, len(ids))
+	for rows.Next() {
+		var id string
+		var ev []byte
+		if err := rows.Scan(&id, &ev); err != nil {
+			continue
+		}
+		if rc, ok := triage.ParseRecordedChange(ev); ok {
+			recorded[id] = rc
+		}
+	}
+	if err := rows.Err(); err != nil {
+		if log != nil {
+			log.Warn("incident assembly: config change evidence scan failed", "error", err, "account", accountID)
+		}
+		return
+	}
+	applyChangeLines(items[:n], bounds[:n], recorded)
+}
+
+// applyChangeLines sets each item's Changes from the recorded edits that bound
+// it, nearest-the-alert first, until maxChangesBytes is spent.
+func applyChangeLines(items []tierItem, bounds []changeBounds, recorded map[string]triage.RecordedChange) {
+	budget := maxChangesBytes
+	for i, b := range bounds {
+		latest, ok := recorded[b.latestID]
+		if !ok {
+			continue
+		}
+		earliest, edits := latest, 1
+		if e, ok := recorded[b.earliestID]; ok {
+			earliest, edits = e, b.edits
+		}
+		lines := triage.ChangeLines(earliest, latest, edits)
+		size := 0
+		for _, l := range lines {
+			size += len(l)
+		}
+		if size == 0 {
+			continue
+		}
+		if size > budget {
+			break
+		}
+		budget -= size
+		items[i].Changes = lines
+	}
 }
 
 // tierEvidence is the rarity fact behind a chronic fold or a kept impact: how many
@@ -711,6 +856,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		rep   windowRow
 		count int
 		src   map[string]bool
+		edits changeSpan // config changes only
 	}
 	seedOccurrences := 1 // the seed row itself, which is never part of wr
 
@@ -748,10 +894,14 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		if r.source != "" {
 			items[i].src[r.source] = true
 		}
+		if r.id.IsConfigChange {
+			items[i].edits.add(r, rootTime)
+		}
 	}
 
 	sameIncident, configChanges, upstream, impact, chronic := []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}, []tierItem{}
 	sameNode := []tierItem{}
+	var configBounds []changeBounds // parallel to configChanges
 	for _, ci := range items {
 		item := toTierItem(ci.rep, rates)
 		item.OccurrenceCount = ci.count
@@ -766,6 +916,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 		case triage.TierCause:
 			if ci.rep.id.IsConfigChange {
 				configChanges = append(configChanges, item)
+				configBounds = append(configBounds, ci.edits.bounds(ci.rep.id.ID))
 			} else {
 				upstream = append(upstream, item)
 			}
@@ -780,6 +931,7 @@ func buildIncidentAssembly(log *slog.Logger, db *sqlx.DB, accountID, rootEventID
 			sameNode = append(sameNode, item)
 		}
 	}
+	attachConfigChangeLines(log, db, accountID, configChanges, configBounds)
 
 	return gin.H{
 		"root_identity":    triage.SubjectKey(seed),

@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -277,12 +276,6 @@ func TestHandleExecute_IsolatedEnv(t *testing.T) {
 			"writable HOME paths must not shadow image-owned binaries or relay shims")
 		assert.Contains(t, resp.Response, "/usr/local/go/bin")
 		assert.Contains(t, resp.Response, "/usr/local/bin")
-		assert.Contains(t, resp.Response, "/app/google-cloud-sdk/bin")
-		assert.Less(t,
-			strings.Index(resp.Response, "/usr/local/bin"),
-			strings.Index(resp.Response, "/app/google-cloud-sdk/bin"),
-			"relay shims in /usr/local/bin must take precedence over bundled cloud CLIs",
-		)
 	})
 
 	t.Run("req.Env cannot override the isolation contract", func(t *testing.T) {
@@ -366,6 +359,8 @@ func TestHandleExecute_TimeoutKillsGrandchildProcess(t *testing.T) {
 
 	assert.Equal(t, "failed", resp.CommandStatus, "response: %+v", resp)
 	assert.Contains(t, resp.Error, "killed")
+	// The caller (an LLM) must learn why it stopped, not just "signal: killed" (#42167).
+	assert.Contains(t, resp.Error, "1s workspace time limit")
 	assert.Less(t, elapsed, 5*time.Second,
 		"handler took %s — should be bounded by the ~1s configured deadline, not the sleep 30's natural duration; "+
 			"a regression here means the deadline no longer kills grandchild processes", elapsed)

@@ -84,6 +84,34 @@ actions:
     permissions:
       - role: tenant_admin
       - role: tenant_admin_readonly
+  # Delivery history, scoped like alerts (api-server notification_deliveries_v2). Namespace roles are left
+  # out: the rows carry no namespace, so they would see other namespaces' alert titles.
+  - name: notifications_list_deliveries
+    comment: List notification deliveries, one row per attempt to send a message to a destination
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: notifications_aggregate_deliveries
+    comment: Count notification deliveries and summarise them per destination
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: usergroups_aggregate
     comment: Aggregate user-group counts for the tenant
     definition:
@@ -121,6 +149,30 @@ actions:
       - role: tenant_admin_readonly
   - name: users_aggregate_by_tenant
     comment: Aggregate tenant user counts by status
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+  - name: users_list_by_tenant_with_bees
+    comment: List tenant users including bee accounts (users_list_by_tenant lists people only)
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+  - name: users_aggregate_by_tenant_with_bees
+    comment: Aggregate tenant user counts including bee accounts
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
@@ -270,19 +322,6 @@ actions:
     permissions:
       - role: account_admin
       - role: tenant_admin
-  - name: ai_create_function
-    comment: Create a reusable prompt function with variables and defaults
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-    permissions:
-      - role: account_admin
-      - role: k8s_namespace_admin
-      - role: tenant_admin
   - name: ai_create_gc
     definition:
       kind: synchronous
@@ -356,18 +395,6 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
-  - name: ai_delete_function
-    comment: Delete a prompt function
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-    permissions:
-      - role: account_admin
-      - role: tenant_admin
   - name: ai_delete_gc
     definition:
       kind: synchronous
@@ -547,6 +574,20 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Generate Metrics Query
+  - name: ai_generate_dashboard
+    comment: Generate an unsaved dashboard draft from a natural-language description
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/completions/dashboard-generate'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
   - name: ai_generate_workflow
     comment: Generate an automation workflow from a natural-language description
     definition:
@@ -910,6 +951,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -927,6 +969,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -943,6 +986,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -960,6 +1004,7 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
+      - role: tenant_usage
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
       - role: account_admin_readonly
@@ -977,10 +1022,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_create_routing_rule
@@ -994,11 +1035,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_update_routing_rule
     comment: Update an AI Gateway model routing rule
@@ -1011,11 +1047,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_delete_routing_rule
     comment: Delete an AI Gateway model routing rule
@@ -1028,11 +1059,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_list_tiers
     definition:
@@ -1044,10 +1070,19 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: llm_gateway_list_models
+    comment: List the AI Gateway model names an API key can be restricted to
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/config/models/list'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_set_tier
@@ -1060,11 +1095,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_reset_tier
     definition:
@@ -1076,11 +1106,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_list_rate_limits
     comment: List AI Gateway rate-limit quotas
@@ -1093,10 +1118,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_upsert_rate_limit
@@ -1110,11 +1131,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
-      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_delete_rate_limit
     comment: Delete an AI Gateway rate-limit quota
@@ -1127,11 +1143,31 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
+      - role: tenant_admin
+  - name: llm_gateway_list_user_access
+    comment: List each user's AI Gateway access restrictions in the tenant
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/config/user_access/list'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
       - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: llm_gateway_upsert_user_access
+    comment: Set one user's AI Gateway allowed providers, models, endpoints, suspension and end date
+    definition:
+      kind: synchronous
+      handler: '{{LLM_GATEWAY_URL}}/rpc/config/user_access/upsert'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_GATEWAY_ACTION_TOKEN
+      timeout: 60
+    permissions:
       - role: tenant_admin
   - name: llm_gateway_get_settings
     definition:
@@ -1143,10 +1179,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin_readonly
-      - role: k8s_namespace_admin
-      - role: account_admin_readonly
-      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: llm_gateway_update_settings
@@ -1159,8 +1191,6 @@ actions:
           value_from_env: LLM_GATEWAY_ACTION_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin
-      - role: account_admin
       - role: tenant_admin
   - name: egressfilter_get
     definition:
@@ -1218,6 +1248,87 @@ actions:
     permissions:
       - role: tenant_admin
     comment: Clear the tenant's egress-filter override so env defaults apply
+  - name: toolapproval_list
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List tool approval rules for the current tenant
+  - name: toolapproval_create
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Add a tool approval rule to one or more accounts in a single transaction
+  - name: toolapproval_upsert
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Create or update a tool approval rule
+  - name: toolapproval_delete
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Delete a tool approval rule
+  - name: toolapproval_check_match
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Check whether a sample invocation matches a proposed tool approval rule
+  - name: toolapproval_list_options
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Resolve named execution configurations for tool approval rule editing
+  - name: toolapproval_list_tools
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/tool-approval/config'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List tools shared by the selected accounts for tool approval rule editing
   - name: ai_get_gc
     definition:
       kind: "synchronous"
@@ -1326,6 +1437,19 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Generate a structured remediation plan (execute/verify/rollback commands) from an investigation
+  - name: ai_generate_remediation_plan
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/analyze/remediation/plan'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: Ask the assistant to write, re-check or replan an event's remediation plan in the background (remediation loop)
   - name: ai_remediation_get
     definition:
       kind: "synchronous"
@@ -1453,6 +1577,18 @@ actions:
       - role: tenant_admin_readonly
       - role: tenant_admin
     comment: List all knowledge bases for an account
+  - name: ai_list_kb_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation knowledge base
   - name: ai_get_kb_load_history
     definition:
       kind: "synchronous"
@@ -1578,6 +1714,19 @@ actions:
   # are still gated server-side by requireTenantAdmin — the actions.yaml
   # permissions list every role that can call any combination, not just
   # the most privileged.
+  - name: ai_delete_memory
+    comment: Delete one of the AI's stored long-term memories for the account
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/memory'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
   - name: ai_memory_get
     definition:
       kind: "synchronous"
@@ -1732,6 +1881,17 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: GDPR portability — exports a user's memory bundle as a fresh JSON artifact.
+  - name: ai_list_tenant_models
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/conversations/ai_list_tenant_models'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: List the models of the tenant's organisation-wide LLM configs and its tenant default
   - name: ai_list_models
     definition:
       kind: "synchronous"
@@ -1930,19 +2090,6 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
-  - name: ai_update_function
-    comment: Update a prompt function
-    definition:
-      kind: synchronous
-      handler: '{{LLM_SERVER_URL}}/v1/functions'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: LLM_SERVER_TOKEN
-      timeout: 120
-    permissions:
-      - role: tenant_admin
-      - role: account_admin
   - name: ai_update_gc
     definition:
       kind: synchronous
@@ -1979,6 +2126,155 @@ actions:
       - role: account_admin
       - role: tenant_admin
     comment: Turn a knowledge base on or off without changing its content
+  - name: ai_update_kb_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a knowledge base between account and organisation scope, or change which accounts an organisation knowledge base reaches
+  - name: ai_update_kb_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation knowledge base on or off for one account
+  - name: ai_create_kb_skill_source
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Add a GitHub repository whose Agent Skills folders become organisation skills
+  - name: ai_list_kb_skill_sources
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the organisation's skill sources
+  - name: ai_update_kb_skill_source
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Change which accounts use the skills of a skill source
+  - name: ai_sync_kb_skill_source
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Sync a skill source's skills from its repository now
+  - name: ai_delete_kb_skill_source
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/knowledgebases'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Remove a skill source and the skills it synced
+  - name: ai_update_agent_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a custom agent between account and organisation scope, or change which accounts an organisation agent reaches
+  - name: ai_update_agent_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation agent on or off for one account
+  - name: ai_list_agent_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/agents'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation agent
+  - name: ai_update_tool_visibility
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Move a custom tool between account and organisation scope, or change which accounts an organisation tool reaches
+  - name: ai_update_tool_account_override
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
+    comment: Switch an organisation tool on or off for one account
+  - name: ai_list_tool_account_overrides
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/tools'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: List the per-account switches of an organisation tool
   - name: ai_update_tool
     comment: Update a custom agent tool
     definition:
@@ -2441,6 +2737,19 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: action to change status of auto optimize
+  - name: autooptimize_update_approval
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/autopilot/approval'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: tenant_admin
+      - role: account_admin
+    comment: approve or reject an auto optimize run that is waiting for approval
   - name: autooptimize_aggregate
     comment: Aggregate auto-pilot optimization records by status and category
     definition:
@@ -2599,6 +2908,18 @@ actions:
       - role: account_admin
   - name: cloud_account_update
     comment: Update a cloud account's settings
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/account'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+  - name: cloud_update_credentials
+    comment: Rotate a cloud account's stored credential in place, on every account sharing it, and restart its sync
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/account'
@@ -2894,6 +3215,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudListNotificationTargets: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -2907,6 +3230,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleTriggerCloudSync: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -2920,6 +3245,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleSyncCloudService: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -2933,6 +3260,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudApplyCommand: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -2946,6 +3275,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      # Bound grants reach it: handleCloudExecuteCommand: CanAccessAccount on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -3180,6 +3511,20 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get triage rules for an account
+  - name: event_list_triage_sources
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin_readonly
+      - role: account_admin
+    comment: List the Source options for the Create Triage Rule form
   - name: workload_list_criticality
     definition:
       kind: synchronous
@@ -3249,6 +3594,19 @@ actions:
     comment: Preview how many existing events would match a triage rule criteria
   - name: events_update_resolution
     comment: Update an event's resolution
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/event'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
+  - name: events_check_rollback
+    comment: Check whether rolling back a recorded change would be refused right now, and why, without attempting it
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/event'
@@ -3357,6 +3715,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
     comment: Update the nb_status (triage status) of an event
+  - name: events_apply_remediation_resolve
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/triage'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin
+    comment: Resolve an event whose remediation run was judged likely fixed, confirmed by the person calling (remediation loop)
   - name: event_update_triage_rule
     definition:
       kind: synchronous
@@ -3539,6 +3910,18 @@ actions:
       timeout: 120
     permissions:
       - role: tenant_admin
+  - name: integrations_check_llm_defaults
+    comment: Report what an LLM integration save, delete, disable or enable would do to each account's default
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: tenant_admin
   - name: integrations_delete_config
     comment: Delete an integration configuration
     definition:
@@ -3586,6 +3969,17 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: tenant_admin
+  - name: integrations_update_mcp_write_tools
+    comment: Set which of an MCP integration's tools ask for approval before running
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/integration'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   - name: integrations_check_connection
     comment: Test connectivity of a saved integration
     definition:
@@ -3613,6 +4007,18 @@ actions:
       - role: tenant_admin_readonly
       - role: account_admin
       - role: account_admin_readonly
+  - name: integrations_execute_mcp_health_check
+    comment: Check an MCP integration's health now, through the path Nubi uses (llm-server discovery via relay); records the result and returns the stored health
+    definition:
+      kind: synchronous
+      handler: '{{LLM_SERVER_URL}}/v1/mcp-integrations/health-check'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
+      timeout: 120
+    permissions:
+      - role: tenant_admin
   - name: integrations_check_connection_config
     comment: Test connectivity of integration settings before saving
     definition:
@@ -4018,18 +4424,6 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: soft-delete one row AND remove the matching source='manual' edge from the KG in one transaction. Prevents ghost edges from outliving deleted declarations.
-  - name: kg_import_manual_dependencies
-    definition:
-      kind: synchronous
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: account_admin
-    comment: bulk import declarations from CSV. Required header columns - source_node_type, source_name, dest_node_type, dest_name. Optional - source_namespace, source_cluster, source_arn, source_account_id, source_region, and the corresponding dest_ columns, plus relationship_type (defaults to CALLS) and notes. Returns per-row imported/rejected status.
   - name: kg_resolve_manual_dependency
     definition:
       kind: synchronous
@@ -4077,6 +4471,146 @@ actions:
     permissions:
       - role: tenant_admin
     comment: panic-button rollback. Soft-deletes every manual_dependencies row for the tenant AND removes every source='manual' edge from the KG. tenant_admin only.
+  - name: kg_get_manual_node_schema
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
+    comment: where nodes can be declared by hand (each connected cloud account, plus outside any connected account) and, per place, the declarable types with their compulsory key fields and optional schema properties. Drives the declare-node form.
+  - name: kg_list_manual_nodes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
+    comment: list the tenant's manually declared KG nodes with status (active, adopted by a collector, possible_duplicate of a collected node).
+  - name: kg_create_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: declare one KG node and write it into the graph at once. In a connected account the node gets the id the collector writes for the same resource, so it merges when collected; 409 when the resource is already in the graph.
+  - name: kg_update_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: edit a declared node's description, optional properties and labels. Identity fields (account, type, name, region, network) cannot change - delete and declare again.
+  - name: kg_delete_manual_node
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: withdraw a declaration and retire its node with the edges touching it. An adopted node is left to the collector that now owns it.
+  - name: kg_apply_manual_node_merge
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: resolve a possible_duplicate declaration in favour of the collected node it matches - dependencies pinned to the declared node move to it and the declaration is withdrawn.
+  - name: kg_create_manual_declarations
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: 'declare KG nodes and dependencies from one JSON document, `{"nodes": [...], "dependencies": [...]}`. A node is a kg_create_manual_node request plus an optional ref (defaults to name, unique in the document). A dependency side is a ref to a node of the document, or an endpoint object with node_type, name and optional namespace, cluster, arn, account_id for a node already in the graph; relationship_type defaults to CALLS. Nodes land first; one already declared or collected comes back as existing and still links, and a dependency already declared comes back as existing. Invalid JSON, an unknown field, a duplicate or unknown ref, more than 1 MB or more than 500 items is a 400 with nothing written. Returns per-item results - nodes and dependencies, each created, existing or rejected.'
+  - name: kg_delete_all_manual_nodes
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: panic-button rollback. Withdraws every manual node declaration for the tenant and retires every node still owned by one, with its edges. tenant_admin only.
+  - name: kg_list_node_roles
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+    comment: the roles a Knowledge Graph node can act as (database, cache, ...) and the node types that can carry one. Static vocabulary, no tenant data.
+  - name: kg_upsert_node_role
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: set the role a Knowledge Graph node acts as, overriding the detected one. Also applies to the node's linked cloud instances (SAME_AS) the caller may write. Needs write access to the node's account, or tenant-wide access for a node outside any account.
+  - name: kg_delete_node_role
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/knowledge-graph'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: remove the role a user gave a Knowledge Graph node (and its linked instances); the detected role, if any, shows again.
   - name: insights_aggregate
     comment: Aggregate insights into counts and summaries
     definition:
@@ -4135,6 +4669,23 @@ actions:
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
     comment: get feedback submitted by user via session id
+  - name: ai_list_own_conversation_feedback
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/ai'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: account_admin_readonly
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+    comment: get the authenticated caller's own feedback for a set of responses, scoped server-side to their user id
   - name: log_group
     comment: Get details for a grouped log pattern
     definition:
@@ -4184,6 +4735,20 @@ actions:
       - role: tenant_admin_readonly
       - role: tenant_usage
     comment: Fetch Log Label Values
+  - name: logs_check_vm_status
+    comment: Check whether a self-hosted VM account has a log store connected and holding recent logs
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/logs'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: logs_list_labels
     definition:
       kind: "synchronous"
@@ -4271,6 +4836,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4288,6 +4855,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4302,6 +4871,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4316,6 +4887,24 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+  - name: metrics_check_vm_status
+    comment: Check whether a self-hosted VM account has metrics connected and agents reporting
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4330,6 +4919,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4343,6 +4934,8 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/metrics'
+      # Bound grants reach it: handleMetricsAction: CanReadAccountData on account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4514,6 +5107,28 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Send a test notification to verify messaging integration
+  - name: notifications_delete_ms_teams_connection
+    definition:
+      kind: synchronous
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/integrations/ms-teams/disconnect'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Disconnect Microsoft Teams from the workspace, releasing every team bound to it
+  - name: notifications_delete_ms_teams_team
+    definition:
+      kind: synchronous
+      handler: '{{NOTIFICATION_SERVICE_URL}}/api/integrations/ms-teams/disconnect-team'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: NOTIFICATION_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+    comment: Disconnect one Microsoft Teams team from the workspace
   - name: notification_rule_delete
     definition:
       kind: synchronous
@@ -4712,6 +5327,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/v1/relay/request'
+      # Bound grants reach it: validateRelayAccountAccess: CanReadAccountData / HasScopedPermission(k8s, Write) on body.account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4771,6 +5388,19 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: security_update_vm_active
+    comment: Decommission (is_active false) or recommission (true) a self-hosted VM; decommissioning retires its packages and open vulnerability findings and stops scans of it
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/recommendation'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
   - name: security_scan_vm_account
     comment: Trigger an on-demand VM package inventory + vulnerability scan for every instance in an account
     definition:
@@ -4810,11 +5440,30 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin
       - role: tenant_admin
+  - name: forecast_generate
+    comment: Forecast when a workload metric preset (CPU throttling, CPU or memory saturation) will cross a threshold, on demand (creates no event)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: handleForecastGenerate: CanAccessAccount on account_id.
+      account_enforced: true
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 100
+    permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
+      - role: tenant_admin
   - name: slo_config_create
     comment: Create an SLO configuration
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.CreateOrUpdateSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4829,6 +5478,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.GetSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4847,6 +5498,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.DeleteSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -4860,6 +5513,8 @@ actions:
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/slo'
+      # Bound grants reach it: slo.CreateOrUpdateSLOConfig: CanAccessAccount on cloud_account_id.
+      account_enforced: true
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5160,6 +5815,20 @@ actions:
       - role: account_admin_readonly
       - role: tenant_admin
       - role: tenant_admin_readonly
+  - name: ticket_get_attachment
+    comment: Fetch a comment attachment's bytes for a ticket (ServiceNow/Jira only - requires platform credentials the browser doesn't have)
+    definition:
+      kind: "synchronous"
+      handler: '{{TICKET_SERVICE_URL}}/tickets/rpc/get-attachment'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+      - role: tenant_admin_readonly
   - name: ticket_groupings_v2
     comment: Aggregate tickets grouped by status and account
     definition:
@@ -5204,6 +5873,23 @@ actions:
     definition:
       kind: "synchronous"
       handler: '{{TICKET_SERVICE_URL}}/tickets/create-meta'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: k8s_namespace_admin_readonly
+      - role: account_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin
+      - role: tenant_admin
+  - name: tickets_get_transition_meta
+    comment: Get status choices for ticket transitions without create-ticket fields
+    definition:
+      kind: "synchronous"
+      handler: '{{TICKET_SERVICE_URL}}/tickets/transition-meta'
       forward_client_headers: true
       headers:
         - name: X-ACTION-TOKEN
@@ -5450,6 +6136,24 @@ actions:
       - role: tenant_admin
       - role: tenant_admin_readonly
       - role: tenant_usage
+  - name: vm_get_service_map
+    comment: Get the service dependency map of a self-hosted VM account, built by its forager from node-agent metrics
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/application'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 60
+    permissions:
+      - role: k8s_namespace_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_usage
+      - role: tenant_admin_readonly
   - name: traces_get_service_map
     comment: Get the service dependency map derived from traces
     definition:
@@ -5611,14 +6315,8 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_usage
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
+  # userauths_create / userauths_delete: server-only. NextAuth's callbacks call them
+  # as the server, so no session role is granted access.
   - name: userauths_create
     comment: Create a login or SSO auth record for a user
     definition:
@@ -5628,13 +6326,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: userauths_delete
     comment: Delete a user's login or SSO auth record
     definition:
@@ -5644,13 +6335,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: users_get_details
     comment: Get a user's profile, status and assigned roles
     definition:
@@ -5660,14 +6344,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_usage
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: users_create_history
     comment: Record a user activity history entry
     definition:
@@ -5700,14 +6376,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_usage
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: userroles_sync
     comment: Replace a user's role assignments within the tenant
     definition:
@@ -6058,7 +6726,7 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
   - name: users_update_token
-    comment: Update an API access token's expiry and limits
+    comment: Update an API access token's expiry, limits and AI Gateway restrictions (a sent gateway_policy replaces all three lists)
     definition:
       kind: synchronous
       handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
@@ -6073,6 +6741,30 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: users_list_tenant_tokens
+    comment: List every API key in the tenant (admins; never the secret)
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: super_admin_readonly
+  - name: users_delete_tenant_token
+    comment: Revoke any API key in the tenant by id (tenant admins)
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
   - name: cloud_check_credentials
     definition:
       kind: synchronous
@@ -6191,6 +6883,22 @@ actions:
       - role: account_admin
   - name: workflow_get
     comment: Get a workflow definition
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: workflow_get_account
+    comment: Get the account a workflow belongs to, for a link that carries no account
     definition:
       kind: "synchronous"
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'
@@ -6508,6 +7216,32 @@ actions:
       - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: workflows_list_ai_settings
+    comment: List automations offered, or that could be offered, to Nubi as tools, with their AI settings
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: account_admin_readonly
+      - role: account_admin
+  - name: workflows_update_ai_settings
+    comment: Set whether Nubi may run an automation, and whether it runs without asking
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: tenant_admin
   - name: workflow_update
     comment: Update a workflow definition
     definition:
@@ -7099,20 +7833,6 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
-  - name: ai_list_functions
-    comment: List AI functions available to agents
-    definition:
-      kind: "synchronous"
-      handler: '{{SERVICE_API_SERVER_URL}}/rpc/query'
-      forward_client_headers: true
-      headers:
-        - name: X-ACTION-TOKEN
-          value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin_readonly
-      - role: tenant_admin
-      - role: account_admin_readonly
-      - role: account_admin
   - name: ai_list_agent_installations
     comment: List AI agent installations per account
     definition:
@@ -7237,13 +7957,6 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
-    permissions:
-      - role: tenant_admin
-      - role: tenant_admin_readonly
-      - role: account_admin
-      - role: account_admin_readonly
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
   - name: cloud_account_attrs_v2
     comment: List cloud-account attributes (key and value settings)
     definition:
@@ -7437,6 +8150,7 @@ custom_types:
     - name: DisableAlertRule
     - name: security_scan_image_input
     - name: security_scan_vm_input
+    - name: security_update_vm_active_input
     - name: security_scan_vm_account_input
     - name: security_list_vm_scan_statuses_input
     - name: security_list_vm_scan_datasources_input
@@ -7514,6 +8228,7 @@ custom_types:
     - name: event_resolve_input
     - name: auto_optimize_workload_input
     - name: auto_optimize_update_status_request
+    - name: auto_optimize_update_approval_request
     - name: TraceHeatMapWhereRequest
     - name: auto_optimize_skip_request
     - name: AgentRegenerateTokenInput
@@ -7524,6 +8239,7 @@ custom_types:
     - name: ApplicationMetricsRequest
     - name: NudgebeeAIGetPrometheusQueryRequest
     - name: AIGetMetricsQueryRequest
+    - name: AIGenerateDashboardRequest
     - name: AIGetLogQueryRequest
     - name: AiFeedbackCreateRequest
     - name: GetInvestigateQueryRequest
@@ -7548,6 +8264,7 @@ custom_types:
     - name: CreateIntegrationConfigRequest
     - name: IntegrationConfigValueInput
     - name: DeleteIntegrationConfigRequest
+    - name: UpdateMCPWriteToolsRequest
     - name: AnomalyTemplateListRequest
     - name: TriggerAnomalyExecuteRequest
     - name: ListAnomalyWhereRequest
@@ -7579,7 +8296,6 @@ custom_types:
     - name: TicketAddCommentObjectInput
     - name: CreateAgentRagInput
     - name: TenantAttributeRequest
-    - name: CreateFunctionInput
     - name: AIStopInvestigationRequest
     - name: auto_runbook_custom_action_update_input
     - name: SortField
@@ -7588,7 +8304,10 @@ custom_types:
     - name: FetchLogLabelValuesRequest
     - name: UserTokenCreateRequest
     - name: UserTokenDeleteRequest
+    - name: TenantTokenListRequest
+    - name: TenantTokenDeleteRequest
     - name: TraceServiceMapRequest
+    - name: VmServiceMapRequest
     - name: DefaultProviderRequest
     - name: FetchMetricsListRequest
     - name: UserHistoryInput
@@ -7604,16 +8323,16 @@ custom_types:
     - name: TracesV3LabelValuesRequest
     - name: CreateExtensionAgentDetails
     - name: CreateExtensionAgentRequest
-    - name: AiDeleteFunctionRequest
     - name: FetchMetricLabelsRequest
     - name: FetchMetricsLabelValueRequest
-    - name: UpdateFunctionInput
     - name: FetchMetricsRequest
     - name: UpdateAgentExtensionRequest
     - name: UpdateAgentExtensionDetails
     - name: AIBudgetStatusRequest
     - name: WorkflowTaskDefinitionListRequest
     - name: WorkflowListRequest
+    - name: WorkflowListAISettingsRequest
+    - name: WorkflowUpdateAISettingsRequest
     - name: WorkflowGetRequest
     - name: WorkflowCountRequest
     - name: WorkflowExecutionCountRequest
@@ -7720,6 +8439,7 @@ custom_types:
     - name: recommendation_rule_list_input
     - name: AiGetWorspaceFile
     - name: cloud_account_update_input
+    - name: cloud_update_credentials_input
     - name: cloud_account_attr_object
     - name: cloud_account_attrs_upsert_input
     - name: messaging_platform_list_input
@@ -7743,7 +8463,6 @@ custom_types:
     - name: RecommendationResolutionGroupingsWhereRequest
     - name: EventResolutionWhereRequest
     - name: EventResolutionGroupingsWhereRequest
-    - name: LlmFunctionsWhereRequest
     - name: LlmAgentsInstallationWhereRequest
     - name: KnowledgeBaseWhereRequest
     - name: FeatureFlagWhereRequest
@@ -7877,6 +8596,7 @@ custom_types:
     - name: auto_optimize_recommendation_output
     - name: security_scan_image_output
     - name: security_scan_vm_output
+    - name: security_update_vm_active_output
     - name: security_scan_vm_account_output
     - name: security_list_vm_scan_statuses_output
     - name: security_list_vm_scan_datasources_output
@@ -7911,6 +8631,7 @@ custom_types:
     - name: MonitoringResponse
     - name: MonitoringRowResponse
     - name: ticket_create_meta_response
+    - name: ticket_transition_meta_response
     - name: ticket_field_values_response
     - name: recommendation_job_create_output
     - name: MonitoringEventsResponse
@@ -7983,6 +8704,7 @@ custom_types:
     - name: RecommendationMissConfigRowResponse
     - name: event_resolve_output
     - name: auto_optimize_update_status_response
+    - name: auto_optimize_update_approval_response
     - name: AIResponse
     - name: TracesHeatMapResponse
     - name: TraceHeatMapRowResponse
@@ -7998,6 +8720,7 @@ custom_types:
     - name: NudgebeeAIGetPrometheusQueryResponse
     - name: NudgebeeAIGetPrometheusQuery
     - name: AIGetMetricsQueryResponse
+    - name: AIGenerateDashboardResponse
     - name: AIGeneratedQuery
     - name: AIGetLogQueryResponse
     - name: GenerateFeedbackResponse
@@ -8068,9 +8791,6 @@ custom_types:
     - name: LLMRagGroupingResponse
     - name: LLMRagGroupingRowResponse
     - name: TenantAttributeResponse
-    - name: CreateFunctionResponse
-    - name: LLMFunctionCreateResponse
-    - name: FunctionResponse
     - name: AIStopInvestigationResponse
     - name: auto_runbook_custom_action_update_output
     - name: FetchLogResponse
@@ -8080,6 +8800,8 @@ custom_types:
     - name: UserTokenDeleteResponse
     - name: UserAuthTokenResponse
     - name: UserAuthToken
+    - name: TenantTokenListResponse
+    - name: TenantTokenDeleteResponse
     - name: ServiceApplicationId
     - name: Instance
     - name: Link
@@ -8104,11 +8826,9 @@ custom_types:
     - name: TracesV3LabelValuesResponse
     - name: TraceGroupingValues
     - name: CreateAgentExtensionResponse
-    - name: AiDeleteFunctionResponse
     - name: OutputMetricLabels
     - name: OutputMetricsLabelValues
     - name: UpgradeExecuteCommandResponse
-    - name: FunctionUpdateResponse
     - name: TracesGroupV3CountResponse
     - name: OutputMetricQuery
     - name: UpdateAgentExtensionResponse
@@ -8125,6 +8845,8 @@ custom_types:
     - name: WorkflowTaskDefinitionResponse
     - name: WorkflowTaskDefinitionListResponse
     - name: WorkflowListResponse
+    - name: WorkflowAISetting
+    - name: WorkflowListAISettingsResponse
     - name: WorkflowCountResponse
     - name: WorkflowExecutionCountResponse
     - name: WorkflowUser
@@ -8365,8 +9087,6 @@ custom_types:
     - name: EventResolutionRowResponse
     - name: EventResolutionGroupingsResponse
     - name: EventResolutionGroupingsRowResponse
-    - name: LlmFunctionsResponse
-    - name: LlmFunctionsRowResponse
     - name: LlmAgentsInstallationResponse
     - name: LlmAgentsInstallationRowResponse
     - name: CloudResourcesListResponse

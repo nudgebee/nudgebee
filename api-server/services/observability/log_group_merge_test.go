@@ -192,3 +192,15 @@ func TestGroupESLogsByPattern(t *testing.T) {
 		assert.Equal(t, windowEndSec, out.Groups[0].Timestamps[0])
 	})
 }
+
+// A provider that counted a sample says so; merging must not lose that (it did, so a
+// SolarWinds sample reached the caller looking like a full count).
+func TestMergeLogGroupsByPattern_KeepsSampleMarker(t *testing.T) {
+	out := mergeLogGroupsByPattern(LogGroupOutput{
+		Groups:          []LogGroup{{PatternHash: "h", Count: 1, Timestamps: []int64{1}, Values: []float64{1}}},
+		Sampled:         true,
+		SampleStartTime: 1791396900000,
+	})
+	assert.True(t, out.Sampled)
+	assert.Equal(t, int64(1791396900000), out.SampleStartTime)
+}

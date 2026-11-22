@@ -138,6 +138,19 @@ describe('buildOptimizationTriggerMock', () => {
     expect(payload.cloud_account_id).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     expect(payload.account_id).toBe('aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
   });
+  // #39837: with a category picked and no rule, the sample kept the Right Sizing default rule.
+  it('pairs a category with a rule of that category when no rule is picked', () => {
+    const rightSizingRule = buildOptimizationTriggerMock().rule_name;
+
+    for (const category of ['InfraUpgrade', 'Configuration', 'K8sSpotRecommendation']) {
+      const payload = buildOptimizationTriggerMock({ category });
+
+      expect(payload.category).toBe(category);
+      expect(payload.rule_name).toBeTruthy();
+      expect(payload.rule_name).not.toBe(rightSizingRule);
+    }
+    expect(buildOptimizationTriggerMock({ category: 'RightSizing' }).rule_name).toBe(rightSizingRule);
+  });
 });
 
 describe('buildTriggerMock', () => {

@@ -137,3 +137,19 @@ func TestNormalizeEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// As in the GitLab and GitHub sources: the key comes from BaseSource, which keys
+// UserAccount on properties["username"] — for PagerDuty the user's own id, not an
+// email or display name (#41505). Pinned per source so a future GenerateUniqueKey
+// override here cannot silently go back to display-name keys.
+func TestNewUserNodeKeysOnUserID(t *testing.T) {
+	s := newPagerDutySourceForTest()
+	user := gopagerduty.User{Name: "Jane Doe", Email: "jane@example.com"}
+	user.ID = "PA1B2C3"
+
+	node := s.newUserNode(user, testReq())
+	want := "pagerduty:integration-1::UserAccount::PA1B2C3"
+	if node.UniqueKey != want {
+		t.Errorf("UniqueKey = %q, want %q", node.UniqueKey, want)
+	}
+}

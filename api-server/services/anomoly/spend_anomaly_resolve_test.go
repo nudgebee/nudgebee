@@ -88,7 +88,7 @@ func TestResolveRecoveredAnomalies_SendsTheAnomalyIntervalAsResolved(t *testing.
 	args[eventsArgStatus-1], args[eventsArgStartsAt-1], args[eventsArgEndsAt-1] = status, startsAt, endsAt
 	// is_insert = false: the FIRING event for this anomaly is already stored.
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO events")).WithArgs(args...).
-		WillReturnRows(sqlmock.NewRows([]string{"is_insert"}).AddRow(false))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "is_insert"}).AddRow("5e7a1c2b-3d4e-4f50-8a6b-7c8d9e0f1a2b", false))
 
 	resolveRecoveredAnomalies(nil, manager, resolveTestAccount, resolveTestTenant, "billing-prod", "AWS", cfg)
 

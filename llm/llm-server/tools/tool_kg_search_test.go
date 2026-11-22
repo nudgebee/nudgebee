@@ -102,7 +102,7 @@ func TestValidateKGSearchInput(t *testing.T) {
 		reject := validateKGSearchInput(kgSearchInput{})
 		if assert.NotNil(t, reject) {
 			assert.Equal(t, core.NBToolResponseStatusError, reject.Status)
-			assert.Contains(t, reject.Data, "at least one of query, node_types, namespace, source, labels, or account_ids",
+			assert.Contains(t, reject.Data, "at least one of query, node_types, roles, namespace, source, labels, or account_ids",
 				"reject message must name the shape that WOULD work so the model can self-correct")
 		}
 	})

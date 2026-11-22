@@ -17,7 +17,7 @@ from rag.core.types import LLM, Embeddings
 from rag.core.utils.db_query import (
     get_default_llm_integration,
     get_embeddings_integrations,
-    get_llm_integrations,
+    get_llm_integration_config,
 )
 from utils.config import Config
 from utils.shared import bedrock_client
@@ -353,10 +353,7 @@ def get_llm(cloud_account_id: str) -> LLM:
         # account that has one. Same rule llm-server applies.
         integration_id = get_default_llm_integration(cloud_account_id)
         if integration_id:
-            for integration in get_llm_integrations(cloud_account_id) or []:
-                if integration.get("integration_id") == integration_id:
-                    integration_config = integration.get("config", {})
-                    break
+            integration_config = get_llm_integration_config(integration_id) or None
 
     def get_config_value(key: str, default: Optional[Any] = None) -> Any:
         if integration_config and key in integration_config:

@@ -194,6 +194,23 @@ func (sc *SecurityContext) IsSuperAdminReadonly() bool {
 	return slices.Contains(sc.roles, AUTH_SUPER_ADMIN_READONLY_ROLE)
 }
 
+// HasExplicitTenantRole reports whether the user holds a grant of their own in
+// this context's tenant. The super-admin roles are excluded because they are
+// global — their user_roles rows carry tenant_id IS NULL, so the per-tenant
+// lookup behind NewSecurityContext never returns them; anything else here came
+// from a row scoped to this tenant. Authorizes nothing on its own.
+func (sc *SecurityContext) HasExplicitTenantRole() bool {
+	if sc == nil {
+		return false
+	}
+	for _, role := range sc.roles {
+		if role != AUTH_SUPER_ADMIN_FULL_ROLE && role != AUTH_SUPER_ADMIN_READONLY_ROLE {
+			return true
+		}
+	}
+	return len(sc.customPermissions) > 0 || len(sc.scopedCustomPermissions) > 0
+}
+
 func (sc *SecurityContext) IsTenantAdmin() bool {
 	return slices.Contains(sc.roles, AUTH_TENANT_ADMIN_ROLE)
 }
@@ -280,13 +297,23 @@ func (sc *SecurityContext) CanReadAccountData(accountId string, module string) b
 }
 
 func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAccessType) bool {
-	if sc.IsSuperAdmin() {
+	// Synthetic server-side contexts carry no tenant, so there is nothing to
+	// check the account against.
+	if sc.isServerInternal {
 		return true
 	}
-	if sc.IsSuperAdminReadonly() {
-		return access == SecurityAccessTypeRead
+	// Everyone else — super admins included — may only touch accounts of the
+	// tenant they are signed into. A super admin reaches another tenant's
+	// account by switching tenant; letting them write it from here stored the
+	// session's tenant next to a foreign account. Super admins confirm
+	// a miss against the database so an account onboarded minutes ago is not
+	// refused by the cached list (they used to bypass it entirely).
+	if sc.IsSuperAdmin() || sc.IsSuperAdminReadonly() {
+		if !slices.Contains(sc.accountIds, accountId) && (sc.tenantId == "" || !IsAccountInTenant(accountId, sc.tenantId)) {
+			return false
+		}
+		return sc.IsSuperAdmin() || access == SecurityAccessTypeRead
 	}
-
 	if !slices.Contains(sc.accountIds, accountId) {
 		return false
 	}
@@ -314,6 +341,14 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 	}
 
 	return false
+}
+
+// CanRunAI reports whether the person may run Nubi on the account: read access
+// to it, or a custom-role grant to run AI there (ai_misc Execute; Write does
+// not imply Execute).
+func (sc *SecurityContext) CanRunAI(accountId string) bool {
+	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
+		sc.HasScopedPermission(accountId, "ai_misc", "Execute")
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`
@@ -615,10 +650,15 @@ func parseSecurityContextResponse(body []byte) (*SecurityContext, error) {
 	return &res.Context, nil
 }
 
+// ErrSecurityContextRejected is wrapped in the error NewSecurityContext returns
+// when services-server answers with a 4xx (for example an unknown or removed
+// user), as opposed to being unreachable or failing with a 5xx.
+var ErrSecurityContextRejected = errors.New("security: security context rejected")
+
 func shouldRetrySecurityContext(statusCode int) (bool, error) {
 	// Don't retry on 4xx client errors
 	if statusCode >= 400 && statusCode < 500 {
-		return false, fmt.Errorf("security: client error %d", statusCode)
+		return false, fmt.Errorf("%w: client error %d", ErrSecurityContextRejected, statusCode)
 	}
 
 	// Retry on 5xx server errors

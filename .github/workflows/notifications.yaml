@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   notifications-build:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, whose repos have no
+    # postgresql-server-dev-16 (see the Install Build Essentials step).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     # Real broker for tests/test_consumer_reconnect.py (consumer count stays one
@@ -52,35 +54,20 @@ jobs:
           # a specific server-dev version avoids the dependency clash.
           sudo apt-get install -y --no-install-recommends build-essential postgresql-server-dev-16 libsodium-dev
 
-      - name: Install Poetry
-        uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263 # v1.4.2
-        with:
-          version: 1.8.5
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-          installer-parallel: true
-
-      - name: Load cached venv
-        id: cached-poetry-dependencies
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ./notifications-server/.venv
-          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('./poetry.lock') }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
 
       - name: Install dependencies
         working-directory: ./notifications-server
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-
-      - name: Install project
-        working-directory: ./notifications-server
-        run: poetry install --no-interaction
+        # --locked fails when uv.lock is out of date with pyproject.toml, so CI
+        # and the image (which syncs from the same lock) run the same versions.
+        run: uv sync --locked
 
       - name: Run linters
         working-directory: ./notifications-server
         run: |
-          poetry run black --check .
-          poetry run flake8 .
+          uv run black --check .
+          uv run flake8 .
 
       - name: Run tests
         working-directory: ./notifications-server
@@ -88,4 +75,4 @@ jobs:
         # so a missing broker fails them.
         env:
           RABBIT_MQ_TEST_HOST: 127.0.0.1
-        run: poetry run pytest -q
+        run: uv run pytest -q

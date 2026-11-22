@@ -242,14 +242,16 @@ def score_documents(query: str, docs: List) -> Tuple[List[float], bool]:
     queued_at = time.monotonic()
     try:
         model = get_reranker()
-        # page_content is typed str, but it arrives from a Qdrant payload that
-        # can carry an explicit null; without the fallback one malformed
-        # document would fail the whole batch closed.
-        pairs = [(query, (d[0].page_content or "")[: Config.reranker_max_doc_chars]) for d in docs]
+        # retrieval_text adds the chunk's context only where it fits beside the
+        # whole chunk, and tolerates a null page_content from a Qdrant payload,
+        # so one malformed document does not fail the whole batch closed.
+        pairs = [(query, d[0].retrieval_text(Config.reranker_max_doc_chars)) for d in docs]
         admitted_at = time.monotonic()
         with _inference_slots:
             waited = time.monotonic() - admitted_at
-            scored = _to_unit_scale(model.predict(pairs, batch_size=Config.reranker_batch_size))
+            scored = _to_unit_scale(
+                model.predict(pairs, batch_size=Config.reranker_batch_size, show_progress_bar=False)
+            )
     except Exception as e:
         logger.warning(f"Reranker failed to score documents: {e}", exc_info=True)
         return [], False
@@ -286,10 +288,10 @@ def rerank(query: str, docs: List, threshold: float | None = None) -> Tuple[List
         # caller behind a one-off cost. Concurrent loads are already serialised by
         # ``_model_lock``.
         model = get_reranker()
-        # page_content is typed str, but it arrives from a Qdrant payload that can
-        # carry an explicit null; without the fallback one malformed document
-        # would fail the whole batch closed.
-        pairs = [(query, (d[0].page_content or "")[: Config.reranker_max_doc_chars]) for d in docs]
+        # retrieval_text adds the chunk's context only where it fits beside the
+        # whole chunk, and tolerates a null page_content from a Qdrant payload,
+        # so one malformed document would not fail the whole batch closed.
+        pairs = [(query, d[0].retrieval_text(Config.reranker_max_doc_chars)) for d in docs]
         # Timed from here, not from entry: the first call after a restart spends
         # ~35s in get_reranker, and counting that as queue wait would report a
         # cold start as contention.
@@ -299,7 +301,9 @@ def rerank(query: str, docs: List, threshold: float | None = None) -> Tuple[List
             # batch_size bounds peak activation memory: without it
             # sentence-transformers scores every pair in one batch, so the
             # footprint scaled with whatever retrieval happened to return.
-            scored = _to_unit_scale(model.predict(pairs, batch_size=Config.reranker_batch_size))
+            scored = _to_unit_scale(
+                model.predict(pairs, batch_size=Config.reranker_batch_size, show_progress_bar=False)
+            )
     except Exception as e:
         # exc_info: this path discards the whole batch, so the traceback is the
         # only way to tell a model-load failure from a scoring one.

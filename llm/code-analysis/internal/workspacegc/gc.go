@@ -150,6 +150,9 @@ func CachePaths(workspaceRoot string) []string {
 		filepath.Join(root, "node"),
 		filepath.Join(root, "maven"),
 		filepath.Join(root, "gradle"),
+		// What repository setup scripts installed. Purging it only costs the
+		// next clone a re-run of the script.
+		filepath.Join(root, "tools"),
 	}
 }
 

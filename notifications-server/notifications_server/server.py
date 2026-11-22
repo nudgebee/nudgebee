@@ -49,6 +49,19 @@ async def run_retention_sweeper():
             LOG.exception("Channel retention sweep failed; will retry next interval")
 
 
+async def run_grouped_flush_sweeper(processor: NotificationProcessor):
+    """Runs on every pod — safe to overlap, since claiming a batch is atomic in Redis."""
+    interval = max(settings.notifications.grouped_sweep_interval_seconds, 1)
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            await processor.group_handler.sweep()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("Grouped flush sweep failed; will retry next interval")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if not settings.action_api_server_token:
@@ -68,6 +81,8 @@ async def lifespan(_: FastAPI):
     LOG.info("RabbitMQ consumer started as asyncio task")
     sweeper_task = asyncio.create_task(run_retention_sweeper())
     LOG.info("Channel retention sweeper started as asyncio task")
+    grouped_sweeper_task = asyncio.create_task(run_grouped_flush_sweeper(processor))
+    LOG.info("Grouped flush sweeper started as asyncio task")
     # Not awaited: a slow or unreachable services-server must not delay startup.
     # Messages sent before the first refresh use the bundled branding.
     branding_task = asyncio.create_task(build_refresher().run())
@@ -77,11 +92,14 @@ async def lifespan(_: FastAPI):
         await consumer.stop()
         consumer_task.cancel()
         sweeper_task.cancel()
+        grouped_sweeper_task.cancel()
         branding_task.cancel()
         with suppress(asyncio.CancelledError):
             await consumer_task
         with suppress(asyncio.CancelledError):
             await sweeper_task
+        with suppress(asyncio.CancelledError):
+            await grouped_sweeper_task
         with suppress(asyncio.CancelledError):
             await branding_task
         LOG.info("RabbitMQ consumer and retention sweeper stopped")
@@ -95,17 +113,13 @@ FastAPIInstrumentor().instrument_app(app)
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    body = None
-    try:
-        body = await request.json()
-    except Exception:
-        pass
+    # Never log the body or the rejected values: they can carry tokens and
+    # customer content.
     LOG.error(
-        "Request validation error on %s %s: %s | body=%s",
+        "Request validation error on %s %s: %s",
         request.method,
         request.url.path,
-        exc.errors(),
-        body,
+        [{k: v for k, v in err.items() if k not in ("input", "ctx")} for err in exc.errors()],
     )
     safe_errors = []
     for err in exc.errors():

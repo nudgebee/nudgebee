@@ -10,6 +10,7 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from botbuilder.schema import (
     Activity,
@@ -42,21 +43,65 @@ RETRY_READ_STATUSES = {412, 429, 502, 504}
 MAX_ATTEMPTS = 3
 MAX_RETRY_WAIT_SECONDS = 10
 CHANNEL_CACHE_SECONDS = 600
+# The Bot Connector hosts of Microsoft Teams (commercial, GCC, GCC High, DoD).
+# The bot's token goes only to these: a stored service URL is never trusted
+# for its own sake.
+BOT_CONNECTOR_HOSTS = frozenset(
+    {
+        "smba.trafficmanager.net",
+        "smba.infra.gcc.teams.microsoft.com",
+        "smba.infra.gov.teams.microsoft.us",
+        "smba.infra.dod.teams.microsoft.us",
+    }
+)
 
-APP_NOT_IN_TEAM = "The NudgeBee app isn't added to this team in Microsoft Teams"
+# Messages naming the product hold {brand}, filled by _branded when raised: the
+# deployment's branding can change while the server runs.
+APP_NOT_IN_TEAM = "The {brand} app isn't added to this team in Microsoft Teams"
 NOT_SUPPORTED = "This action isn't supported for Microsoft Teams"
 # The bot lists and posts to a team's standard channels only.
 CHANNEL_NOT_IN_TEAM = (
     "This channel isn't a standard channel of the selected Microsoft Teams team; "
-    "NudgeBee can post only to standard channels"
+    "{brand} can post only to standard channels"
 )
-CHANNEL_FORBIDDEN = "Microsoft Teams refused the post; check that the NudgeBee app is still added to this team"
+CHANNEL_FORBIDDEN = "Microsoft Teams refused the post; check that the {brand} app is still added to this team"
+
+
+def _branded(text: str) -> str:
+    return text.format(brand=settings.urls.branding_name)
 
 
 class TeamsBotError(Exception):
     def __init__(self, message: str, status: Optional[int] = None):
         super().__init__(message)
         self.status = status
+
+
+def is_bot_connector_url(service_url) -> bool:
+    """Whether a service URL is an https URL on a Microsoft Teams Bot Connector host."""
+    try:
+        parsed = urlparse(service_url or "")
+        port = parsed.port
+    except (TypeError, ValueError):
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "") in BOT_CONNECTOR_HOSTS and port in (None, 443)
+
+
+def require_bot_connector_url(service_url) -> None:
+    """Raise TeamsBotError, and log, unless the URL is a Bot Connector URL."""
+    if not is_bot_connector_url(service_url):
+        LOG.error("Refusing a Microsoft Teams service URL outside the Bot Connector: %r", service_url)
+        raise TeamsBotError("Microsoft Teams service URL is not a Bot Connector URL")
+
+
+class AppNotInTeamError(TeamsBotError):
+    def __init__(self):
+        super().__init__(_branded(APP_NOT_IN_TEAM))
+
+
+class ChannelNotInTeamError(TeamsBotError):
+    def __init__(self):
+        super().__init__(_branded(CHANNEL_NOT_IN_TEAM))
 
 
 @dataclass
@@ -86,7 +131,7 @@ def _team_query(tenant_id, aad_group_id: Optional[str] = None):
     query = select(Integration).where(
         Integration.type == TEAM_TYPE,
         Integration.tenant_id == tenant_id,
-        Integration.status != "disabled",
+        Integration.status == "enabled",
     )
     if aad_group_id:
         query = query.where(Integration.name == aad_group_id)
@@ -94,7 +139,7 @@ def _team_query(tenant_id, aad_group_id: Optional[str] = None):
 
 
 def load_teams(session, tenant_id) -> List[TeamRef]:
-    """Sync: every team with the bot installed for this tenant."""
+    """Sync: every team bound to this tenant."""
     teams = []
     for integ in session.execute(_team_query(tenant_id).order_by(Integration.name)).scalars().all():
         rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
@@ -153,10 +198,12 @@ class TeamsBotSender:
         self._channel_cache: Dict[str, tuple] = {}
 
     def _connector(self, service_url: str) -> ConnectorClient:
+        require_bot_connector_url(service_url)
         MicrosoftAppCredentials.trust_service_url(service_url)
         return _only_connect_retries(ConnectorClient(self._credentials, base_url=service_url))
 
     def _teams_connector(self, service_url: str) -> TeamsConnectorClient:
+        require_bot_connector_url(service_url)
         MicrosoftAppCredentials.trust_service_url(service_url)
         return _only_connect_retries(TeamsConnectorClient(self._credentials, base_url=service_url))
 
@@ -182,6 +229,8 @@ class TeamsBotSender:
                         "Microsoft Teams still returned %s for %s after %.1fs of retries", status, target, waited
                     )
                 raise TeamsBotError(f"Microsoft Teams returned {status}", status=status) from e
+            except TeamsBotError:
+                raise
             except Exception as e:
                 raise TeamsBotError(f"Microsoft Teams request failed: {type(e).__name__}") from e
         raise TeamsBotError("Microsoft Teams request did not complete")
@@ -198,7 +247,7 @@ class TeamsBotSender:
             )
         except TeamsBotError as e:
             if e.status == 403:
-                raise TeamsBotError(CHANNEL_FORBIDDEN, status=403) from e
+                raise TeamsBotError(_branded(CHANNEL_FORBIDDEN), status=403) from e
             raise
         return getattr(response, "id", None) or ""
 
@@ -227,6 +276,20 @@ class TeamsBotSender:
         )
         return {"name": getattr(member, "name", None) or "", "email": email}
 
+    def get_member_identity(self, service_url: str, conversation_id: str, member_id: str) -> Dict[str, str]:
+        """A member's sign-in name (UPN), home tenant and role. The Bot Connector
+        returns members as ChannelAccount, which has no fields for these, so they
+        arrive in additional_properties; nothing else is read."""
+        member = self._call(
+            lambda: self._connector(service_url).conversations.get_conversation_member(conversation_id, member_id)
+        )
+        properties = getattr(member, "additional_properties", None) or {}
+        return {
+            "upn": str(properties.get("userPrincipalName") or ""),
+            "tenant_id": str(properties.get("tenantId") or ""),
+            "user_role": str(properties.get("userRole") or ""),
+        }
+
     def list_channels(self, team: TeamRef) -> List[Dict[str, str]]:
         """The team's channels, cached per process for a few minutes."""
         if not team.thread_id:
@@ -236,12 +299,20 @@ class TeamsBotSender:
             return cached[1]
         result = self._call(lambda: self._teams_connector(team.service_url).teams.get_teams_channels(team.thread_id))
         channels = [
-            # The General channel has no name and shares the team's thread id.
-            {"id": c.id, "name": c.name or "General"}
+            # The default channel shares the team's thread id and always comes back
+            # without a name, even when the team renamed it.
+            {"id": c.id, "name": c.name or "General (default channel)"}
             for c in (getattr(result, "conversations", None) or [])
         ]
         self._channel_cache[team.thread_id] = (time.monotonic() + CHANNEL_CACHE_SECONDS, channels)
         return channels
+
+    def team_name(self, team: TeamRef) -> str:
+        """The team's display name, read from Microsoft."""
+        if not team.thread_id:
+            return ""
+        details = self._call(lambda: self._teams_connector(team.service_url).teams.get_team_details(team.thread_id))
+        return getattr(details, "name", None) or ""
 
     def forget_channels(self, team_thread_id: str) -> None:
         self._channel_cache.pop(team_thread_id, None)
@@ -257,7 +328,7 @@ class TeamsBotSender:
                 self.forget_channels(team.thread_id)
             if any(c["id"] == channel_id for c in self.list_channels(team)):
                 return
-        raise TeamsBotError(CHANNEL_NOT_IN_TEAM)
+        raise ChannelNotInTeamError()
 
 
 CHANNEL_CHANGE_EVENTS = {"channelCreated", "channelDeleted", "channelRenamed", "channelRestored"}

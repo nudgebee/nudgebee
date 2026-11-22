@@ -55,6 +55,26 @@ func TestNBQueryConfig_LogProviderOverride(t *testing.T) {
 	}
 }
 
+// The chat depth pick is sticky the same way: a follow-up turn inherits it
+// unless it picks again.
+func TestNBQueryConfig_InvestigationDepth(t *testing.T) {
+	if (NBQueryConfig{InvestigationDepth: "deep"}).IsEmpty() {
+		t.Fatal("IsEmpty: config with InvestigationDepth should not be empty")
+	}
+
+	dst := NBQueryConfig{}
+	dst.MergeFrom(NBQueryConfig{InvestigationDepth: "deep"})
+	if dst.InvestigationDepth != "deep" {
+		t.Fatalf("MergeFrom: expected depth copied, got %q", dst.InvestigationDepth)
+	}
+
+	dst2 := NBQueryConfig{InvestigationDepth: "quick"}
+	dst2.MergeFrom(NBQueryConfig{InvestigationDepth: "deep"})
+	if dst2.InvestigationDepth != "quick" {
+		t.Fatalf("MergeFrom: expected this turn's pick preserved, got %q", dst2.InvestigationDepth)
+	}
+}
+
 // Blanket (provider+model) and per-tier picks are mutually exclusive at the
 // conversation row — switching modes nulls the other side. MergeFrom has to
 // respect that, or a mode switch inherits the mode it just replaced.
@@ -179,6 +199,43 @@ func TestIsEmpty_SkipHistoryOnlyConfigIsNotEmpty(t *testing.T) {
 	// silently drop the flag.
 	if (NBQueryConfig{SkipConversationHistory: true}).IsEmpty() {
 		t.Fatal("a skip-history-only config must not read as empty")
+	}
+}
+
+func TestMergeFrom_ReadOnlyRunInheritsWithinTurn(t *testing.T) {
+	// Sub-agent and resume merges of the same turn's stored config keep the
+	// flag, or a resumed alert investigation could raise approval prompts.
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true})
+	if !q.ReadOnlyRun {
+		t.Fatal("read-only flag lost on merge")
+	}
+	if (NBQueryConfig{ReadOnlyRun: true}).IsEmpty() {
+		t.Fatal("a read-only-only config must not read as empty")
+	}
+}
+
+// #40734: a sub-agent or resume of the alert's follow-up check keeps its strict reads.
+func TestMergeFrom_StrictReadOnlyInheritsWithinTurn(t *testing.T) {
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true})
+	if !q.StrictReadOnly {
+		t.Fatal("strict read-only flag lost on merge")
+	}
+	if (NBQueryConfig{StrictReadOnly: true}).IsEmpty() {
+		t.Fatal("a strict-read-only config must not read as empty")
+	}
+}
+
+// #40734: a sub-agent or resume of the background planning turn keeps its marker.
+func TestMergeFrom_RemediationPlanTurnInheritsWithinTurn(t *testing.T) {
+	q := NBQueryConfig{Namespace: "nudgebee"}
+	q.MergeFrom(NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true, RemediationPlanTurn: "auto"})
+	if q.RemediationPlanTurn != "auto" {
+		t.Fatal("planning-turn marker lost on merge")
+	}
+	if (NBQueryConfig{RemediationPlanTurn: "replan"}).IsEmpty() {
+		t.Fatal("a planning-turn config must not read as empty")
 	}
 }
 

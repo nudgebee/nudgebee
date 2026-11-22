@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useContext, useState } from 'react';
+import { CitationClickContext, citationChipSx } from '../utils/citationLinks';
 import PropTypes from 'prop-types';
 import { Box, Typography, Grid } from '@mui/material';
 import { ds } from '@utils/colors';
@@ -27,6 +28,8 @@ import { Chip } from '@ui/Chip';
 import { convertToReadableFormat } from 'src/utils/common';
 import { executionBatchLabel, executionBatchTone, executionBatchTooltip, parseExecutionBatchMetadata } from './executionBatch';
 import ExecutedTargetChip, { targetKey } from './ExecutedTargetChip';
+import AgentChart, { parseChartSpec } from './AgentChart';
+import ApprovedByRuleChip from './ApprovedByRuleChip';
 
 const FRIENDLY_TOOL_NAMES = {
   react_critique: 'Critique Feedback',
@@ -494,6 +497,17 @@ const renderPrometheusCharts = (metricsQueryObject) => (
   </Grid>
 );
 
+// A step's response rendered as markdown. When it is a sub-agent's answer, its citations name
+// that sub-agent's steps and the drawer around it opens them.
+const AnswerMarkDowns = ({ sx, ...props }) => {
+  const openCitation = useContext(CitationClickContext);
+  return <MarkDowns {...props} sx={openCitation ? { ...citationChipSx, ...sx } : sx} onLinkClick={openCitation || undefined} />;
+};
+
+AnswerMarkDowns.propTypes = {
+  sx: PropTypes.object,
+};
+
 const renderResponseText = (responseText, toolCall) => {
   if (!responseText) {
     return null;
@@ -525,7 +539,7 @@ const renderResponseText = (responseText, toolCall) => {
         // Render as markdown if content contains markdown indicators
         if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(output)) {
           return (
-            <MarkDowns
+            <AnswerMarkDowns
               data={prettifyJsonFencesInMarkdown(output)}
               sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
             />
@@ -563,7 +577,10 @@ const renderResponseText = (responseText, toolCall) => {
   const rawText = responseText.replace(/\\n/g, '\n');
   if (/^#{1,6}\s|(\*\*|__).+(\*\*|__)|^[*-]\s|^\d+\.\s|```/m.test(rawText)) {
     return (
-      <MarkDowns data={prettifyJsonFencesInMarkdown(rawText)} sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }} />
+      <AnswerMarkDowns
+        data={prettifyJsonFencesInMarkdown(rawText)}
+        sx={{ width: '100%', overflowX: 'auto', p: 0, fontSize: 'var(--ds-text-small)' }}
+      />
     );
   }
 
@@ -1047,6 +1064,45 @@ SectionLabel.propTypes = {
 };
 
 /**
+ * Charts a tool saved with its result (metadata.charts, keyed by chart ref) — the
+ * metrics tools' query results and the series analysis' series against its
+ * thresholds — so the step reads as a chart before its raw JSON. Refs are sorted
+ * because saved JSON keeps no key order; a tool that cares about order encodes it
+ * in the ref. Renders nothing when the step saved no chart.
+ */
+export const ToolCharts = ({ metadata }) => {
+  let meta = metadata;
+  if (typeof meta === 'string') {
+    try {
+      meta = JSON.parse(meta);
+    } catch {
+      return null;
+    }
+  }
+  const charts =
+    meta?.charts && typeof meta.charts === 'object'
+      ? Object.entries(meta.charts)
+          .filter(([, spec]) => parseChartSpec(spec))
+          .sort(([a], [b]) => a.localeCompare(b))
+      : [];
+  if (charts.length === 0) {
+    return null;
+  }
+  return (
+    <Box sx={{ mb: ds.space[4] }} data-testid='tool-details-charts'>
+      <SectionLabel label='Chart' />
+      {charts.map(([ref, spec]) => (
+        <AgentChart key={ref} spec={spec} />
+      ))}
+    </Box>
+  );
+};
+
+ToolCharts.propTypes = {
+  metadata: PropTypes.oneOfType([PropTypes.object, PropTypes.string]),
+};
+
+/**
  * Renders a tool call's parameters as a "Query" box. Accepts either the raw JSON
  * string (per-tool-call task objects) or an already-parsed object so both the
  * grouped view and the single-call fallback can share it.
@@ -1155,6 +1211,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }
         </Typography>
         <StatusBadge status={tcStatus} />
         <ExecutedTargetChip metadata={tc.metadata} status={tcStatus} />
+        <ApprovedByRuleChip metadata={tc.metadata} />
         {executionBatch && (
           <Tooltip title={executionBatchTooltip(executionBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>
@@ -1228,6 +1285,7 @@ const ToolCallSection = ({ tc, index, accountId, reasoning, showExecutionBatch }
       ) : (
         responseText && (
           <Box>
+            <ToolCharts metadata={tc.metadata} />
             <SectionLabel label='Response' copyText={responseText} toastMessage='Response copied to clipboard' />
             <Box sx={contentBoxSx}>
               <FormattedToolResponse
@@ -1457,6 +1515,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
         )}
         <StatusBadge status={status} />
         <ExecutedTargetChip metadata={headerTargetMetadata} status={status} />
+        {!hasMultipleToolCalls && <ApprovedByRuleChip metadata={headerMetadata} />}
         {headerBatch && (
           <Tooltip title={executionBatchTooltip(headerBatch)} placement='top'>
             <Box component='span' sx={{ display: 'inline-flex' }}>
@@ -1527,6 +1586,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool 
           <ParametersBox parameters={toolCall.toolParameters} />
           {hasAgentResponse && (
             <Box>
+              <ToolCharts metadata={headerMetadata} />
               <SectionLabel
                 label='Response'
                 copyText={toolCall.response?.text || toolCall.response_text}

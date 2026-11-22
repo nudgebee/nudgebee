@@ -48,6 +48,45 @@ func TestValidateDefinition_AcceptsValidPanels(t *testing.T) {
 	require.NoError(t, ValidateDefinition(def))
 }
 
+// A histogram is a chart, so it is accepted on the metrics datasource like the
+// other chart types.
+func TestValidateDefinition_AcceptsHistogramOnMetrics(t *testing.T) {
+	p := timeseriesPanel()
+	p.Type = VizHistogram
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{p}}))
+}
+
+// A datasource that renders a table cannot carry a histogram — the same table
+// rule that keeps every non-table chart off traces/logs/command datasources.
+func TestValidateDefinition_RejectsHistogramOnTableDatasource(t *testing.T) {
+	p := timeseriesPanel()
+	p.Type = VizHistogram
+	p.Datasource = DatasourceTraces
+	p.Targets = []PanelTarget{{RefId: "A", Query: map[string]any{
+		"table":   "traces_v2",
+		"columns": []any{map[string]any{"name": "trace_id"}},
+	}}}
+	err := ValidateDefinition(Definition{Panels: []Panel{p}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "renders a table")
+}
+
+func TestValidateDefinition_AcceptsPieOnMetrics(t *testing.T) {
+	pie := timeseriesPanel()
+	pie.Type = VizPie
+	require.NoError(t, ValidateDefinition(Definition{Panels: []Panel{pie}}))
+}
+
+// A pie draws one slice per series, and only metrics produces series — every
+// other datasource is forced to a table, so a pie there is rejected, the same
+// rule the other chart types hit.
+func TestValidateDefinition_RejectsPieOnTableDatasource(t *testing.T) {
+	pie := timeseriesPanel()
+	pie.Type = VizPie
+	pie.Datasource = DatasourceTraces
+	require.ErrorContains(t, ValidateDefinition(Definition{Panels: []Panel{pie}}), "renders a table")
+}
+
 // Two panels on two accounts in one dashboard is the reason accounts live on
 // the panel rather than the dashboard.
 func TestValidateDefinition_AcceptsPanelsOnDifferentAccounts(t *testing.T) {
@@ -319,4 +358,50 @@ func TestBindingMatches(t *testing.T) {
 			assert.Equal(t, tc.want, bindingMatches(tc.binding, req))
 		})
 	}
+}
+
+func TestValidateVariables(t *testing.T) {
+	good := Variable{Name: "scale_set", Query: "gha_max_runners", LabelKey: "name"}
+	assert.NoError(t, validateVariables(nil))
+	assert.NoError(t, validateVariables([]Variable{good}))
+	assert.Error(t, validateVariables([]Variable{good, good}), "duplicate name")
+	assert.Error(t, validateVariables([]Variable{{Name: "a-b", Query: "q", LabelKey: "l"}}), "cannot be referenced")
+	assert.Error(t, validateVariables([]Variable{{Name: "1a", Query: "q", LabelKey: "l"}}), "cannot be referenced")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", LabelKey: "l"}}), "no query")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Query: "q"}}), "no label key")
+	assert.NoError(t, validateVariables([]Variable{{Name: "a", Type: "custom", Values: []string{"x"}, Multi: true}}))
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "custom"}}), "no values")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "custom", Values: []string{" "}}}), "blank values")
+	assert.Error(t, validateVariables([]Variable{{Name: "a", Type: "other", Query: "q", LabelKey: "l"}}), "unknown type")
+}
+
+// A field the struct does not carry is dropped on save, so this pins the round trip.
+func TestDefinitionKeepsVariables(t *testing.T) {
+	raw := `{"panels":[],"variables":[{"name":"scale_set","label":"Scale set","query":"gha_max_runners","label_key":"name"},{"name":"env","type":"custom","values":["dev","prod"],"multi":true}]}`
+	var def Definition
+	require.NoError(t, json.Unmarshal([]byte(raw), &def))
+	out, err := json.Marshal(def)
+	require.NoError(t, err)
+	assert.JSONEq(t, raw, string(out))
+}
+
+func TestVariableAllValueRoundTrips(t *testing.T) {
+	stored, err := json.Marshal(Definition{Variables: []Variable{{Name: "ns", Type: VariableTypeCustom, Values: []string{"a"}, AllValue: ".+"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read Definition
+	if err := json.Unmarshal(stored, &read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Variables[0].AllValue != ".+" {
+		t.Fatalf("all_value did not survive a round trip: %s", stored)
+	}
+}
+
+func TestValidateNudgebeeVariable(t *testing.T) {
+	good := Variable{Name: "status", Type: VariableTypeNudgebee, Table: "events_v2", Column: "status"}
+	assert.NoError(t, validateVariables([]Variable{good}))
+	assert.Error(t, validateVariables([]Variable{{Name: "status", Type: VariableTypeNudgebee, Table: "events_v2"}}), "no column")
+	assert.Error(t, validateVariables([]Variable{{Name: "status", Type: VariableTypeNudgebee, Column: "status"}}), "no table")
 }

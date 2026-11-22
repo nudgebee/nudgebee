@@ -11,7 +11,7 @@
  * apply buttons are now `ds/Button`. All raw hex / colors.* values
  * migrated to ds.* tokens.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { LocalizationProvider } from '@mui/x-date-pickers/LocalizationProvider';
 import { AdapterDayjs } from '@mui/x-date-pickers/AdapterDayjs';
 import { DateTimePicker } from '@mui/x-date-pickers/DateTimePicker';
@@ -24,21 +24,8 @@ import { TIME_PICK_SHORTCUTS } from '@data/constants';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CustomTooltip from '@shared/CustomTooltip';
 import { Button as DsButton } from '@ui/Button';
-
-// Shortcut → window-size in ms. Hoisted to module scope so it isn't reallocated
-// on every shortcut click.
-const TIME_ADJUSTMENTS = {
-  'Last 24 Hours': 24 * 60 * 60 * 1000,
-  'Last 1 Hour': 1 * 60 * 60 * 1000,
-  'Last 3 Hours': 3 * 60 * 60 * 1000,
-  'Last 6 Hours': 6 * 60 * 60 * 1000,
-  'Last 12 Hours': 12 * 60 * 60 * 1000,
-  'Last 5 Minutes': 5 * 60 * 1000,
-  'Last 10 Minutes': 10 * 60 * 1000,
-  'Last 15 Minutes': 15 * 60 * 1000,
-  'Last 30 Minutes': 30 * 60 * 1000,
-  'Current Week': 7 * 24 * 60 * 60 * 1000,
-};
+// Shortcut → window-size in ms. Shared so a consumer refreshing a range can tell a rolling window from a calendar one.
+import { rangeProblem, TIME_ADJUSTMENTS } from './dateRangeShortcuts';
 
 CustomDateTimeRangePicker.propTypes = {
   passedSelectedDateTime: PropTypes.shape({
@@ -109,7 +96,15 @@ function CustomDateTimeRangePicker({
   const open = Boolean(anchorEl);
   const id = open ? 'simple-popover' : undefined;
 
+  /**
+   * What the picker held when the popover opened. Edits inside it are a draft until Apply or a shortcut
+   * hands them to the page; closing any other way puts this back. While the popover is open the trigger
+   * keeps showing this, so it never names a range the page was not given.
+   */
+  const openedWith = useRef(null);
+
   const handleOpenDatePicker = (event) => {
+    openedWith.current = { selectedDateTime, isShortcutSelected, selectedShortCut };
     setAnchorEl(event.currentTarget);
     setIsPopoverOpen(true);
   };
@@ -135,6 +130,12 @@ function CustomDateTimeRangePicker({
   };
 
   const handleCloseDatePicker = () => {
+    const before = openedWith.current;
+    if (before) {
+      setSelectedDateTime(before.selectedDateTime);
+      setIsShortcutSelected(before.isShortcutSelected);
+      setSelectedShortCut(before.selectedShortCut);
+    }
     setAnchorEl(null);
     setIsPopoverOpen(false);
   };
@@ -177,9 +178,9 @@ function CustomDateTimeRangePicker({
     } else {
       switch (shortcut) {
         case 'Current Week': {
-          const currentDayOfWeek = now.getDay();
+          const daysSinceMonday = (now.getDay() + 6) % 7;
           const startOfWeek = new Date(now);
-          startOfWeek.setDate(now.getDate() - currentDayOfWeek);
+          startOfWeek.setDate(now.getDate() - daysSinceMonday);
           startOfWeek.setHours(0, 0, 0, 0);
           date = Math.max(startOfWeek.getTime(), minDateValue.getTime());
           break;
@@ -228,7 +229,6 @@ function CustomDateTimeRangePicker({
         [6 * 60 * 60 * 1000]: 'Last 6 Hours',
         [12 * 60 * 60 * 1000]: 'Last 12 Hours',
         [24 * 60 * 60 * 1000]: 'Last 24 Hours',
-        [7 * 24 * 60 * 60 * 1000]: 'Current Week',
       };
 
       const shortcutName = shortcutMap[passedSelectedDateTime.shortcutClickTime];
@@ -245,19 +245,24 @@ function CustomDateTimeRangePicker({
     }
   }, [passedSelectedDateTime.shortcutClickTime]);
 
-  const displayText = React.useMemo(() => {
-    if (isShortcutSelected) return selectedShortCut;
+  // The range the page has: the draft once the popover is closed, what it opened with while it is open.
+  const shown = (open && openedWith.current) || { selectedDateTime, isShortcutSelected, selectedShortCut };
 
-    const startDateFormate = new Date(selectedDateTime.startTime).toLocaleDateString('en-US', {
+  const displayText = React.useMemo(() => {
+    if (shown.isShortcutSelected) return shown.selectedShortCut;
+
+    const startDateFormate = new Date(shown.selectedDateTime.startTime).toLocaleDateString('en-US', {
       day: 'numeric',
       month: 'short',
     });
-    const endDateFormate = new Date(selectedDateTime.endTime).toLocaleDateString('en-US', {
+    const endDateFormate = new Date(shown.selectedDateTime.endTime).toLocaleDateString('en-US', {
       day: 'numeric',
       month: 'short',
     });
     return `${startDateFormate} - ${endDateFormate}`;
-  }, [selectedDateTime.startTime, selectedDateTime.endTime, isShortcutSelected, selectedShortCut]);
+  }, [shown.selectedDateTime.startTime, shown.selectedDateTime.endTime, shown.isShortcutSelected, shown.selectedShortCut]);
+
+  const problem = rangeProblem(selectedDateTime.startTime, selectedDateTime.endTime);
 
   const fieldSx = {
     fontSize: ds.text.bodyLg,
@@ -274,8 +279,8 @@ function CustomDateTimeRangePicker({
   return (
     <>
       <CustomTooltip
-        title={`${new Date(selectedDateTime?.startTime ?? Date.now()).toLocaleString()} - ${new Date(
-          selectedDateTime?.endTime ?? Date.now()
+        title={`${new Date(shown.selectedDateTime?.startTime ?? Date.now()).toLocaleString()} - ${new Date(
+          shown.selectedDateTime?.endTime ?? Date.now()
         ).toLocaleString()}`}
       >
         <Box
@@ -412,16 +417,15 @@ function CustomDateTimeRangePicker({
                       renderInput={(params) => <TextField {...params} size='small' fullWidth sx={fieldSx} />}
                     />
                   </Box>
+                  {problem ? (
+                    <Box role='alert' data-testid='date-range-problem' sx={{ pt: ds.space[2], fontSize: ds.text.caption, color: ds.red[600] }}>
+                      {problem}
+                    </Box>
+                  ) : null}
                 </Box>
 
                 <Box sx={{ pt: ds.space[3], display: 'flex', justifyContent: 'flex-start' }}>
-                  <DsButton
-                    tone='primary'
-                    size='md'
-                    onClick={() => handleApply(false)}
-                    disabled={!(selectedDateTime.startTime && selectedDateTime.endTime)}
-                    data-testid='date-range-apply'
-                  >
+                  <DsButton tone='primary' size='md' onClick={() => handleApply(false)} disabled={Boolean(problem)} data-testid='date-range-apply'>
                     Apply Time Range
                   </DsButton>
                 </Box>

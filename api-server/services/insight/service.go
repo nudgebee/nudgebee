@@ -146,6 +146,11 @@ func getAccountDetails(ctx *security.RequestContext, accountIds ...string) (map[
 	if len(accountIds) > 0 {
 		query = `select ca.id as cloud_account_id , ca.tenant as tenant, ca.cloud_provider as cloud_provider from cloud_accounts ca inner join agent a on ca.id = a.cloud_account_id where ca.status = 'active' and a.status = 'CONNECTED' and ca.id in (?) group by ca.tenant, ca.id, ca.cloud_provider`
 		args = append(args, accountIds)
+		// A caller's account is looked up within the caller's tenant only.
+		if sc := ctx.GetSecurityContext(); sc != nil && sc.GetTenantId() != "" {
+			query = strings.Replace(query, "and ca.id in (?)", "and ca.id in (?) and ca.tenant = ?", 1)
+			args = append(args, sc.GetTenantId())
+		}
 	}
 	rows, err := dbms.Query(query, args...)
 	if err != nil {

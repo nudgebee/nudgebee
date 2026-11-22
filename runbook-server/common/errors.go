@@ -5,6 +5,10 @@ import "errors"
 type Error struct {
 	Message string `json:"message,omitempty"`
 	Code    int    `json:"code,omitempty"`
+	// Reason is a machine-readable cause for callers that act on it (for
+	// example a bee refusal: mode_off, needs_approval). Handlers return it as
+	// "code" next to "error"; empty for most errors.
+	Reason string `json:"reason,omitempty"`
 }
 
 // ErrorAction is the response shape RPC actions expect for errors.

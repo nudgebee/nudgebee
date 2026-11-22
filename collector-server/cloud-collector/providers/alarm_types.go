@@ -38,6 +38,11 @@ type AlarmConfiguration struct {
 	// Metric math fields (for multi-metric alarms with expressions)
 	Metrics []MetricQuery `yaml:"metrics,omitempty" json:"metrics,omitempty"` // Metric queries for metric math
 
+	// SatisfiedBy lists the metrics an existing alarm can watch to count as this
+	// template's alarm. Empty means the template's own Namespace/MetricName; a
+	// metric math template has neither, so it must list them. AWS only.
+	SatisfiedBy []MetricInfo `yaml:"satisfied_by,omitempty" json:"satisfied_by,omitempty"`
+
 	// Common fields
 	Period             int    `yaml:"period" json:"period"`                           // Seconds (300 = 5 minutes)
 	EvaluationPeriods  int    `yaml:"evaluation_periods" json:"evaluation_periods"`   // Number of periods to evaluate

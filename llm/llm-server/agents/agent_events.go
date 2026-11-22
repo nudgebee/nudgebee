@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -131,7 +132,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 	}
 
 	constraints := []string{
-		"You MUST query event data before answering. Prefer get_event_by_id, list_events, or aggregate_events when they can express the request; use events_execute only for unsupported events-table queries and anomaly_execute for anomaly-table queries.",
+		"You MUST query event data before answering. Use get_event_by_id, list_events, or aggregate_events for events: they filter on subject, owner, node, cluster, namespace, type, finding type, aggregation key, priority, source, status, nb_status, fingerprint, title/description text and time range, and group by up to three columns. Use events_execute only when no argument of those tools expresses the request (e.g. reading inside labels or evidence JSON), and anomaly_execute for anomaly-table queries.",
 		"CRITICAL: When using 'events_execute' or 'anomaly_execute' tool, you MUST provide actual SQL queries, NOT descriptions or explanations.",
 		"WRONG: 'The user is asking for event details, I need to query...'",
 		"CORRECT for events: 'SELECT * FROM events WHERE id = \"event-id\"'",
@@ -148,15 +149,15 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: event_id (required).",
 		},
 		tools.ToolListEvents: {
-			"Use for recent or filtered event lists. Returns compact evidence manifests rather than full evidence.",
-			"Input: optional subject_name, subject_namespace, subject_type, finding_type, aggregation_key, priority, time range, and limit filters.",
+			"Use for recent or filtered event lists. Returns the newest occurrence of each recurring alert with its event_count, and compact evidence manifests rather than full evidence.",
+			"Input: optional subject_name, subject_namespace, subject_type, subject_owner, subject_node, cluster, finding_type, aggregation_key, priority, source, status, nb_status, fingerprint, text (searches title and description), time range, and limit.",
 		},
 		tools.ToolAggregateEvents: {
-			"Use for event counts and supported groupings.",
-			"Input: group_by plus optional namespace, finding type, priority, time range, and distinct-fingerprint filters.",
+			"Use for event counts, top-N and 'when did it start' questions. Each group carries count, first_seen, last_seen and total_event_groups; when total_event_groups exceeds the rows returned, report 'top N of total_event_groups', not the rows as the whole set.",
+			"Input: group_by (one to three columns) plus the same filters as list_events, and count_distinct_fingerprint.",
 		},
 		tools.ToolEventExecuteSql: {
-			"Raw-SQL fallback for events-table requests that the structured tools cannot express.",
+			"Raw-SQL fallback, only for events-table requests that no list_events/aggregate_events argument can express.",
 			"Input: MUST be a valid SQL query (e.g., 'SELECT * FROM events WHERE id = \"event-id\"')",
 			"Output: the data returned by the sql query.",
 			"CRITICAL: Input must be actual SQL, not descriptions or explanations",
@@ -233,6 +234,11 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: event_id.",
 			"Output: the classification record, or a clear note that none was recorded.",
 			"Use it to answer how an event was classified and why — complements get_event_triage_explanation (dedup chain/firing history).",
+		},
+		tools.ToolMetricForecast: {
+			"Use for 'will <workload> breach its CPU or memory SLO / hit CPU throttling / run out of CPU or memory?', and to re-check the forecast behind a CPUThrottlingPredicted, CPUSaturationPredicted, MemorySaturationPredicted or *SLOBreached event (take namespace and workload from the event's subject and owner, kind from its workload_kind label, metric from its condition label, container from its container label).",
+			"Input: workload_namespace, workload_name and metric (cpu_throttling|cpu_saturation|memory_saturation), container (required for memory_saturation), optional kind and threshold (%).",
+			"Output: an explicit status plus eta_hours, current_pct, threshold_pct, suggested_limit (in limit_unit) and a daily table; quote them as evidence. insufficient_history means under 48h of data since the last limit change.",
 		},
 		tools.ToolTriageRuleEvents: {
 			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
@@ -362,21 +368,41 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: "The resource type and absolute time range are supported by list_events.",
 		},
 		{
+			Question: "Show firing alerts from Datadog with 'timeout' in the title in the last hour",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolListEvents,
+					Input: `{"source":["datadog"],"status":["FIRING"],"text":"timeout","relative_range":"1h","limit":10}`,
+				},
+			},
+			Explanation: "source, status and text are list_events filters; no SQL needed.",
+		},
+		{
+			Question: "When did the CrashLoopBackOff alerts for the checkout deployment start, and how often did they fire?",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["title","subject_name"],"subject_owner":"checkout","aggregation_key":["report_crash_loop"],"relative_range":"7d"}`,
+				},
+			},
+			Explanation: "aggregate_events returns count, first_seen and last_seen per group.",
+		},
+		{
 			Question: "How many events are there for nodes within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT count(*) AS event_count FROM events WHERE ((starts_at >= '2024-05-07T09:19:21.743Z') AND (starts_at <= '2024-05-14T09:19:21.743Z') AND (subject_type IN ('node'))",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["subject_type"],"subject_type":"node","start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
 				},
 			},
-			Explanation: "We are filtering using `starts_at` and `subject_type`. Limit/Order is not required as this is only count",
+			Explanation: "A count is a single-group aggregate_events call.",
 		},
 		{
 			Question: "How many events are thre for each aggregation key within a specific time range?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"aggregation_key","start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
+					Input: `{"group_by":["aggregation_key"],"start_time":"2024-05-07T09:19:21.743Z","end_time":"2024-05-14T09:19:21.743Z"}`,
 				},
 			},
 			Explanation: "This is a supported grouped count, so use aggregate_events instead of generating SQL.",
@@ -387,17 +413,17 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"subject_namespace","count_distinct_fingerprint":true,"relative_range":"24h"}`,
+					Input: `{"group_by":["subject_namespace"],"count_distinct_fingerprint":true,"relative_range":"24h"}`,
 				},
 			},
 		},
 		{
 			Question:    "What fields are retrieved from the events table for a specific subject name, cloud account ID, and finding type within a specific time range?",
-			Explanation: "We are filtering using `starts_at`, `finding_type` and `subject_name`, limited to 3",
+			Explanation: "Time range, finding_type and subject_name are list_events filters.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE ((starts_at >= '2024-04-30T18:30:00.000Z') AND (starts_at <= '2024-05-31T18:29:59.999Z') AND (finding_type = 'issue') AND (subject_name = 'ip-172-31-93-121.ec2.internal') ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"subject_name":"ip-172-31-93-121.ec2.internal","finding_type":["issue"],"start_time":"2024-04-30T18:30:00.000Z","end_time":"2024-05-31T18:29:59.999Z","limit":3}`,
 				},
 			},
 		},
@@ -405,8 +431,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest anomalies?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'Anomaly' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["Anomaly"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest anomalies based on the 'starts_at' time, limited to 3.",
@@ -415,8 +441,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest anomalies for nudgebee namespace?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'Anomaly' AND subject_namespace = 'nudgebee' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["Anomaly"],"subject_namespace":["nudgebee"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest anomalies for the 'nudgebee' namespace based on the 'starts_at' time, limited to 3.",
@@ -425,8 +451,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest SLO violations?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'SLO' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["SLO"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest SLO violations based on the 'starts_at' time, limited to 3.",
@@ -435,8 +461,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Question: "What are the latest SLO violations for nudgebee namespace?",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT * FROM events WHERE finding_type = 'SLO' AND subject_namespace = 'nudgebee' ORDER BY starts_at DESC LIMIT 3",
+					Tool:  tools.ToolListEvents,
+					Input: `{"finding_type":["SLO"],"subject_namespace":["nudgebee"],"limit":3}`,
 				},
 			},
 			Explanation: "We are retrieving the latest SLO violations for the 'nudgebee' namespace based on the 'starts_at' time, limited to 3.",
@@ -520,8 +546,12 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			Explanation: "Aggregate firings vs distinct fingerprints per alert to find noisy alerts, then surface configured rules to spot coverage gaps.",
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
-					Tool:  tools.ToolEventExecuteSql,
-					Input: "SELECT aggregation_key, source, count(*) AS firings, count(DISTINCT fingerprint) AS distinct_patterns FROM events GROUP BY aggregation_key, source ORDER BY firings DESC",
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["aggregation_key","source"],"relative_range":"30d","limit":50}`,
+				},
+				{
+					Tool:  tools.ToolAggregateEvents,
+					Input: `{"group_by":["aggregation_key","source"],"count_distinct_fingerprint":true,"relative_range":"30d","limit":50}`,
 				},
 				{
 					Tool:  tools.ToolTriageRules,
@@ -535,7 +565,7 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
 				{
 					Tool:  tools.ToolAggregateEvents,
-					Input: `{"group_by":"aggregation_key","priority":["HIGH"],"relative_range":"7d"}`,
+					Input: `{"group_by":["aggregation_key"],"priority":["HIGH"],"relative_range":"7d"}`,
 				},
 			},
 		},
@@ -591,7 +621,7 @@ func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
 		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
-		tools.IncidentAssemblyTool{},
+		tools.IncidentAssemblyTool{}, tools.MetricForecastTool{},
 	}
 }
 
@@ -826,6 +856,10 @@ func reduceEventData(event events.Event) map[string]any {
 
 	if event.Evidences.LogPatternBreakdown.Data != nil {
 		eventData["log_pattern_breakdown"] = event.Evidences.LogPatternBreakdown
+	}
+
+	if event.Evidences.AnomalyDetection != nil {
+		eventData["anomaly_detection"] = event.Evidences.AnomalyDetection
 	}
 
 	if len(event.Evidences.Others) > 0 {
@@ -1096,10 +1130,20 @@ func (l AgentEvents) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlanne
 			return toolResponse
 		}
 
+		// The reducer keeps known columns only; carry the note saying the
+		// event is on another account (tools.EventAccountNoteKey).
+		var rawRows []map[string]any
+		_ = common.UnmarshalJson([]byte(toolResponse), &rawRows)
+
 		finalResponse := []map[string]any{}
 
-		for _, event := range eventsData {
+		for i, event := range eventsData {
 			eventData := reduceEventData(event)
+			if i < len(rawRows) {
+				if note, ok := rawRows[i][tools.EventAccountNoteKey]; ok {
+					eventData[tools.EventAccountNoteKey] = note
+				}
+			}
 			finalResponse = append(finalResponse, eventData)
 		}
 
@@ -1114,7 +1158,9 @@ func (l AgentEvents) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlanne
 
 const ToolEventSummary = "event_summary"
 
+// EventSummaryTool only summarises event data already on the request.
 type EventSummaryTool struct {
+	toolcore.ReadOnlyTool
 }
 
 func (m EventSummaryTool) Name() string {
@@ -1165,6 +1211,29 @@ func parseEventLabels(labelsStr string) map[string]any {
 	}
 
 	return result
+}
+
+// summaryAccountID is the account whose cloud the summary describes: the
+// events' own account when they all belong to one the caller can read (an
+// event found by id on another account), else the call's data account.
+func summaryAccountID(nbRequestContext toolcore.NbToolContext, eventData []events.Event) string {
+	own := nbRequestContext.DataAccountID()
+	if len(eventData) == 0 {
+		return own
+	}
+	account := eventData[0].CloudAccountId
+	for _, event := range eventData[1:] {
+		if event.CloudAccountId != account {
+			return own
+		}
+	}
+	if account == "" || account == own || nbRequestContext.Ctx == nil {
+		return own
+	}
+	if sc := nbRequestContext.Ctx.GetSecurityContext(); sc == nil || !sc.HasAccountAccess(account, security.SecurityAccessTypeRead) {
+		return own
+	}
+	return account
 }
 
 func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
@@ -1236,7 +1305,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 	}
 
 	// Add account context (cloud provider) as a hidden system instruction
-	if cloudProvider := GetCloudProviderForAccount(nbRequestContext.DataAccountID()); cloudProvider != "" {
+	if cloudProvider := GetCloudProviderForAccount(summaryAccountID(nbRequestContext, eventData)); cloudProvider != "" {
 		eventPrompt = eventPrompt + "\n\n[INTERNAL INSTRUCTION - DO NOT INCLUDE IN OUTPUT]: The infrastructure runs on " + cloudProvider + ". Use this context to guide your analysis approach, but do NOT mention the cloud provider context, infrastructure type, or deployment controller details in your output. Your response must remain provider-agnostic. Focus only on the evidence and findings."
 	}
 
@@ -1250,7 +1319,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		llms.TextParts(llms.ChatMessageTypeSystem, eventPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, batchInstruction+"\n\n --- JSON Data -- \n"+batchedEventData),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("eventsummary: unable to generate content", "error", err)
 		return toolcore.NBToolResponse{}, err

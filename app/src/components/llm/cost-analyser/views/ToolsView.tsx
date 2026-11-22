@@ -59,7 +59,7 @@ interface ToolDrill {
 
 const SORT_OPTIONS: { value: ToolSortBy; label: string; icon: React.ReactNode }[] = [
   { value: 'calls', label: 'By calls', icon: <FormatListNumberedIcon sx={{ fontSize: 14 }} /> },
-  { value: 'errors', label: 'By errors', icon: <ErrorOutlineIcon sx={{ fontSize: 14 }} /> },
+  { value: 'errors', label: 'By error rate', icon: <ErrorOutlineIcon sx={{ fontSize: 14 }} /> },
   { value: 'duration', label: 'By duration', icon: <TimerOutlinedIcon sx={{ fontSize: 14 }} /> },
   { value: 'cost', label: 'By downstream cost', icon: <PaidOutlinedIcon sx={{ fontSize: 14 }} /> },
 ];

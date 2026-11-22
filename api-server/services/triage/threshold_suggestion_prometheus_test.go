@@ -43,9 +43,11 @@ func TestFetchPrometheusMetricHistoryUsesTheInjectedFetcher(t *testing.T) {
 	ev := promEvent(t, "acc-1", map[string]any{"datname": "temporal_visibility"})
 	alertDef := &AlertDefinition{MetricName: `pg_cache_hit_ratio`, CurrentThreshold: 0.98, Operator: "LessThanThreshold"}
 
-	history := fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "tenant-1", fetcher, start, end)
+	history, err := fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "tenant-1", fetcher, start, end)
 
+	require.NoError(t, err)
 	require.NotNil(t, history)
+	assert.False(t, history.otherInstance, "the alert's own series was found")
 	assert.Equal(t, "temporal_visibility", history.Labels["datname"],
 		"the series whose labels match the firing event must be the one analysed")
 	assert.Equal(t, "acc-1", gotAccount)
@@ -57,7 +59,8 @@ func TestFetchPrometheusMetricHistoryUsesTheInjectedFetcher(t *testing.T) {
 }
 
 // A backend that cannot answer must yield no suggestion rather than a panic or a
-// bogus one built from an empty series.
+// bogus one built from an empty series — and must say it failed, which is a different
+// fact from answering with no data.
 func TestFetchPrometheusMetricHistoryHandlesFailureAndEmptyResults(t *testing.T) {
 	ev := promEvent(t, "acc-1", map[string]any{"datname": "postgres"})
 	alertDef := &AlertDefinition{MetricName: "up", CurrentThreshold: 1, Operator: "LessThanThreshold"}
@@ -66,15 +69,39 @@ func TestFetchPrometheusMetricHistoryHandlesFailureAndEmptyResults(t *testing.T)
 	failing := func(*security.RequestContext, string, string, time.Time, time.Time) ([]*MetricHistory, error) {
 		return nil, assert.AnError
 	}
-	assert.Nil(t, fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", failing, now.Add(-time.Hour), now))
+	history, err := fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", failing, now.Add(-time.Hour), now)
+	assert.Nil(t, history)
+	assert.ErrorIs(t, err, errMetricQueryFailed, "a failed query is reported as a failure")
 
 	empty := func(*security.RequestContext, string, string, time.Time, time.Time) ([]*MetricHistory, error) {
 		return nil, nil
 	}
-	assert.Nil(t, fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", empty, now.Add(-time.Hour), now))
+	history, err = fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", empty, now.Add(-time.Hour), now)
+	assert.Nil(t, history)
+	assert.NoError(t, err, "an answer with no series is not a failure")
 
 	// Nothing wired at all (the zero value a caller that has no fetcher passes).
-	assert.Nil(t, fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", nil, now.Add(-time.Hour), now))
+	history, err = fetchPrometheusMetricHistory(context.Background(), ev, alertDef, "t", nil, now.Add(-time.Hour), now)
+	assert.Nil(t, history)
+	assert.NoError(t, err)
+}
+
+// When no series carries the alert's own labels the most-violating one is analysed. That is
+// another instance of the rule, and the history says so.
+func TestFetchPrometheusMetricHistoryMarksAnotherInstance(t *testing.T) {
+	fetcher := func(*security.RequestContext, string, string, time.Time, time.Time) ([]*MetricHistory, error) {
+		return []*MetricHistory{
+			{Labels: map[string]string{"pod": "cart-1"}, Timestamps: []int64{100, 130}, Values: []float64{5, 6}},
+			{Labels: map[string]string{"pod": "cart-2"}, Timestamps: []int64{100, 130}, Values: []float64{1, 1}},
+		}, nil
+	}
+	ev := promEvent(t, "acc-1", map[string]any{"pod": "orders-9"})
+	now := time.Now().UTC()
+	history, err := fetchPrometheusMetricHistory(context.Background(), ev, &AlertDefinition{MetricName: "restarts", CurrentThreshold: 2, Operator: ">"}, "t", fetcher, now.Add(-time.Hour), now)
+	require.NoError(t, err)
+	require.NotNil(t, history)
+	assert.True(t, history.otherInstance, "the series analysed is not the alert's own")
+	assert.Equal(t, "pod=cart-1", describeSeries(history.Labels))
 }
 
 // Guards the account guard: without a cloud account there is nothing to query,
@@ -89,6 +116,8 @@ func TestFetchPrometheusMetricHistoryRequiresAnAccount(t *testing.T) {
 		return nil, nil
 	}
 	now := time.Now().UTC()
-	assert.Nil(t, fetchPrometheusMetricHistory(context.Background(), ev, &AlertDefinition{MetricName: "up"}, "t", fetcher, now.Add(-time.Hour), now))
+	history, err := fetchPrometheusMetricHistory(context.Background(), ev, &AlertDefinition{MetricName: "up"}, "t", fetcher, now.Add(-time.Hour), now)
+	assert.Nil(t, history)
+	assert.NoError(t, err)
 	assert.False(t, called, "no account id means no query")
 }

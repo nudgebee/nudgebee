@@ -31,13 +31,17 @@ import LibraryBooksOutlinedIcon from '@mui/icons-material/LibraryBooksOutlined';
 import SearchIcon from '@mui/icons-material/Search';
 import BackButton from '@shared/buttons/BackButton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import DashboardVariablesModal from './DashboardVariablesModal';
+import { isNudgebeeVariable, sameVariables, useDashboardVariables, variableReach } from './dashboardVariables';
+import Datetime from '@shared/format/Datetime';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { downloadIcon, RefreshIcon, writeIconLight } from '@assets';
 import { ds } from '@utils/colors';
+import { getUpstreamStatus } from '@lib/errorMessages';
 import apiDashboards, { EMPTY_DEFINITION, type AccountOption, type Dashboard, type DashboardDefinition, type Panel } from '@api1/dashboards';
 import SortablePanel from './SortablePanel';
 import usePanelResize from './usePanelResize';
-import { downloadNodeAsPng, waitForPanels } from './panelImage';
+import { downloadNodeAsPng, EXPORT_HIDE_ATTR, waitForPanels } from './panelImage';
 import EditDashboardJsonModal from './EditDashboardJsonModal';
 import type { EditableDashboard } from './dashboardJson';
 import PanelEditorModal from './PanelEditorModal';
@@ -45,6 +49,7 @@ import PanelLibraryModal from './PanelLibraryModal';
 import { blankPanel, panelSpan } from './panelDefaults';
 import { resolvePanelAccounts } from './panelAccounts';
 import { PANEL_PARAM, withPanelParam } from './panelLink';
+import { refreshedRange } from './dashboardRange';
 import type { VariableValues } from './templating';
 
 interface Props {
@@ -80,10 +85,16 @@ const HIGHLIGHT_MS = 2000;
  * `edit` is the toolbar's own Discard — it leaves edit mode without leaving the
  * screen; the other two leave the screen entirely.
  */
-type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string };
+type Exit = { to: 'edit' } | { to: 'back' } | { to: 'route'; url: string; hashOnly?: boolean };
 
 /** The definition's settings beside its panels. */
-type DashboardSettings = Pick<DashboardDefinition, 'time_from' | 'refresh'>;
+type DashboardSettings = Pick<DashboardDefinition, 'variables' | 'time_from' | 'refresh'>;
+
+/** What one save writes; anything left out is taken from the saved dashboard. */
+type DashboardChange = { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings };
+
+/** The answer to "someone else saved this dashboard since you opened it". */
+type ConflictChoice = 'reload' | 'overwrite' | 'cancel';
 
 const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, onChange, canEdit, initialEditing = false }) => {
   const router = useRouter();
@@ -127,18 +138,11 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     }
   };
 
-  /**
-   * Refreshes every panel. A relative range ("Last 1 Hour") has to be re-evaluated against now —
-   * refetching the same fixed window would return the same data and read as a broken button.
-   */
+  /** Refreshes every panel, moving the range to now only where the range is meant to move — see refreshedRange. */
   const refreshAll = () => {
-    setRange((prev) => (prev.shortcutClickTime > 0 ? { ...prev, startDate: Date.now() - prev.shortcutClickTime, endDate: Date.now() } : prev));
+    setRange((prev) => refreshedRange(prev, Date.now()));
     setRefreshToken((n) => n + 1);
   };
-
-  // Substitution values come only from the host page — dashboards declare no
-  // variables of their own.
-  const variables = useMemo(() => context || {}, [context]);
 
   const savedPanels = dashboard.definition?.panels || [];
 
@@ -174,10 +178,36 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const settingsChanged =
     draftSettings !== null &&
     ((draftSettings.time_from || '') !== (dashboard.definition?.time_from || '') ||
-      (draftSettings.refresh || '') !== (dashboard.definition?.refresh || ''));
+      (draftSettings.refresh || '') !== (dashboard.definition?.refresh || '') ||
+      !sameVariables(draftSettings.variables, dashboard.definition?.variables));
 
   const editing = draftPanels !== null;
   const panels = draftPanels ?? savedPanels;
+
+  /*
+   * The dropdowns follow the draft, so an author sees a variable work before
+   * saving it. The choices come from the accounts on screen. The host page's
+   * values win: a dashboard on a detail page is about that page's namespace.
+   */
+  const declaredVariables = useMemo(
+    () => (draftSettings ? draftSettings.variables : dashboard.definition?.variables) || [],
+    [draftSettings, dashboard.definition?.variables]
+  );
+  const variableAccounts = useMemo(() => {
+    if (accountFilter.length > 0) return accounts.filter((a) => accountFilter.includes(a.value));
+    const scoped = new Map(panels.flatMap((p) => resolvePanelAccounts(p, accounts)).map((a) => [a.value, a]));
+    // A dashboard with no scoped panel yet still lists choices, so a variable can be declared before it is used.
+    return scoped.size > 0 ? [...scoped.values()].sort((a, b) => a.value.localeCompare(b.value)) : accounts;
+  }, [accountFilter, panels, accounts]);
+  const dashboardVariables = useDashboardVariables({
+    variables: declaredVariables,
+    accounts: variableAccounts,
+    panels,
+    startTime: range.startDate,
+    endTime: range.endDate,
+    context,
+  });
+  const variables = useMemo(() => ({ ...dashboardVariables.values, ...(context || {}) }), [dashboardVariables.values, context]);
   // Cheap because a definition is a few dozen small objects, and it compares
   // what actually gets written rather than tracking a dirty flag per gesture.
   const dirty =
@@ -199,6 +229,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   const [panelModalOpen, setPanelModalOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [variablesOpen, setVariablesOpen] = useState(false);
   /** Set when Save refused JSON the author applied: the editor reopens on it, with the reason. */
   const [jsonReopen, setJsonReopen] = useState<{ error: string } | null>(null);
   /** Whether JSON was applied to the draft since it was last saved or discarded. */
@@ -214,6 +245,13 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
    * the author has just agreed to. Consumed by the first route change it sees.
    */
   const allowNavigation = useRef(false);
+  /** The newer saved copy the conflict prompt describes. Kept after it closes so the text holds through the fade. */
+  const [conflict, setConflict] = useState<Dashboard | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  /** Settles the save waiting on the conflict prompt with the author's answer. */
+  const answerConflict = useRef<((choice: ConflictChoice) => void) | null>(null);
+  // A save left waiting on a prompt that unmounted with the screen is abandoned.
+  useEffect(() => () => answerConflict.current?.('cancel'), []);
   /** The panel awaiting delete confirmation. Held whole so the prompt can name it. */
   const [pendingDelete, setPendingDelete] = useState<Panel | null>(null);
   /** The panel under the cursor mid-drag; drives the DragOverlay. */
@@ -273,17 +311,25 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     return () => cancelAnimationFrame(frame);
   }, [linkedPanel, editing, savedPanels, scrollToPanel]);
 
-  /** Writes the dashboard back. */
-  const persist = async (change: { title?: string; description?: string; panels?: Panel[]; settings?: DashboardSettings }): Promise<boolean> => {
+  /**
+   * Writes the dashboard back. `expectedVersion` is the revision the write
+   * replaces — the one this screen loaded, unless the author chose to overwrite
+   * a newer one.
+   */
+  const persist = async (change: DashboardChange, expectedVersion = dashboard.version): Promise<boolean> => {
     setSaving(true);
     // A create answers with its new id and the host writes it into the URL. That
     // push is this screen's own doing, so the guard below must not hold it.
     allowNavigation.current = true;
+    lastSaveError.current = '';
     try {
       const res = await apiDashboards.saveDashboard({
         // Empty on a dashboard that has never been written — `saveDashboard`
         // reads that as a create rather than an update.
         id: dashboard.id,
+        // Every save sends the whole definition, so one written over a newer
+        // save would silently undo it. The server refuses that with a 409.
+        expected_version: dashboard.id ? expectedVersion : undefined,
         title: change.title ?? dashboard.title,
         description: change.description ?? dashboard.description,
         // Falls back to the SAVED panels, never the draft: renaming mid-edit
@@ -292,19 +338,27 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           ...EMPTY_DEFINITION,
           ...(dashboard.definition || {}),
           // Written field by field so a setting the draft removed is removed, not left as saved.
-          ...(change.settings ? { time_from: change.settings.time_from, refresh: change.settings.refresh } : {}),
+          ...(change.settings
+            ? { variables: change.settings.variables, time_from: change.settings.time_from, refresh: change.settings.refresh }
+            : {}),
           panels: change.panels ?? savedPanels,
         },
+        // The server writes whatever arrives, an absent list as empty, and this
+        // screen has no tag control — so pass them through or a save erases them.
+        tags: dashboard.tags,
       });
 
       // The gateway reports handler failures in `errors`, not by throwing, so a
       // success toast keyed only on the absence of an exception would lie.
       if (res.errors || !res.data) {
         const message = Array.isArray(res.errors) ? (res.errors[0] as any)?.message : null;
-        lastSaveError.current = message || 'Could not save the dashboard.';
-        snackbar.error(lastSaveError.current);
         // Nothing was written and nothing navigates — hand the pass back.
         allowNavigation.current = false;
+        if (dashboard.id && getUpstreamStatus({ errors: res.errors }) === 409) {
+          return await resolveConflict(change, message);
+        }
+        lastSaveError.current = message || 'Could not save the dashboard.';
+        snackbar.error(lastSaveError.current);
         return false;
       }
       onChange?.(res.data);
@@ -313,6 +367,46 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       // Guarantees the toolbar and every panel control unfreeze on both exits.
       setSaving(false);
     }
+  };
+
+  /**
+   * Someone saved this dashboard after it was opened. Asks the author whether to
+   * load that version or write this one over it, and answers as `persist` does.
+   * The toolbar stays frozen until they choose.
+   */
+  const resolveConflict = async (change: DashboardChange, message: string | null): Promise<boolean> => {
+    const latest = (await apiDashboards.getDashboard(dashboard.id)).data?.dashboard;
+    if (!latest) {
+      // Without the newer copy there is nothing to reload or name — say why the save failed.
+      snackbar.error(message || 'This dashboard was saved by someone else after you opened it.');
+      return false;
+    }
+    const choice = await new Promise<ConflictChoice>((resolve) => {
+      answerConflict.current = resolve;
+      setConflict(latest);
+      setConflictOpen(true);
+    });
+    answerConflict.current = null;
+    setConflictOpen(false);
+    // Against the version just read, so a third save landing meanwhile asks again.
+    if (choice === 'overwrite') return persist(change, latest.version);
+    if (choice === 'reload') reloadLatest(latest);
+    return false;
+  };
+
+  /** Shows the newer copy and drops this screen's unsaved edits — the conflict prompt's Reload. */
+  const reloadLatest = (latest: Dashboard) => {
+    onChange?.(latest);
+    setTitleDraft(latest.title);
+    setDescriptionDraft(latest.description || '');
+    setDraftSettings(null);
+    jsonApplied.current = false;
+    setDraftPanels(null);
+    setPanelModalOpen(false);
+    setEditingPanel(null);
+    // The exit a leave prompt was holding is off: the author is looking at a different dashboard now.
+    setPendingExit(null);
+    snackbar.info('Loaded the latest version of this dashboard.');
   };
 
   const openNewPanel = () => {
@@ -375,7 +469,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     setTitleDraft(next.title);
     setDescriptionDraft(next.description);
     setDraftPanels(next.definition.panels);
-    setDraftSettings({ time_from: next.definition.time_from, refresh: next.definition.refresh });
+    setDraftSettings({ variables: next.definition.variables, time_from: next.definition.time_from, refresh: next.definition.refresh });
     jsonApplied.current = true;
     setJsonReopen(null);
     setJsonOpen(false);
@@ -392,6 +486,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     // means leaving the screen.
     if (exit.to === 'route' || exit.to === 'back' || isNew) {
       allowNavigation.current = true;
+      // A hash change leaves the draft mounted unless the hash names another
+      // screen, so the draft is dropped here as Back would drop it.
+      if (exit.to === 'route' && exit.hashOnly) onBack?.();
       if (exit.to === 'route') router.push(exit.url);
       else onBack?.();
       return;
@@ -422,8 +519,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       // than a toast about panel 7 over a grid of them.
       // It reopens on the draft as it is now — the applied JSON plus anything
       // edited on the canvas since — never on a stale copy of what was applied,
-      // which applied again would undo those edits.
-      if (jsonApplied.current) {
+      // which applied again would undo those edits. A conflict is not about the
+      // JSON, so it carries no error and the editor stays shut.
+      if (jsonApplied.current && lastSaveError.current) {
         setJsonReopen({ error: lastSaveError.current });
         setJsonOpen(true);
       }
@@ -486,7 +584,10 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   useEffect(() => {
     if (!unsavedWork) return undefined;
 
-    const handleRouteChangeStart = (url: string) => {
+    // A never-saved draft sits at /dashboards with no ?dashboard=, so the nav's
+    // /dashboards#groups is only a hash change: Next emits hashChangeStart, not
+    // routeChangeStart, and the page swaps this screen out all the same.
+    const holdNavigation = (hashOnly: boolean) => (url: string) => {
       if (allowNavigation.current) {
         allowNavigation.current = false;
         return;
@@ -497,12 +598,16 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
       if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== here) {
         window.history.pushState(null, '', here);
       }
-      setPendingExit({ to: 'route', url });
+      setPendingExit({ to: 'route', url, hashOnly });
       // Next's own way of cancelling a transition from routeChangeStart: emit
       // the error event the router listens for, then unwind out of the handler.
-      router.events.emit('routeChangeError');
+      // A hash change has no such event; throwing before Next writes the new
+      // hash is what stops it.
+      if (!hashOnly) router.events.emit('routeChangeError');
       throw 'Route change aborted — the dashboard has unsaved changes. This is not an error.';
     };
+    const handleRouteChangeStart = holdNavigation(false);
+    const handleHashChangeStart = holdNavigation(true);
 
     // The tab closing or reloading is the browser's to warn about; it renders
     // its own dialog and ignores any wording we pass.
@@ -514,9 +619,11 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
     };
 
     router.events.on('routeChangeStart', handleRouteChangeStart);
+    router.events.on('hashChangeStart', handleHashChangeStart);
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       router.events.off('routeChangeStart', handleRouteChangeStart);
+      router.events.off('hashChangeStart', handleHashChangeStart);
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [unsavedWork, router]);
@@ -631,6 +738,77 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
   );
 
   /**
+   * The dropdowns get a row of their own, inside the sticky bar: what narrows the panels stays on screen
+   * while they scroll, and however many there are, the title and the actions keep their space. No row
+   * without variables, so a dashboard that has none looks as it did.
+   */
+  const variableRow = declaredVariables.length > 0 && (
+    <Stack
+      direction='row'
+      flexWrap='wrap'
+      alignItems='center'
+      gap={ds.space[2]}
+      data-testid='dashboard-variables-row'
+      {...{ [EXPORT_HIDE_ATTR]: 'true' }}
+    >
+      {declaredVariables.map((v) => {
+        const options = (dashboardVariables.options[v.name] || []).map((o) => ({ value: o, label: o }));
+        const picked = dashboardVariables.selected[v.name] || [];
+        const dropdown = v.multi ? (
+          <FilterDropdown
+            id={`dashboard-variable-${v.name}`}
+            label={v.label || v.name}
+            size='sm'
+            multiple
+            freeSolo={isNudgebeeVariable(v)}
+            isOptionsLoading={Boolean(dashboardVariables.loading[v.name])}
+            limitTag={2}
+            value={picked}
+            options={options}
+            onSelect={(_e: unknown, next: (string | { value: string })[]) =>
+              dashboardVariables.select(
+                v.name,
+                (next || []).map((o) => (typeof o === 'string' ? o : o.value))
+              )
+            }
+          />
+        ) : (
+          <FilterDropdown
+            id={`dashboard-variable-${v.name}`}
+            label={v.label || v.name}
+            size='sm'
+            // A row table's list is read from its newest rows, so a value it left out can still be typed.
+            freeSolo={isNudgebeeVariable(v)}
+            isOptionsLoading={Boolean(dashboardVariables.loading[v.name])}
+            value={picked[0] || ''}
+            options={options}
+            onSelect={(e: { target?: { value?: string } }) => {
+              const value = e?.target?.value;
+              dashboardVariables.select(v.name, value ? [value] : []);
+            }}
+          />
+        );
+        return (
+          <Tooltip key={v.name} title={dashboardVariables.errors[v.name] || variableReach(panels, v.name)}>
+            <span data-testid={`dashboard-variable-control-${v.name}`}>{dropdown}</span>
+          </Tooltip>
+        );
+      })}
+      {Object.values(dashboardVariables.selected).some((picked) => picked.length > 0) && (
+        <Button
+          tone='ghost'
+          size='sm'
+          onClick={dashboardVariables.clear}
+          id='dashboard-variables-clear-btn'
+          data-testid='dashboard-variables-clear-btn'
+        >
+          Clear
+        </Button>
+      )}
+    </Stack>
+  );
+
+  /**
    * One button, two ways to fill it — a blank panel and the library are the same act with a different
    * starting point, and side by side they read as competing choices.
    *
@@ -707,8 +885,11 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
               value={accountFilter}
               options={accountFilterOptions}
               searchPlaceholder='Search accounts…'
-              // Multi-select hands back the chosen option objects; an empty list is the filter cleared.
-              onSelect={(_e: unknown, next: { value: string }[]) => setAccountFilter((next || []).map((o) => o.value))}
+              // Multi-select hands back what was already picked as it was given — ids here — plus the
+              // option just ticked; an empty list is the filter cleared.
+              onSelect={(_e: unknown, next: (string | { value: string })[]) =>
+                setAccountFilter((next || []).map((o) => (typeof o === 'string' ? o : o.value)))
+              }
             />
           )}
           <CustomDateTimeRangePicker
@@ -734,7 +915,7 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           </Tooltip>
           {/* Loads every panel first, including the ones below the fold, so the
               image is the whole dashboard rather than the part scrolled past. */}
-          <Tooltip title='Export the whole dashboard as a PNG'>
+          <Tooltip title='Export the whole dashboard as a PNG' placement='left' disableFlip>
             <Button
               tone='secondary'
               composition='icon-only'
@@ -773,6 +954,9 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
             data-testid='dashboard-edit-json-btn'
           >
             Edit JSON
+          </Button>
+          <Button tone='secondary' onClick={() => setVariablesOpen(true)} id='dashboard-variables-btn' data-testid='dashboard-variables-btn'>
+            Variables
           </Button>
           <Button tone='secondary' onClick={requestExit} disabled={saving} id='dashboard-discard-btn' data-testid='dashboard-discard-btn'>
             Discard
@@ -814,71 +998,74 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
           py: ds.space[2],
           mb: ds.space[4],
           display: 'flex',
-          alignItems: 'center',
+          flexDirection: 'column',
           gap: ds.space[2],
           backgroundColor: ds.background[100],
           borderBottom: `1px solid ${ds.gray[200]}`,
         }}
       >
-        {onBack && <BackButton id='dashboard-back-btn' onClick={requestBack} />}
-        {editing ? (
-          /* The name and description are plain fields here rather than a
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+          {onBack && <BackButton id='dashboard-back-btn' onClick={requestBack} />}
+          {editing ? (
+            /* The name and description are plain fields here rather than a
              separate rename control: edit mode is already a buffered session
              with its own Save, so a second commit step inside it would be a
              save button in front of a save button. */
-          <Stack direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
-            <Box sx={{ width: 240 }}>
-              <Input
-                value={titleDraft}
-                onChange={setTitleDraft}
-                disabled={saving}
-                placeholder='Dashboard name'
-                required
-                id='dashboard-title-input'
-                data-testid='dashboard-title-input'
-              />
-            </Box>
-            <Box sx={{ width: 320 }}>
-              <Input
-                value={descriptionDraft}
-                onChange={setDescriptionDraft}
-                disabled={saving}
-                placeholder='Description (optional)'
-                id='dashboard-description-input'
-                data-testid='dashboard-description-input'
-              />
-            </Box>
-          </Stack>
-        ) : (
-          <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
-            <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 18, fontWeight: 650, color: ds.gray[700] }}>
-                {dashboard.title}
-              </Typography>
-            </Box>
-            {/* The description is a tooltip, not a subtitle: it is read once
+            <Stack direction='row' alignItems='center' gap={1} sx={{ minWidth: 0 }}>
+              <Box sx={{ width: 240 }}>
+                <Input
+                  value={titleDraft}
+                  onChange={setTitleDraft}
+                  disabled={saving}
+                  placeholder='Dashboard name'
+                  required
+                  id='dashboard-title-input'
+                  data-testid='dashboard-title-input'
+                />
+              </Box>
+              <Box sx={{ width: 320 }}>
+                <Input
+                  value={descriptionDraft}
+                  onChange={setDescriptionDraft}
+                  disabled={saving}
+                  placeholder='Description (optional)'
+                  id='dashboard-description-input'
+                  data-testid='dashboard-description-input'
+                />
+              </Box>
+            </Stack>
+          ) : (
+            <Stack direction='row' alignItems='center' gap={0.5} sx={{ minWidth: 0 }}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography sx={{ fontFamily: 'var(--ds-font-display)', fontSize: 18, fontWeight: 650, color: ds.gray[700] }}>
+                  {dashboard.title}
+                </Typography>
+              </Box>
+              {/* The description is a tooltip, not a subtitle: it is read once
                 when you arrive and then costs a line of the sticky bar on every
                 screen after that. Same treatment a panel's description gets. */}
-            {dashboard.description && (
-              <Tooltip title={dashboard.description}>
-                <Box
-                  component='span'
-                  sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
-                  data-testid='dashboard-description'
-                >
-                  <InfoOutlinedIcon sx={{ fontSize: 15 }} />
-                </Box>
-              </Tooltip>
-            )}
-          </Stack>
-        )}
-        {dashboard.is_builtin && (
-          <Chip size='2xs' tone='subtle'>
-            Built-in
-          </Chip>
-        )}
-        <Box sx={{ flex: 1, minWidth: 0 }} />
-        {actions}
+              {dashboard.description && (
+                <Tooltip title={dashboard.description}>
+                  <Box
+                    component='span'
+                    sx={{ display: 'inline-flex', alignItems: 'center', color: ds.gray[400], cursor: 'help' }}
+                    data-testid='dashboard-description'
+                  >
+                    <InfoOutlinedIcon sx={{ fontSize: 15 }} />
+                  </Box>
+                </Tooltip>
+              )}
+            </Stack>
+          )}
+          {dashboard.is_builtin && (
+            <Chip size='2xs' tone='subtle'>
+              Built-in
+            </Chip>
+          )}
+          <Box sx={{ flex: 1, minWidth: 0 }} />
+          {actions}
+        </Box>
+        {variableRow}
       </Box>
 
       {/* No card around the panels: each panel is already a bordered surface,
@@ -939,6 +1126,20 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         )}
       </Box>
 
+      <DashboardVariablesModal
+        open={variablesOpen}
+        variables={declaredVariables}
+        panels={panels}
+        onClose={() => setVariablesOpen(false)}
+        onApply={(next) => {
+          setDraftSettings({
+            time_from: draftSettings ? draftSettings.time_from : dashboard.definition?.time_from,
+            refresh: draftSettings ? draftSettings.refresh : dashboard.definition?.refresh,
+            variables: next,
+          });
+          setVariablesOpen(false);
+        }}
+      />
       <EditDashboardJsonModal
         open={jsonOpen}
         current={jsonDraft}
@@ -1026,6 +1227,57 @@ const DashboardView: React.FC<Props> = ({ dashboard, accounts, context, onBack, 
         <Typography variant='body2'>
           {isNew ? 'This dashboard has not been saved yet.' : `Your changes to ${dashboard.title} have not been saved.`} Discard them and they are
           gone — this cannot be undone.
+        </Typography>
+      </Modal>
+
+      {/* A save refused because someone else saved first. Reload is the safe
+          answer; Overwrite throws the other person's changes away, so it is the
+          one that reads as dangerous. Closing keeps the edits, unsaved. */}
+      <Modal
+        open={conflictOpen}
+        handleClose={() => answerConflict.current?.('cancel')}
+        title='Someone else saved this dashboard'
+        actionButtons={
+          <Stack direction='row' gap={ds.space[2]} justifyContent='flex-end' sx={{ width: '100%' }}>
+            <Button
+              tone='ghost'
+              size='md'
+              onClick={() => answerConflict.current?.('cancel')}
+              id='dashboard-conflict-cancel-btn'
+              data-testid='dashboard-conflict-cancel-btn'
+            >
+              Cancel
+            </Button>
+            <Button
+              tone='danger'
+              size='md'
+              onClick={() => answerConflict.current?.('overwrite')}
+              id='dashboard-conflict-overwrite-btn'
+              data-testid='dashboard-conflict-overwrite-btn'
+            >
+              Overwrite
+            </Button>
+            <Button
+              tone='primary'
+              size='md'
+              onClick={() => answerConflict.current?.('reload')}
+              id='dashboard-conflict-reload-btn'
+              data-testid='dashboard-conflict-reload-btn'
+            >
+              Reload
+            </Button>
+          </Stack>
+        }
+      >
+        <Typography variant='body2' component='div' data-testid='dashboard-conflict-message'>
+          {conflict?.updated_by_name || 'Another user'} saved {conflict?.title || 'this dashboard'}
+          {conflict?.updated_at ? (
+            <>
+              {' '}
+              <Datetime value={conflict.updated_at} />
+            </>
+          ) : null}{' '}
+          after you opened it. Reload to see their version and drop your unsaved changes, or overwrite to replace their changes with yours.
         </Typography>
       </Modal>
 

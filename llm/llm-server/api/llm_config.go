@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -22,6 +22,8 @@ type testConnectionRequest struct {
 	// AccountIds the configuration is saved for. api-server has already checked
 	// the caller may act on each; a referenced fallback is resolved per account.
 	AccountIds []string `json:"account_ids,omitempty"`
+	// TenantId resolves a referenced fallback when AccountIds is empty.
+	TenantId string `json:"tenant_id,omitempty"`
 }
 
 // testConnectionResponse carries the per-target probe outcomes so the
@@ -30,13 +32,14 @@ type testConnectionRequest struct {
 // (single-probe) wire shape for backwards compatibility with any caller
 // that doesn't read Results yet.
 type testConnectionResponse struct {
-	OK      bool               `json:"ok"`
-	Error   string             `json:"error,omitempty"`
-	Results []core.ProbeResult `json:"results,omitempty"`
-	Summary string             `json:"summary,omitempty"`
+	OK      bool                     `json:"ok"`
+	Error   string                   `json:"error,omitempty"`
+	Results []llmruntime.ProbeResult `json:"results,omitempty"`
+	Summary string                   `json:"summary,omitempty"`
 }
 
-// handleLLMConfigTestApis registers POST /v1/llm-config/test-connection.
+// handleLLMConfigTestApis registers POST /v1/llm-config/test-connection and
+// GET /v1/llm-config/env-status.
 //
 // Auth is enforced by the global authHandlerMiddleware in cmd/main.go (single
 // LLM_SERVER_TOKEN gate). This is an internal service-to-service endpoint —
@@ -54,6 +57,13 @@ type testConnectionResponse struct {
 func handleLLMConfigTestApis(r *gin.Engine, _ trace.Tracer, _ metric.Meter) {
 	group := r.Group("/v1/llm-config")
 
+	// GET /v1/llm-config/env-status tells api-server whether llm-server has a
+	// platform LLM (ENV) for accounts with no default, so it can decide whether a
+	// change that removes an account's LLM is blocked or only warned about.
+	group.GET("/env-status", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"configured": llmruntime.IsEnvLLMConfigured()})
+	})
+
 	group.POST("/test-connection", func(c *gin.Context) {
 		var req testConnectionRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -68,9 +78,9 @@ func handleLLMConfigTestApis(r *gin.Engine, _ trace.Tracer, _ metric.Meter) {
 		// A referenced fallback resolves through the runtime's TTL cache; the
 		// test must see the referenced integration as it is now.
 		for _, acct := range req.AccountIds {
-			core.ForgetLLMIntegrationsList(acct)
+			llmruntime.ForgetLLMIntegrationsList(acct)
 		}
-		results, err := core.TestLLMProviderConnectionAll(c.Request.Context(), req.Config, req.AccountIds)
+		results, err := llmruntime.TestLLMProviderConnectionAll(c.Request.Context(), req.Config, req.AccountIds, req.TenantId)
 		if err != nil {
 			slog.Info("llm-config: connectivity probe enumeration failed",
 				"provider", req.Config["llm_provider"], "error", err)

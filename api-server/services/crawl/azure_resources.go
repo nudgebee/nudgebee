@@ -9,6 +9,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"slices"
 	"strings"
 	"time"
 )
@@ -117,7 +118,31 @@ func extractResource(azurePricingData AzureRetailPricing, spot bool) ([]*Instanc
 	return infoList, nil
 }
 
+// azureSkuFilterBatchSize caps the SKUs named in one retail prices request. The API
+// answers HTTP 400 to the OData `in` operator, and to a filter with about 20 or more
+// `or` terms, so SKUs are sent as `or` batches well under that.
+const azureSkuFilterBatchSize = 10
+
 func getRetailPrice(region string, serviceName string, currencyCode string, skuNames []string) (AzureRetailPricing, error) {
+	var result AzureRetailPricing
+	for i, pricingURL := range retailPriceURLs(region, serviceName, currencyCode, skuNames) {
+		batch, err := fetchAllPages(pricingURL)
+		if err != nil {
+			return AzureRetailPricing{}, err
+		}
+		if i == 0 {
+			result = batch
+			continue
+		}
+		result.Items = append(result.Items, batch.Items...)
+	}
+	result.Count = len(result.Items)
+	return result, nil
+}
+
+// retailPriceURLs returns the request URLs that cover skuNames, one per SKU batch.
+// With no skuNames it returns a single URL that is not filtered by SKU.
+func retailPriceURLs(region string, serviceName string, currencyCode string, skuNames []string) []string {
 	pricingURL := "https://prices.azure.com/api/retail/prices?$skip=0"
 
 	if currencyCode != "" {
@@ -136,22 +161,27 @@ func getRetailPrice(region string, serviceName string, currencyCode string, skuN
 		filterParams = append(filterParams, regionParam)
 	}
 
-	if len(skuNames) > 0 {
-		if len(skuNames) == 1 {
-			skuNameParam := fmt.Sprintf("armSkuName eq '%s'", skuNames[0])
-			filterParams = append(filterParams, skuNameParam)
-		} else {
-			skuNameParam := fmt.Sprintf("armSkuName in ('%s')", strings.Join(skuNames, "','"))
-			filterParams = append(filterParams, skuNameParam)
+	withFilter := func(params []string) string {
+		if len(params) == 0 {
+			return pricingURL
 		}
+		return pricingURL + fmt.Sprintf("&$filter=%s", url.QueryEscape(strings.Join(params, " and ")))
 	}
 
-	if len(filterParams) > 0 {
-		filterParamsEscaped := url.QueryEscape(strings.Join(filterParams[:], " and "))
-		pricingURL += fmt.Sprintf("&$filter=%s", filterParamsEscaped)
+	if len(skuNames) == 0 {
+		return []string{withFilter(filterParams)}
 	}
 
-	return fetchAllPages(pricingURL)
+	urls := make([]string, 0, len(skuNames)/azureSkuFilterBatchSize+1)
+	for batch := range slices.Chunk(skuNames, azureSkuFilterBatchSize) {
+		terms := make([]string, 0, len(batch))
+		for _, skuName := range batch {
+			terms = append(terms, fmt.Sprintf("armSkuName eq '%s'", skuName))
+		}
+		skuNameParam := "(" + strings.Join(terms, " or ") + ")"
+		urls = append(urls, withFilter(append(slices.Clone(filterParams), skuNameParam)))
+	}
+	return urls
 }
 
 // fetchAllPages fetches the initial URL and follows NextPageLink until all pages are consumed.

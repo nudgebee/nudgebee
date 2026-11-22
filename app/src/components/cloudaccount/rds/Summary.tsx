@@ -20,6 +20,7 @@ import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
 import { CloudCostSummary } from '@components/cloudaccount/CloudCostSummary';
 import { CloudRecentEvents } from '@components/cloudaccount/CloudRecentEvents';
+import { parseGcpTier } from './instanceCompute';
 
 const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 
@@ -158,30 +159,19 @@ function getEngineFromMeta(r: any): string {
 }
 
 /**
- * Parse GCP Cloud SQL tier to extract vCPU and memory.
- * GCP tiers: "db-custom-{vcpu}-{memoryMB}", "db-n1-standard-{vcpu}", etc.
+ * GCP Cloud SQL tier → this table's Memory/vCPU cells, sourced from the shared
+ * `parseGcpTier` (the same spec table the Instances tab uses) so the two views
+ * never disagree. `parseGcpTier` returns display strings ("1 shared vCPU",
+ * "16 GB"); map them onto this table's own conventions — Memory in GiB, and a
+ * bare vCPU count for regular tiers (shared-core keeps its "shared" qualifier).
  */
-function parseGcpTierSpecs(tier: string): { memory_gb: string; vcpu: string } | null {
-  if (!tier) return null;
-  const customMatch = /^db-custom-(\d+)-(\d+)$/.exec(tier);
-  if (customMatch) {
-    const vcpu = customMatch[1];
-    const memMb = parseInt(customMatch[2], 10);
-    const memGb = (memMb / 1024).toFixed(1).replace(/\.0$/, '');
-    return { vcpu, memory_gb: memGb };
-  }
-  const stdMatch = /^db-(?:n\d+|e2|c\d+)-(standard|highmem|highcpu)-(\d+)$/.exec(tier);
-  if (stdMatch) {
-    const type = stdMatch[1];
-    const vcpu = stdMatch[2];
-    const vcpuNum = parseInt(vcpu, 10);
-    let memGb = '';
-    if (type === 'standard') memGb = String(vcpuNum * 4);
-    else if (type === 'highmem') memGb = String(vcpuNum * 8);
-    else if (type === 'highcpu') memGb = String(Math.ceil(vcpuNum * 0.9));
-    return { vcpu, memory_gb: memGb };
-  }
-  return null;
+function getGcpSummarySpecs(tier: string): { memory_gb: string; vcpu: string } | null {
+  const { cpu, memory } = parseGcpTier(tier);
+  if (!cpu && !memory) return null;
+  return {
+    memory_gb: memory ? memory.replace(/\s*GB$/, '') : '',
+    vcpu: cpu ? (cpu.includes('shared') ? cpu : cpu.replace(/\s*vCPU$/, '')) : '',
+  };
 }
 
 const ClusterSummary = ({ accountId, clusterSummary = {} }: any) => {
@@ -233,10 +223,10 @@ const ClusterSummary = ({ accountId, clusterSummary = {} }: any) => {
 
           // Tier 2 (GCP only): parse Cloud SQL tier name when meta is empty.
           if (!memory && !vcpu) {
-            const gcpSpecs = parseGcpTierSpecs(instanceType);
+            const gcpSpecs = getGcpSummarySpecs(instanceType);
             if (gcpSpecs) {
-              memory = `${gcpSpecs.memory_gb} GiB`;
-              vcpu = gcpSpecs.vcpu;
+              if (gcpSpecs.memory_gb) memory = `${gcpSpecs.memory_gb} GiB`;
+              if (gcpSpecs.vcpu) vcpu = gcpSpecs.vcpu;
             }
           }
 

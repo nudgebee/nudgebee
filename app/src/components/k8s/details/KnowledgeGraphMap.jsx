@@ -55,6 +55,7 @@ import TerminalOutlined from '@mui/icons-material/TerminalOutlined';
 import WorkOutlineOutlined from '@mui/icons-material/WorkOutlineOutlined';
 import CustomTooltip from '@ui/Tooltip';
 import LangTypeIcon from '@shared/icons/LangTypeIcon';
+import { nodeRoleLabel } from '@components/knowledge-graph/nodeRoleLabels';
 import { ds } from 'src/utils/colors';
 
 const ELK_OPTIONS = {
@@ -389,7 +390,9 @@ function transformKGData(kgNodes, kgEdges, targetService) {
     const color = NODE_TYPE_COLORS[nodeType] || ds.gray[500];
     const typeLabel = NODE_TYPE_LABELS[nodeType] || nodeType.substring(0, 3).toUpperCase();
     const isTarget = name === targetService;
-    const specificType = specificTypeLabel(node.specific_type, nodeType);
+    // The role a node acts as (a workload that is a cache) shares the type line,
+    // so a card keeps the line count the layout measures.
+    const specificType = [specificTypeLabel(node.specific_type, nodeType), nodeRoleLabel(node.properties?.role)].filter(Boolean).join(' · ');
     // Namespace and cluster on one line. The cluster is what separates two nodes
     // that are otherwise identical on screen — the same workload in a dev and a
     // prod cluster under one tenant — so it is shown whenever the graph carries it.

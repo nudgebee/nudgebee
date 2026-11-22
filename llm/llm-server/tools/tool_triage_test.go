@@ -25,7 +25,8 @@ func newTriageToolContext(accountId string) core.NbToolContext {
 	// Build the security context from JSON so the tenant id is set without a DB
 	// lookup — the triage helper reads tenant from the context (header path).
 	secCtx := &security.SecurityContext{}
-	if err := json.Unmarshal([]byte(`{"TenantId":"tenant-123","UserId":"user-1","Roles":["tenant_admin"]}`), secCtx); err != nil {
+	// A tenant admin's context lists the tenant's accounts, as it does in a real run.
+	if err := json.Unmarshal([]byte(`{"TenantId":"tenant-123","UserId":"user-1","Roles":["tenant_admin"],"AccountIds":["`+accountId+`"]}`), secCtx); err != nil {
 		panic(err)
 	}
 	reqCtx := security.NewRequestContext(context.Background(), secCtx, logger, nil, nil)

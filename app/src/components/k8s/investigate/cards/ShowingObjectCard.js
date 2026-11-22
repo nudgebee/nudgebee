@@ -8,8 +8,12 @@ import { ArgocdIcon } from '@assets';
 class ShowingObjectCard {
   constructor(evidenceData, _event, index) {
     this.id = `ShowingObjectCard_${index}`;
+    // A title an automation author typed is shown as written. Enricher titles and action names
+    // are identifiers, so those are title-cased.
     this.text =
-      titleCase(evidenceData?.additional_info?.title || snakeToTitleCase(evidenceData?.additional_info?.action_name)) || `Diagnostic Summary`;
+      (evidenceData?.additional_info?.actual_action_name === 'workflow_evidence'
+        ? evidenceData?.additional_info?.title
+        : titleCase(evidenceData?.additional_info?.title || snakeToTitleCase(evidenceData?.additional_info?.action_name))) || `Diagnostic Summary`;
     this.icon = evidenceData?.additional_info?.action_name == 'argocd_app_history' ? ArgocdIcon : LogsIcon;
     this.resolveButton = false;
     this.insightData = [];

@@ -31,6 +31,9 @@ const (
 	CloudProviderGCP      = "gcp"
 	CloudProviderAzure    = "azure"
 	CloudProviderExternal = "external"
+	// CloudProviderSelfHosted keys the nodes of a self-hosted VM account
+	// (sources/selfhosted).
+	CloudProviderSelfHosted = "selfhosted"
 )
 
 // NewUniqueKeyComponents creates a new UniqueKeyComponents with defaults

@@ -42,6 +42,7 @@ export class SoulLocators extends CommonLocators {
   readonly expandDoneBtn: Locator;
   readonly saveBtn: Locator;
   readonly resetBtn: Locator;
+  readonly soulPanel: Locator;
   readonly bCortexDisabledPanel: Locator;
   readonly notificationsRegion: Locator;
 
@@ -135,13 +136,15 @@ export class SoulLocators extends CommonLocators {
     this.expandDoneBtn = this.expandDialog.getByRole("button", { name: "Done", exact: true });
 
     // Save reads "Saving…" while a write is in flight, so exact:true keeps this
-    // off the in-flight state. Unlike PreferencesTab these two are not gated on
-    // the form being dirty — SoulTab disables them only while it is loading or
-    // saving, which is what makes "Save is enabled" the tab's load signal.
+    // off the in-flight state. Like PreferencesTab, both stay disabled until the
+    // form differs from the last saved snapshot (and while loading or saving).
     // No fallback: their enabled state is load-bearing, so matching a different
     // button would pass a test that proved nothing.
     this.saveBtn = this.bCortexDialog.getByRole("button", { name: "Save", exact: true });
     this.resetBtn = this.bCortexDialog.getByRole("button", { name: "Reset", exact: true });
+    // SoulTab's root carries aria-busy while its fetch is in flight — the tab's
+    // load signal, since a clean form keeps Save disabled even once loaded.
+    this.soulPanel = this.bCortexDialog.getByTestId("soul-tab");
 
     // Rendered in place of the whole editor when the tenant's b-Cortex flag is
     // off (BCortexDisabled.jsx). Asserted against so a disabled module reports

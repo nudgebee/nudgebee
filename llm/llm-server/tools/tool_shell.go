@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"path/filepath"
@@ -48,7 +50,18 @@ func (m ShellTool) GetType() core.NBToolType {
 }
 
 func (m ShellTool) Description() string {
-	return `Executes a shell command in an Alpine Linux workspace and returns the command output.
+	if config.Config.LlmServerWorkspaceNbctlEnabled {
+		return shellToolDescription + shellNbctlHint
+	}
+	return shellToolDescription
+}
+
+// shellNbctlHint lists nbctl when it is enabled in the workspace.
+const shellNbctlHint = `
+
+	**nbctl (raw metrics and logs):** ` + "`nbctl metrics query --query '<query>' --start-time <RFC3339> --end-time <RFC3339> [--step 5m] -o json > cpu.json`" + `, ` + "`nbctl logs query --query '<query>' --start-time ... --end-time ... --limit 5000 -o json > logs.json`" + `, and ` + "`nbctl metrics list-metrics` / `list-labels --metric <m>` / `list-label-values --label <l>`, `nbctl logs list-labels` / `list-label-values --label-name <l>`" + `. Reads this conversation's account through Nubi and runs the query as written, so write it in the query language of the account's provider (your instructions name it). Run ` + "`nbctl logs list-labels --fields-only`" + ` first for the provider's own log field names, and pass ` + "`--index`" + ` for another Elasticsearch index (in-cluster Elasticsearch needs it). If nbctl reports an authentication error, run the command again: each command gets a fresh token, so do not run ` + "`nbctl configure`" + `. Level or severity is often a field inside the line rather than a label. ` + "`nbctl logs query -o json`" + ` prints one object, ` + "`{logs: [...], series: [...], truncated, partial, total}`" + `: read lines with ` + "`jq '.logs[]'`" + ` and check ` + "`truncated`" + ` / ` + "`partial`" + ` before treating the result as complete. For counts, ask the provider to count instead of pulling lines: an Elasticsearch aggregation comes back in ` + "`.series`" + `; a LogQL ` + "`count_over_time`" + ` comes back in ` + "`.logs`" + `, each entry's ` + "`message`" + ` being the count. ` + "`nbctl metrics query -o json`" + ` prints a list of ` + "`{query_key, payload: [{metric, timestamps, values}]}`" + ` with no ` + "`series`" + ` key (read it with ` + "`jq '.[].payload[]'`" + `); ` + "`-o raw`" + ` is for ` + "`nbctl logs query`" + ` only. Warnings (lines cut off at --limit, groups left out, failed queries) also go to stderr, so keep stderr when scripting. Redirect to a file for large results. Only the commands listed here are available; any other nbctl command is refused. ` + "`nbctl <command> --help`" + ` lists every flag; do not inspect the binary.`
+
+var shellToolDescription = `Executes a shell command in an Alpine Linux workspace and returns the command output.
 
 	**Available CLIs:** ` + "`grep`, `awk`, `sed`, `jq`, `find`, `xargs`, `curl`, `tar`, `unzip`" + `, plus ` + "`kubectl`, `helm`, `psql`, `mysql`, `redis-cli`, `argocd`, `clickhouse-client`, `rabbitmqadmin`, `sqlcmd`, `sqlplus`, `ssh`, `aws`, `gcloud`, `az`, `gh`, `python3`" + `. Pipes (` + "`|`" + `), redirection (` + "`>`, `>>`, `<`" + `), command substitution (` + "`$()`" + `), env vars all work.
 
@@ -58,11 +71,13 @@ func (m ShellTool) Description() string {
 
 	**Stateless shell:** Each call is a fresh ` + "`sh -c`" + `, so ` + "`cd`" + ` and environment variables do NOT persist. Files do (they live on disk). Put environment setup and the command that consumes it in the same call (` + "`export FOO=bar && command`" + `), or pass the value through the CLI's explicit flags. Shell profile files are not sourced automatically.
 
-	**Credentials handled automatically:** Infrastructure CLIs receive credentials through their configured execution boundary; ` + "`GITHUB_TOKEN`" + ` and ` + "`GITLAB_TOKEN`" + ` are injected when their CLIs are invoked. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, `gh auth login`, or `glab auth login`" + ` step.
+	**Credentials handled automatically:** Infrastructure CLIs receive credentials through their configured execution boundary; ` + "`GITHUB_TOKEN`" + ` and ` + "`GITLAB_TOKEN`" + ` are injected when their CLIs are invoked. You do NOT need to plan an ` + "`aws configure`, `gcloud auth`, `gh auth login`, or `glab auth login`" + ` step. Always pass ` + "`--repo owner/repo`" + ` to ` + "`gh`" + `: it cannot infer the repository from a local clone.
 
 	**Large Data Redirection:** Identify large output by command intent (log dumps, metric time-series, multi-resource JSON, or queries expecting >50 records). Redirect stdout to a relative workspace file (` + "`command > data.json`" + `). Then inspect using ` + "`jq`, `grep`, `awk`, or `head` (`jq .key data.json | head -n 50`)" + ` to keep context usage bounded.
 
 	**Collection and analysis:** Invoke infrastructure CLIs directly in shell commands; use local tools to analyze the saved output. Prefer jq for JSON selection and aggregation, and grep/head for bounded text inspection. Use Python when the analysis needs more complex parsing or joins; keep it focused on local files, with standard-library modules. Reuse existing captures when they cover the requested scope and time range.
+
+	**Fetch once, analyze the file:** When you will look at a remote resource more than once or in more than one way (a CI or job log, an API response, a listing, a file from a remote repository), save it to a workspace file in one call (` + "`<fetch command> > run.log`" + `) and run every later grep/sed/jq/python against that file. Do not re-run the fetch with a different filter: each re-run downloads the whole resource again and costs a call. Put several extractions from the same file into one call (` + "`grep -n ERROR run.log | head -n 20; echo ---; sed -n 120,160p run.log`" + `). When you need more than a couple of files from one remote source, bring the source into the workspace once (a shallow clone or an archive) and search it locally instead of fetching one file per call. For questions about code, use ` + "`code_analyzer`" + ` when it is available.
 
 	**Python quoting:** For multiline Python, use a quoted heredoc (python3 - <<'PY', followed by the script and a closing PY on its own line). Avoid packing multiline logic or nested shell quotes into python3 -c. Pass file paths as arguments instead of interpolating them into source code.
 
@@ -85,7 +100,6 @@ func (m ShellTool) Description() string {
 	* ` + "`ls -la`" + `
 	* ` + "`jq .key data.json`" + `
 	`
-}
 
 func (m ShellTool) InputSchema() core.ToolSchema {
 	return core.ToolSchema{
@@ -196,9 +210,9 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	originalCommand := command
 
 	// Size-limited logging to avoid excessive output in logs
-	cmdLog := command
-	if len(cmdLog) > 100 {
-		cmdLog = cmdLog[:100] + "..."
+	cmdLog := egressfilter.RedactForLogPrefix(command, 100)
+	if len(command) > 100 {
+		cmdLog += "..."
 	}
 	nbRequestContext.Ctx.GetLogger().Info("shell: executing shell command", "command_preview", cmdLog)
 
@@ -296,24 +310,33 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 			}
 		}
 	}
-	// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
-	// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
-	// fall back to the sole active github integration in the tenant.
-	if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
-		slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
-	} else if ghAuth != nil {
-		for k, v := range ghAuth.Env {
+	if scmProxyEnabled() {
+		// Every command is bound to the account's GitHub/GitLab integrations,
+		// so gh and glab work from scripts too; only the command's execution
+		// token enters the pod (#41077).
+		for k, v := range scmProxyEnvForCommand(nbRequestContext, m.AccountId) {
 			env[k] = v
 		}
-	}
+	} else {
+		// Inject GITHUB_TOKEN when the command invokes `gh`. Same shape as the
+		// cloud cross-account path: hint via QueryConfig.ToolConfigs first, then
+		// fall back to the sole active github integration in the tenant.
+		if ghAuth, err := m.buildGithubAuthEnv(nbRequestContext, command); err != nil {
+			slog.Warn("shell: github auth injection skipped", "account_id", m.AccountId, "error", err)
+		} else if ghAuth != nil {
+			for k, v := range ghAuth.Env {
+				env[k] = v
+			}
+		}
 
-	// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
-	// runs a self-hosted GitLab.
-	if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
-		slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
-	} else if glAuth != nil {
-		for k, v := range glAuth.Env {
-			env[k] = v
+		// Same shape for `glab`: GITLAB_TOKEN, plus GITLAB_HOST when the tenant
+		// runs a self-hosted GitLab.
+		if glAuth, err := m.buildGitlabAuthEnv(nbRequestContext, command); err != nil {
+			slog.Warn("shell: gitlab auth injection skipped", "account_id", m.AccountId, "error", err)
+		} else if glAuth != nil {
+			for k, v := range glAuth.Env {
+				env[k] = v
+			}
 		}
 	}
 
@@ -459,6 +482,11 @@ var noMatchExitCommands = map[string]bool{
 // reclassified just like a bare `grep X file`.
 func isNoMatchExit(err error, originalCommand string) bool {
 	if !workspace.IsExitStatus1Failure(err) {
+		return false
+	}
+	// In a chain (`a && b | grep x`, `a; b | grep x`) the exit 1 may come from
+	// an earlier command, so it is a real failure, not an empty match.
+	if len(splitShellCommandSegments(originalCommand)) > 1 {
 		return false
 	}
 	tail := lastPipelineSegment(originalCommand)
@@ -731,16 +759,23 @@ func detectGitlabCLI(command string) bool { return detectCLIToken(command, "glab
 // config. Returns (nil, nil) when nothing usable exists or the choice would be
 // ambiguous — injection is skipped rather than guessed at.
 func (m ShellTool) resolveScmToolConfig(nbRequestContext core.NbToolContext, toolName string) (*core.ToolConfig, error) {
-	if m.AccountId == "" {
+	return resolveScmToolConfig(nbRequestContext, m.AccountId, toolName)
+}
+
+// resolveScmToolConfig picks the GitHub/GitLab integration a command uses: the
+// planner's hint, else the tenant's only one. nil when there is none or the
+// choice is ambiguous.
+func resolveScmToolConfig(nbRequestContext core.NbToolContext, accountId, toolName string) (*core.ToolConfig, error) {
+	if accountId == "" {
 		return nil, nil
 	}
 
-	scmTool, ok := core.GetNBTool(m.AccountId, toolName)
+	scmTool, ok := core.GetNBTool(accountId, toolName)
 	if !ok {
 		return nil, nil
 	}
 
-	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, m.AccountId, scmTool)
+	configs, err := core.ListToolConfigs(nbRequestContext.Ctx, accountId, scmTool)
 	if err != nil {
 		return nil, fmt.Errorf("shell: %s tool config lookup failed: %w", toolName, err)
 	}
@@ -760,7 +795,7 @@ func (m ShellTool) resolveScmToolConfig(nbRequestContext core.NbToolContext, too
 	// Strategy 2: sole config in the tenant.
 	if len(configs) != 1 {
 		slog.Info("shell: multiple scm configs, skipping injection (no hint)",
-			"account_id", m.AccountId, "tool", toolName, "count", len(configs))
+			"account_id", accountId, "tool", toolName, "count", len(configs))
 		return nil, nil
 	}
 	return &configs[0], nil
@@ -779,7 +814,6 @@ func (m ShellTool) buildGithubAuthEnv(nbRequestContext core.NbToolContext, comma
 	if err != nil || chosen == nil {
 		return nil, err
 	}
-
 	return BuildGithubAuth(nbRequestContext.Ctx.GetContext(), *chosen)
 }
 
@@ -797,7 +831,6 @@ func (m ShellTool) buildGitlabAuthEnv(nbRequestContext core.NbToolContext, comma
 	if err != nil || chosen == nil {
 		return nil, err
 	}
-
 	return BuildGitlabAuth(*chosen)
 }
 

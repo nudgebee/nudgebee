@@ -178,3 +178,24 @@ func TestNewGroupNode(t *testing.T) {
 		t.Errorf("url = %v, want https://gitlab.com/acme/platform", node.Properties["url"])
 	}
 }
+
+// This source does not build the key itself — it delegates to BaseSource, which keys
+// UserAccount on the login (#41505). Asserted here as well as in the sources package
+// so that adding a GenerateUniqueKey override to GitLabSource, as the k8s and azure
+// sources have, cannot silently reinstate display-name keys.
+func TestNewUserNodeKeysOnUsername(t *testing.T) {
+	s := newGitLabSourceForTest()
+	userNodes := make(map[string]*core.DbNode)
+
+	node, _ := s.newUserNode("mangglesh1653", "Mangglesh Dagar", "", "", userNodes, testReq())
+	want := "gitlab:integration-1::UserAccount::mangglesh1653"
+	if node.UniqueKey != want {
+		t.Errorf("UniqueKey = %q, want %q", node.UniqueKey, want)
+	}
+
+	// The same person under their other account: one display name, two nodes.
+	other, _ := s.newUserNode("mangglesh.dagar", "Mangglesh Dagar", "", "", userNodes, testReq())
+	if other.UniqueKey == node.UniqueKey {
+		t.Errorf("two logins sharing a display name produced one key: %q", node.UniqueKey)
+	}
+}

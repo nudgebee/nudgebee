@@ -190,6 +190,10 @@ export interface AccountExecutionItem {
   user_name?: string;
   failure_reason?: string;
   version_number?: number;
+  /** Set on a COMPLETED run whose continue-on-failure steps failed. */
+  failed_step_count?: number;
+  first_failed_step?: string;
+  first_failed_step_error?: string;
 }
 
 export interface AccountExecutionListResponse {
@@ -208,10 +212,19 @@ export interface FailedAutomationCount {
 export interface ExecutionAggregateResponse {
   total: number;
   succeeded: number;
+  /**
+   * Every run that did not succeed: FAILED + TIMED_OUT + TERMINATED. The
+   * most-failed leaderboard ranks this same set. The FAILED status alone is
+   * `failed - timed_out - terminated`.
+   */
   failed: number;
   running: number;
   /** Subset of `failed` — runs that hit the execution timeout rather than erroring. */
   timed_out: number;
+  /** Subset of `failed` — runs stopped from outside. Absent from servers that predate it. */
+  terminated?: number;
+  /** Not part of `failed`. Absent from servers that predate it. */
+  canceled?: number;
   counts_are_approximate: boolean;
   top_failed: FailedAutomationCount[];
   top_failed_is_approximate: boolean;

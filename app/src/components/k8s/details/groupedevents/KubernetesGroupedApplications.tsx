@@ -5,7 +5,7 @@ import { ds } from 'src/utils/colors';
 import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import { applyFiltersOnRouter } from '@lib/router';
-import { titleCaseForAggregationKey, toSeverityLevel } from 'src/utils/common';
+import { titleCaseForAggregationKey, toSeverityLevel, getAlertStatusLabel, getAlertStatusTone, deriveGroupAlertStatus } from 'src/utils/common';
 import Datetime from '@shared/format/Datetime';
 import CustomTable2 from '@shared/tables/CustomTable2';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
@@ -256,7 +256,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
     () =>
       eventGroupings.map((item: any) => {
         const severity = deriveSeverity(item.distinct_priority);
-        const status = item.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
+        const status = deriveGroupAlertStatus(item.distinct_status);
 
         return [
           {
@@ -285,7 +285,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
             component: <SeverityIcon level={toSeverityLevel(severity)} aria-label={`Severity: ${severity || 'unknown'}`} />,
             data: severity,
           },
-          { component: <Label margin='auto' text={status} /> },
+          { component: <Label margin='auto' text={getAlertStatusLabel(status)} variant={getAlertStatusTone(status)} /> },
           {},
         ];
       }),

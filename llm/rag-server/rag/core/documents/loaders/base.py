@@ -70,6 +70,8 @@ def get_active_accounts(cursor):
     )
     cursor.execute(query)
     result = cursor.fetchall()
+    if hasattr(cursor, "connection") and cursor.connection:
+        cursor.connection.commit()
     return result
 
 

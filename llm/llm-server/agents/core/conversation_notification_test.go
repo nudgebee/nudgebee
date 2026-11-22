@@ -1,6 +1,8 @@
 package core
 
 import (
+	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,12 +63,12 @@ func TestRenderFollowupQuestion(t *testing.T) {
 	const markdown = "# Plan\nApprove **this**?"
 
 	t.Run("slack session converts markdown", func(t *testing.T) {
-		got := renderFollowupQuestion(markdown, "C08MHJWAA1Z-1779282615.385979")
+		got := renderFollowupQuestion(markdown, "C08MHJWAA1Z-1779282615.385979", "acc")
 		assert.Equal(t, "*Plan*\nApprove *this*?", got)
 	})
 
 	t.Run("non-slack session keeps original markdown", func(t *testing.T) {
-		got := renderFollowupQuestion(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076")
+		got := renderFollowupQuestion(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076", "acc")
 		assert.Equal(t, markdown, got)
 	})
 }
@@ -80,12 +82,51 @@ func TestRenderFinalResponse(t *testing.T) {
 	const markdown = "# Plan\nApprove **this**?"
 
 	t.Run("slack session converts markdown", func(t *testing.T) {
-		got := renderFinalResponse(markdown, "C08MHJWAA1Z-1779282615.385979")
+		got := renderFinalResponse(markdown, "C08MHJWAA1Z-1779282615.385979", "acc")
 		assert.Equal(t, "*Plan*\nApprove *this*?", got)
 	})
 
 	t.Run("non-slack session keeps original markdown", func(t *testing.T) {
-		got := renderFinalResponse(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076")
+		got := renderFinalResponse(markdown, "fd343b9a-63e2-459c-8c22-3361f308d076", "acc")
 		assert.Equal(t, markdown, got)
 	})
+}
+
+// TestChatCitationPageURL: Slack only links absolute http(s) URLs, so the page
+// is left out when the app's address is not one.
+func TestChatCitationPageURL(t *testing.T) {
+	saved := config.Config.BaseUrl
+	t.Cleanup(func() { config.Config.BaseUrl = saved })
+
+	config.Config.BaseUrl = "https://app.example.com/"
+	assert.Equal(t, "https://app.example.com/ask-nudgebee?accountId=acc&session_id=C0123456789-1792769289.338369",
+		chatCitationPageURL("acc", "C0123456789-1792769289.338369"))
+	assert.Equal(t, "", chatCitationPageURL("", "C0123456789-1.2"))
+
+	config.Config.BaseUrl = "nudgebee"
+	assert.Equal(t, "", chatCitationPageURL("acc", "C0123456789-1.2"))
+}
+
+// A plan step's approval (run_step, remediation loop) carries its type, key and the api package's details, so
+// notifications-server draws it as the step's approval card; every other follow-up is sent exactly as before.
+func TestWithRemediationApproval(t *testing.T) {
+	orig := RemediationApprovalDetails
+	t.Cleanup(func() { RemediationApprovalDetails = orig })
+	RemediationApprovalDetails = func(*security.RequestContext, NBAgentRequest, FollowupRequest) map[string]any {
+		return map[string]any{"recheck": true}
+	}
+	ctx := security.NewRequestContextForSuperAdmin()
+	for _, f := range []FollowupRequest{
+		{FollowupType: FollowupTypeToolConfirmation, ConfirmationKey: "kubectl_write"},
+		{FollowupType: FollowupTypeToolConfirmation},
+		{Question: "which cluster?"},
+	} {
+		data := map[string]any{"question": "q"}
+		withRemediationApproval(ctx, NBAgentRequest{}, f, data)
+		assert.Equal(t, map[string]any{"question": "q"}, data, "unchanged: %+v", f)
+	}
+	data := map[string]any{"question": "q"}
+	withRemediationApproval(ctx, NBAgentRequest{}, FollowupRequest{FollowupType: FollowupTypeToolConfirmation, ConfirmationKey: "run_step:pv:1:apply"}, data)
+	assert.Equal(t, map[string]any{"question": "q", "followupType": string(FollowupTypeToolConfirmation),
+		"confirmationKey": "run_step:pv:1:apply", "remediation": map[string]any{"recheck": true}}, data)
 }

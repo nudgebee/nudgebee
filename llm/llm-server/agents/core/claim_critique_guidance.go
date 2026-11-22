@@ -8,15 +8,16 @@ import (
 	"strings"
 	"time"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-// Step 2 runs after the audit, on its own budget: the audit alone takes most of
-// claimCritiqueTimeout, and guidance p90 was ~12s in the offline replay (#39803).
-const claimGuidanceTimeout = 20 * time.Second
+// Step 2 runs after the audit, on its own budget of the same size: the audit
+// alone takes most of claimCritiqueTimeout, and guidance p90 was ~12s in the
+// offline replay (#39803).
 const claimGuidanceLimit = 2000
 
 const claimGuidanceHeader = "Review of your root-cause analysis. For each weak point: why it is weak, the competing explanation, and the one check that tells them apart. Run the most decisive of these checks (one permitted discriminating read), or revise the answer to what the evidence supports; do not repeat denied evidence paths. " +
@@ -102,7 +103,7 @@ func claimGuidanceFeedback(ctx *security.RequestContext, request NBAgentRequest,
 		// Continue the audit's own request: same conversation, the audit
 		// instruction and its reply, then the guidance instruction.
 		capture.Mode = claimModeContinuation
-		bounded, cancel := context.WithTimeout(cont.conv.ctx.GetContext(), claimGuidanceTimeout)
+		bounded, cancel := context.WithTimeout(cont.conv.ctx.GetContext(), claimCritiqueTimeout())
 		defer cancel()
 		response, err = cont.conv.generate(cont.conv.derive(bounded), request,
 			llms.TextParts(llms.ChatMessageTypeHuman, cont.auditInstruction),
@@ -132,19 +133,19 @@ func claimGuidanceFeedback(ctx *security.RequestContext, request NBAgentRequest,
 			return finish("prepare_error", fmt.Errorf("encode guidance packet: %w", err))
 		}
 
-		bounded, cancel := context.WithTimeout(ctx.GetContext(), claimGuidanceTimeout)
+		bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 		defer cancel()
-		bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
+		bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 		// Like the audit, send the evidence exactly as captured: a pre-flight trim
 		// would let guidance cite observations the model never saw. If the input
 		// cannot be sent unaltered, the call fails and legacy feedback stays.
-		bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
+		bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
 		guidanceCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		messages := []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, prompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, string(input)),
 		}
-		response, err = GenerateAndTrackLLMContent(guidanceCtx, request.UserId, request.AccountId, request.ConversationId,
+		response, err = llmruntime.GenerateAndTrackLLMContent(guidanceCtx, request.UserId, request.AccountId, request.ConversationId,
 			request.MessageId, request.AgentId, false, messages, false, llms.WithTemperature(0), llms.WithJSONMode())
 		if err != nil {
 			return finish("generation_error", fmt.Errorf("generate claim guidance: %w", err))

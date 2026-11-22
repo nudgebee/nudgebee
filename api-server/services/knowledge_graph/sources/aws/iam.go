@@ -169,13 +169,19 @@ func (s *AWSSource) buildServiceIdentityNodes(roles []iamRole, req *core.SourceB
 			}
 		}
 
-		// Convert tags to labels map
+		// Convert tags to labels map, minus AWS-generated identifier keys
+		// (see isAWSUniqueIDTagKey) — those are not names anyone chose.
 		if len(role.Tags) > 0 {
 			labelsMap := make(map[string]string, len(role.Tags))
 			for _, tag := range role.Tags {
+				if isAWSUniqueIDTagKey(tag.Key) {
+					continue
+				}
 				labelsMap[tag.Key] = tag.Value
 			}
-			properties["labels"] = labelsMap
+			if len(labelsMap) > 0 {
+				properties["labels"] = labelsMap
+			}
 		}
 
 		// Unique key: aws:{accountID}:global:ServiceIdentity::{roleName}
@@ -231,6 +237,9 @@ func (s *AWSSource) createServiceIdentityFromIAMUser(resource *sources.CloudReso
 	if len(resource.Tags) > 0 && string(resource.Tags) != "{}" {
 		var tagsMap map[string]interface{}
 		if err := json.Unmarshal(resource.Tags, &tagsMap); err == nil {
+			// An IAM user carries one tag per access key, keyed by the access
+			// key ID — a credential identifier, not a label name.
+			dropAWSUniqueIDTagKeys(tagsMap)
 			properties["labels"] = tagsMap
 		}
 	}

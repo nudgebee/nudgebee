@@ -548,6 +548,19 @@ func normalizeESTimestamp(ts string) string {
 
 // QueryLogs implements [LogSource].
 func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
+	logs, _, err := e.QueryLogsDetailed(ctx, fetchLogRequest)
+	return logs, err
+}
+
+// LabelAliasTargets implements labelAliasTargetsSource: the shipper spellings a
+// Nudgebee label is expanded into (esCanonicalK8sFields).
+func (e *ElasticSource) LabelAliasTargets(name string) []string {
+	return esCandidateFields(name)
+}
+
+// QueryLogsDetailed implements [DetailedLogSource]: the dsl path also reports
+// hits.total and the aggregations the body asked for. PPL reports neither.
+func (e *ElasticSource) QueryLogsDetailed(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, LogQueryDetails, error) {
 	var queryType string
 	if fetchLogRequest.Request != nil {
 		queryType, _ = fetchLogRequest.Request["query_type"].(string)
@@ -563,7 +576,7 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	case "dsl":
 		var jsonMap map[string]interface{}
 		if err := json.Unmarshal([]byte(fetchLogRequest.Query), &jsonMap); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal DSL query: %w", err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to unmarshal DSL query: %w", err)
 		}
 		// Extract query clause if present, otherwise use the whole map as the query
 		if q, ok := jsonMap["query"]; ok {
@@ -577,7 +590,7 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	case "ppl":
 		queryParam = fetchLogRequest.Query
 	default:
-		return nil, fmt.Errorf("unsupported query_type: %v", queryType)
+		return nil, LogQueryDetails{}, fmt.Errorf("unsupported query_type: %v", queryType)
 	}
 	actionParams := map[string]any{
 		"query":      queryParam,
@@ -598,7 +611,9 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 		}
 	}
 
-	if fetchLogRequest.Limit > 0 {
+	// A size the DSL body sets wins, as on the hosted source: an aggregation-only
+	// query sends size 0, and the limit must not turn it back into a line fetch.
+	if _, ok := actionParams["size"]; !ok && fetchLogRequest.Limit > 0 {
 		actionParams["size"] = fetchLogRequest.Limit
 	}
 	if queryType == "dsl" {
@@ -617,12 +632,12 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 		Body:    relayRequest,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute query label: %w", err)
+		return nil, LogQueryDetails{}, fmt.Errorf("failed to execute query label: %w", err)
 	}
 
 	rawJSON, err := e.ExtractRawResponseString(resp)
 	if err != nil {
-		return nil, err
+		return nil, LogQueryDetails{}, err
 	}
 
 	var output []OutputLog
@@ -630,7 +645,7 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	if queryType == "ppl" {
 		var pplResp PPLResponse
 		if err := json.Unmarshal([]byte(rawJSON), &pplResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal PPL response: %w", err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to unmarshal PPL response: %w", err)
 		}
 
 		output = make([]OutputLog, 0, len(pplResp.DataRows))
@@ -655,7 +670,7 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	} else {
 		var searchResp SearchResponse
 		if err := json.Unmarshal([]byte(rawJSON), &searchResp); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal DSL response: %w", err)
+			return nil, LogQueryDetails{}, fmt.Errorf("failed to unmarshal DSL response: %w", err)
 		}
 
 		output = make([]OutputLog, 0, len(searchResp.Hits.Hits))
@@ -665,9 +680,10 @@ func (e *ElasticSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 				output = append(output, log)
 			}
 		}
+		return output, esLogQueryDetails([]byte(rawJSON), esAggsDefinition(otherDSLFields), actionParams["size"], fetchLogRequest.EndTime, fetchLogRequest.IncludeRaw), nil
 	}
 
-	return output, nil
+	return output, LogQueryDetails{}, nil
 }
 
 func (s *ElasticSource) ExtractIndexFieldAndAttributes(resp map[string]any) ([]OutputLogLabelFields, error) {

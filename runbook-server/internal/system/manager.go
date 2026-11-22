@@ -2,11 +2,13 @@ package system
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -114,10 +116,10 @@ func (m *SystemJobManager) ensureSchedule(ctx context.Context, cfg scheduleConfi
 	}
 
 	handle := scheduleClient.GetHandle(ctx, cfg.scheduleID)
-	_, err := handle.Describe(ctx)
-	if err == nil {
+
+	updateSchedule := func() error {
 		m.logger.Info("Updating existing schedule", "scheduleID", cfg.scheduleID)
-		err = handle.Update(ctx, client.ScheduleUpdateOptions{
+		err := handle.Update(ctx, client.ScheduleUpdateOptions{
 			DoUpdate: func(input client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
 				input.Description.Schedule.Spec = &spec
 				input.Description.Schedule.Action = action
@@ -132,17 +134,32 @@ func (m *SystemJobManager) ensureSchedule(ctx context.Context, cfg scheduleConfi
 		if err != nil {
 			return fmt.Errorf("failed to update schedule %s: %w", cfg.scheduleID, err)
 		}
-	} else {
-		m.logger.Info("Creating schedule", "scheduleID", cfg.scheduleID)
-		_, err = scheduleClient.Create(ctx, client.ScheduleOptions{
-			ID:            cfg.scheduleID,
-			Spec:          spec,
-			Action:        action,
-			CatchupWindow: cfg.catchupWindow,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create schedule %s: %w", cfg.scheduleID, err)
+		return nil
+	}
+
+	_, err := handle.Describe(ctx)
+	if err == nil {
+		return updateSchedule()
+	}
+
+	var notFound *serviceerror.NotFound
+	if !errors.As(err, &notFound) {
+		return fmt.Errorf("failed to describe schedule %s: %w", cfg.scheduleID, err)
+	}
+
+	m.logger.Info("Creating schedule", "scheduleID", cfg.scheduleID)
+	_, err = scheduleClient.Create(ctx, client.ScheduleOptions{
+		ID:            cfg.scheduleID,
+		Spec:          spec,
+		Action:        action,
+		CatchupWindow: cfg.catchupWindow,
+	})
+	if err != nil {
+		var alreadyExists *serviceerror.AlreadyExists
+		if errors.As(err, &alreadyExists) {
+			return updateSchedule()
 		}
+		return fmt.Errorf("failed to create schedule %s: %w", cfg.scheduleID, err)
 	}
 
 	return nil

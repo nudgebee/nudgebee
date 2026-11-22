@@ -30,6 +30,7 @@ query ListTicketConfigsForCreate {
       name
       tool
       status
+      url
       projects {
         name
         key
@@ -156,10 +157,23 @@ query ListJiraSummary{
 }
 `;
 
-const GET_JIRA_META = `
-query GetJiraMeta($integration_id: String!, $project_key: String!) {
+// Generic create-meta fetch - every ticketing tool's GetCreateMeta (Jira,
+// ServiceNow, GitHub, GitLab, PagerDuty, ZenDuty, Freshdesk) answers this same
+// action, dispatched by tool on the backend. Named GetTicketCreateMeta (not
+// GetJiraMeta) since Jira is no longer its only caller.
+const GET_TICKET_CREATE_META = `
+query GetTicketCreateMeta($integration_id: String!, $project_key: String!) {
   tickets_get_create_meta(integration_id: $integration_id, project_key: $project_key) {
     data
+  }
+}
+`;
+
+const GET_TRANSITION_META = `
+query GetTicketTransitionMeta($integration_id: String!, $project_key: String!) {
+  tickets_get_transition_meta(integration_id: $integration_id, project_key: $project_key) {
+    data
+    warning
   }
 }
 `;
@@ -182,6 +196,12 @@ query GetCommentsQuery($account_id: String!, $integration_id: String!, $source: 
       comment
       created_at
       updated_at
+      attachments {
+        id
+        name
+        content_type
+        url
+      }
     }
   }
 }
@@ -204,6 +224,12 @@ mutation UpdateCommentsQuery($account_id: String!, $integration_id: String!, $so
       comment
       created_at
       updated_at
+      attachments {
+        id
+        name
+        content_type
+        url
+      }
     }
   }
 }
@@ -255,6 +281,18 @@ const transformIntegrationToLegacyFormat = (integration: any) => {
   };
 };
 
+export interface GitIntegration {
+  name: string;
+  type: 'github' | 'gitlab';
+  /** Base URL repo keys are appended to, e.g. https://github.com */
+  url: string;
+  /** Repos the integration can read: `key` is "owner/repo", `name` the display name. */
+  projects: { key: string; name: string }[];
+  /** "type:name", unique across integrations */
+  key: string;
+  label: string;
+}
+
 const apiIntegrations = {
   listTicketConfigurations: async function (query?: any, refresh = false) {
     try {
@@ -288,11 +326,12 @@ const apiIntegrations = {
     }
   },
 
-  // Used by the create-ticket form only. Unlike listTicketConfigurations (which
-  // hits the admin-only integrations_list action), this routes through the
-  // ticket-server's read-level tickets_list_configs so readonly users can pick a
-  // config. Shape matches what TicketFormSection consumes (id, name, tool,
-  // projects); no credentials are returned.
+  // Used by the create-ticket form and other read-level Git-integration pickers.
+  // Unlike listTicketConfigurations (which hits the admin-only integrations_list
+  // action), this routes through the ticket-server's read-level tickets_list_configs
+  // so readonly users can pick a config. Shape matches what callers consume
+  // (id, name, tool, url, projects); url is plain metadata (e.g. a self-hosted
+  // GitLab base URL), not a credential.
   listTicketConfigsForCreate: async function (query?: { tool?: string; status?: string }) {
     try {
       const response = await queryGraphQL(LIST_TICKET_CONFIGS_FOR_CREATE, 'ListTicketConfigsForCreate');
@@ -309,6 +348,7 @@ const apiIntegrations = {
         tool: c.tool,
         status: c.status,
         is_active: c.status === 'enabled',
+        url: c.url,
         projects: c.projects || [],
       }));
       return {
@@ -321,6 +361,26 @@ const apiIntegrations = {
       // and crash later configList.find(...) calls in TicketFormSection.
       return { data: [] };
     }
+  },
+
+  // Enabled GitHub and GitLab integrations with their repos, shaped for a
+  // "pick an integration, then a repo" dropdown. `key` is "type:name".
+  listGitIntegrations: async function (): Promise<GitIntegration[]> {
+    const res = await apiIntegrations.listTicketConfigsForCreate({ status: 'enabled' });
+    const configs: any[] = res?.data || [];
+    return configs
+      .filter((c) => c.tool === 'github' || c.tool === 'gitlab')
+      .map((c) => {
+        const isGithub = c.tool === 'github';
+        return {
+          name: c.name,
+          type: c.tool,
+          url: isGithub ? 'https://github.com' : c.url || 'https://gitlab.com',
+          projects: Array.isArray(c.projects) ? c.projects : [],
+          key: `${c.tool}:${c.name}`,
+          label: `${isGithub ? 'GitHub' : 'GitLab'}: ${c.name}`,
+        };
+      });
   },
 
   listTool: async function () {
@@ -521,7 +581,7 @@ const apiIntegrations = {
     const cached = cache.get(cacheKey);
     if (cached) return cached;
     try {
-      const response = await queryGraphQL(GET_JIRA_META, 'GetJiraMeta', {
+      const response = await queryGraphQL(GET_TICKET_CREATE_META, 'GetTicketCreateMeta', {
         integration_id: configuration_id,
         project_key: project_key,
       });
@@ -530,6 +590,18 @@ const apiIntegrations = {
       return data;
     } catch (err) {
       console.log('failed to fetch ticket metadata- ', err);
+      return err;
+    }
+  },
+  getTicketTransitionMeta: async function (configuration_id: string, project_key: string) {
+    try {
+      const response = await queryGraphQL(GET_TRANSITION_META, 'GetTicketTransitionMeta', {
+        integration_id: configuration_id,
+        project_key: project_key,
+      });
+      return response?.data || [];
+    } catch (err) {
+      console.log('failed to fetch ticket transition metadata- ', err);
       return err;
     }
   },

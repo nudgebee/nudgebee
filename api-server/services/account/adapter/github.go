@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -106,32 +104,38 @@ func validateGitDetails(gitDetails gitDetailFromDeployment) error {
 	return nil
 }
 
-func checkoutCodeRepo(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitDetailFromDeployment) (string, error) {
+func checkoutCodeRepo(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetails gitDetailFromDeployment) (dir string, err error) {
 	if err := validateGitDetails(gitDetails); err != nil {
 		return "", err
 	}
 
-	dir, err := os.MkdirTemp("", "checkout")
+	dir, err = os.MkdirTemp("", "checkout")
 	if err != nil {
 		ctx.GetLogger().Error("Error creating temp dir", "error", err)
 		return "", err
 	}
-	var gitUrl string
-	if gitDetails.Token == "" {
-		gitUrl = fmt.Sprintf("https://github.com/%s/%s.git", gitDetails.Org, gitDetails.Repo)
-	} else {
-		gitUrl = fmt.Sprintf("https://oauth2:%s@github.com/%s/%s.git", gitDetails.Token, gitDetails.Org, gitDetails.Repo)
-	}
+	// The caller only owns dir on success; a failed checkout removes it. A
+	// failing return has already set dir to "", so remove the saved path.
+	tmpDir := dir
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
+	// The token goes in the environment, not the URL: see gitHTTPAuthEnv.
+	gitUrl := fmt.Sprintf("https://github.com/%s/%s.git", gitDetails.Org, gitDetails.Repo)
 	cmd := exec.Command("git", "clone", "--depth", "1", "-b", gitDetails.BaseBranch, gitUrl, dir)
+	cmd.Env = githubGitEnv(gitDetails.Token)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitCredentials(string(output)))
+		ctx.GetLogger().Error("Error cloning repo", "error", err, "output", redactGitOutput(string(output), gitDetails.Token))
 		return "", err
 	}
 	if gitDetails.Sha1 != "" {
 		cmdFetch := exec.Command("git", "-C", dir, "fetch", "--depth=1", "origin", gitDetails.Sha1)
+		cmdFetch.Env = githubGitEnv(gitDetails.Token)
 		if output, err := cmdFetch.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitCredentials(string(output)), err)
+			return "", fmt.Errorf("fetch specific commit failed: %s, %v", redactGitOutput(string(output), gitDetails.Token), err)
 		}
 		cmdCheckout := exec.Command("git", "-C", dir, "checkout", gitDetails.Sha1)
 		if output, err := cmdCheckout.CombinedOutput(); err != nil {
@@ -522,9 +526,10 @@ func commitCode(ctx AccountAdapterContext, dir string, request ApplyRecommendati
 		}
 		cmd1 := exec.Command("git", "fetch")
 		cmd1.Dir = dir
+		cmd1.Env = githubGitEnv(gitDetails.Token)
 		output1, err1 := cmd1.Output()
 		if err1 != nil {
-			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitCredentials(string(output1)), "branch", branchName)
+			ctx.GetLogger().Error("Error fetching remote branch", "error", err1, "output", redactGitOutput(string(output1), gitDetails.Token), "branch", branchName)
 			return "", err1
 		}
 		cmd2 := exec.Command("git", "checkout", "-b", branchName, "origin/"+branchName)
@@ -662,10 +667,12 @@ func raisePrForCodeRepo(ctx AccountAdapterContext, dir string, branchName string
 	// captured, not just the exit code — a plain .Output() drops it.
 	cmd := exec.Command("git", "push", "origin", branchName, "-f")
 	cmd.Dir = dir
+	cmd.Env = githubGitEnv(gitDetail.Token)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redactGitCredentials(string(output)))
-		return "", fmt.Errorf("git push failed: %s", strings.TrimSpace(redactGitCredentials(string(output))))
+		redacted := redactGitOutput(string(output), gitDetail.Token)
+		ctx.GetLogger().Error("Error pushing branch", "error", err, "output", redacted)
+		return "", fmt.Errorf("git push failed: %s", strings.TrimSpace(redacted))
 	}
 
 	// raise PR
@@ -1731,32 +1738,13 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		}, nil
 	}
 
-	_, authType, _, password, err := getGitCredentials(ctx, providerConfigMap["name"].(string))
+	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return unverifiedPRStatus("GitHub integration: " + err.Error()), nil
 	}
-
-	// Get the actual GitHub token based on auth type
-	var githubToken string
-	if authType == "application" {
-		// For GitHub App, password is the installation ID - need to get installation token
-		ctx.GetLogger().Info("Using GitHub App authentication", "installation_id", password)
-
-		// Use a fresh context with timeout for GitHub API call to avoid "context canceled" errors
-		// when the parent cron job context is cancelled. This ensures the GitHub API call
-		// can complete even if the HTTP request context is cancelled after sending response.
-		span := trace.SpanFromContext(ctx.GetContext())
-		tokenCtx, cancel := context.WithTimeout(trace.ContextWithSpan(context.Background(), span), 30*time.Second)
-		defer cancel()
-
-		githubToken, err = common.GetGithubAppInstallationToken(tokenCtx, password)
-		if err != nil {
-			ctx.GetLogger().Error("Failed to get GitHub App installation token", "error", err)
-			return unverifiedPRStatus("GitHub authentication failed: " + err.Error()), nil
-		}
-	} else {
-		// For token auth, use the password directly as the token
-		githubToken = password
+	integrations, err := loadGitIntegrationConfigs(ctx.GetLogger(), dbms, ctx.GetSecurityContext().GetTenantId(), "github", providerConfigMap["name"].(string))
+	if err != nil {
+		return unverifiedPRStatus("GitHub integration: " + err.Error()), nil
 	}
 
 	prUrlParts := strings.Split(prUrl, "/")
@@ -1774,23 +1762,62 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 	repo := prUrlParts[len(prUrlParts)-3]
 	org := prUrlParts[len(prUrlParts)-4]
 
-	resp, err := common.HttpGet(fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s", org, repo, prId), common.HttpWithHeaders(map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", githubToken),
+	return githubPRStatusFromIntegrations(ctx, integrations, org, repo, prId), nil
+}
+
+// githubPRStatusFromIntegrations asks GitHub for the pull request with each
+// integration in turn, moving on only while the answer is that the credential
+// cannot see it. The first failure is the one reported: it is the picked
+// integration's.
+func githubPRStatusFromIntegrations(ctx AccountAdapterContext, integrations []gitIntegrationConfig, org, repo, prID string) GetRecommendationResolutionStatusResponse {
+	var firstFailure GetRecommendationResolutionStatusResponse
+	failed := false
+	for _, integration := range integrations {
+		statusCode, body, err := lookupGitHubPR(ctx, integration.Values, org, repo, prID)
+		if err == nil && statusCode == 200 {
+			return githubPRStatusFromResponse(statusCode, body)
+		}
+		var answer GetRecommendationResolutionStatusResponse
+		if err != nil {
+			ctx.GetLogger().Error("Error getting PR status", "integration", integration.Name, "error", err)
+			answer = unverifiedPRStatus(err.Error())
+		} else {
+			ctx.GetLogger().Error("Error getting PR status", "integration", integration.Name, "status", statusCode, "data", string(body))
+			answer = githubPRStatusFromResponse(statusCode, body)
+		}
+		if !failed {
+			firstFailure, failed = answer, true
+		}
+		if !errors.Is(err, errAppTokenFailed) && (err != nil || !credentialCannotSee(statusCode)) {
+			return answer
+		}
+	}
+	if !failed {
+		return unverifiedPRStatus("no GitHub integration to ask")
+	}
+	return firstFailure
+}
+
+// lookupGitHubPR asks GitHub for a pull request with one integration's
+// credential. err is set only when no answer was read; its text is shown to
+// the user.
+func lookupGitHubPR(ctx AccountAdapterContext, cfg map[string]string, org, repo, prID string) (int, []byte, error) {
+	token, err := githubAPIToken(ctx.GetContext(), cfg)
+	if err != nil {
+		return 0, nil, fmt.Errorf("GitHub authentication failed: %w", err)
+	}
+	resp, err := common.HttpGet(fmt.Sprintf("%s/repos/%s/%s/pulls/%s", githubAPIBase, org, repo, prID), common.HttpWithHeaders(map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", token),
 	}))
 	if err != nil {
-		ctx.GetLogger().Error("Error getting PR status", "error", err)
-		return unverifiedPRStatus("GitHub request failed: " + err.Error()), nil
+		return 0, nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	jsonBodyBytes, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return unverifiedPRStatus("reading GitHub's response: " + err.Error()), nil
+		return 0, nil, fmt.Errorf("reading GitHub's response: %w", err)
 	}
-	if resp.StatusCode != 200 {
-		ctx.GetLogger().Error("Error getting PR status", "status", resp.StatusCode, "data", string(jsonBodyBytes))
-	}
-	return githubPRStatusFromResponse(resp.StatusCode, jsonBodyBytes), nil
+	return resp.StatusCode, body, nil
 }
 
 // githubPRStatusFromResponse maps GitHub's answer for a pull request onto a

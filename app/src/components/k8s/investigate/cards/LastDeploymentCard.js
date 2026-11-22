@@ -1,14 +1,8 @@
 import React, { useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import Datetime, { formatClockCompact } from '@shared/format/Datetime';
-import {
-  describeChangeTiming,
-  describeRollbackWrites,
-  isPathAncestor,
-  isRolloutOnlyKey,
-  normalizePath,
-  shiftsListPosition,
-} from '@components/k8s/investigate/changeRollback';
+import { describeChangeTiming, describeRollbackWrites, isRolloutOnlyKey, normalizePath } from '@components/k8s/investigate/changeRollback';
+import { useRollbackCheck } from '@components/k8s/investigate/useRollbackCheck';
 import { Modal } from '@ui/Modal';
 import { Box, Typography } from '@mui/material';
 import { Divider } from '@ui/Divider';
@@ -161,39 +155,6 @@ export const isScaleOnlyChange = (fields) => {
   return paths.includes('spec.replicas') && paths.every((p) => p === 'spec.replicas' || (p && isRolloutOnlyKey(p)));
 };
 
-// markSupersededChanges annotates each change (newest first) with the nearest newer change that
-// conflicts with rolling it back: one that moved the same field (or a parent or child of it) to a
-// different value, or added or removed a list item at or before one of its positions — after which
-// that position names a different item. Rolling such a change back would undo the later change or
-// write into the wrong item, so the server refuses it — offering it anyway meant a click that could
-// only fail. This mirrors the server's rule (laterChangeConflict), rollout annotations included:
-// they are part of what a revert writes. A change whose field list was cut short (fields_omitted) cannot be judged
-// from here and is left to the server.
-// Mirrors the server's sameChangedValue: absent and null are the same, anything else by its JSON.
-const sameChangedValue = (a, b) => (a ?? null) === (b ?? null) || JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-
-export const markSupersededChanges = (deployments) =>
-  (Array.isArray(deployments) ? deployments : []).map((d, index, all) => {
-    if (!Array.isArray(d?.changedFields) || d.changedFields.length === 0 || d.fieldsOmitted > 0) return d;
-    const mine = new Map(d.changedFields.map((f) => [normalizePath(f?.path), f?.new]));
-    for (let j = index - 1; j >= 0; j--) {
-      const later = all[j];
-      const clash = (later?.changedFields || []).some((f) => {
-        const path = normalizePath(f?.path);
-        // The same change recorded twice is not a later change (the server skips these too). Compared
-        // by content, as the server does: an object value parsed twice is never ===.
-        if (mine.has(path) && sameChangedValue(mine.get(path), f?.new)) return false;
-        // An add or remove shows as one side of the item absent.
-        const addsOrRemoves = f?.old === null || f?.old === undefined || f?.new === null || f?.new === undefined;
-        return [...mine.keys()].some(
-          (p) => p === path || isPathAncestor(path, p) || isPathAncestor(p, path) || (addsOrRemoves && shiftsListPosition(path, p))
-        );
-      });
-      if (clash) return { ...d, supersededBy: later.timestamp || '' };
-    }
-    return d;
-  });
-
 // summarizeChangedFields names what a change touched in a few words, so a row can say "image" rather
 // than leaving the operator to open the dialog to learn what a rollback would undo.
 export const summarizeChangedFields = (fields) => {
@@ -251,6 +212,35 @@ ChangedField.propTypes = {
     old: PropTypes.string,
     new: PropTypes.string,
   }).isRequired,
+};
+
+// RollbackOffer is one history row's rollback button. Whether a change can still be rolled back on
+// its own is the server's to say: it alone sees what was recorded after the alert, and it alone
+// knows when a later change has itself been undone. The page used to decide from the history it was
+// loaded with, which could do neither. Until the answer is "changed again" the row offers the
+// rollback, and the dialog asks again when it opens.
+const RollbackOffer = ({ accountId, eventId, changeEventId, disabled, onRollBack }) => {
+  const check = useRollbackCheck({ accountId, eventId, changeEventId });
+  if (check.status === 'blocked') {
+    return (
+      <Typography title={check.reason} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', whiteSpace: 'nowrap' }}>
+        {'Changed again later'}
+      </Typography>
+    );
+  }
+  return (
+    <Button size='xs' tone='secondary' disabled={disabled} onClick={onRollBack}>
+      {'Roll back'}
+    </Button>
+  );
+};
+
+RollbackOffer.propTypes = {
+  accountId: PropTypes.string,
+  eventId: PropTypes.string,
+  changeEventId: PropTypes.string,
+  disabled: PropTypes.bool,
+  onRollBack: PropTypes.func.isRequired,
 };
 
 // DeploymentHistoryContent lists every change recorded before the alert and lets the operator
@@ -349,10 +339,14 @@ const DeploymentHistoryContent = ({ history, event, cardId, changeChoices }) => 
                   {expandedId === d.eventId ? 'Hide diff' : 'Show diff'}
                 </Button>
               )}
-              {isRevertableChange(d) && d.supersededBy === undefined && (
-                <Button size='xs' tone='secondary' disabled={!canRevert} onClick={() => setRevertChangeId(d.eventId)}>
-                  {'Roll back'}
-                </Button>
+              {isRevertableChange(d) && (
+                <RollbackOffer
+                  accountId={event?.cloud_account_id}
+                  eventId={event?.id}
+                  changeEventId={d.eventId}
+                  disabled={!canRevert}
+                  onRollBack={() => setRevertChangeId(d.eventId)}
+                />
               )}
               {/* Each label is said only where the data shows it. A change with no recorded field
                   list is offered and left to the server, never labelled with a claim we cannot make. */}
@@ -369,14 +363,6 @@ const DeploymentHistoryContent = ({ history, event, cardId, changeChoices }) => 
               )}
               {d.changedFields.length > 0 && isScaleOnlyChange(d.changedFields) && (
                 <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', whiteSpace: 'nowrap' }}>{'Scale only'}</Typography>
-              )}
-              {isRevertableChange(d) && d.supersededBy !== undefined && (
-                <Typography
-                  title='A later change edited the same fields, so rolling this one back on its own would undo that change too.'
-                  sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', whiteSpace: 'nowrap' }}
-                >
-                  {d.supersededBy ? `Replaced by the ${formatClockCompact(d.supersededBy)} change` : 'Replaced by a later change'}
-                </Typography>
               )}
             </Box>
           </Box>
@@ -587,16 +573,12 @@ class LastDeploymentCard {
             valueTruncated: !!d.value_truncated,
           })),
         };
-        this.deploymentHistory.deployments = markSupersededChanges(this.deploymentHistory.deployments);
-        // Every change that can be rolled back on its own is a choice in the rollback dialog, newest
-        // first. Only the newest used to be offered, so a workload with an image bump and a separate
-        // env change could act on one of them. A change a later one overwrote is not offered — the
-        // server refuses it, and a choice that cannot be chosen is noise; the Evidence tab still lists
-        // it as replaced. A restart, a scale or another object's change is not a deploy to put back.
+        // Every change that is a deploy to put back is a choice in the rollback dialog, newest first:
+        // a restart, a scale or another object's change is not one. Whether a later change stands in
+        // the way of a choice is asked of the server when it is picked — this history stops at the
+        // alert, so it cannot know what changed after, nor that a later change was itself undone.
         this.setRollbackChoices(
-          this.deploymentHistory.deployments
-            .filter((d) => isRevertableChange(d) && d.supersededBy === undefined)
-            .map((d) => this.buildChoice(d.eventId, d.timestamp, d.changedFields))
+          this.deploymentHistory.deployments.filter(isRevertableChange).map((d) => this.buildChoice(d.eventId, d.timestamp, d.changedFields))
         );
         this.renderContent = true;
       }
@@ -745,10 +727,17 @@ class LastDeploymentCard {
     this.actionDetail = !newest
       ? ''
       : this.choosesTarget
-      ? [`${choices.length} recent changes can be rolled back`, newest.timing ? `newest ${newest.timing}` : ''].filter(Boolean).join(' · ')
+      ? [`${choices.length} recent changes to choose from`, newest.timing ? `newest ${newest.timing}` : ''].filter(Boolean).join(' · ')
       : [newest.timing, newest.writes ? `rolls back ${newest.writes}` : newest.summary ? `changes ${newest.summary}` : '']
           .filter(Boolean)
           .join(' · ');
+    // A row naming one change states that change's recorded values as what is running now. Only the
+    // server knows whether the workload was changed again since, so that row asks it
+    // (RollbackActionDetail) and says this instead when it was.
+    this.checksRollback = choices.length === 1;
+    this.blockedActionDetail = this.checksRollback
+      ? [newest.timing, 'changed again since, so this change cannot be rolled back on its own'].filter(Boolean).join(' · ')
+      : '';
   };
 
   // A stable component: the page asks for it on every render, and a fresh one each time would remount

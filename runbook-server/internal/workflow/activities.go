@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks"
 	configSvc "nudgebee/runbook/services/config"
 	"time"
+
+	"go.temporal.io/sdk/activity"
 )
 
 // WorkflowActivities holds dependencies for workflow-related activities.
@@ -19,7 +23,23 @@ type WorkflowActivities struct {
 // Internal_UpdateLastExecutionStatus updates the last execution status of a workflow.
 func (a *WorkflowActivities) Internal_UpdateLastExecutionStatus(ctx context.Context, wf model.Workflow, status model.WorkflowExecutionStatus, statusMessage string) error {
 	statusMessage = a.scrubSecrets(ctx, wf.TenantID, wf.AccountID, statusMessage)
-	return a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage, wf.LastExecutionVersion)
+	if err := a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage, wf.LastExecutionVersion); err != nil {
+		return err
+	}
+	if runFinished != nil && wf.Binding.IsAutomation() && activity.IsActivity(ctx) && isTerminalStatus(status) {
+		return runFinished(ctx, wf, activity.GetInfo(ctx).WorkflowExecution.RunID, status, statusMessage)
+	}
+	return nil
+}
+
+// isTerminalStatus reports whether status is where an execution ends.
+func isTerminalStatus(status model.WorkflowExecutionStatus) bool {
+	switch status {
+	case model.WorkflowExecutionStatusCompleted, model.WorkflowExecutionStatusFailed, model.WorkflowExecutionStatusCanceled,
+		model.WorkflowExecutionStatusTerminated, model.WorkflowExecutionStatusTimedOut:
+		return true
+	}
+	return false
 }
 
 // scrubSecrets replaces the account's credential values in a failure message
@@ -33,7 +53,21 @@ func (a *WorkflowActivities) scrubSecrets(ctx context.Context, tenantID, account
 	if err != nil {
 		return text
 	}
-	return ScrubSecretValues(text, SecretValues(resp.Secrets))
+	return logsafe.ScrubSecretValues(text, logsafe.SecretValues(resp.Secrets))
+}
+
+// StepSecretLoader loads an account's secret values for TaskWrapper to mask in
+// each step's logs and errors: every secret a run could render, tenant-wide
+// ones included, whatever the run's restrict_to_account setting.
+func StepSecretLoader(configService configSvc.ConfigService) tasks.SecretLoader {
+	a := &WorkflowActivities{ConfigService: configService}
+	return tasks.NewCachedSecretLoader(func(ctx context.Context, tenantID, accountID string) ([]string, error) {
+		resp, err := a.FetchWorkflowConfigsActivity(ctx, tenantID, accountID, false)
+		if err != nil {
+			return nil, err
+		}
+		return logsafe.SecretValues(resp.Secrets), nil
+	})
 }
 
 // FetchWorkflowDefinitionActivity fetches a workflow definition by its name.

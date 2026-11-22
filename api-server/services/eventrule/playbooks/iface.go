@@ -44,6 +44,11 @@ type PlaybookEvent struct {
 	AggregationKey          string          `json:"aggregation_key"`
 	Fingerprint             string          `json:"fingerprint"`
 	ExistingEvidenceActions map[string]bool `json:"existing_evidence_actions,omitempty"`
+	// CloudResourceId is the cloud_resourses row the event is already linked to,
+	// when the emitter linked it. Enrichers that describe the event's resource read
+	// this row rather than re-matching it from labels, which can hit another row
+	// that shares the resource's id (a cost-report or Systems Manager record).
+	CloudResourceId string `json:"cloud_resource_id,omitempty"`
 	// Deadline, when non-zero, bounds the whole playbook run. ExecutePlaybook checks
 	// it before starting each action and stops early, returning the results it has
 	// so far rather than abandoning them. Actions themselves are not cancellable

@@ -19,11 +19,20 @@ var (
 )
 
 func RegisterNBToolFactory(tool string, toolFactory func(accountId string) (NBTool, error)) {
-	slog.Info("registering tool", "tool", tool)
+	slog.Debug("registering tool", "tool", tool)
 	if _, ok := nbSystemTools[strings.ToLower(tool)]; ok {
 		slog.Warn("tool already registered", "tool", tool)
 	}
 	nbSystemTools[strings.ToLower(tool)] = toolFactory
+}
+
+// isSystemToolName reports whether a built-in tool or agent (or an alias of
+// one) is registered under name, which a custom tool must not take.
+func isSystemToolName(name string) bool {
+	lower := strings.ToLower(name)
+	_, isTool := nbSystemTools[lower]
+	_, isAlias := toolAliases[lower]
+	return isTool || isAlias
 }
 
 // RegisterNBToolAlias adds a deprecated/short name that resolves to the same
@@ -200,20 +209,5 @@ func RegisterToolCacheInvalidator(fn func(accountId string)) {
 func InvalidateAllCaches(accountId string) {
 	for _, fn := range toolCacheInvalidators {
 		fn(accountId)
-	}
-}
-
-func NewCustomTool(tool ToolDto) NBTool {
-	switch tool.ExecutorType {
-	case ToolExecutorTypeMCP:
-		// MCP tools from llm_tools are deprecated — use MCP integrations instead
-		slog.Warn("tools: MCP executor type in llm_tools is deprecated, use MCP integrations", "tool_id", tool.Id)
-		return nil
-	case ToolExecutorTypeContainer:
-		return nbCustomContainerTool{tool: tool}
-	default:
-		// Workflow executor type is deprecated
-		slog.Warn("tools: unsupported executor type in NewCustomTool", "executor_type", tool.ExecutorType)
-		return nil
 	}
 }

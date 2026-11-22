@@ -248,7 +248,7 @@ func (t *RunScriptTask) Execute(taskCtx types.TaskContext, params map[string]any
 	}
 
 	// Instantiate Executor
-	executor, err := executors.NewExecutor(config)
+	executor, err := newExecutor(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create executor: %w", err)
 	}
@@ -517,6 +517,10 @@ var getAccountCredentials = cloud.GetAccountCredentials
 // getAccountProvider is a variable so tests can name an account's provider
 // without a database.
 var getAccountProvider = cloud.GetAccountProvider
+
+// newExecutor is a variable so tests can run a step without a cluster, relay
+// or cloud to execute on.
+var newExecutor = executors.NewExecutor
 
 // applyAccountCredentials fetches credentials for the account the step names and
 // merges them into the script's environment.

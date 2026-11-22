@@ -9,6 +9,7 @@ import (
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/kgnotify"
 	"nudgebee/collector/cloud/providers"
+	awsProvider "nudgebee/collector/cloud/providers/aws"
 	"nudgebee/collector/cloud/security"
 	"runtime/debug"
 	"slices"
@@ -363,8 +364,9 @@ func agentStatusForUsageSync(err error) AgentStatus {
 
 func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month, year int) (StoreUsageReportResponse, error) {
 	// Capture month-of-call before any defers so the post-report publish is
-	// stable across mid-run month rollovers.
-	callTime := time.Now()
+	// stable across mid-run month rollovers. UTC to match the billing data
+	// and report dates this is compared against elsewhere in this file.
+	callTime := time.Now().UTC()
 	currentMonth := callTime.Month()
 	currentYear := callTime.Year()
 
@@ -536,10 +538,17 @@ func StoreUsage(ctx *security.RequestContext, accountId string, month time.Month
 		ctx.GetLogger().Info("usagereport: updated resources from usage report", "time", time.Since(t0).String(), "count", resourceCnt)
 	}
 
-	// trigger notifications
-	err = sendDailySpendNotification(ctx, dbms, accountId, account.AccountName, sink)
-	if err != nil {
-		ctx.GetLogger().Error("usagereport: unable to send notification", "error", err)
+	// trigger notifications - only for the current-month job. The previous-month
+	// job (publishPreviousMonth in StoreDailyUsageReportForAllAccounts) exists
+	// solely to backfill late-settling AWS/Azure billing data and runs on the
+	// same day as the current-month job; notifying for it too would send the
+	// daily spend report to Slack twice with conflicting numbers.
+	if month == currentMonth && year == currentYear {
+		if notifyErr := sendDailySpendNotification(ctx, dbms, accountId, account.AccountName, sink); notifyErr != nil {
+			ctx.GetLogger().Error("usagereport: unable to send notification", "error", notifyErr)
+		}
+	} else {
+		ctx.GetLogger().Debug("usagereport: skipping notification for non-current-month job", "month", month, "year", year)
 	}
 
 	// update spends
@@ -717,13 +726,13 @@ func storeAccountRecommendations(ctx *security.RequestContext, accountId string)
 // (account-level, not in cloud_resourses). The post-report job runs it before
 // resource discovery: it needs only a few account-level calls, and run after a
 // slow discovery it was the step left with no time budget.
-// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
+// AWS: costoptimizationhub, costexplorer, commitments, computeoptimizer, trustedadvisor
 // GCP: recommender
 // Azure: advisor
 func storeNativeAccountRecommendations(ctx *security.RequestContext, accountId string) map[string]StoreUsageRecommendationResponse {
 	t0 := time.Now()
 	data := map[string]StoreUsageRecommendationResponse{}
-	nativeServices := []string{"costoptimizationhub", "costexplorer", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
+	nativeServices := []string{"costoptimizationhub", "costexplorer", "commitments", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
 	for _, svc := range nativeServices {
 		r, err := StoreRecommendations(ctx, accountId, providers.ListRecommendationsRequest{
 			ServiceName: svc,
@@ -794,8 +803,21 @@ func discoverAndStoreAccountResources(ctx *security.RequestContext, accountId st
 		ctx.GetLogger().Info("usagereport: adding missing default service for discovery", "service", defaultSvc, "provider", account.CloudProvider, "accountId", accountId)
 	}
 
+	// The regions passed per service are where its rows are, so on an account
+	// with a region allowlist a region added to the list would never be crawled
+	// for a service already seen elsewhere. Adding the list keeps this full sync
+	// in step with it; StoreResources crawls only the allowed part and archives
+	// the rest.
+	var allowedRegions []string
+	if accErr == nil && strings.EqualFold(account.CloudProvider, "aws") {
+		allowedRegions = awsProvider.ConfiguredRegions(account)
+	}
+
 	// sync resources
 	for serviceName, regions := range serviceRegionsMaps {
+		if len(allowedRegions) > 0 && !isGlobalAwsService(serviceName) {
+			regions = lo.Union(regions, allowedRegions)
+		}
 		r, err := StoreResources(ctx, accountId, serviceName, regions...)
 		msg := ""
 		if err != nil && !errors.Is(err, errors.ErrUnsupported) {

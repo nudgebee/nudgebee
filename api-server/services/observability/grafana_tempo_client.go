@@ -18,7 +18,12 @@ const (
 	tempoSearchMaxWindow  = 168*time.Hour - time.Minute
 	tempoMetricsMaxWindow = 24*time.Hour - time.Minute
 	tempoRequestTimeout   = 30 * time.Second
-	tempoDefaultPageSize  = 50
+	// tempoDefaultPageSize applies only when a caller sets no limit. The Traces tab, the
+	// phased trace evidence and the LLM path all set one. The callers left are bulk readers:
+	// the service map, which links parent and child spans and so needs whole call chains
+	// rather than one listing page, and the raw-query trace evidence action, whose stored
+	// payload is capped downstream (capTraceEvidence).
+	tempoDefaultPageSize = 500
 	// tempoSpanCap bounds how deep the listing pages: /api/search has no offset, so page N
 	// is served by fetching the newest N*size spans and slicing. 1000 matches the largest
 	// caller (the LLM trace path).

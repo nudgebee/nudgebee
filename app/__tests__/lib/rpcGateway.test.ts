@@ -21,15 +21,9 @@ import type { JWT } from 'next-auth/jwt';
 jest.mock('next-auth/jwt', () => ({ getToken: jest.fn() }));
 jest.mock('@lib/internal', () => ({ decrypt: jest.fn() }));
 
-import {
-  ACCOUNT_ENFORCED_ACTIONS,
-  actionHasCustomGrant,
-  applySelection,
-  buildSessionVariables,
-  parseOperation,
-  tryBypassGraphQL,
-} from '@lib/rpcGateway';
+import { actionHasCustomGrant, applySelection, buildSessionVariables, parseOperation, tryBypassGraphQL } from '@lib/rpcGateway';
 import { classifyAction } from '@lib/permissionCatalog';
+import { loadRpcRoutes } from '@lib/rpcRoutes';
 import { LIST_GATEWAY_REQUESTS } from '@api1/gateway-usage';
 
 // Pull a top-level field's selection set out of a query string. The bypass
@@ -195,6 +189,7 @@ describe('gateway-usage list-requests contract', () => {
       startDate: '2026-07-08T00:00:00Z',
       endDate: '2026-07-14T23:59:59.999Z',
       userId: 'u-1',
+      apiKeyId: 'k-1',
       providers: ['anthropic'],
       models: ['claude-fable-5'],
       status: 'error',
@@ -216,6 +211,7 @@ describe('gateway-usage list-requests contract', () => {
         start_date: '2026-07-08T00:00:00Z',
         end_date: '2026-07-14T23:59:59.999Z',
         user_id: 'u-1',
+        api_key_id: 'k-1',
         providers: ['anthropic'],
         models: ['claude-fable-5'],
         status: 'error',
@@ -303,6 +299,26 @@ describe('buildSessionVariables', () => {
   it('appends super_admin to allowed-roles for super-admin sessions', () => {
     const vars = buildSessionVariables({ ...baseJwt, isSuperAdmin: true } as JWT);
     expect(vars.allowed_roles).toEqual(['account_admin', 'k8s_namespace_admin', 'super_admin']);
+  });
+
+  // jwt.roles holds the user's roles in one tenant, so a super-admin role
+  // there came from a tenant-scoped row. Only jwt.isSuperAdmin* grants super admin.
+  it('drops super-admin roles that came in with the tenant roles', () => {
+    const vars = buildSessionVariables({ ...baseJwt, roles: ['tenant_admin', 'super_admin', 'SUPER_ADMIN_READONLY'] } as JWT);
+    expect(vars.allowed_roles).toEqual(['tenant_admin']);
+    expect(vars.role).toBe('tenant_admin');
+  });
+
+  it('keeps super_admin for a real super admin whatever the tenant roles say', () => {
+    const vars = buildSessionVariables({ ...baseJwt, roles: ['super_admin'], isSuperAdmin: true } as JWT);
+    expect(vars.allowed_roles).toEqual(['super_admin']);
+  });
+
+  it('leaves the server identity able to run every action', () => {
+    const serverJwt = { isSuperAdmin: true, roles: ['admin'], tenant: { id: '' }, id: '', sub: '' };
+    const vars = buildSessionVariables(serverJwt as unknown as JWT);
+    expect(vars.role).toBe('admin');
+    expect(vars.allowed_roles).toEqual(['admin', 'super_admin']);
   });
 
   it('falls back to tenant_admin_readonly when roles is empty', () => {
@@ -430,6 +446,38 @@ describe('tryBypassGraphQL', () => {
         },
       },
     });
+  });
+
+  // llm-server honours run claims (X-NB-Run-*) only from service callers: the
+  // gateway must never send them, whatever a browser puts on its request.
+  // Pinning the exact header set means any new forwarded header (a client
+  // header passthrough included) fails here and gets a deliberate review.
+  it('sends upstream only its fixed header set, never a run claim header', async () => {
+    const fetchMock = mockFetchOnce({ items: [] });
+    await tryBypassGraphQL({
+      query: 'query A { integrations_list(limit: 1) { items { id } } }',
+      variables: undefined,
+      jwt: adminJwt,
+      clientAuthorization: 'Bearer abc',
+      traceparent: 'tp',
+      requestId: 'rid',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const headerNames = Object.keys(fetchMock.mock.calls[0][1].headers).map((h) => h.toLowerCase());
+    expect(headerNames.filter((h) => h.startsWith('x-nb-run-'))).toEqual([]);
+    const allowed = new Set([
+      'content-type',
+      'traceparent',
+      'x-request-id',
+      'x-tenant-id',
+      'x-user-id',
+      'x-user-role',
+      'x-user-roles',
+      'authorization',
+      // per-action service tokens declared in actions.yaml `headers:`
+      'x-action-token',
+    ]);
+    expect(headerNames.filter((h) => !allowed.has(h))).toEqual([]);
   });
 
   it('coerces a single value into a list when the schema declares the arg as a list', async () => {
@@ -1106,85 +1154,88 @@ describe('actionHasCustomGrant (dynamic-RBAC gate)', () => {
 
   it('tenant-global grant authorizes on any route (query + custom)', () => {
     const perms = ['events:Read'];
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: QUERY }, perms)).toBe(true);
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: CUSTOM }, perms)).toBe(true);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: QUERY }, perms)).toBe(true);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM }, perms)).toBe(true);
   });
 
   it('tenant-global Write satisfies a Read action (Write⇒Read), any route', () => {
     const perms = ['events:Write'];
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: CUSTOM }, perms)).toBe(true);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM }, perms)).toBe(true);
     // but not the other direction: Read does not satisfy Write
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Write', handler: QUERY }, ['events:Read'])).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Write', handler: QUERY }, ['events:Read'])).toBe(false);
   });
 
   it('scoped grant authorizes ONLY on the /rpc/query route', () => {
     const perms = ['scoped:events:Read'];
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: QUERY }, perms)).toBe(true);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: QUERY }, perms)).toBe(true);
     // custom-handler action: scoped grant must NOT admit (no per-account gate)
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: CUSTOM }, perms)).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM }, perms)).toBe(false);
   });
 
   // A custom handler has no uniform per-account gate, so a scoped grant is
-  // admitted off /rpc/query only for actions on ACCOUNT_ENFORCED_ACTIONS — the
-  // ledger of handlers verified to re-check the account themselves.
-  it('scoped grant admits a custom-handler action only when it is on the enforced ledger', () => {
+  // admitted off /rpc/query only for actions actions.yaml flags
+  // `account_enforced` — handlers verified to re-check the account themselves.
+  it('scoped grant admits a custom-handler action only when it is flagged account_enforced', () => {
     const perms = ['scoped:events:Read'];
-    const route = { permission: 'events:Read', handler: CUSTOM };
-    expect(actionHasCustomGrant('event_get_timeline', route, perms)).toBe(false);
-
-    ACCOUNT_ENFORCED_ACTIONS.add('event_get_timeline');
-    try {
-      expect(actionHasCustomGrant('event_get_timeline', route, perms)).toBe(true);
-      // Being on the ledger does not relax the module/class match.
-      expect(actionHasCustomGrant('event_get_timeline', { permission: 'events:Write', handler: CUSTOM }, perms)).toBe(false);
-    } finally {
-      ACCOUNT_ENFORCED_ACTIONS.delete('event_get_timeline');
-    }
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM }, perms)).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM, accountEnforced: false }, perms)).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM, accountEnforced: true }, perms)).toBe(true);
+    // The flag does not relax the module/class match.
+    expect(actionHasCustomGrant({ permission: 'events:Write', handler: CUSTOM, accountEnforced: true }, perms)).toBe(false);
   });
 
-  it('the enforced ledger never admits a caller holding no grant at all', () => {
-    ACCOUNT_ENFORCED_ACTIONS.add('event_get_timeline');
-    try {
-      expect(actionHasCustomGrant('event_get_timeline', { permission: 'events:Read', handler: CUSTOM }, [])).toBe(false);
-    } finally {
-      ACCOUNT_ENFORCED_ACTIONS.delete('event_get_timeline');
+  it('the account_enforced flag never admits a caller holding no grant at all', () => {
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM, accountEnforced: true }, [])).toBe(false);
+  });
+
+  it('bee page reads: a workflows grant, scoped or global, admits them; the tenant-admin actions stay unreachable by scoped grants', () => {
+    const routes = loadRpcRoutes();
+    for (const name of ['bees_list', 'bees_get_install', 'bees_list_runs', 'bees_list_approvals']) {
+      const route = { permission: 'workflows:Read', handler: '{{WORKFLOW_SERVER_URL}}/bees/x', accountEnforced: true };
+      expect(classifyAction(name)).toEqual({ module: 'workflows', class: 'Read' });
+      expect(actionHasCustomGrant(route, ['workflows:Read'])).toBe(true);
+      expect(actionHasCustomGrant(route, ['scoped:workflows:Read'])).toBe(true);
+      expect(actionHasCustomGrant(route, ['scoped:k8s:Read'])).toBe(false);
+    }
+    for (const name of ['bees_install', 'bees_uninstall', 'bees_check_install', 'bees_update_modes']) {
+      expect(routes[name]?.accountEnforced).toBeFalsy();
     }
   });
 
   it('relay_forward_request: a k8s:Read grant admits the live-cluster relay proxy', () => {
     // Re-homed from the non-grantable `relay` module to k8s at the Read bar.
     expect(classifyAction('relay_forward_request')).toEqual({ module: 'k8s', class: 'Read' });
-    // relay.go re-checks the account per-request, so it is on the enforced ledger.
-    expect(ACCOUNT_ENFORCED_ACTIONS.has('relay_forward_request')).toBe(true);
+    // relay.go re-checks the account per-request, so actions.yaml flags it account_enforced.
+    const route = loadRpcRoutes()['relay_forward_request'];
+    expect(route.accountEnforced).toBe(true);
 
-    const route = { permission: 'k8s:Read', handler: '{{SERVICE_API_SERVER_URL}}/v1/relay/request' };
     // tenant-global k8s:Read — and k8s:Write via the Write⇒Read relaxation — admit it
-    expect(actionHasCustomGrant('relay_forward_request', route, ['k8s:Read'])).toBe(true);
-    expect(actionHasCustomGrant('relay_forward_request', route, ['k8s:Write'])).toBe(true);
-    // account-scoped k8s:Read admits it because it is on the enforced ledger (relay.go gates the account)
-    expect(actionHasCustomGrant('relay_forward_request', route, ['scoped:k8s:Read'])).toBe(true);
+    expect(actionHasCustomGrant(route, ['k8s:Read'])).toBe(true);
+    expect(actionHasCustomGrant(route, ['k8s:Write'])).toBe(true);
+    // account-scoped k8s:Read admits it because it is flagged (relay.go gates the account)
+    expect(actionHasCustomGrant(route, ['scoped:k8s:Read'])).toBe(true);
     // an unrelated grant does not — the caller falls through to the built-in role check (fail-closed)
-    expect(actionHasCustomGrant('relay_forward_request', route, ['traces:Read'])).toBe(false);
-    expect(actionHasCustomGrant('relay_forward_request', route, [])).toBe(false);
+    expect(actionHasCustomGrant(route, ['traces:Read'])).toBe(false);
+    expect(actionHasCustomGrant(route, [])).toBe(false);
   });
 
   it('scoped Write satisfies a Read action on the query route (Write⇒Read)', () => {
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: QUERY }, ['scoped:events:Write'])).toBe(true);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: QUERY }, ['scoped:events:Write'])).toBe(true);
     // Write action is NOT satisfied by a scoped Read grant
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Write', handler: QUERY }, ['scoped:events:Read'])).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Write', handler: QUERY }, ['scoped:events:Read'])).toBe(false);
   });
 
   it('a scoped grant for a different module does not admit', () => {
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: QUERY }, ['scoped:tickets:Read'])).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: QUERY }, ['scoped:tickets:Read'])).toBe(false);
   });
 
   it('no grant / no route permission → false', () => {
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: QUERY }, [])).toBe(false);
-    expect(actionHasCustomGrant('events_list', { permission: undefined, handler: QUERY }, ['events:Read'])).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: QUERY }, [])).toBe(false);
+    expect(actionHasCustomGrant({ permission: undefined, handler: QUERY }, ['events:Read'])).toBe(false);
   });
 
   it('a bare scoped key never leaks into the tenant-global (any-route) path', () => {
     // holder has ONLY scoped:events:Read — a custom-route events read is denied
-    expect(actionHasCustomGrant('events_list', { permission: 'events:Read', handler: CUSTOM }, ['scoped:events:Read'])).toBe(false);
+    expect(actionHasCustomGrant({ permission: 'events:Read', handler: CUSTOM }, ['scoped:events:Read'])).toBe(false);
   });
 });

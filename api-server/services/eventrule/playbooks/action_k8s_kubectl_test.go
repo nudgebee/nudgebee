@@ -29,3 +29,16 @@ func TestKubectlAction(t *testing.T) {
 	assert.NotNil(t, response)
 	assert.Nil(t, err)
 }
+
+func TestKubectlActionRefusesSecretAccess(t *testing.T) {
+	ctx := defaultPlaybookActionContext{accountId: "acc", logger: slog.Default()}
+	for _, cmd := range []string{
+		"kubectl get secrets -A -o yaml",
+		"kubectl get --raw /api/v1/secrets",
+		"kubectl get pods -o go-template-file=/var/run/secrets/kubernetes.io/serviceaccount/token",
+	} {
+		response, err := (&k8sKubectlAction{}).Execute(&ctx, map[string]any{"command": cmd})
+		assert.Nil(t, response, cmd)
+		assert.ErrorContains(t, err, "blocked", cmd)
+	}
+}

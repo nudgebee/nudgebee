@@ -8,7 +8,7 @@ import (
 var nbSystemTools = map[string]Integration{}
 
 func RegisterIntegration(integration Integration) {
-	slog.Info("registering integration", "integration", integration.Name())
+	slog.Debug("registering integration", "integration", integration.Name())
 	if _, ok := nbSystemTools[strings.ToLower(integration.Name())]; ok {
 		slog.Warn("integration already registered", "tool", integration.Name())
 	}
@@ -22,7 +22,7 @@ func RegisterIntegration(integration Integration) {
 // agent and user variants share a provider name).
 func RegisterIntegrationWithSource(providerName string, source string, integration Integration) {
 	key := strings.ToLower(providerName) + ":" + strings.ToLower(source)
-	slog.Info("registering integration with source", "provider", providerName, "source", source, "integration", integration.Name())
+	slog.Debug("registering integration with source", "provider", providerName, "source", source, "integration", integration.Name())
 	nbSystemTools[key] = integration
 }
 

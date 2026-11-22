@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,10 @@ import (
 	neturl "net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
+	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
+	"nudgebee/services/integrations/promclient"
+	"nudgebee/services/integrations/promforager"
 	"nudgebee/services/security"
 	"strings"
 	"time"
@@ -50,6 +54,10 @@ type LokiConfig struct {
 	// Headers carries any additional headers the deployment needs. Authentication is
 	// not expressed here — AuthType owns it.
 	Headers map[string]string
+	// Transport, when set (connection_mode=vm_agent), sends requests through the
+	// account's forager, which owns the base URL and credentials, so lokiRequest hands
+	// it only the path and the extra headers.
+	Transport promclient.ProxyTransport
 }
 
 // RulerBaseURL returns the base URL for ruler API calls, falling back to the query
@@ -61,27 +69,27 @@ func (c *LokiConfig) RulerBaseURL() string {
 	return c.Url
 }
 
-// GetLokiConfig reads and decrypts the user-sourced Loki integration configuration.
-// Agent-sourced rows are filtered out: they carry no URL, and LokiSource (relay) is the
-// source that serves them.
+// GetLokiConfig reads and decrypts the Loki integration configuration a server-side
+// client connects to: a user-sourced row, or a datasource the account's forager
+// registered. The Kubernetes agent's own rows are filtered out: they carry no URL, and
+// LokiSource (relay) is the source that serves them.
 func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig, error) {
 	dtos, err := core.ListActiveIntegrationConfigs(ctx, accountId, "loki")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get loki integration: %w", err)
 	}
 
-	var userDtos []core.IntegrationDto
-	for _, dto := range dtos {
-		if dto.Source == "user" {
-			userDtos = append(userDtos, dto)
-		}
+	picked, found, err := core.PickServerReachableIntegration(ctx, accountId, core.DefaultLogProvider, dtos)
+	if err != nil {
+		return nil, fmt.Errorf("failed to pick loki integration: %w", err)
 	}
-	if len(userDtos) == 0 {
+	if !found {
 		return nil, fmt.Errorf("no loki integration configured for account %s", accountId)
 	}
 
 	cfg := &LokiConfig{Headers: map[string]string{}}
-	for _, c := range userDtos[0].Configs {
+	var connectionMode, datasourceKey, agentType string
+	for _, c := range picked.Configs {
 		value := c.Value
 		if c.IsEncrypted && value != "" {
 			decrypted, decErr := common.Decrypt(value)
@@ -91,6 +99,12 @@ func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig,
 			value = decrypted
 		}
 		switch c.Name {
+		case integrations.LokiConnectionModeKey:
+			connectionMode = strings.TrimSpace(value)
+		case "datasource_key":
+			datasourceKey = strings.TrimSpace(value)
+		case "agent_type":
+			agentType = strings.TrimSpace(value)
 		case LokiUrl:
 			cfg.Url = strings.TrimRight(strings.TrimSpace(value), "/")
 		case LokiRulesUrl:
@@ -127,8 +141,16 @@ func GetLokiConfig(ctx *security.RequestContext, accountId string) (*LokiConfig,
 		}
 	}
 
-	if cfg.Url == "" {
+	// Through a forager the URL is the forager's own: a datasource it registered from
+	// its config has none on the server side, and requests are sent relative to it.
+	if cfg.Url == "" && connectionMode != integrations.LokiConnectionModeVMAgent {
 		return nil, fmt.Errorf("loki integration is missing %s", LokiUrl)
+	}
+	if connectionMode == integrations.LokiConnectionModeVMAgent {
+		if datasourceKey == "" {
+			datasourceKey = picked.Id
+		}
+		cfg.Transport = promforager.NewTransport(accountId, datasourceKey, agentType)
 	}
 	return cfg, nil
 }
@@ -140,6 +162,9 @@ var lokiHTTPClient = &http.Client{Timeout: 60 * time.Second}
 // lokiRequest executes an authenticated HTTP request against a user-configured Loki.
 // Extra headers are applied first so the explicit credential fields win on conflict.
 func lokiRequest(ctx context.Context, method, rawURL, body, contentType string, cfg *LokiConfig) (*http.Response, error) {
+	if cfg.Transport != nil {
+		return lokiRequestViaForager(ctx, method, rawURL, body, contentType, cfg)
+	}
 	var bodyReader io.Reader
 	if body != "" {
 		bodyReader = strings.NewReader(body)
@@ -170,6 +195,42 @@ func lokiRequest(ctx context.Context, method, rawURL, body, contentType string, 
 		req.Header.Set("X-Scope-OrgID", cfg.TenantID)
 	}
 	return lokiHTTPClient.Do(req)
+}
+
+// lokiRequestViaForager is lokiRequest for a forager-reached Loki: credentials live on
+// the forager's datasource, so only the tenant id and extra headers are sent per request.
+func lokiRequestViaForager(ctx context.Context, method, rawURL, body, contentType string, cfg *LokiConfig) (*http.Response, error) {
+	header := make(http.Header)
+	if contentType != "" {
+		header.Set("Content-Type", contentType)
+	}
+	for k, v := range cfg.Headers {
+		header.Set(k, v)
+	}
+	if cfg.TenantID != "" {
+		header.Set("X-Scope-OrgID", cfg.TenantID)
+	}
+
+	var reqBody []byte
+	if body != "" {
+		reqBody = []byte(body)
+	}
+	relPath := strings.TrimPrefix(rawURL, cfg.Url)
+	status, respHeader, respBody, err := cfg.Transport(ctx, method, relPath, header, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("loki request to %s via forager failed: %w", relPath, err)
+	}
+	if respHeader == nil {
+		respHeader = make(http.Header)
+	}
+	return &http.Response{
+		Status:        fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		StatusCode:    status,
+		Header:        respHeader,
+		Body:          io.NopCloser(bytes.NewReader(respBody)),
+		ContentLength: int64(len(respBody)),
+		Request:       &http.Request{Method: method},
+	}, nil
 }
 
 // readLokiResponse reads the body and turns any non-2xx into an error carrying the

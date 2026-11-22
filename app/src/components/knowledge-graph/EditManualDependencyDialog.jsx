@@ -5,7 +5,9 @@
 //   - source_node_type, source_name, dest_node_type, dest_name required;
 //   - the other six per-side fields (namespace, cluster, arn, account_id,
 //     region) are optional qualifiers that narrow ambiguous matches;
-//   - relationship_type defaults to CALLS.
+//   - relationship_type defaults to CALLS. CALLS / PUBLISHES_TO /
+//     SUBSCRIBES_TO link any two nodes; the other six need a node declared
+//     outside any account at one end (the server refuses them otherwise).
 //
 // The form is a two-column layout (Source | Destination) so the operator
 // can visually parallel the two endpoints. Sits inside the parent DS Modal
@@ -18,6 +20,7 @@ import { Divider } from '@ui/Divider';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import PropTypes from 'prop-types';
 import { Modal } from '@ui/Modal';
+import { Banner } from '@ui/Banner';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
@@ -67,7 +70,17 @@ const CLOUD_NODE_TYPE_OPTIONS = [
   { value: 'LoadBalancer', label: 'LoadBalancer' },
   { value: 'APIGateway', label: 'APIGateway' },
   { value: 'ExternalService', label: 'ExternalService' },
+  { value: 'CloudResource', label: 'CloudResource (other)' },
 ];
+
+// The tenant's own kinds (NetworkSwitch, …) declared outside any account, from
+// kg_get_manual_node_schema. An endpoint names one as its node type.
+const customKindOptions = (schema) =>
+  (schema ?? [])
+    .filter((p) => !p.cloud_account_id)
+    .flatMap((p) => p.kinds ?? [])
+    .filter((k) => k.free_properties)
+    .map((k) => ({ value: k.specific_type, label: `${k.specific_type} (your kind)` }));
 
 const K8S_NODE_TYPE_SET = new Set(K8S_NODE_TYPE_OPTIONS.map((o) => o.value));
 
@@ -78,16 +91,26 @@ const deriveKind = (nodeType) => (nodeType && K8S_NODE_TYPE_SET.has(nodeType) ? 
 
 const defaultNodeTypeForKind = (kind) => (kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS[0].value : CLOUD_NODE_TYPE_OPTIONS[0].value);
 
-// Endpoint identity fields compared to decide whether a side was edited.
-// When a side is untouched on edit we preserve its existing pin instead of
-// letting the backend resolver re-run and clobber it.
-const PIN_COMPARE_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
+// The fields that identify an endpoint. Compared side-against-row to decide
+// whether a side was edited (an untouched side keeps its existing pin instead
+// of letting the backend resolver re-run and clobber it), and source-against-
+// destination to catch a declaration from a node to itself.
+const ENDPOINT_IDENTITY_FIELDS = ['node_type', 'name', 'namespace', 'cluster', 'arn', 'account_id', 'region'];
 
+// The first three link any two nodes; the rest need a node declared outside
+// any account at one end. Which end that is the form cannot tell (a typed
+// Database may be either), so all are offered and the server decides.
 const RELATIONSHIP_OPTIONS = [
-  { value: 'CALLS', label: 'CALLS' },
-  { value: 'PUBLISHES_TO', label: 'PUBLISHES_TO' },
-  { value: 'SUBSCRIBES_TO', label: 'SUBSCRIBES_TO' },
-];
+  'CALLS',
+  'PUBLISHES_TO',
+  'SUBSCRIBES_TO',
+  'CONNECTED_TO',
+  'DEPENDS_ON',
+  'RUNS_ON',
+  'HOSTED_ON',
+  'ROUTES_TO',
+  'BELONGS_TO',
+].map((value) => ({ value, label: value }));
 
 // Per-field tooltip copy. Keeping the wording in one place so we can edit
 // without hunting through JSX. Mirrors the resolver semantics in
@@ -103,11 +126,10 @@ const TOOLTIPS = {
   cluster: 'Optional. K8s cluster name. Use it when the same workload exists in more than one cluster.',
   resourceId:
     'Optional. Deterministic cloud identifier — AWS ARN, Azure resource ID, or GCP self-link. When set, this wins over name matching (most specific match possible).',
-  cloudAccount:
-    'Optional. Strict qualifier — currently AWS-only (Azure subscription_id / GCP project_id support is a deferred backend follow-up). For Azure / GCP, narrow via Region + Resource ID instead.',
+  cloudAccount: 'Optional. Strict qualifier — only nodes in this connected account match (AWS, GCP and Azure).',
   region: 'Optional. Cloud region (us-east-1, eastus, us-central1, …). Useful when the same logical resource exists in multiple regions.',
   relationship:
-    'Edge type. CALLS for synchronous request/response. PUBLISHES_TO / SUBSCRIBES_TO for pub-sub (you must declare both directions; no automatic inverse).',
+    'Edge type. CALLS for synchronous request/response. PUBLISHES_TO / SUBSCRIBES_TO for pub-sub (you must declare both directions; no automatic inverse). These three link any two nodes. The rest need a node declared outside any account at one end: Source RUNS_ON / HOSTED_ON / DEPENDS_ON / ROUTES_TO Destination means the source depends on the destination; CONNECTED_TO has no direction (a cable between two things); BELONGS_TO groups the source under the destination.',
   notes: 'Free-text context for future readers. Surfaces in the manual dependencies table so reviewers can see why a row was declared.',
   kgPickAccount: 'Pick the cloud account whose KG nodes you want to browse. Required to populate the node-type and node dropdowns.',
   kgPickNodeType: 'Pick the KG NodeType. Only types with at least one node in the selected account are shown.',
@@ -177,8 +199,9 @@ const formatAccountOption = (acc) => {
 const accountToSelectValue = (stored) => (stored ? stored : ACCOUNT_ANY_VALUE);
 const selectValueToAccount = (next) => (next === ACCOUNT_ANY_VALUE ? '' : next);
 
-const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
+const EditManualDependencyDialog = ({ open, row, schema, onClose, onSaved }) => {
   const isEdit = Boolean(row?.id);
+  const customKinds = useMemo(() => customKindOptions(schema), [schema]);
   const [form, setForm] = useState(BLANK);
   const [submitting, setSubmitting] = useState(false);
   const [cloudAccounts, setCloudAccounts] = useState([]);
@@ -310,7 +333,8 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             return {
               ...prev,
               [`${prefix}_picker_account_id`]: accountId,
-              [`${prefix}_picker_node_type`]: node.node_type || prev[`${prefix}_node_type`] || '',
+              // The picker's type dropdown lists specific types (grouped by node type).
+              [`${prefix}_picker_node_type`]: node.specific_type || node.node_type || prev[`${prefix}_node_type`] || '',
             };
           });
         })
@@ -421,8 +445,27 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
     return sideOk('source') && sideOk('dest');
   }, [form]);
 
-  const handleSubmit = async () => {
+  // The server refuses a declaration whose two sides are one node — it would
+  // draw a self-loop the investigations then read as a real dependency. Say so
+  // here rather than after the round trip. Two picked nodes are compared by
+  // id, anything else by endpoint text; typing one text on both sides is
+  // refused even where it happens to name two nodes (the server allows that
+  // one, since a pin can still separate them) — pick the two nodes instead.
+  const selfLink = useMemo(() => {
     if (!canSubmit) {
+      return false; // a half-filled form is not yet a self-link; both sides start out blank and identical
+    }
+    const pickOf = (prefix) => (form[`${prefix}_kind`] === KIND_KG_PICK ? form[`${prefix}_picked_node_id`] : '');
+    const sourcePick = pickOf('source');
+    const destPick = pickOf('dest');
+    if (sourcePick && destPick) {
+      return sourcePick === destPick;
+    }
+    return ENDPOINT_IDENTITY_FIELDS.every((f) => (form[`source_${f}`] ?? '').trim() === (form[`dest_${f}`] ?? '').trim());
+  }, [form, canSubmit]);
+
+  const handleSubmit = async () => {
+    if (!canSubmit || selfLink) {
       return;
     }
     setSubmitting(true);
@@ -462,7 +505,8 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
       //      every save, which would otherwise clobber a pin on a side the
       //      operator didn't edit (e.g. they only changed notes/relationship).
       //   3. Otherwise → no pin; let the resolver run.
-      const sideUnchanged = (prefix) => isEdit && PIN_COMPARE_FIELDS.every((f) => (form[`${prefix}_${f}`] ?? '') === (row?.[`${prefix}_${f}`] ?? ''));
+      const sideUnchanged = (prefix) =>
+        isEdit && ENDPOINT_IDENTITY_FIELDS.every((f) => (form[`${prefix}_${f}`] ?? '') === (row?.[`${prefix}_${f}`] ?? ''));
       const pinFor = (prefix) => {
         if (form[`${prefix}_kind`] === KIND_KG_PICK) {
           return form[`${prefix}_picked_node_id`] || '';
@@ -522,6 +566,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='source'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
+            customKinds={customKinds}
           />
           <Divider orientation='vertical' sx={{ mx: 0 }} />
           <EndpointColumn
@@ -534,6 +579,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
             prefix='dest'
             accountOptions={accountOptions}
             cloudAccounts={cloudAccounts}
+            customKinds={customKinds}
           />
         </Box>
 
@@ -553,11 +599,20 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
           </Box>
         </Box>
 
+        {selfLink && (
+          <Banner
+            tone='critical'
+            surface='section'
+            title='Source and destination are the same node'
+            message='Change one side. A dependency from a resource to itself would be drawn as a self-loop in the graph.'
+          />
+        )}
+
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
           <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button tone='primary' size='md' onClick={handleSubmit} disabled={!canSubmit || submitting} loading={submitting}>
+          <Button tone='primary' size='md' onClick={handleSubmit} disabled={!canSubmit || selfLink || submitting} loading={submitting}>
             {isEdit ? 'Save' : 'Create'}
           </Button>
         </Box>
@@ -569,6 +624,8 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
 EditManualDependencyDialog.propTypes = {
   open: PropTypes.bool.isRequired,
   row: PropTypes.object,
+  // kg_get_manual_node_schema: the tenant's own kinds become node-type options.
+  schema: PropTypes.array,
   onClose: PropTypes.func.isRequired,
   onSaved: PropTypes.func.isRequired,
 };
@@ -581,11 +638,25 @@ EditManualDependencyDialog.propTypes = {
 //   - Pick from KG — cascading dropdowns (account → type → node) for direct picking.
 //     Available in create and edit. On submit the picked UUID is pinned via
 //     kg_resolve_manual_dependency so the row resolves first try.
-const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerField, onPickNode, prefix, accountOptions, cloudAccounts }) => {
+const EndpointColumn = ({
+  label,
+  fields,
+  updateField,
+  updateKind,
+  updatePickerField,
+  onPickNode,
+  prefix,
+  accountOptions,
+  cloudAccounts,
+  customKinds,
+}) => {
   const get = (suffix) => fields[`${prefix}_${suffix}`] ?? '';
   const set = (suffix) => updateField(`${prefix}_${suffix}`);
   const kind = fields[`${prefix}_kind`] ?? KIND_K8S;
-  const nodeTypeOptions = kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS : CLOUD_NODE_TYPE_OPTIONS;
+  const listed = kind === KIND_K8S ? K8S_NODE_TYPE_OPTIONS : [...CLOUD_NODE_TYPE_OPTIONS, ...customKinds];
+  // A stored type the lists lack (a kind no longer in use) still shows.
+  const nodeType = get('node_type');
+  const nodeTypeOptions = nodeType && !listed.some((o) => o.value === nodeType) ? [...listed, { value: nodeType, label: nodeType }] : listed;
   // Display label for a pinned node (picked_node_id set) — seeds the Node
   // dropdown and the brief "loading" banner so the picker reflects the pin
   // instead of looking empty before its option lists are opened.
@@ -693,6 +764,7 @@ EndpointColumn.propTypes = {
   prefix: PropTypes.oneOf(['source', 'dest']).isRequired,
   accountOptions: PropTypes.array.isRequired,
   cloudAccounts: PropTypes.array.isRequired,
+  customKinds: PropTypes.array.isRequired,
 };
 
 // Tiny helper for consistent field-label styling across the form. When

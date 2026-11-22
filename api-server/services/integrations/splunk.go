@@ -343,13 +343,23 @@ type SignalFlowDataPoint struct {
 	MetricName  string
 }
 
+// SignalFlowStop says why a SignalFlow stream ended before END_OF_CHANNEL, so the
+// points read are only part of the requested window. Empty when the stream completed.
+type SignalFlowStop string
+
+const (
+	SignalFlowStopDeadline SignalFlowStop = "deadline" // SplunkO11yTimeout elapsed mid-stream
+	SignalFlowStopAborted  SignalFlowStop = "aborted"  // server sent CHANNEL_ABORT
+)
+
 // ExecuteSignalFlow runs a SignalFlow program and returns all data points.
 // program is a SignalFlow expression, e.g. `data('cpu.utilization').mean().publish()`.
 // startMs/stopMs are Unix milliseconds passed as URL query params (not in the JSON body).
-func ExecuteSignalFlow(cfg SplunkO11yConnConfig, program string, startMs, endMs, resolutionMs int64) ([]SignalFlowDataPoint, error) {
+// The SignalFlowStop is non-empty when the points are partial (see its constants).
+func ExecuteSignalFlow(cfg SplunkO11yConnConfig, program string, startMs, endMs, resolutionMs int64) ([]SignalFlowDataPoint, SignalFlowStop, error) {
 	bodyBytes, err := json.Marshal(SignalFlowRequest{ProgramText: program})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal SignalFlow request: %w", err)
+		return nil, "", fmt.Errorf("failed to marshal SignalFlow request: %w", err)
 	}
 
 	// Use a context timeout so the SSE stream read is cancelled if the server
@@ -365,7 +375,7 @@ func ExecuteSignalFlow(cfg SplunkO11yConnConfig, program string, startMs, endMs,
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create SignalFlow request: %w", err)
+		return nil, "", fmt.Errorf("failed to create SignalFlow request: %w", err)
 	}
 
 	// Time range and resolution go as URL query params — not in the JSON body.
@@ -387,32 +397,36 @@ func ExecuteSignalFlow(cfg SplunkO11yConnConfig, program string, startMs, endMs,
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("signalFlow request failed: %w", err)
+		return nil, "", fmt.Errorf("signalFlow request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("invalid or expired Splunk O11y access token (HTTP 401)")
+		return nil, "", fmt.Errorf("invalid or expired Splunk O11y access token (HTTP 401)")
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body) //nolint:errcheck // best-effort error body for context
-		return nil, fmt.Errorf("signalFlow returned status %d: %s", resp.StatusCode, string(body))
+		return nil, "", fmt.Errorf("signalFlow returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	points, err := parseSignalFlowResponse(resp.Body)
+	points, aborted, err := parseSignalFlowResponse(resp.Body)
 	// Context deadline/cancel just means we stopped reading after the timeout.
 	// Return whatever data points were collected rather than failing entirely.
 	if err != nil && ctx.Err() != nil {
-		return points, nil
+		return points, SignalFlowStopDeadline, nil
 	}
-	return points, err
+	if aborted {
+		return points, SignalFlowStopAborted, err
+	}
+	return points, "", err
 }
 
 // parseSignalFlowResponse parses the SSE stream from SignalFlow.
 // SSE format: each event is delimited by a blank line.
 // Each event has an `event: <type>` line followed by one or more `data: <json-fragment>` lines.
 // We correlate metadata events (tsId → metric name + labels) with data events.
-func parseSignalFlowResponse(body io.Reader) ([]SignalFlowDataPoint, error) {
+// aborted is true when the stream ended with CHANNEL_ABORT instead of END_OF_CHANNEL.
+func parseSignalFlowResponse(body io.Reader) ([]SignalFlowDataPoint, bool, error) {
 	metaByTsID := make(map[string]SignalFlowMetadataLine)
 	var dataLines []SignalFlowDataLine
 
@@ -422,7 +436,7 @@ func parseSignalFlowResponse(body io.Reader) ([]SignalFlowDataPoint, error) {
 	var eventType string
 	var dataBuf strings.Builder
 
-	done := false
+	done, aborted := false, false
 	flush := func() {
 		raw := strings.TrimSpace(dataBuf.String())
 		dataBuf.Reset()
@@ -445,9 +459,11 @@ func parseSignalFlowResponse(body io.Reader) ([]SignalFlowDataPoint, error) {
 			var ctrl struct {
 				Event string `json:"event"`
 			}
+			// CHANNEL_ABORT also ends the stream, but before all data was delivered.
 			if err := json.Unmarshal([]byte(raw), &ctrl); err == nil &&
 				(ctrl.Event == "END_OF_CHANNEL" || ctrl.Event == "CHANNEL_ABORT") {
 				done = true
+				aborted = ctrl.Event == "CHANNEL_ABORT"
 			}
 		}
 		eventType = ""
@@ -502,9 +518,9 @@ func parseSignalFlowResponse(body io.Reader) ([]SignalFlowDataPoint, error) {
 	// Return any scanner error after correlation — context deadline just means we
 	// read all available historical data; the caller will suppress it via ctx.Err().
 	if err := scanner.Err(); err != nil {
-		return points, fmt.Errorf("failed to read SignalFlow response: %w", err)
+		return points, aborted, fmt.Errorf("failed to read SignalFlow response: %w", err)
 	}
-	return points, nil
+	return points, aborted, nil
 }
 
 // --- APM Trace API ---

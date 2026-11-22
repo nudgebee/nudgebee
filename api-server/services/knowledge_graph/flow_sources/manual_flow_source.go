@@ -22,7 +22,7 @@ func init() {
 		func(logger *slog.Logger) (core.FlowSourceInterface, error) {
 			return NewManualFlowSource(logger), nil
 		},
-		"User-declared service-to-service dependencies (CSV upload / single-row form); supports cross-stack k8s<->AWS",
+		"User-declared nodes and service-to-service dependencies (CSV upload / single-row form); supports cross-stack k8s<->AWS",
 		string(core.FlowSourceCategoryManual),
 	)
 }
@@ -61,9 +61,11 @@ func (s *ManualFlowSource) Validate() error {
 	return s.BaseFlowSource.Validate()
 }
 
-// BuildFlowRelationships pulls active rows for the tenant, re-checks /
-// re-resolves each one, persists the updated resolution state, and returns
-// edges for resolved rows. It does not create any new nodes.
+// BuildFlowRelationships re-emits the tenant's declared nodes (see
+// ManualNodeRepository.RunCycle), then pulls active dependency rows,
+// re-checks / re-resolves each one, persists the updated resolution state, and
+// returns edges for resolved rows. Declared nodes are returned with the edges:
+// SaveEdges drops any edge whose endpoints are not in the build's node list.
 func (s *ManualFlowSource) BuildFlowRelationships(
 	reqCtx *security.RequestContext,
 	req *core.FlowSourceBuildRequest,
@@ -77,6 +79,29 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 		return nil, nil, fmt.Errorf("manual flow source: db manager unavailable: %w", err)
 	}
 
+	nodeIndex := buildNodeIndex(req.ExistingNodes)
+	declaredNodes := []*core.DbNode{}
+	cycle, err := NewManualNodeRepository(dbManager, s.logger).RunCycle(reqCtx.GetContext(), req.TenantID, nodeIndex)
+	if err != nil {
+		// Declared nodes are already in the graph and never swept, so a failed
+		// cycle only skips this build's refresh of them.
+		s.logger.Warn("manual flow source: declared node cycle failed; continuing with dependencies",
+			"tenant_id", req.TenantID, "error", err)
+		s.IncrementErrorCount()
+	} else {
+		declaredNodes = cycle.Nodes
+		for _, n := range declaredNodes {
+			nodeIndex[n.ID] = n
+		}
+		if len(declaredNodes) > 0 || cycle.Adopted > 0 || cycle.Duplicates > 0 {
+			s.logger.Info("manual flow source: declared nodes",
+				"tenant_id", req.TenantID,
+				"emitted", len(declaredNodes),
+				"adopted", cycle.Adopted,
+				"duplicate_flags_changed", cycle.Duplicates)
+		}
+	}
+
 	rows, err := loadActiveManualDependencies(reqCtx.GetContext(), dbManager, req.TenantID)
 	if err != nil {
 		s.IncrementErrorCount()
@@ -85,15 +110,17 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 
 	if len(rows) == 0 {
 		s.logger.Info("manual flow source: no active rows", "tenant_id", req.TenantID)
-		return []*core.DbEdge{}, []*core.DbNode{}, nil
+		s.retireOrphanedEdges(dbManager, req.TenantID)
+		return []*core.DbEdge{}, declaredNodes, nil
 	}
 
-	nodeIndex := buildNodeIndex(req.ExistingNodes)
 	resolver := NewManualEndpointResolver(dbManager, s.logger)
 
 	edges := make([]*core.DbEdge, 0, len(rows))
 	emittedCount := 0
 	rowUpdates := make([]manualDependencyUpdate, 0, len(rows))
+	// Rows are loaded by id, so on a pair the lowest id is seen first.
+	linked := map[string]manualDependencyRow{}
 
 	for _, row := range rows {
 		update, edge, err := s.processRow(reqCtx.GetContext(), resolver, nodeIndex, row, req.TenantID)
@@ -103,6 +130,7 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 			s.IncrementErrorCount()
 			continue
 		}
+		edge = claimPair(linked, row, &update, edge)
 		rowUpdates = append(rowUpdates, update)
 		if edge != nil {
 			edges = append(edges, edge)
@@ -126,6 +154,7 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 		s.LogMetrics()
 		return []*core.DbEdge{}, []*core.DbNode{}, fmt.Errorf("manual flow source persist failure: %w", err)
 	}
+	s.retireOrphanedEdges(dbManager, req.TenantID)
 
 	s.LogMetrics()
 	s.logger.Info("completed building flow relationships from manual",
@@ -134,7 +163,7 @@ func (s *ManualFlowSource) BuildFlowRelationships(
 		"edges_emitted", emittedCount,
 		"duration_seconds", time.Since(startTime).Seconds())
 
-	return edges, []*core.DbNode{}, nil
+	return edges, declaredNodes, nil
 }
 
 // processRow runs one row through the recheck-then-resolve pipeline and
@@ -156,6 +185,18 @@ func (s *ManualFlowSource) processRow(
 	update := buildUpdateFromResults(row.ID, srcResult, dstResult)
 
 	if update.ResolutionStatus != ManualResolutionResolved {
+		return update, nil, nil
+	}
+
+	srcNode, dstNode := nodeIndex[srcResult.NodeID], nodeIndex[dstResult.NodeID]
+	if RequiresDeclaredNode(row.RelationshipType) && srcNode != nil && dstNode != nil &&
+		!isDeclaredOutsideAccount(srcNode, tenantID) && !isDeclaredOutsideAccount(dstNode, tenantID) {
+		// Both ends are discovered resources: drawing the edge could replace a
+		// collector's edge on the pair. The write paths refuse this up front;
+		// this catches a row whose ends resolved later. (An end missing from
+		// this build's nodes skips the edge below without judging the row.)
+		update.ResolutionStatus = ManualResolutionInvalidPayload
+		update.ResolutionError = fmt.Sprintf("%s %s", row.RelationshipType, ErrManualDependencyNeedsDeclaredNode)
 		return update, nil, nil
 	}
 
@@ -280,6 +321,64 @@ func (s *ManualFlowSource) buildEdge(
 	}
 }
 
+// claimPair records the node pair a row's edge links and returns the edge to
+// emit. The build keeps one edge per pair whatever its relationship, so when
+// a pair is already linked by an earlier row (rows come in id order) and
+// either row uses a declared-only relationship, the later row is marked
+// invalid and emits nothing: its link would otherwise vanish while the row
+// read resolved. Rows that are all CALLS / PUBLISHES_TO / SUBSCRIBES_TO keep
+// sharing a pair as before.
+func claimPair(linked map[string]manualDependencyRow, row manualDependencyRow, update *manualDependencyUpdate, edge *core.DbEdge) *core.DbEdge {
+	if edge == nil {
+		return nil
+	}
+	refuse := func(first manualDependencyRow) *core.DbEdge {
+		update.ResolutionStatus = ManualResolutionInvalidPayload
+		update.ResolutionError = fmt.Sprintf("%s (declaration %d, %s)", ErrManualDependencyPairLinked, first.ID, first.RelationshipType)
+		return nil
+	}
+	// An undirected link declared the other way round is the same link.
+	if first, taken := linked[edge.DestinationNodeID+">"+edge.SourceNodeID]; taken && pairConflict(row.RelationshipType, first.RelationshipType, false) {
+		return refuse(first)
+	}
+	pair := edge.SourceNodeID + ">" + edge.DestinationNodeID
+	first, taken := linked[pair]
+	if !taken {
+		linked[pair] = row
+		return edge
+	}
+	if pairConflict(row.RelationshipType, first.RelationshipType, true) {
+		return refuse(first)
+	}
+	return edge
+}
+
+// retireOrphanedEdges retires this source's edges that no resolved
+// declaration backs any more: the row was deleted or edited, re-pinned
+// elsewhere, no longer resolves, or was judged invalid. The build's infra
+// sweep skips manual edges (markInactiveInfraEdges), so this is what retires
+// them. It reads row state, not what this cycle emitted: a resolved row whose
+// endpoint is missing from one build (its source failed) keeps its edge.
+// Best-effort: a failure leaves the edges for the next build.
+func (s *ManualFlowSource) retireOrphanedEdges(dbManager *database.DatabaseManager, tenantID string) {
+	res, err := dbManager.Exec(`UPDATE knowledge_graph_edge e SET is_active = false
+		WHERE e.tenant_id = $1 AND e.source = $2 AND e.is_active = true
+		  AND NOT EXISTS (
+			SELECT 1 FROM kg_manual_dependencies d
+			WHERE d.tenant_id = $1 AND d.is_active = true AND d.resolution_status = $3
+			  AND d.relationship_type = e.relationship_type
+			  AND d.resolved_source_node_id = e.source_node_id
+			  AND d.resolved_dest_node_id = e.destination_node_id
+		  )`, tenantID, ManualFlowSourceName, ManualResolutionResolved)
+	if err != nil {
+		s.logger.Warn("manual flow source: failed to retire orphaned edges", "tenant_id", tenantID, "error", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.logger.Info("manual flow source: retired edges no declaration backs", "tenant_id", tenantID, "edges", n)
+	}
+}
+
 // manualDependencyRow mirrors one row of kg_manual_dependencies. Kept private
 // to the flow_sources package — RPC handlers exchange ManualDependency
 // (public DTO) and the package converts at the boundary.
@@ -356,6 +455,17 @@ func buildUpdateFromResults(rowID int64, src, dst *EndpointResolveResult) manual
 	}
 	if dst.Status == EndpointStatusResolved {
 		u.ResolvedDestNodeID = dst.NodeID
+	}
+
+	// Both sides on one node: the edge would be a self-loop, which the write
+	// paths refuse up front. A row stored before that guard, or one whose two
+	// sides drifted onto the same node, is caught here instead — in the one
+	// place row resolution is computed, so the build and a single re-resolve
+	// agree. Not resolved means no edge, and retireOrphanedEdges then removes
+	// the self-loop an earlier build drew.
+	if u.ResolvedSourceNodeID != "" && u.ResolvedSourceNodeID == u.ResolvedDestNodeID {
+		u.ResolutionStatus = ManualResolutionInvalidPayload
+		u.ResolutionError = ErrManualDependencySelfLink.Error()
 	}
 
 	switch {

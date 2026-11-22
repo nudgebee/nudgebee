@@ -1,5 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import { rangeProblem } from '@shared/widgets/dateRangeShortcuts';
 
 jest.mock('@mui/x-date-pickers/LocalizationProvider', () => ({
   LocalizationProvider: ({ children }) => <>{children}</>,
@@ -10,15 +11,19 @@ jest.mock('@mui/x-date-pickers/AdapterDayjs', () => ({
 }));
 
 // Label-based testids let us distinguish From vs To pickers unambiguously.
+// The field hands onChange a dayjs, as the real one does — an unparsable entry is an invalid dayjs, not a string.
 jest.mock('@mui/x-date-pickers/DateTimePicker', () => ({
-  DateTimePicker: ({ value, onChange, label }) => (
-    <input
-      data-testid={label ? `picker-${label.toLowerCase()}` : 'picker'}
-      aria-label={label || 'date-picker'}
-      value={value ? String(value) : ''}
-      onChange={(e) => onChange?.(e.target.value)}
-    />
-  ),
+  DateTimePicker: ({ value, onChange, label }) => {
+    const mockDayjs = jest.requireActual('dayjs');
+    return (
+      <input
+        data-testid={label ? `picker-${label.toLowerCase()}` : 'picker'}
+        aria-label={label || 'date-picker'}
+        value={value ? String(value) : ''}
+        onChange={(e) => onChange?.(mockDayjs(e.target.value))}
+      />
+    );
+  },
 }));
 
 // Spread data-testid so the component's data-testid props on DsButton reach the DOM.
@@ -60,6 +65,14 @@ const baseProps = {
 
 // Helper: click the trigger (first button, always the Box component='button' trigger)
 const clickTrigger = () => fireEvent.click(screen.getAllByRole('button')[0]);
+
+const HOUR = 3600000;
+/** What a field is given for an instant: text the mocked field parses back to the same ms. */
+const at = (ms) => new Date(ms).toISOString();
+// The trigger while the popover is open — `hidden` because an open popover hides the page behind it from the a11y tree.
+const triggerBehindPopover = () => screen.getAllByRole('button', { hidden: true })[0];
+const problem = () => screen.queryByTestId('date-range-problem')?.textContent ?? null;
+const closeWithoutApplying = () => fireEvent.keyDown(screen.getByRole('presentation'), { key: 'Escape' });
 
 beforeEach(() => {
   baseProps.onChange.mockClear();
@@ -253,11 +266,11 @@ describe('CustomDateTimeRangePicker', () => {
     it('updates startTime when From picker changes and Apply is clicked', () => {
       render(<CustomDateTimeRangePicker {...baseProps} />);
       clickTrigger();
-      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: '2024-01-15' } });
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now - 2 * HOUR) } });
       fireEvent.click(screen.getByTestId('date-range-apply'));
       expect(baseProps.onChange).toHaveBeenCalledWith(
         expect.objectContaining({
-          selection: expect.objectContaining({ startTime: '2024-01-15' }),
+          selection: expect.objectContaining({ startTime: now - 2 * HOUR }),
         })
       );
     });
@@ -265,11 +278,11 @@ describe('CustomDateTimeRangePicker', () => {
     it('updates endTime when To picker changes and Apply is clicked', () => {
       render(<CustomDateTimeRangePicker {...baseProps} />);
       clickTrigger();
-      fireEvent.change(screen.getByTestId('picker-to'), { target: { value: '2024-06-30' } });
+      fireEvent.change(screen.getByTestId('picker-to'), { target: { value: at(now - HOUR / 2) } });
       fireEvent.click(screen.getByTestId('date-range-apply'));
       expect(baseProps.onChange).toHaveBeenCalledWith(
         expect.objectContaining({
-          selection: expect.objectContaining({ endTime: '2024-06-30' }),
+          selection: expect.objectContaining({ endTime: now - HOUR / 2 }),
         })
       );
     });
@@ -390,6 +403,134 @@ describe('CustomDateTimeRangePicker', () => {
       // Re-render with the same resetDateTime=0 — should not reset
       rerender(<CustomDateTimeRangePicker {...baseProps} resetDateTime={0} />);
       expect(screen.getByRole('button')).toHaveTextContent('Last 1 Hour');
+    });
+  });
+
+  // ─── Range validation ────────────────────────────────────────────────────────
+  //
+  // Each field is bounded against the calendar but not against the other field, so a From after To could be
+  // applied: the page then asked for a backwards range and drew empty panels with no error.
+
+  describe('rangeProblem', () => {
+    it('accepts a start before its end', () => {
+      expect(rangeProblem(now - HOUR, now)).toBe('');
+    });
+
+    it('rejects an end before, or at, the start', () => {
+      expect(rangeProblem(now, now - HOUR)).toBe('From must be earlier than To.');
+      expect(rangeProblem(now, now)).toBe('From must be earlier than To.');
+    });
+
+    it('rejects a date that did not parse, and a missing one', () => {
+      expect(rangeProblem(NaN, now)).toBe('Enter a valid date and time in both fields.');
+      expect(rangeProblem(now, undefined)).toBe('Enter a valid date and time in both fields.');
+      expect(rangeProblem(null, now)).toBe('Enter a valid date and time in both fields.');
+    });
+
+    it('reads whatever a page seeds the picker with, as the fields do', () => {
+      // Pages hand over what they hold — not always a number of ms.
+      expect(rangeProblem(new Date(now - HOUR), new Date(now))).toBe('');
+      expect(rangeProblem(new Date(now - HOUR).toISOString(), new Date(now).toISOString())).toBe('');
+      expect(rangeProblem(new Date(now), new Date(now - HOUR))).toBe('From must be earlier than To.');
+    });
+
+    it('leaves Apply available on first open for a page that seeds the picker with Date objects', () => {
+      render(<CustomDateTimeRangePicker {...baseProps} passedSelectedDateTime={{ startTime: new Date(now - HOUR), endTime: new Date(now) }} />);
+      clickTrigger();
+
+      expect(screen.getByTestId('date-range-apply')).toBeEnabled();
+      expect(problem()).toBeNull();
+    });
+  });
+
+  describe('applying a range that cannot be used', () => {
+    it('refuses a From that is after To, and says why', () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now + HOUR) } });
+
+      expect(screen.getByTestId('date-range-apply')).toBeDisabled();
+      expect(problem()).toBe('From must be earlier than To.');
+      fireEvent.click(screen.getByTestId('date-range-apply'));
+      expect(baseProps.onChange).not.toHaveBeenCalled();
+    });
+
+    it('allows the range again once it is put right', () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now + HOUR) } });
+      expect(screen.getByTestId('date-range-apply')).toBeDisabled();
+
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now - 2 * HOUR) } });
+
+      expect(screen.getByTestId('date-range-apply')).toBeEnabled();
+      expect(problem()).toBeNull();
+    });
+
+    it('refuses a half-typed date', () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: 'not a date' } });
+
+      expect(screen.getByTestId('date-range-apply')).toBeDisabled();
+      expect(problem()).toBe('Enter a valid date and time in both fields.');
+    });
+  });
+
+  // ─── Unapplied edits ─────────────────────────────────────────────────────────
+  //
+  // The trigger's label was the popover's draft: editing a field and closing without Apply left the abandoned
+  // dates — or "Invalid Date - Invalid Date" — on the toolbar, over data still drawn for the old range.
+
+  describe('the range on the trigger', () => {
+    const appliedLabel = () => {
+      const day = (ms) => new Date(ms).toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+      return `${day(now - HOUR)} - ${day(now)}`;
+    };
+
+    it('stays on the applied range while a field is being edited', () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: 'not a date' } });
+
+      expect(triggerBehindPopover()).toHaveTextContent(appliedLabel());
+    });
+
+    it('goes back to the applied range when the picker is closed without Apply', async () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: 'not a date' } });
+      closeWithoutApplying();
+      await waitFor(() => expect(screen.queryByTestId('date-range-apply')).not.toBeInTheDocument());
+
+      expect(screen.getAllByRole('button')[0]).toHaveTextContent(appliedLabel());
+      // And the abandoned edit is gone from the fields, not waiting behind the label.
+      clickTrigger();
+      expect(screen.getByTestId('picker-from')).toHaveValue(String(new Date(now - HOUR)));
+      expect(screen.getByTestId('date-range-apply')).toBeEnabled();
+    });
+
+    it('keeps a shortcut’s name when an edit under it is abandoned', async () => {
+      render(<CustomDateTimeRangePicker {...baseProps} passedSelectedDateTime={{ startTime: now - HOUR, endTime: now, shortcutClickTime: HOUR }} />);
+      expect(screen.getAllByRole('button')[0]).toHaveTextContent('Last 1 Hour');
+
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now - 3 * HOUR) } });
+      closeWithoutApplying();
+      await waitFor(() => expect(screen.queryByTestId('date-range-apply')).not.toBeInTheDocument());
+
+      expect(screen.getAllByRole('button')[0]).toHaveTextContent('Last 1 Hour');
+    });
+
+    it('shows the new range once it is applied', async () => {
+      render(<CustomDateTimeRangePicker {...baseProps} />);
+      clickTrigger();
+      fireEvent.change(screen.getByTestId('picker-from'), { target: { value: at(now - 26 * HOUR) } });
+      fireEvent.click(screen.getByTestId('date-range-apply'));
+      await waitFor(() => expect(screen.queryByTestId('date-range-apply')).not.toBeInTheDocument());
+
+      const day = (ms) => new Date(ms).toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+      expect(screen.getAllByRole('button')[0]).toHaveTextContent(`${day(now - 26 * HOUR)} - ${day(now)}`);
     });
   });
 });

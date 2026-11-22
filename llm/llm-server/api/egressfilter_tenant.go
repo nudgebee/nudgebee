@@ -22,10 +22,8 @@ import (
 // 2026-06-29 data study — no evidence of need today; adding API surface
 // before need risks shipping a foot-gun for ops to misuse).
 //
-// All write paths invalidate the local process's tenant-config cache so
-// the next Resolve sees fresh data. Cross-pod invalidation is Stage 2c
-// (RabbitMQ broadcast); in 2a, other pods carry stale data for up to
-// SetTenantConfigTTL (default 5m).
+// All write paths invalidate the tenant-config cache on every replica so the
+// next Resolve sees fresh data (egressfilter_changed broadcast, #40807).
 
 const (
 	maxAllowlistEntries          = 500

@@ -590,8 +590,15 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// method over an hour, shaped for the latency table; an evidence chart needs a
 		// single p99 line at the chart's own resolution. Both this and cpu_throttling
 		// read the node-agent's eBPF metrics, so they answer only where that agent runs.
+		//
+		// The rate window follows the request (rateW), not a fixed 5m. A charted window
+		// with no explicit step still gets 5m. The anomaly detector asks for 7 days at a
+		// 10m step, and with 5m windows its query read every sample of the busiest
+		// histogram we store 2.5 times. Measured on a live cluster (#43354), one workload's query
+		// touched 81M samples and held 8M in memory at once, and the hourly burst of
+		// these queries OOM-killed Prometheus.
 		case KeyWorkloadHTTPLatencyP99:
-			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %s}[5m])))`, httpWorkloadScope)
+			queries[metricKey] = fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (rate(container_http_requests_duration_seconds_total_bucket{__CLUSTER__ %s}[`+rateW+`])))`, httpWorkloadScope)
 		// Request rate and mean latency for the whole workload, probes excluded.
 		//
 		// Siblings of workload_http_latency_p99 above: one series, no path or method
@@ -617,6 +624,48 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 				httpWorkloadScope, healthCheckPathsRegex())
 		case KeyCPUThrottling:
 			queries[metricKey] = fmt.Sprintf(`sum by (container_id) (rate(container_resources_cpu_throttled_seconds_total{__CLUSTER__ container_id=~".*%s/%s.*"}[5m]))`, safeMeta.Namespace, safeMeta.Name)
+		case KeyCPUThrottlingRatio:
+			// cAdvisor's CFS counters, summed across the workload's containers before
+			// dividing, so a container with a limit counts in proportion to its periods.
+			// A container without a limit runs no CFS periods and so adds nothing to
+			// either side. A cluster that scrapes cAdvisor twice doubles both sides,
+			// which cancels. The `> 0` guard makes an idle window absent, not +Inf.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(rate(container_cpu_cfs_throttled_periods_total{__CLUSTER__ %s}[`+rateW+`]))`+
+					` / (sum(rate(container_cpu_cfs_periods_total{__CLUSTER__ %s}[`+rateW+`])) > 0)`,
+				containerFilter, containerFilter)
+		case KeyCPUUsageLimited:
+			// Usage of the containers kube-state-metrics reports a CPU limit for, so it
+			// divides by cpu_limit (the same containers) without counting a container
+			// that has no limit on one side only.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(rate(container_cpu_usage_seconds_total{__CLUSTER__ %s}[5m])`+
+					` and on (namespace, pod, container) (%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="cpu"}) > 0))`,
+				containerFilter, promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryRSSLimitRatio:
+			// Per pod, peak RSS over that pod's own limit; then the highest pod. RSS is the
+			// peak of the trailing hour: a container is OOM-killed the moment it reaches its
+			// limit, so a forecast on the hourly average would miss the spikes that kill it.
+			// `max by` on both sides collapses duplicate scrapes before the join, and the
+			// `> 0` guard leaves a container without a memory limit with no series (no_limit).
+			queries[metricKey] = fmt.Sprintf(
+				`max(max by (namespace, pod, container) (max_over_time(container_memory_rss{__CLUSTER__ %s}[1h]))`+
+					` / on (namespace, pod, container) (%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"}) > 0))`,
+				containerFilter, promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryLimitPerPodMiB:
+			queries[metricKey] = fmt.Sprintf(`max(%s (kube_pod_container_resource_limits{__CLUSTER__ %sresource="memory"})) / 1048576`,
+				promSpecPerContainer, containerFilter)
+		case KeyContainerMemoryRSSMiB:
+			// The same trailing-hour peak as the ratio, so a suggested limit covers the spikes.
+			queries[metricKey] = fmt.Sprintf(`max(max by (namespace, pod, container) (max_over_time(container_memory_rss{__CLUSTER__ %s}[1h]))) / 1048576`, containerFilter)
+		case KeyContainerRestartsLastOOM6h:
+			// Joined on job, as KeyContainerOOMKilledLimitByPod is: both halves come
+			// from kube-state-metrics, and two scrapers must not count a restart twice.
+			queries[metricKey] = fmt.Sprintf(
+				`sum(max by (namespace, pod, container, job) (increase(kube_pod_container_status_restarts_total{__CLUSTER__ %s}[6h]))`+
+					` * on (namespace, pod, container, job) group_left `+
+					`max by (namespace, pod, container, job) (kube_pod_container_status_last_terminated_reason{__CLUSTER__ %s}))`,
+				containerFilter, promSelector(containerFilter, `reason="OOMKilled"`))
 		case KeyCPURequest:
 			queries[metricKey] = promSpecTotal("kube_pod_container_resource_requests", fmt.Sprintf(`__CLUSTER__ %sresource="cpu"`, containerFilter))
 		case KeyCPULimit:
@@ -651,7 +700,13 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		case KeyCPUReal:
 			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rangeW, rangeW)
 		case KeyCPUTotal:
-			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__})`
+			// machine_cpu_cores is a cAdvisor metric that managed Prometheus services
+			// (Azure Managed Prometheus's default profile) do not scrape, which left the
+			// cluster CPU gauge with no denominator. Fall back to node-exporter's
+			// per-core idle series (the same family as KeyCPUReal) and then to
+			// kube-state-metrics' node capacity. Both collapse duplicate exporter
+			// copies first so a node scraped twice is not counted twice.
+			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__}) or count(count by (instance, cpu) (node_cpu_seconds_total{__CLUSTER__ mode="idle"})) or sum(max by (node) (kube_node_status_capacity{__CLUSTER__ resource="cpu"}))`
 		case KeyMemReal:
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case KeyMemTotal:
@@ -667,10 +722,21 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		// meta.Step is that bucket, which a caller sets explicitly; the default
 		// derived from the range would make each point cover a different span than
 		// the one being charted.
+		//
+		// Source is node-exporter's node_network_*_bytes_total, NOT the per-pod
+		// container_network_* counters. These keys carry no pod/namespace filter --
+		// they are always cluster-wide -- so the container form selects every pod's
+		// veth series over the whole picker window, and a month of pod churn pushes
+		// that past vmselect's 300k-series index limit: the query 422s and the tile
+		// shows "No data". node_network_* is node-scoped (same cardinality class as
+		// the CPU/mem cluster tiles, which do render), so it stays well under the
+		// limit. The device filter drops loopback and the virtual/CNI interfaces so
+		// only real NIC traffic is summed -- identical to the node_network packet
+		// queries in the node-detail builder above.
 		case KeyNetworkReceiveBytesIncrease:
-			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_receive_bytes_total{__CLUSTER__}[%s]))`, stepW)
+			queries[metricKey] = fmt.Sprintf(`sum(increase(node_network_receive_bytes_total{__CLUSTER__ device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[%s]))`, stepW)
 		case KeyNetworkTransmitBytesIncrease:
-			queries[metricKey] = fmt.Sprintf(`sum(increase(container_network_transmit_bytes_total{__CLUSTER__}[%s]))`, stepW)
+			queries[metricKey] = fmt.Sprintf(`sum(increase(node_network_transmit_bytes_total{__CLUSTER__ device!~"lo|veth.*|docker.*|flannel.*|cali.*|cbr.*"}[%s]))`, stepW)
 
 		// cpu_usage_trend / mem_usage_trend feed the utilisation sparkline: fetched as a RANGE
 		// query so the relay evaluates them at each step across the picker window. CPU uses a

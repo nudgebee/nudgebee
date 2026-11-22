@@ -14,8 +14,13 @@ import api from '@api1/ask-nudgebee';
 import { useWatchFeatureEnabled } from '@hooks/useTenantBranding';
 import { TERMINAL_WATCH_STATUSES, WATCH_FOLLOWUP_BUDGET_MS, countAwaitingFollowups, reconcilePendingFollowups } from './utils/watchFollowup';
 import { actionableTasks } from './utils/taskClassification';
-import { isFollowupTask, summarizeFollowups } from './utils/followupRecord';
+import { CitationClickContext, findCitedTask, findLegacyCitedTask, parseCitationHref } from './utils/citationLinks';
+import { describeFollowup, isFollowupTask, summarizeFollowups } from './utils/followupRecord';
 import FollowupHistory from './common/FollowupHistory';
+import PlanCard from './plan/PlanCard';
+import { filterDrawerTasksForStep } from './plan/planState';
+import { noteTime } from './utils/systemNote';
+import { ds } from '@utils/colors';
 
 const taskKey = (task) => task?.id ?? task?.tool_id ?? task?.originalIndex ?? null;
 
@@ -268,13 +273,32 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
     [itemProps?.handleTokenUsageHover]
   );
 
+  // A citation inside a step shown in the drawer — a sub-agent's answer cites that sub-agent's
+  // steps — opens the cited step beside the list.
+  const openCitationInDrawer = useCallback(
+    (href) => {
+      const citation = parseCitationHref(href);
+      const cited = citation?.rowId && drawer.kind === 'tasks' ? findCitedTask(citation.rowId, drawer.data?.tasks) : null;
+      if (!cited) {
+        return false;
+      }
+      setSecondary({ open: true, task: cited });
+      return true;
+    },
+    [drawer.kind, drawer.data]
+  );
+
   const openContextsDrawer = useCallback((references) => {
     setDrawer({ open: true, kind: 'contexts', title: `Additional Contexts · ${references.length}`, data: { references } });
     setSecondary({ open: false, task: null });
   }, []);
 
-  const openFollowupsDrawer = useCallback((followups) => {
-    setDrawer({ open: true, kind: 'followups', title: `Approvals & clarifications · ${followups.length}`, data: { followups } });
+  // Each pill opens only its own kind, so an approval and a clarification never share one view.
+  const openFollowupsDrawer = useCallback((kind, followups) => {
+    const isApprovals = kind === 'approvals';
+    const shown = followups.filter((f) => describeFollowup(f).isApproval === isApprovals);
+    const title = `${isApprovals ? 'Approvals' : 'Clarifications'} · ${shown.length}`;
+    setDrawer({ open: true, kind: 'followups', title, data: { followups: shown } });
     setSecondary({ open: false, task: null });
   }, []);
 
@@ -359,7 +383,7 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
   // expand the card and scroll to it. Otherwise (completed group) open the right drawer
   // with that task pre-expanded.
   const handleNavigateToTask = useCallback(
-    (groupIndex, taskOriginalIndex) => {
+    (groupIndex, taskOriginalIndex, citation) => {
       const group = groupedMessages[groupIndex];
       if (!group) {
         return;
@@ -367,6 +391,27 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
       const hasResponse = group.children.some((c) => (c.tool ?? c.type) === 'response');
       const tasks = group.children.filter((c) => (c.tool ?? c.type) !== 'question' && (c.tool ?? c.type) !== 'response');
       if (tasks.length === 0) {
+        return;
+      }
+
+      // A step citation in the answer: open the step it names (an old step-number citation by
+      // step order), or the full list of steps when the step is not part of this answer.
+      if (citation && hasResponse) {
+        const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+        const drawerTasks = response?.drawerTasks ?? tasks;
+        const cited = citation.rowId
+          ? findCitedTask(citation.rowId, response?.drawerTasks)
+          : findLegacyCitedTask(citation.step, response?.drawerTasks);
+        if (cited) {
+          openTasksDrawer({ tasks: drawerTasks, expandedTaskKey: cited.id });
+          return;
+        }
+        if (taskOriginalIndex == null) {
+          openTasksDrawer({ tasks: drawerTasks });
+          return;
+        }
+      }
+      if (taskOriginalIndex == null) {
         return;
       }
 
@@ -393,6 +438,28 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
     [groupedMessages, openTasksDrawer, setCollapsedObj]
   );
 
+  // A link from outside the app (a Slack reply) names its cited step in the URL hash; open that
+  // step once the answer that holds it has loaded.
+  const hashCitationOpenedRef = useRef(false);
+  useEffect(() => {
+    if (hashCitationOpenedRef.current || typeof window === 'undefined') {
+      return;
+    }
+    const citation = parseCitationHref(window.location.hash);
+    if (!citation?.rowId) {
+      return;
+    }
+    for (const group of groupedMessages) {
+      const response = group.children.find((c) => (c.tool ?? c.type) === 'response');
+      const cited = findCitedTask(citation.rowId, response?.drawerTasks);
+      if (cited) {
+        hashCitationOpenedRef.current = true;
+        openTasksDrawer({ tasks: response.drawerTasks, expandedTaskKey: cited.id });
+        return;
+      }
+    }
+  }, [groupedMessages, openTasksDrawer]);
+
   return (
     <Box>
       {groupedMessages.map((group, groupIndex) => {
@@ -413,7 +480,8 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
 
         // A finished turn hides its task cards, followups included; the pill keeps
         // what the user was asked — and what they chose or approved — one click away.
-        const followups = response ? tasks.filter(isFollowupTask) : [];
+        // Approvals a rule granted without asking are listed alongside the answered ones.
+        const followups = response ? [...tasks.filter(isFollowupTask), ...(response.autoApprovals || [])] : [];
         const followupSummary = summarizeFollowups(followups);
 
         const responseTokenData = response ? itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId] : null;
@@ -438,7 +506,7 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
               onOpenChannels: channelRefs.length > 0 ? () => openChannelsDrawer(channelRefs) : undefined,
               onOpenWatches: watchesForThisGroup > 0 ? openWatchesDrawer : undefined,
               followups: followupSummary,
-              onOpenFollowups: followups.length > 0 ? () => openFollowupsDrawer(followups) : undefined,
+              onOpenFollowups: followups.length > 0 ? (kind) => openFollowupsDrawer(kind, followups) : undefined,
               messageTokenData: responseTokenData,
               onTokenUsageHover: itemProps.handleTokenUsageHover,
               isFetchingTokenData: itemProps.isFetchingTokenData,
@@ -451,16 +519,46 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
 
         return (
           <React.Fragment key={group.question.originalIndex}>
-            <MessageItem
-              message={group.question}
-              index={group.question.originalIndex}
-              isCollapsed={false}
-              collapsedObj={collapsedObj}
-              onToggle={() => {}}
-              showFullText={!!showFullText[group.question.originalIndex]}
-              onShowFullText={() => handleShowFullText(group.question.originalIndex)}
-              {...itemProps}
-            />
+            {group.question.systemNote ? (
+              // The platform's own turn (a planning turn, a follow-up check, the investigation summary): one line
+              // with its time, never a person's bubble.
+              <Box
+                data-testid='conversation-system-note'
+                sx={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  py: ds.space[2],
+                  color: 'var(--ds-gray-500)',
+                  fontSize: 'var(--ds-text-small)',
+                  fontFamily: ds.font.sans,
+                }}
+              >
+                {[group.question.systemNote, noteTime(group.question.created_at)].filter(Boolean).join(' · ')}
+              </Box>
+            ) : (
+              <MessageItem
+                message={group.question}
+                index={group.question.originalIndex}
+                isCollapsed={false}
+                collapsedObj={collapsedObj}
+                onToggle={() => {}}
+                showFullText={!!showFullText[group.question.originalIndex]}
+                onShowFullText={() => handleShowFullText(group.question.originalIndex)}
+                {...itemProps}
+              />
+            )}
+            {group.question.plan && (
+              <PlanCard
+                plan={group.question.plan}
+                live={!response}
+                // Once answered, a step's calls open in the Tasks drawer like the rest of the turn.
+                onOpenStep={
+                  response
+                    ? (stepId) => openTasksDrawer({ tasks: filterDrawerTasksForStep(drawerTasks, group.question.plan.nodeIdsByStep?.[stepId]) })
+                    : undefined
+                }
+              />
+            )}
             {showInlineTasks &&
               tasks.map((task, taskIdx) => {
                 const isLastTaskInGroup = taskIdx === tasks.length - 1;
@@ -518,42 +616,45 @@ const MessageStream = ({ messages, isProcessing = false, isBusy, collapsedObj, s
         );
       })}
 
-      <CustomDrawer
-        open={drawer.open}
-        onClose={closeDrawer}
-        title={drawer.title}
-        width='38%'
-        onWidthChange={setPrimaryWidth}
-        resizable={false}
-        variant={drawer.kind === 'tasks' ? 'modern' : 'default'}
-      >
-        <Box sx={{ color: 'var(--ds-gray-700)' }}>
-          {renderDrawerContent({
-            drawer,
-            secondary,
-            itemProps,
-            onOpenToolDetails: openSecondaryToolDetails,
-          })}
-        </Box>
-      </CustomDrawer>
+      {/* Only the Tasks drawer lists steps to open; elsewhere citations stay plain links. */}
+      <CitationClickContext.Provider value={drawer.kind === 'tasks' ? openCitationInDrawer : null}>
+        <CustomDrawer
+          open={drawer.open}
+          onClose={closeDrawer}
+          title={drawer.title}
+          width='38%'
+          onWidthChange={setPrimaryWidth}
+          resizable={false}
+          variant={drawer.kind === 'tasks' ? 'modern' : 'default'}
+        >
+          <Box sx={{ color: 'var(--ds-gray-700)' }}>
+            {renderDrawerContent({
+              drawer,
+              secondary,
+              itemProps,
+              onOpenToolDetails: openSecondaryToolDetails,
+            })}
+          </Box>
+        </CustomDrawer>
 
-      <SecondaryDrawer
-        open={secondary.open && drawer.open && drawer.kind === 'tasks'}
-        onClose={closeSecondary}
-        title='Tool Details'
-        rightOffset={primaryWidth}
-        defaultWidth='45%'
-        variant='modern'
-      >
-        {secondary.task && (
-          <ToolDetails
-            toolCall={secondary.task}
-            accountId={itemProps.accountId}
-            conversationId={itemProps.conversationId}
-            getReasoningForTool={itemProps?.getReasoningForTool}
-          />
-        )}
-      </SecondaryDrawer>
+        <SecondaryDrawer
+          open={secondary.open && drawer.open && drawer.kind === 'tasks'}
+          onClose={closeSecondary}
+          title='Tool Details'
+          rightOffset={primaryWidth}
+          defaultWidth='45%'
+          variant='modern'
+        >
+          {secondary.task && (
+            <ToolDetails
+              toolCall={secondary.task}
+              accountId={itemProps.accountId}
+              conversationId={itemProps.conversationId}
+              getReasoningForTool={itemProps?.getReasoningForTool}
+            />
+          )}
+        </SecondaryDrawer>
+      </CitationClickContext.Provider>
     </Box>
   );
 };

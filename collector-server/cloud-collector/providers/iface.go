@@ -280,10 +280,21 @@ type Recommendation struct {
 	ResourceRegion      string                 `json:"resource_region"  valdiate:"required"`
 	ExternalResourceId  string                 `json:"external_resource_id,omitempty"` // Optional: actual resource's external_resource_id for linking to cloud_resourses
 	DedupeGroup         string                 `json:"dedupe_group,omitempty"`         // Optional: collapses alternative recommendations for the same opportunity in aggregations (e.g. 8 Savings Plan variants for one workload)
+	// Unevaluated marks a placeholder, not a recommendation: the rule RuleName could
+	// not be evaluated for this resource in this run — its usage could not be read,
+	// or the run's work limit was reached first. Nothing is stored for it; it only
+	// tells the store step to leave a row this rule raised earlier for the resource
+	// as it is, since "could not check" must not read as "no longer applies".
+	Unevaluated bool `json:"unevaluated,omitempty"`
 }
 
 type ListRecommendationsRequest struct {
 	ServiceName string `json:"service_name"`
+	// SkipDiskPerformance leaves out the disk performance rule, which reads up to
+	// 30 days of usage per disk from the cloud's metrics API. The read-only list
+	// path sets it: only the store step needs the rule's result. Not settable
+	// from a request body.
+	SkipDiskPerformance bool `json:"-"`
 }
 
 type ListSupportedRecommendationsResponse struct {
@@ -407,6 +418,12 @@ type Event struct {
 	// (an alarm that entered and left ALARM between two polls); it is stored with
 	// that end time.
 	EndsAt *time.Time `json:"ends_at,omitempty"`
+	// LegacyFindingId is the finding_id this firing was stored under before its
+	// source changed finding_id format. Polling treats a row under it as the same
+	// firing, so a still-open alert is neither closed nor stored a second time
+	// when the format changes. Transitional: remove once no open
+	// Azure_Monitor_Alert event carries a resource-scoped finding_id.
+	LegacyFindingId string `json:"legacy_finding_id,omitempty"`
 }
 
 // FiringFindingID is the per-firing identity of an event: what makes two
@@ -433,6 +450,16 @@ func (e Event) FiringFindingID() string {
 		return e.FindingId
 	}
 	return fmt.Sprintf("%s-%d", e.EventId, e.Date.Unix())
+}
+
+// StoredFindingIDs are the finding_ids this firing may already be stored
+// under: FiringFindingID, and LegacyFindingId while a format change rolls out.
+func (e Event) StoredFindingIDs() []string {
+	ids := []string{e.FiringFindingID()}
+	if e.LegacyFindingId != "" && e.LegacyFindingId != ids[0] {
+		ids = append(ids, e.LegacyFindingId)
+	}
+	return ids
 }
 
 type ListResourcesResponse struct {
@@ -544,6 +571,28 @@ type AsyncInitiatedError struct{ Message string }
 
 func (e *AsyncInitiatedError) Error() string { return e.Message }
 
+// ApplyStatus is where an apply that returned AsyncInitiatedError has got to.
+type ApplyStatus string
+
+const (
+	ApplyStatusInProgress ApplyStatus = "InProgress"
+	ApplyStatusSucceeded  ApplyStatus = "Succeeded"
+	ApplyStatusFailed     ApplyStatus = "Failed"
+)
+
+type ApplyStatusResult struct {
+	Status  ApplyStatus `json:"status"`
+	Message string      `json:"message"`
+}
+
+// ApplyStatusChecker is implemented by providers and services whose ApplyRecommendation
+// can return AsyncInitiatedError, so the outcome of the background operation can be
+// polled. It is optional: anything that does not implement it, or returns
+// errors.ErrUnsupported for a rule, has no asynchronous applies to report on.
+type ApplyStatusChecker interface {
+	GetApplyStatus(ctx CloudProviderContext, account Account, recommendation Recommendation) (ApplyStatusResult, error)
+}
+
 // QueryLogsRequest defines the input for querying logs.
 type QueryLogsRequest struct {
 	Region        string     `json:"region"`
@@ -598,6 +647,11 @@ type QueryLogsResponse struct {
 	Results    []LogMessage       `json:"results"`
 	Status     string             `json:"status"` // e.g., Complete, Failed, Cancelled, Running, Scheduled
 	Statistics LogQueryStatistics `json:"statistics"`
+	// LogGroupName and LogStreamPrefix say where the results were read from,
+	// when the provider resolved that itself (a group detected from the
+	// resource, read through the resource's own streams).
+	LogGroupName    string `json:"log_group_name,omitempty"`
+	LogStreamPrefix string `json:"log_stream_prefix,omitempty"`
 }
 
 // QueryDeploymentDiffRequest defines the input for fetching a resource's recent

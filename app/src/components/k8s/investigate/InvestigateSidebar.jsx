@@ -5,24 +5,29 @@ import KeyboardDoubleArrowLeftIcon from '@mui/icons-material/KeyboardDoubleArrow
 import KeyboardDoubleArrowRightIcon from '@mui/icons-material/KeyboardDoubleArrowRight';
 import { useRouter } from 'next/router';
 import OwnerBadge from '@components/ownership/OwnerBadge';
+import AssignOwnerModal from '@components/ownership/AssignOwnerModal';
 import useResourceOwner, { sourceText } from '@hooks/useResourceOwner';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
 import Datetime, { formatClock, formatClockCompact } from '@shared/format/Datetime';
 import { splitInternalLabels } from './sidebarLabels';
 import Text from '@shared/format/Text';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Label } from '@ui/Label';
 import { Button } from '@ui/Button';
+import { CodeBlock } from '@ui/CodeBlock';
 import { Link } from '@ui/Link';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TriageScore from '@shared/widgets/TriageScore';
 import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { EventOccurrenceRows, EventStateRows, useEventOccurrence } from '@components/k8s/investigate/EventStateRows';
+import { AlertNotifications, useAlertDeliveries } from '@components/k8s/investigate/AlertNotifications';
+import { eventWhen } from '@components/k8s/investigate/eventState';
 import k8sApi from '@api1/kubernetes';
 import { SOURCE_SEVERITY_INFO } from '@api1/triage';
 import { describeContainerMemory } from '@components/k8s/investigate/podFacts';
-import { hasWriteAccess, getUserSession } from '@lib/auth';
+import { hasWriteAccess, getUserSession, isTenantAdmin } from '@lib/auth';
 import { snackbar } from '@shared/snackbarService';
 import { exitCodeMapping, snakeToTitleCase } from 'src/utils/common';
 import { hasEventSubjectLink } from 'src/utils/eventSubjectLink';
@@ -70,6 +75,20 @@ const rowSx = {
 const valueTextSx = { color: ds.gray[700], lineHeight: '1.4' };
 
 // `info` puts an icon after the value whose hover says what the row means.
+// assignableOwnerRung returns the rung an owner can be assigned to from the sidebar:
+// the investigated resource itself, and only when the resolver holds it as active.
+//
+// Never a namespace or account rung. An event that does not identify its resource
+// still resolves a chain from those, but an owner set there is inherited by everything
+// under it — too wide an action to hang off one alert. And never a resource the
+// resolver has no active record of: an owner assigned to it is saved and then hidden,
+// so the row would go on saying "Unassigned".
+export function assignableOwnerRung(levels) {
+  const first = levels?.[0];
+  if (!first || first.noActiveResource) return null;
+  return first.resourceType === 'workload' || first.resourceType === 'cloud_resource' ? first : null;
+}
+
 const Row = ({ label, children, testId, info }) => (
   <Box sx={rowSx} data-testid={testId}>
     <Text value={label} secondaryText />
@@ -87,6 +106,15 @@ const Row = ({ label, children, testId, info }) => (
   </Box>
 );
 Row.propTypes = { label: PropTypes.string, children: PropTypes.node, testId: PropTypes.string, info: PropTypes.string };
+
+// The email-ingest automation writes the description as a parse summary table
+// followed by the mail itself in a fenced block under "**Original email**".
+// Only the mail is worth showing: the table repeats the sidebar and is too wide
+// for it. Empty when the description carries no such block.
+export function sourceEmailBody(description) {
+  const match = String(description || '').match(/\*\*Original email\*\*[^\n]*\n+```[^\n]*\n([\s\S]*?)\n```/);
+  return match ? match[1].trim() : '';
+}
 
 // "pod" → "Pod", "ec2_instance" → "Ec2 Instance"; "Where" when the event has no type.
 const subjectLabel = (type) => {
@@ -123,6 +151,8 @@ Disclosure.propTypes = { open: PropTypes.bool, onToggle: PropTypes.func, label: 
 
 function InvestigateSidebar({
   row,
+  remediationFixing = false,
+  remediationLoopOn = false,
   podDetails,
   othersData,
   alertLabels,
@@ -143,8 +173,20 @@ function InvestigateSidebar({
   const [showInternal, setShowInternal] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
+  const [showEmail, setShowEmail] = useState(false);
+  // The email-ingest automation stamps its events with the mail they came from;
+  // the body is kept in the description, which is markdown.
+  const isEmailEvent = row?.labels?.nb_ingest_path === 'email';
+  const emailBody = useMemo(() => (isEmailEvent ? sourceEmailBody(row?.description) : ''), [isEmailEvent, row?.description]);
   const occurrence = useEventOccurrence(row);
+  const notifications = useAlertDeliveries(row);
   const [showChain, setShowChain] = useState(false);
+  // What the assign dialog was opened on. The target itself rather than an open flag:
+  // the chain behind `assignRung` moves when the sidebar is handed another event, and
+  // an open dialog must go on naming — and writing to — the resource it was opened on.
+  const [assignTarget, setAssignTarget] = useState(null);
+  // Bumped after an owner is assigned, so the chain re-resolves and the row shows it.
+  const [ownerReload, setOwnerReload] = useState(0);
 
   const {
     effective: owner,
@@ -163,11 +205,14 @@ function InvestigateSidebar({
           cloudAccountId: row?.cloud_account_id,
           namespace: row?.subject_namespace,
         })
-      : []
+      : [],
+    ownerReload
   );
   // Nothing to resolve (no account), the source isn't known yet, or the resolve failed
   // — drop the section rather than claim the resource is unowned.
   const showOwner = sourceKnown && !ownerUnresolvable && !!row?.cloud_account_id;
+  // Assigning is tenant-admin only — the backend refuses anyone else.
+  const assignRung = showOwner && isTenantAdmin() ? assignableOwnerRung(ownerLevels) : null;
   const [incidentMembers, setIncidentMembers] = useState([]);
 
   // Members of this event's incident group (#34655) — fetched only when the
@@ -250,6 +295,7 @@ function InvestigateSidebar({
   };
 
   const detailsPathPrefix = isCloud ? '/cloud-account/details' : '/kubernetes/details';
+  const when = eventWhen(row);
 
   const fitCustomLabelStyles = useMemo(
     () => ({
@@ -429,7 +475,8 @@ function InvestigateSidebar({
               <Text value={row.subject_namespace} secondaryText showAutoEllipsis sx={valueTextSx} />
             </Row>
           )}
-          {row?.subject_node && (
+          {/* A node alert's subject is the node, which the first row already names. */}
+          {row?.subject_node && row.subject_node !== row.subject_name && (
             <Row label={isCloud ? 'Region' : 'Node'}>
               <Text value={row.subject_node} copyableTooltip showAutoEllipsis sx={{ fontSize: ds.text.small, ...valueTextSx }} />
             </Row>
@@ -446,7 +493,27 @@ function InvestigateSidebar({
               ) : owner ? (
                 <OwnerBadge owner={owner} hideHint />
               ) : (
-                <Text value={'Unassigned'} secondaryText sx={valueTextSx} />
+                <>
+                  <Text value={'Unassigned'} secondaryText sx={valueTextSx} />
+                  {assignRung && (
+                    <Button
+                      tone='link'
+                      size='xs'
+                      onClick={() =>
+                        setAssignTarget({
+                          resourceType: assignRung.resourceType,
+                          resourceKey: assignRung.resourceKey,
+                          cloudAccountId: row?.cloud_account_id,
+                          label: row?.subject_owner || row?.subject_name,
+                        })
+                      }
+                      id='investigate-assign-owner'
+                      data-testid='investigate-assign-owner'
+                    >
+                      Assign owner
+                    </Button>
+                  )}
+                </>
               )}
             </Row>
           )}
@@ -454,17 +521,11 @@ function InvestigateSidebar({
           <Row label='When'>
             {/* Relative answers "is this fresh", the clock time "which moment"; the
                 full form with timezone and year is the hover. */}
-            {row?.starts_at && (
-              <Datetime value={row?.starts_at} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />
-            )}
-            {formatClockCompact(row?.starts_at) && (
-              <Tooltip title={formatClock(row.starts_at)} arrow placement='bottom'>
+            {when && <Datetime value={when} sx={{ fontSize: ds.text.small }} sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }} />}
+            {formatClockCompact(when) && (
+              <Tooltip title={formatClock(when)} arrow placement='bottom'>
                 <Box component='span' sx={{ display: 'inline-flex' }}>
-                  <Text
-                    value={`· ${formatClockCompact(row.starts_at)}`}
-                    secondaryText
-                    sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }}
-                  />
+                  <Text value={`· ${formatClockCompact(when)}`} secondaryText sx={{ ...valueTextSx, whiteSpace: 'nowrap', cursor: 'default' }} />
                 </Box>
               </Tooltip>
             )}
@@ -513,6 +574,12 @@ function InvestigateSidebar({
               }}
               onCreateTicket={!row?.ticket_id ? () => onCreateTicket(row) : undefined}
             />
+            {/* The remediation loop has an option under way; Resolved follows from the status itself. */}
+            {remediationFixing ? (
+              <Box component='span' data-testid='sidebar-remediation-fixing'>
+                <Label tone='info' size='sm' text='Fixing' />
+              </Box>
+            ) : null}
           </Row>
         </Box>
 
@@ -540,6 +607,12 @@ function InvestigateSidebar({
 
         {isK8s && hasCrashDetails && (
           <Section title='Container' testId='sidebar-container'>
+            {/* The pod's state as the alert captured it, not live: it says when, so it is not read as the state now. */}
+            {remediationLoopOn && formatClockCompact(row?.created_at) ? (
+              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mt: ds.space.mul(1, -1) }} data-testid='sidebar-container-as-of'>
+                {`As of ${formatClockCompact(row.created_at)}, when the alert fired`}
+              </Typography>
+            ) : null}
             {containersReady?.total > 0 && (
               // The same two-column grid as the container rows below, so the values line up.
               <Box
@@ -688,8 +761,12 @@ function InvestigateSidebar({
                 openInNew={true}
                 id='rule-automation-link'
               >
+                {/* An automation's name is what its author typed: shown as stored, so it can be
+                    searched for. The aggregation_key fallback is an identifier and keeps Label's
+                    default capitalisation, like the rule names below. */}
                 <Label
                   text={row.labels.automation_name || row?.aggregation_key || '-'}
+                  textTransform={row.labels.automation_name ? 'none' : undefined}
                   margin='0'
                   height='auto'
                   wordBreak='break-word'
@@ -767,6 +844,9 @@ function InvestigateSidebar({
           {/* References rather than decisions: each opens on demand. */}
           <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[3], mt: ds.space[1] }}>
             <Disclosure open={showDetails} onToggle={() => setShowDetails((prev) => !prev)} label='Details' testId='toggle-details-btn' />
+            {isEmailEvent && (
+              <Disclosure open={showEmail} onToggle={() => setShowEmail((prev) => !prev)} label='Source email' testId='toggle-source-email-btn' />
+            )}
             {labels.length > 0 && (
               <Disclosure
                 open={showLabels}
@@ -876,10 +956,48 @@ function InvestigateSidebar({
                   <Text value={investigateDescription.failureCount} secondaryText sx={valueTextSx} />
                 </Row>
               )}
-              {isCloud && row?.description && (
+              {/* An email event's description is the mail itself, shown in full under Source email. */}
+              {isCloud && row?.description && !isEmailEvent && (
                 <Row label='Description'>
                   <Text value={investigateDescription.logSample} showAutoEllipsis sx={{ fontSize: ds.text.small }} />
                 </Row>
+              )}
+            </Box>
+          )}
+
+          {showEmail && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }} data-testid='sidebar-source-email'>
+              {row?.labels?.email_subject && (
+                <Row label='Subject'>
+                  <Text value={row.labels.email_subject} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_from && (
+                <Row label='From'>
+                  <Text value={row.labels.email_from} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_forwarded_by && (
+                <Row label='Forwarded by'>
+                  <Text value={row.labels.email_forwarded_by} secondaryText sx={valueTextSx} />
+                </Row>
+              )}
+              {row?.labels?.email_received_at && (
+                <Row label='Received'>
+                  <Datetime
+                    value={row.labels.email_received_at}
+                    sx={{ fontSize: ds.text.small }}
+                    sxSuffix={{ color: ds.gray[700], fontSize: ds.text.small }}
+                  />
+                </Row>
+              )}
+              {emailBody ? (
+                <CodeBlock code={emailBody} wrap maxHeight={320} copyToast='Email copied' />
+              ) : (
+                // A description in some other shape: show it whole rather than nothing.
+                // Untrusted content: MarkDowns sanitises the HTML, and without
+                // allowExecutable no code block gets a run button.
+                row?.description && <MarkDowns data={row.description} canRunCode={false} sx={{ fontSize: ds.text.small }} />
               )}
             </Box>
           )}
@@ -899,13 +1017,34 @@ function InvestigateSidebar({
 
           {showInternal && <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>{internalLabelChips}</Box>}
         </Section>
+
+        {notifications.visible && (
+          <Section title='Notifications' testId='sidebar-notifications'>
+            <AlertNotifications row={row} deliveries={notifications} />
+          </Section>
+        )}
       </Box>
+      {assignTarget && (
+        <AssignOwnerModal
+          open
+          onClose={() => setAssignTarget(null)}
+          resourceType={assignTarget.resourceType}
+          resourceKey={assignTarget.resourceKey}
+          cloudAccountId={assignTarget.cloudAccountId}
+          resourceLabel={assignTarget.label}
+          onChange={() => setOwnerReload((n) => n + 1)}
+        />
+      )}
     </Box>
   );
 }
 
 InvestigateSidebar.propTypes = {
   row: PropTypes.object,
+  // The remediation loop has an option under way on this event (shown as "Fixing" next to the status).
+  remediationFixing: PropTypes.bool,
+  // The tenant's remediation loop is on: the container facts say they are as of when the alert fired.
+  remediationLoopOn: PropTypes.bool,
   podDetails: PropTypes.object,
   othersData: PropTypes.array,
   alertLabels: PropTypes.object,

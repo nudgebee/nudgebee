@@ -16,6 +16,7 @@ interface ConditionalEdgeProps extends EdgeProps<ConditionalEdgeData> {
 
 const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
   id,
+  source,
   sourceX,
   sourceY,
   targetX,
@@ -27,8 +28,9 @@ const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
   data,
   onAddOnEdge,
 }) => {
-  const { edgePath, labelX, labelY, isHovered, isEditorMode, onEdgeClick, hoverHandlers } = useEdgeInteraction({
+  const { edgePath, labelX, labelY, isHovered, isEditorMode, canDelete, onEdgeClick, hoverHandlers } = useEdgeInteraction({
     id,
+    source,
     sourceX,
     sourceY,
     targetX,
@@ -122,14 +124,16 @@ const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
                 }}
               />
             )}
-            <Button
-              composition='icon-only'
-              tone='danger'
-              size='xs'
-              aria-label='Delete edge'
-              icon={<Close fontSize='small' />}
-              onClick={onEdgeClick}
-            />
+            {canDelete && (
+              <Button
+                composition='icon-only'
+                tone='danger'
+                size='xs'
+                aria-label='Delete edge'
+                icon={<Close fontSize='small' />}
+                onClick={onEdgeClick}
+              />
+            )}
           </Box>
         )}
       </EdgeLabelRenderer>

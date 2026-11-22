@@ -38,7 +38,7 @@ func kgEvidence(t *testing.T) *models.Json {
 				"properties": map[string]interface{}{
 					"name":        "nudgebee-scenario-services-order",
 					"resource_id": "i-0dcee3621b8456783",
-					"arn":         "arn:aws:ec2:us-east-1:864186153326:instance/i-0dcee3621b8456783",
+					"arn":         "arn:aws:ec2:us-east-1:888888888888:instance/i-0dcee3621b8456783",
 					"region":      "us-east-1",
 				},
 			},
@@ -48,7 +48,7 @@ func kgEvidence(t *testing.T) *models.Json {
 				"properties": map[string]interface{}{
 					"name":        "nudgebee-scenario-services-payment",
 					"resource_id": "i-0b079820a95b1517a",
-					"arn":         "arn:aws:ec2:us-east-1:864186153326:instance/i-0b079820a95b1517a",
+					"arn":         "arn:aws:ec2:us-east-1:888888888888:instance/i-0b079820a95b1517a",
 					"region":      "us-east-1",
 				},
 			},
@@ -95,7 +95,7 @@ func awsAlarmEvent(t *testing.T, alarmName, instanceID string, at time.Time, ev 
 		// so the ARN ends in the instance id rather than the alarm name. Using
 		// the alarm name here would make the test fail for a reason production
 		// never hits.
-		ServiceKey: awsSp("arn:aws:cloudwatch:us-east-1:864186153326:alarm:" + instanceID),
+		ServiceKey: awsSp("arn:aws:cloudwatch:us-east-1:888888888888:alarm:" + instanceID),
 		StartsAt:   &at,
 		Evidences:  ev,
 	}

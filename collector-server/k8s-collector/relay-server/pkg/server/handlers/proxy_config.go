@@ -50,6 +50,12 @@ func NewProxyConfigPushHandler(
 		c.Set("accountID", req.AccountID)
 		logger, _, _ := utils.BuildContextFromPayload(c, tracer, meter, rootLogger)
 
+		// These routes take the account from the body. Anything that reaches them
+		// with a user's tenant attached must own that account (#43931).
+		if !requireTenantOwnsAccount(c, store, logger, req.AccountID, db.AgentTypeProxy) {
+			return
+		}
+
 		// Check if proxy agent is connected
 		connected, err := store.IsAgentConnected(ctx, req.AccountID, db.AgentTypeProxy)
 		if err != nil {
@@ -144,6 +150,12 @@ func NewProxyConfigTestHandler(
 
 		c.Set("accountID", req.AccountID)
 		logger, _, _ := utils.BuildContextFromPayload(c, tracer, meter, rootLogger)
+
+		// These routes take the account from the body. Anything that reaches them
+		// with a user's tenant attached must own that account (#43931).
+		if !requireTenantOwnsAccount(c, store, logger, req.AccountID, db.AgentTypeProxy) {
+			return
+		}
 
 		// Check if proxy agent is connected
 		connected, err := store.IsAgentConnected(ctx, req.AccountID, db.AgentTypeProxy)

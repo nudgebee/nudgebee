@@ -155,4 +155,26 @@ describe('DashboardView keeps its panels still', () => {
     // that is supposed to run a query when the editor opens.
     expect(metricsQuery).toHaveBeenCalledTimes(4);
   });
+
+  it('adds no row of dropdowns to a dashboard without variables', async () => {
+    mount();
+    await waitFor(() => expect(screen.getAllByTestId('line-chart')).toHaveLength(3));
+    expect(screen.queryByTestId('dashboard-variables-row')).not.toBeInTheDocument();
+  });
+
+  it('puts the dropdowns in their own row inside the sticky bar, not among the actions', async () => {
+    const withVariables = {
+      ...dashboard,
+      definition: { ...dashboard.definition, variables: [{ name: 'ns', label: 'Namespace', type: 'custom', values: ['a', 'b'] }] },
+    } as unknown as Dashboard;
+    render(<DashboardView dashboard={withVariables} accounts={accounts} canEdit />);
+    await waitFor(() => expect(screen.getAllByTestId('line-chart')).toHaveLength(3));
+
+    const row = screen.getByTestId('dashboard-variables-row');
+    expect(row.closest('#dashboard-toolbar')).not.toBeNull();
+    expect(row).toContainElement(screen.getByTestId('dashboard-variable-control-ns'));
+    expect(row).not.toContainElement(screen.getByTestId('dashboard-refresh-btn'));
+    // Nothing is picked yet, so there is nothing to clear.
+    expect(screen.queryByTestId('dashboard-variables-clear-btn')).not.toBeInTheDocument();
+  });
 });

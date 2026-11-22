@@ -3,18 +3,12 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import apiAutoPilot from '@api1/autoPilot';
-import CustomTable from '@shared/tables/CustomTable2';
-import { Label } from '@ui/Label';
+import CustomTable from '@shared/tables/CustomTable';
+import { Label, type LabelTone } from '@ui/Label';
 import { Button as DsButton } from '@ui/Button';
 import Datetime from '@shared/format/Datetime';
-import { Modal } from '@ui/Modal';
-import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeContinuousVerticalRightSizingSingleConfiguration';
-import AutoOptimizeVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeVerticalRightSizingSingleConfiguration';
-import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
-import AutoOptimizePVRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizePVRightSizingSingleConfiguration';
-import { getUserSession } from '@lib/auth';
-import apiAccount from '@api1/account';
-import { toast as snackbar } from '@ui/Toast';
+import { hasWriteAccess } from '@lib/auth';
+import AutoOptimizeRunReviewModal, { type RunApproval } from '@components/autopilot/AutoOptimizeRunReviewModal';
 
 interface AutoPilotApprovalsListingProps {
   accountId: string;
@@ -25,19 +19,25 @@ interface AutoPilotApprovalsListingProps {
   onAccountChange?: (e: unknown, option: { value: string } | null) => void;
 }
 
-interface NotificationChannel {
-  name: string;
-  id: string;
-  channels?: { name: string; id: string }[];
-}
-
-interface ApiResponse {
-  data: {
-    data: NotificationChannel[];
-  };
-}
-
 const tableId = 'approvals';
+
+const STATUS_DISPLAY: Record<string, { text: string; tone: LabelTone }> = {
+  PENDING: { text: 'Waiting', tone: 'warning' },
+  APPROVED: { text: 'Approved', tone: 'success' },
+  REJECTED: { text: 'Rejected', tone: 'critical' },
+  EXPIRED: { text: 'Expired', tone: 'neutral' },
+  CANCELLED: { text: 'Cancelled', tone: 'neutral' },
+};
+
+// A PENDING row past its window is expired even before the automation's next
+// run records it.
+const effectiveStatus = (item: any) => {
+  const expiresAt = item?.attributes?.expires_at;
+  if (item?.status === 'PENDING' && expiresAt && new Date(expiresAt).getTime() <= Date.now()) {
+    return 'EXPIRED';
+  }
+  return item?.status;
+};
 
 const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
   accountId,
@@ -48,41 +48,15 @@ const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
   onAccountChange,
 }) => {
   const [tableRows, setTableRows] = useState([]);
-  const [approvalData, setApprovalData] = useState<any>({});
   const [loading, setLoading] = useState<boolean>(false);
-  const [autoOptimizeFormType, setAutoOptimizeFormType] = useState<string>('');
-  const [autoOptimizeData, setAutoOptimizeData] = useState<any>({});
-  const [isAutoOptimizeSingleFormOpen, setIsAutoOptimizeSingleFormOpen] = useState(false);
-  const [msTeamsData, setMsTeamsData] = useState<{ label: string; value: string; channels?: { name: string; id: string }[] }[]>([]);
-  const [googleChannelList, setGoogleChannelList] = useState<{ label: string; value: string }[]>([]);
-  const [isMsTeamsLoading, setIsMsTeamsLoading] = useState(false);
-  const [isGoogleChannelsLoading, setIsGoogleChannelsLoading] = useState(false);
-
+  const [reviewing, setReviewing] = useState<RunApproval | null>(null);
   const [allAutoPilotNames, setAllAutoPilotNames] = useState([]);
 
-  const currentUser = getUserSession().user.email;
-
-  const getAutoOptimize = (id: string) => {
-    apiAutoPilot.getAutoPilotByPk(id).then((res) => {
-      setAutoOptimizeData(res?.data?.auto_pilot_by_pk);
-      setAutoOptimizeFormType(res?.data?.auto_pilot_by_pk?.category);
-      setIsAutoOptimizeSingleFormOpen(true);
-    });
-  };
-
-  const handleReviewClick = (item: any) => {
-    setApprovalData(item);
-    if (item.auto_pilot_type == 'auto_optimize') {
-      getAutoOptimize(item?.autopilot_id);
-    }
-  };
+  const canDecide = hasWriteAccess(accountId);
 
   const getAutoPilotNames = () => {
-    const query: any = {
-      accountId: accountId,
-    };
     if (type == 'auto_optimize') {
-      apiAutoPilot.getAutoOptimizeNames(query).then((res: any) => {
+      apiAutoPilot.getAutoOptimizeNames({ accountId }).then((res: any) => {
         setAllAutoPilotNames(res?.data ?? []);
       });
     }
@@ -94,37 +68,50 @@ const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
 
   const getAutoPilotNameById = (id: string) => {
     const item: any = allAutoPilotNames.find((i: any) => i.id == id);
-    if (item) {
-      return item.name;
-    }
-    return '-';
+    return item ? item.name : '-';
   };
 
   const getApprovalsListing = () => {
     setLoading(true);
-    apiAutoPilot.getAutoPilotApprovals(accountId, type, currentUser).then((res: any) => {
+    apiAutoPilot.getAutoPilotApprovals(accountId, type, '').then((res: any) => {
       if (res.errors) {
         setLoading(false);
-      } else {
-        const tableData = res?.data?.auto_pilot_approvals.map((item: any) => [
+        return;
+      }
+      const tableData = (res?.data?.auto_pilot_approvals ?? []).map((item: any) => {
+        const status = effectiveStatus(item);
+        const display = STATUS_DISPLAY[status] ?? { text: status, tone: 'neutral' as LabelTone };
+        const decided = ['APPROVED', 'REJECTED'].includes(status);
+        return [
           { text: getAutoPilotNameById(item?.autopilot_id) },
-          { text: item?.auto_pilot_approval_status?.description },
-          { component: <Label text={item?.status} /> },
+          { text: item?.attributes?.task_ids?.length ?? '-' },
+          { component: <Label tone={display.tone} text={display.text} /> },
+          {
+            component:
+              status === 'PENDING' && item?.attributes?.expires_at ? (
+                <Datetime value={item.attributes.expires_at} />
+              ) : decided && item?.reviewer_display_name ? (
+                <>{item.reviewer_display_name}</>
+              ) : (
+                <>-</>
+              ),
+          },
           { text: item?.reviewer_comments ?? '-' },
           { component: <Datetime value={item?.created_at} /> },
           {
-            component: !['APPROVED', 'REJECTED'].includes(item?.status) ? (
-              <DsButton tone='primary' size='sm' onClick={() => handleReviewClick(item)}>
-                Review
-              </DsButton>
-            ) : (
-              <></>
-            ),
+            component:
+              status === 'PENDING' && canDecide ? (
+                <DsButton tone='primary' size='sm' onClick={() => setReviewing(item)}>
+                  Review
+                </DsButton>
+              ) : (
+                <></>
+              ),
           },
-        ]);
-        setTableRows(tableData);
-        setLoading(false);
-      }
+        ];
+      });
+      setTableRows(tableData);
+      setLoading(false);
     });
   };
 
@@ -134,150 +121,18 @@ const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
     }
   }, [allAutoPilotNames]);
 
-  useEffect(() => {
-    if (type == 'auto_optimize' && isAutoOptimizeSingleFormOpen) {
-      const fetchMsTeamsChannels = async () => {
-        if (msTeamsData.length === 0) {
-          setIsMsTeamsLoading(true);
-          try {
-            const res = (await apiAccount.getNotificationChannelList('ms_teams')) as ApiResponse;
-            const teamOptions =
-              res?.data?.data?.map((item: NotificationChannel) => ({
-                label: item.name,
-                value: item.id,
-                channels: item.channels,
-              })) || [];
-            setMsTeamsData(teamOptions);
-          } finally {
-            setIsMsTeamsLoading(false);
-          }
-        }
-      };
-
-      const fetchGoogleChatChannels = async () => {
-        if (googleChannelList.length === 0) {
-          setIsGoogleChannelsLoading(true);
-          try {
-            const res = (await apiAccount.getNotificationChannelList('google_chat')) as ApiResponse;
-            const chatOptions =
-              res?.data?.data?.map((item: NotificationChannel) => ({
-                label: item.name,
-                value: item.id,
-              })) || [];
-            setGoogleChannelList(chatOptions);
-          } finally {
-            setIsGoogleChannelsLoading(false);
-          }
-        }
-      };
-
-      fetchMsTeamsChannels();
-      fetchGoogleChatChannels();
-    }
-  }, [isAutoOptimizeSingleFormOpen, msTeamsData.length, googleChannelList.length]);
-
-  const closeAutoPilotSingleConfigModal = (success: boolean, status = '') => {
-    if (success) {
-      snackbar.success(`Auto Optimize ${status} Successfully`);
-    }
-    setIsAutoOptimizeSingleFormOpen(false);
-    setAutoOptimizeFormType('');
-    getApprovalsListing();
-  };
-
   return (
     <>
-      {isAutoOptimizeSingleFormOpen && autoOptimizeFormType === 'continuous_rightsize' && (
-        <Modal
-          width='md'
-          open={isAutoOptimizeSingleFormOpen}
-          handleClose={() => closeAutoPilotSingleConfigModal(false)}
-          title={'Review Auto Optimize Configuration - Vertical RightSizing'}
-          loader={loading}
-        >
-          <AutoOptimizeContinuousVerticalRightSizingSingleConfiguration
-            autoOptimizeData={autoOptimizeData}
-            closeAutoPilotSingleConfigModal={closeAutoPilotSingleConfigModal}
-            msTeamsData={msTeamsData}
-            googleChannelList={googleChannelList}
-            isMsTeamsLoading={isMsTeamsLoading}
-            isGoogleChannelsLoading={isGoogleChannelsLoading}
-            listAutoPilot={getApprovalsListing}
-            setIsLoading={setLoading}
-            reviewAutoOptimize={true}
-            approvalData={approvalData}
-          />
-        </Modal>
-      )}
-      {isAutoOptimizeSingleFormOpen && autoOptimizeFormType === 'vertical_rightsize' && (
-        <Modal
-          width='md'
-          open={isAutoOptimizeSingleFormOpen}
-          handleClose={() => closeAutoPilotSingleConfigModal(false)}
-          title={'Review Auto Optimize Configuration - Scheduled Vertical RightSizing'}
-          loader={loading}
-        >
-          <AutoOptimizeVerticalRightSizingSingleConfiguration
-            autoOptimizeData={autoOptimizeData}
-            closeAutoPilotSingleConfigModal={closeAutoPilotSingleConfigModal}
-            msTeamsData={msTeamsData}
-            googleChannelList={googleChannelList}
-            isMsTeamsLoading={isMsTeamsLoading}
-            isGoogleChannelsLoading={isGoogleChannelsLoading}
-            listAutoPilot={getApprovalsListing}
-            setIsLoading={setLoading}
-            currentData={{}}
-            data={{}}
-            reviewAutoOptimize={true}
-            approvalData={approvalData}
-          />
-        </Modal>
-      )}
-      {isAutoOptimizeSingleFormOpen && autoOptimizeFormType === 'horizontal_rightsize' && (
-        <Modal
-          width='md'
-          open={isAutoOptimizeSingleFormOpen}
-          handleClose={() => closeAutoPilotSingleConfigModal(false)}
-          title={'Review Auto Optimize Configuration  - Replica Rightsizing'}
-          loader={loading}
-        >
-          <AutoOptimizeHorizontalRightSizingSingleConfiguration
-            autoOptimizeData={autoOptimizeData}
-            closeAutoPilotSingleConfigModal={closeAutoPilotSingleConfigModal}
-            msTeamsData={msTeamsData}
-            googleChannelList={googleChannelList}
-            isMsTeamsLoading={isMsTeamsLoading}
-            isGoogleChannelsLoading={isGoogleChannelsLoading}
-            listAutoPilot={getApprovalsListing}
-            setIsLoading={setLoading}
-            reviewAutoOptimize={true}
-            approvalData={approvalData}
-          />
-        </Modal>
-      )}
-      {isAutoOptimizeSingleFormOpen && autoOptimizeFormType === 'pvc_rightsize' && (
-        <Modal
-          width='md'
-          open={isAutoOptimizeSingleFormOpen}
-          handleClose={() => closeAutoPilotSingleConfigModal(false)}
-          title={'Review Auto Optimize Configuration - Persistent Volume Claim Rightsizing'}
-          loader={loading}
-        >
-          <AutoOptimizePVRightSizingSingleConfiguration
-            autoOptimizeData={autoOptimizeData}
-            closeAutoPilotSingleConfigModal={closeAutoPilotSingleConfigModal}
-            msTeamsData={msTeamsData}
-            googleChannelList={googleChannelList}
-            isMsTeamsLoading={isMsTeamsLoading}
-            isGoogleChannelsLoading={isGoogleChannelsLoading}
-            listAutoPilot={getApprovalsListing}
-            setIsLoading={setLoading}
-            _isLoading={loading}
-            reviewAutoOptimize={true}
-            approvalData={approvalData}
-          />
-        </Modal>
-      )}
+      <AutoOptimizeRunReviewModal
+        open={!!reviewing}
+        approval={reviewing}
+        automationName={reviewing ? getAutoPilotNameById(reviewing.autopilot_id) : ''}
+        accountId={accountId}
+        onClose={(decided) => {
+          setReviewing(null);
+          if (decided) getApprovalsListing();
+        }}
+      />
       <ListingLayout id='autopilot-approvals-listing-box'>
         <ListingLayout.Toolbar actions={<DownloadButton onClick={() => ({ tableId: tableId })} />}>
           <FilterDropdown
@@ -293,12 +148,13 @@ const AutoPilotApprovalsListing: React.FC<AutoPilotApprovalsListingProps> = ({
           <CustomTable
             id={tableId}
             headers={[
-              { name: 'Name', width: '25%' },
-              { name: 'Description', width: '20%' },
+              { name: 'Automation', width: '24%' },
+              { name: 'Changes', width: '8%' },
               { name: 'Status', width: '10%' },
-              { name: 'Comment', width: '25%' },
-              { name: 'Created at', width: '10%' },
-              { name: '', width: '5%' },
+              { name: 'Expires / Decided by', width: '14%' },
+              { name: 'Comment', width: '22%' },
+              { name: 'Planned at', width: '12%' },
+              { name: '', width: '10%' },
             ]}
             tableData={tableRows}
             loading={loading}

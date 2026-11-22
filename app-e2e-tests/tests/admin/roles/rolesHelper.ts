@@ -15,9 +15,11 @@ export const E2E_ROLE_PREFIX = "e2e-rbac-";
 export type PermissionClass = "Read" | "Write" | "Execute";
 export type CatalogEntry = {
   module: string;
-  scope: "tenant" | "account";
+  scope: "tenant" | "account" | "provider";
   classes: PermissionClass[];
   actions: Partial<Record<PermissionClass, Array<{ name: string; description: string }>>>;
+  notes?: Partial<Record<PermissionClass, string>>;
+  independentClasses?: boolean;
 };
 export type SystemRoleView = {
   systemKey: string;
@@ -127,7 +129,7 @@ export async function fetchCatalog(page: Page): Promise<{ catalog: CatalogEntry[
 }
 
 /** Every module × class cell the Roles editor renders, flattened. */
-export function catalogCells(catalog: CatalogEntry[]): Array<{ module: string; cls: PermissionClass; scope: "tenant" | "account" }> {
+export function catalogCells(catalog: CatalogEntry[]): Array<{ module: string; cls: PermissionClass; scope: CatalogEntry["scope"] }> {
   return catalog.flatMap((e) => e.classes.map((cls) => ({ module: e.module, cls, scope: e.scope })));
 }
 

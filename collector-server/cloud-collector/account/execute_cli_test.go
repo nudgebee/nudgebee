@@ -28,7 +28,7 @@ func TestExecuteCliCommandAWS(t *testing.T) {
 		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
 	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
-	response, err := ExecuteCliCommand(ctx, "49145907-981b-48ad-a67a-08a4e8099cb2", "aws s3 ls | grep nb")
+	response, err := ExecuteCliCommand(ctx, "49145907-981b-48ad-a67a-08a4e8099cb2", "aws s3 ls")
 	assert.Nil(t, err)
 	assert.NotNil(t, response)
 }

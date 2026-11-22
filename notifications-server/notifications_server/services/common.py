@@ -2,10 +2,11 @@ import asyncio
 import html
 import json
 import logging
-import os
 import re
+import time
 import uuid
 from datetime import datetime, timedelta
+from typing import Optional
 
 import nh3
 from slack_sdk.errors import SlackApiError
@@ -29,24 +30,28 @@ from notifications_server.models.models import (
 )
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
-from notifications_server.services.cache import Cache
+from notifications_server.services import delivery_records
+from notifications_server.services.delivery_errors import google_chat_failure, slack_failure
+from notifications_server.services.cache import SLACK_USERS_FRESH_SECONDS, Cache
 from notifications_server.services.ms_teams.identity import sender_email
 from notifications_server.services.ms_teams.bot_sender import (
-    APP_NOT_IN_TEAM,
     NOT_SUPPORTED,
+    AppNotInTeamError,
     TeamsBotError,
     card_activity,
     get_sender,
     load_teams,
+    require_bot_connector_url,
 )
 from notifications_server.services.messaging_installations import (
     load_installation,
     load_installation_by_team,
-    load_ms_teams_installation_by_aad_tenant,
     load_installations,
-    ms_teams_aad_tenant_owner,
 )
 from notifications_server.services.ms_teams.activity import channel_data_of
+from notifications_server.services.ms_teams.bot_installations import store_team_name
+from notifications_server.services.ms_teams.team_binding import eligible, workspaces_for
+from notifications_server.services.ms_teams import connect_link
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
 from botbuilder.schema import Activity, ActivityTypes, Attachment
@@ -55,6 +60,15 @@ from botbuilder.schema import ConversationAccount, ChannelAccount, ConversationR
 
 cache = Cache()
 LOG = logging.getLogger(__name__)
+
+USER_LIST_RATE_LIMITED = "Slack is limiting how often users can be listed. Try again in a minute."
+USER_LIST_UNAVAILABLE = "Unable to list users"
+USER_LIST_RECONNECT = "Slack access was revoked or lacks the users:read scope. Reconnect Slack in Integrations."
+# Slack errors a retry can't fix: the token or its scopes need a reconnect.
+SLACK_RECONNECT_ERRORS = {"invalid_auth", "not_authed", "token_revoked", "account_inactive", "missing_scope"}
+# After a 429, users.list is not called again for this tenant+team until Retry-After
+# passes (per pod). (tenant, team_id) -> epoch seconds.
+_slack_users_backoff = {}
 
 # Adaptive Card constants
 ADAPTIVE_CARD_SCHEMA_KEY = "$schema"
@@ -92,6 +106,37 @@ def extract_event_fingerprint(conversation_id: str) -> str:
     if conversation_id.startswith(EVENT_CONVERSATION_PREFIX):
         return conversation_id[len(EVENT_CONVERSATION_PREFIX) :]
     return conversation_id
+
+
+def _slack_retry_after(error):
+    """The Retry-After value of a Slack 429 as a string ("" if absent), or None when not rate-limited."""
+    response = getattr(error, "response", None)
+    headers = {str(k).lower(): v for k, v in (getattr(response, "headers", None) or {}).items()}
+    error_code = response.get("error") if hasattr(response, "get") else None
+    if getattr(response, "status_code", None) != 429 and error_code != "ratelimited":
+        return None
+    return str(headers.get("retry-after", "")).strip()
+
+
+def _ask_an_admin_to_connect() -> str:
+    return (
+        f"Ask a {settings.urls.branding_name} admin to @mention {settings.urls.assistant_name} here "
+        "to connect this team."
+    )
+
+
+def latest_slack_notification(session, fingerprint, tenant_id=None, account_id=None):
+    """The newest Slack first post of fingerprint, the alert's thread, scoped to tenant_id and
+    account_id when given. A tenant may have Slack, Discord and Teams rows for one fingerprint, and
+    fingerprints carry no tenant identity, so two tenants can share one."""
+    query = session.query(SentNotifications).filter_by(fingerprint=fingerprint)
+    if tenant_id:
+        query = query.filter_by(tenant_id=tenant_id)
+    if account_id:
+        query = query.filter_by(account_id=account_id)
+    return (
+        query.filter(delivery_records.slack_first_post()).order_by(SentNotifications.created_at.desc()).limit(1).first()
+    )
 
 
 class CommonService:
@@ -134,12 +179,17 @@ class CommonService:
             if platform == "google_chat":
                 return self.get_google_chat_channels(tenant)
 
-            # Slack/MS Teams may live in the integrations table (token encrypted) or
-            # the legacy messaging_platforms table; load_installations unions both.
+            # Slack may live in the integrations table (token encrypted) or the legacy
+            # messaging_platforms table; load_installations unions both. MS Teams is
+            # integrations only.
             installations = load_installations(self.session, tenant, platform)
             messaging_platform = installations[0] if installations else None
             if not messaging_platform:
                 LOG.info("Unable to list channels for %s, no installation in tenant: %s ", platform, tenant)
+                if platform in ("slack", "ms_teams"):
+                    # The hint lets a picker say the app isn't connected, rather than
+                    # that a connected app sees no channels.
+                    return {"data": [], "hint": "not_connected"}
                 return {"data": []}
 
             if platform == "slack":
@@ -227,16 +277,53 @@ class CommonService:
                 return {"data": []}
 
             if platform == "slack":
-                return self.get_slack_users(messaging_platform)
-            elif platform == "discord":
-                return {"data": []}  # Discord bots need privileged intents to list members
-            return {}
+                return self.get_slack_users(messaging_platform, tenant)
+            return {"data": []}  # discord: bots need privileged intents to list members
+        except SlackApiError as e:
+            self.session.rollback()
+            LOG.error("Slack users.list failed for tenant %s: %s", tenant, e)
+            error_code = e.response.get("error") if hasattr(e.response, "get") else None
+            if error_code in SLACK_RECONNECT_ERRORS:
+                return {"error": {"code": "reconnect_required", "message": USER_LIST_RECONNECT}}
+            return {"error": {"code": "provider_error", "message": USER_LIST_UNAVAILABLE}}
         except Exception as e:
             self.session.rollback()
             LOG.critical("Unable to get user list for %s, %s", platform, e)
-            return {}
+            return {"error": {"code": "internal_error", "message": USER_LIST_UNAVAILABLE}}
 
-    def get_slack_users(self, messaging_platform):
+    def get_slack_users(self, messaging_platform, tenant):
+        team_id = messaging_platform.team_id
+        cached = cache.get_cached_slack_users(tenant, team_id)
+        if cached and time.time() - cached.get("cached_at", 0) < SLACK_USERS_FRESH_SECONDS:
+            return {"data": cached["users"]}
+        backoff_key = (tenant, team_id)
+        wait = _slack_users_backoff.get(backoff_key, 0) - time.time()
+        if wait > 0:
+            if cached:
+                return {"data": cached["users"]}
+            return {"error": {"code": "rate_limited", "message": USER_LIST_RATE_LIMITED, "retry_after": int(wait) + 1}}
+        try:
+            users = self._fetch_slack_users(messaging_platform)
+        except SlackApiError as e:
+            retry_after = _slack_retry_after(e)
+            if retry_after is None:
+                raise
+            _slack_users_backoff[backoff_key] = time.time() + (int(retry_after) if retry_after.isdigit() else 30)
+            if cached:
+                LOG.warning("Slack rate limited users.list for tenant %s, serving the cached list", tenant)
+                return {"data": cached["users"]}
+            LOG.warning("Slack rate limited users.list for tenant %s, retry after %ss", tenant, retry_after)
+            return {
+                "error": {
+                    "code": "rate_limited",
+                    "message": USER_LIST_RATE_LIMITED,
+                    "retry_after": int(retry_after) if retry_after.isdigit() else None,
+                }
+            }
+        cache.cache_slack_users(tenant, team_id, users)
+        return {"data": users}
+
+    def _fetch_slack_users(self, messaging_platform):
         users = []
         next_cursor = None
 
@@ -266,7 +353,7 @@ class CommonService:
             else:
                 break
 
-        return {"data": users}
+        return users
 
     def get_ms_teams_channels(self, messaging_platform):
         return {"data": self._ms_teams_installed_channels(messaging_platform.tenant_id)}
@@ -283,8 +370,27 @@ class CommonService:
             except TeamsBotError as e:
                 LOG.warning("Listing channels of Teams team %s failed: %s", team.aad_group_id, e)
                 channels = []
-            teams.append({"name": team.name, "id": team.aad_group_id, "channels": channels})
+            teams.append(
+                {"name": team.name or self._fill_team_name(sender, team), "id": team.aad_group_id, "channels": channels}
+            )
         return teams
+
+    def _fill_team_name(self, sender, team):
+        """Teams leaves the team name out of message events, so a team first
+        recorded from a message (installed before its Microsoft tenant was
+        connected) has none. Read it from Microsoft once and keep it."""
+        try:
+            name = sender.team_name(team)
+        except TeamsBotError as e:
+            LOG.warning("Reading the name of Teams team %s failed: %s", team.aad_group_id, e)
+            return ""
+        if name:
+            try:
+                store_team_name(self.session, team.integration_id, name)
+            except Exception as e:
+                self.session.rollback()
+                LOG.warning("Saving the name of Teams team %s failed: %s", team.aad_group_id, e)
+        return name
 
     def get_google_chat_channels(self, tenant):
         """List the Google Chat spaces bound to this tenant (google_chat_space integrations).
@@ -824,9 +930,13 @@ class CommonService:
 
     def _get_messaging_platform(self, tenant_id, team_id, platform):
         # Slack callers may target a specific workspace by team_id; MS Teams/Google
-        # Chat resolve by tenant. Unions integrations + legacy messaging_platforms.
+        # Chat resolve by tenant. Unions integrations + legacy messaging_platforms
+        # (Slack only).
+        # team_id is caller-supplied, so it only selects among this tenant's
+        # installs — it must never reach another tenant's workspace.
         if team_id and platform == "slack":
-            return load_installation_by_team(self.session, team_id, platform)
+            installs = load_installations(self.session, tenant_id, platform)
+            return next((i for i in installs if i.team_id == team_id), None)
         return load_installation(self.session, tenant_id, platform)
 
     def _refresh_google_chat_token(self, messaging_platform):
@@ -870,7 +980,34 @@ class CommonService:
         except Exception as e:
             LOG.warning(f"Failed to send welcome message to channel {channel_id}: {e}")
 
-    def send_channel_message(self, platform, tenant_id, channel_id, session_id, text, team_id=None):
+    def _record_automation_post(self, tenant_id, platform, destination, text, account_id=None, **columns):
+        """Record an automation post's delivery row: sent with its message id, or
+        failed with the reason of the failed result in columns."""
+        dispatch = delivery_records.Dispatch(
+            tenant_id=delivery_records.as_uuid(tenant_id),
+            kind=delivery_records.AUTOMATION,
+            source=delivery_records.AUTOMATION,
+            account_id=delivery_records.as_uuid(account_id),
+            title=delivery_records.title_of(delivery_records.AUTOMATION, {"message": text}),
+        )
+        if dispatch.tenant_id is None:
+            return
+        failed = columns.pop("failed", None)
+        status = delivery_records.FAILED if failed else delivery_records.SENT
+        if failed:
+            columns.update(reason=failed.get("reason"), error_code=failed.get("error_code"))
+        row = delivery_records.new_row(dispatch, status, platform=platform, destination=destination, **columns)
+        # This request's own transaction ends first, so recording never waits for a second connection
+        # while it holds one.
+        session = getattr(self, "session", None)
+        if session is not None:
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
+        delivery_records.record_sync([row], engine=self.engine)
+
+    def send_channel_message(self, platform, tenant_id, channel_id, session_id, text, team_id=None, account_id=None):
         try:
             if platform != "slack":
                 return {"error": {"message": f"Platform {platform} is not supported yet"}}
@@ -890,11 +1027,23 @@ class CommonService:
                 if not message_response.get("ok"):
                     error_msg = message_response.get("error", ERR_UNKNOWN)
                     LOG.error(f"Failed to send message to channel {channel_id}: {error_msg}")
+                    self._record_automation_post(
+                        tenant_id, "slack", channel_id, text, account_id, failed=slack_failure(message_response)
+                    )
                     return {"error": {"message": f"Failed to send message: {error_msg}"}}
 
                 message_ts = message_response.get("ts")
 
                 LOG.info(f"Successfully sent message to channel {channel_id} for session {session_id}")
+                self._record_automation_post(
+                    tenant_id,
+                    "slack",
+                    channel_id,
+                    text,
+                    account_id,
+                    team_id=messaging_platform.team_id,
+                    message_id=message_ts,
+                )
 
                 return {
                     "success": True,
@@ -910,6 +1059,9 @@ class CommonService:
             except SlackApiError as e:
                 error_msg = e.response.get("error") or "slack_api_error"
                 LOG.error(f"Slack API error sending message to channel {channel_id}: {error_msg}")
+                self._record_automation_post(
+                    tenant_id, "slack", channel_id, text, account_id, failed=slack_failure(e.response)
+                )
 
                 return self._check_error_msg(error_msg, "chat:write")
 
@@ -917,7 +1069,7 @@ class CommonService:
             LOG.exception("Error sending message to channel")
             return {"error": {"message": "Unexpected error while sending message"}}
 
-    def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None):
+    def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None, account_id=None):
         try:
             if platform not in ["slack", "google_chat"]:
                 return {"error": {"message": f"Platform {platform} is not supported for direct messages"}}
@@ -927,15 +1079,15 @@ class CommonService:
                 return {"error": {"message": f"No {platform} installation found for tenant: {tenant_id}"}}
 
             if platform == "slack":
-                return self._send_slack_direct_message(messaging_platform, user_id, text)
+                return self._send_slack_direct_message(messaging_platform, user_id, text, account_id)
             elif platform == "google_chat":
-                return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id)
+                return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id, account_id)
 
         except Exception:
             LOG.exception("Error sending direct message")
             return {"error": {"message": "Unexpected error while sending direct message"}}
 
-    def _send_slack_direct_message(self, messaging_platform, user_id, text):
+    def _send_slack_direct_message(self, messaging_platform, user_id, text, account_id=None):
         try:
             # Open a DM channel with the user
             dm_response = self.slack_app.client.conversations_open(token=messaging_platform.token, users=user_id)
@@ -960,10 +1112,27 @@ class CommonService:
             if not message_response.get("ok"):
                 error_msg = message_response.get("error", ERR_UNKNOWN)
                 LOG.error(f"Failed to send DM to user {user_id}: {error_msg}")
+                self._record_automation_post(
+                    messaging_platform.tenant_id,
+                    "slack",
+                    user_id,
+                    text,
+                    account_id,
+                    failed=slack_failure(message_response),
+                )
                 return {"error": {"message": f"Failed to send message: {error_msg}"}}
 
             message_ts = message_response.get("ts")
             LOG.info(f"Successfully sent DM to user {user_id} via channel {dm_channel_id}")
+            self._record_automation_post(
+                messaging_platform.tenant_id,
+                "slack",
+                user_id,
+                text,
+                account_id,
+                team_id=messaging_platform.team_id,
+                message_id=message_ts,
+            )
 
             return {
                 "success": True,
@@ -979,9 +1148,12 @@ class CommonService:
         except SlackApiError as e:
             error_msg = e.response.get("error") or "slack_api_error"
             LOG.error(f"Slack API error sending DM to user {user_id}: {error_msg}")
+            self._record_automation_post(
+                messaging_platform.tenant_id, "slack", user_id, text, account_id, failed=slack_failure(e.response)
+            )
             return self._check_dm_error_msg(error_msg)
 
-    def _send_google_chat_direct_message(self, messaging_platform, user_id, text, tenant_id):
+    def _send_google_chat_direct_message(self, messaging_platform, user_id, text, tenant_id, account_id=None):
         error = self._refresh_google_chat_token(messaging_platform)
         if error:
             return {"error": {"message": error}}
@@ -994,8 +1166,14 @@ class CommonService:
         )
 
         if not result.get("success"):
+            self._record_automation_post(
+                tenant_id, "google_chat", user_id, text, account_id, failed=google_chat_failure(result)
+            )
             return {"error": {"message": result.get("error", "Failed to send direct message")}}
 
+        self._record_automation_post(
+            tenant_id, "google_chat", user_id, text, account_id, message_id=(result.get("data") or {}).get("name")
+        )
         return {
             "success": True,
             "message": MSG_DM_SENT_SUCCESS,
@@ -1395,6 +1573,7 @@ class CommonService:
         reply_to=None,
         cc=None,
         bcc=None,
+        tenant_id=None,
     ):
         """
         Send an email to one or more recipients.
@@ -1412,6 +1591,8 @@ class CommonService:
             cc: Optional list (or single string) of Cc addresses
             bcc: Optional list (or single string) of Bcc addresses
                 (envelope-only; never appears in headers)
+            tenant_id: The tenant the email is sent for; its delivery rows are
+                recorded only when it is known
 
         Returns:
             Dict with success status and details
@@ -1432,12 +1613,18 @@ class CommonService:
 
             email_config = self._prepare_email_config(body, template, template_params, body_format)
 
+            outcomes = {}
             if cc_list or bcc_list:
                 sent_to, errors = await self._send_combined_email(
-                    recipient_list, cc_list, bcc_list, subject, email_config, reply_to
+                    recipient_list, cc_list, bcc_list, subject, email_config, reply_to, outcomes
                 )
             else:
-                sent_to, errors = await self._send_emails_to_recipients(recipient_list, subject, email_config, reply_to)
+                sent_to, errors = await self._send_emails_to_recipients(
+                    recipient_list, subject, email_config, reply_to, outcomes
+                )
+            if tenant_id:
+                rows = delivery_records.email_rows(tenant_id, template, subject, outcomes)
+                await asyncio.to_thread(delivery_records.record_sync, rows)
 
             return self._build_email_response(sent_to, errors)
 
@@ -1556,8 +1743,9 @@ class CommonService:
 
         return {"from_email": from_email, "template_type": template_type, "template_params": params}
 
-    async def _send_emails_to_recipients(self, recipients, subject, email_config, reply_to):
-        """Send emails to all recipients and collect results."""
+    async def _send_emails_to_recipients(self, recipients, subject, email_config, reply_to, outcomes=None):
+        """Send emails to all recipients and collect results. outcomes, when
+        given, gets each recipient's error, or None when it was sent."""
         from notifications_server.emailer import generate_email, send_email_async
 
         sent_to = []
@@ -1575,14 +1763,18 @@ class CommonService:
                 )
                 await send_email_async(email_msg)
                 sent_to.append(recipient)
+                if outcomes is not None:
+                    outcomes[recipient] = None
                 LOG.info("Email sent successfully to %s", recipient)
-            except Exception:
+            except Exception as exc:
                 LOG.exception("Failed to send email to %s", recipient)
                 errors.append({"recipient": recipient, "error": "Unexpected error; see server logs"})
+                if outcomes is not None:
+                    outcomes[recipient] = exc
 
         return sent_to, errors
 
-    async def _send_combined_email(self, to_list, cc_list, bcc_list, subject, email_config, reply_to):
+    async def _send_combined_email(self, to_list, cc_list, bcc_list, subject, email_config, reply_to, outcomes=None):
         """Send a single combined email with To/Cc headers and envelope-only Bcc.
 
         Returns (sent_to, errors). On a successful SMTP send, sent_to is the
@@ -1609,9 +1801,13 @@ class CommonService:
                 len(cc_list or []),
                 len(bcc_list or []),
             )
+            if outcomes is not None:
+                outcomes.update(dict.fromkeys(envelope))
             return envelope, []
-        except Exception:
+        except Exception as exc:
             LOG.exception("Failed to send combined email")
+            if outcomes is not None:
+                outcomes.update(dict.fromkeys(envelope, exc))
             return [], [{"recipients": envelope, "error": "Unexpected error; see server logs"}]
 
     @staticmethod
@@ -1629,13 +1825,14 @@ class CommonService:
             "errors": errors,
         }
 
-    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message):
+    def post_slack_ephemeral_response(self, channel_id, team_id, user_id, message, thread_ts=None):
         bot = self.get_slack_installation(team_id)
         output_blocks = Transformer.to_slack(MarkdownBlock(text=message))
         self.slack_app.client.post_ephemeral(
             text="message",
             channel_id=channel_id,
             user=user_id,
+            thread_ts=thread_ts,
             token=bot.token,
             response_type="in_channel",
             replace_original=True,
@@ -2082,15 +2279,7 @@ class CommonService:
             # by tenant_id whenever the caller has one so a foreign tenant's
             # Slack row can never be selected instead of this tenant's own
             # (non-Slack, or missing) row for the same fingerprint.
-            query = self.session.query(SentNotifications).filter_by(fingerprint=fingerprint)
-            if tenant_id:
-                query = query.filter_by(tenant_id=tenant_id)
-            notification = (
-                query.filter(SentNotifications.slack_thread_id.isnot(None))
-                .order_by(SentNotifications.created_at.desc())
-                .limit(1)
-                .first()
-            )
+            notification = latest_slack_notification(self.session, fingerprint, tenant_id)
         except Exception as e:
             self.session.rollback()
             LOG.error(f"Unable to query sent notifications for conversation_id: {conversation_id} due to {e}")
@@ -2112,8 +2301,8 @@ class CommonService:
     # ==================== Teams Bot Messaging Methods ====================
 
     def _init_bot_framework(self, channel_auth_tenant):
-        app_id = os.environ.get("MS_TEAMS_CLIENT_ID")
-        app_password = os.environ.get("MS_TEAMS_CLIENT_SECRET")
+        app_id = settings.ms_teams.client_id
+        app_password = settings.ms_teams.client_secret
         if app_id and app_password:
             LOG.debug(f"Initializing Bot Framework adapter with App ID: {app_id[:8]}...")
             # A SingleTenant bot must take its Bot Connector token from its own
@@ -2134,10 +2323,8 @@ class CommonService:
                 LOG.warning("No AAD user ID provided")
                 return None
 
-            messaging_platform = load_ms_teams_installation_by_aad_tenant(self.session, teams_account_id)
-
-            if not messaging_platform:
-                LOG.debug(f"No Teams messaging platform found for teams account {teams_account_id}")
+            if not eligible(self.session, teams_account_id):
+                LOG.debug(f"No Teams team is connected in Microsoft tenant {teams_account_id}")
                 return None
 
             user_email = await sender_email(activity) if activity is not None else None
@@ -2267,13 +2454,28 @@ class CommonService:
         return card
 
     @staticmethod
-    def create_teams_welcome_card(connected: bool):
-        """The card shown when the app is added. A Microsoft tenant already
-        connected to NudgeBee gets how-to-use; otherwise, how to connect."""
+    def create_teams_welcome_card(connected: bool, connect_url: Optional[str] = None, integrations_only: bool = False):
+        """The card shown when the app is added. A connected team gets how-to-use;
+        otherwise, how to connect: with connect_url, its button carries a connect
+        link for whoever added the app; with integrations_only, it says to ask an
+        admin, for someone who can't have a link. In a personal or group chat
+        that isn't connected, how to connect a team."""
         from notifications_server.services.bot_messages import SIGNUP_URL
 
         branding_name = settings.urls.branding_name
+        # The app's name in Teams, which the store requires the welcome to use.
+        assistant_name = settings.urls.assistant_name
         branding_logo = settings.urls.branding_logo_url
+        # A brand with no logo gets no image: an Image with an empty url is not a valid element.
+        logo_columns = []
+        if branding_logo:
+            logo_columns.append(
+                {
+                    "type": "Column",
+                    "width": "auto",
+                    "items": [{"type": "Image", "url": branding_logo, "size": "Small", "style": "Person"}],
+                }
+            )
 
         card = {
             "type": "AdaptiveCard",
@@ -2283,18 +2485,7 @@ class CommonService:
                 {
                     "type": "ColumnSet",
                     "columns": [
-                        {
-                            "type": "Column",
-                            "width": "auto",
-                            "items": [
-                                {
-                                    "type": "Image",
-                                    "url": branding_logo,
-                                    "size": "Small",
-                                    "style": "Person",
-                                }
-                            ],
-                        },
+                        *logo_columns,
                         {
                             "type": "Column",
                             "width": "stretch",
@@ -2302,7 +2493,7 @@ class CommonService:
                             "items": [
                                 {
                                     "type": "TextBlock",
-                                    "text": f"Welcome to {branding_name}!",
+                                    "text": f"Welcome to {assistant_name}!",
                                     "weight": "Bolder",
                                     "size": "Large",
                                 }
@@ -2312,7 +2503,10 @@ class CommonService:
                 },
                 {
                     "type": "TextBlock",
-                    "text": f"Hi there! I'm your {branding_name} assistant. Here's what I can help you with:",
+                    "text": (
+                        f"Hi there! I'm {assistant_name}, your {branding_name} assistant. "
+                        "Here's what I can help you with:"
+                    ),
                     "wrap": True,
                 },
                 {
@@ -2330,14 +2524,14 @@ class CommonService:
             card["body"].append(
                 {
                     "type": "TextBlock",
-                    "text": f"Mention **@{branding_name}** in a channel or a thread to ask a question.",
+                    "text": f"Mention **@{assistant_name}** in a channel or a thread to ask a question.",
                     "wrap": True,
                 }
             )
             card["actions"] = [
                 {"type": "Action.OpenUrl", "title": f"Open {branding_name}", "url": f"{settings.base_url}/home"}
             ]
-        else:
+        elif connect_url:
             card["body"] += [
                 {
                     "type": "TextBlock",
@@ -2351,13 +2545,41 @@ class CommonService:
                     "size": "Small",
                     "isSubtle": True,
                 },
-            ]
-            card["actions"] = [
+                # In the body, not the card's actions, so the line below can follow the button.
                 {
-                    "type": "Action.OpenUrl",
-                    "title": "Connect Microsoft Teams",
-                    "url": f"{settings.base_url}/user-management#integrations",
-                }
+                    "type": "ActionSet",
+                    "actions": [{"type": "Action.OpenUrl", "title": "Connect Microsoft Teams", "url": connect_url}],
+                },
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"This button works for 7 days and only for the person who added {assistant_name}. "
+                        f"After that, @mention {assistant_name} here for a new one."
+                    ),
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
+            ]
+        elif integrations_only:
+            card["body"].append({"type": "TextBlock", "text": _ask_an_admin_to_connect(), "wrap": True})
+        else:
+            card["body"] += [
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"To get alerts and ask questions, add {assistant_name} to a team and @mention it there "
+                        f"to connect that team to {branding_name}."
+                    ),
+                    "wrap": True,
+                },
+                {
+                    "type": "TextBlock",
+                    "text": f"New to {branding_name}? [Sign up]({SIGNUP_URL})",
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
             ]
 
         return card
@@ -2370,7 +2592,7 @@ class CommonService:
             # Get conversation reference from the incoming activity
             conversation_reference = TurnContext.get_conversation_reference(activity)
 
-            # Trust the service URL for this conversation
+            require_bot_connector_url(activity.service_url)
             MicrosoftAppCredentials.trust_service_url(activity.service_url)
 
             # Define the callback function that sends the card
@@ -2411,7 +2633,7 @@ class CommonService:
             # Get conversation reference from the incoming activity
             conversation_reference = TurnContext.get_conversation_reference(activity)
 
-            # Trust the service URL for this conversation
+            require_bot_connector_url(activity.service_url)
             MicrosoftAppCredentials.trust_service_url(activity.service_url)
 
             # Define the callback function that sends the message
@@ -2455,6 +2677,7 @@ class CommonService:
                 ),
             )
 
+            require_bot_connector_url(conversation_ref_dict.get("service_url"))
             MicrosoftAppCredentials.trust_service_url(conversation_ref_dict.get("service_url"))
 
             async def send_message_callback(turn_context: TurnContext):
@@ -2495,6 +2718,7 @@ class CommonService:
                 ),
             )
 
+            require_bot_connector_url(conversation_ref_dict.get("service_url"))
             MicrosoftAppCredentials.trust_service_url(conversation_ref_dict.get("service_url"))
 
             async def send_card_callback(turn_context: TurnContext):
@@ -2584,7 +2808,7 @@ class CommonService:
             (t for t in load_teams(self.session, messaging_platform.tenant_id) if t.aad_group_id == team_id), None
         )
         if team is None:
-            return {"success": False, "platform": "ms_teams", "error": APP_NOT_IN_TEAM}
+            return {"success": False, "platform": "ms_teams", "error": str(AppNotInTeamError())}
         sender = get_sender()
         try:
             sender.check_channel(team, channel_id)
@@ -2630,16 +2854,70 @@ class CommonService:
             return {"success": False, "platform": "google_chat", "error": "Unexpected error; see server logs"}
 
     async def teams_send_welcome_message(self, activity: Activity) -> bool:
-        """Send welcome message when bot is added to a Teams conversation."""
+        """Send welcome message when bot is added to a Teams conversation: in a
+        team, connected or with a connect link for whoever added the app; in a
+        personal or group chat, the plain welcome."""
         aad_tenant_id = (channel_data_of(activity).get("tenant") or {}).get("id")
         try:
-            connected = bool(ms_teams_aad_tenant_owner(self.session, aad_tenant_id, enabled_only=True))
+            connected = bool(workspaces_for(self.session, activity))
         except Exception as e:
             LOG.warning("Checking the Teams connection for tenant %s failed: %s", aad_tenant_id, e)
             self.session.rollback()
             connected = False
-        card = self.create_teams_welcome_card(connected)
+        if connected:
+            card = self.create_teams_welcome_card(True)
+        else:
+            # None when there's no link; the reason is logged.
+            connect_url = await connect_link.link_url(activity)
+            if connect_link.offerable(activity):
+                card = self.create_teams_welcome_card(False, connect_url=connect_url, integrations_only=not connect_url)
+            else:
+                card = self.create_teams_welcome_card(False)
         return await self.teams_reply_with_card(activity, card, None)
+
+    @staticmethod
+    def create_teams_not_connected_card() -> dict:
+        """The bot's reply to a message in a team that isn't connected to a
+        workspace, from someone who can't have a connect link."""
+        return {
+            "type": "AdaptiveCard",
+            ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
+            "version": "1.4",
+            "body": [{"type": "TextBlock", "text": _ask_an_admin_to_connect(), "wrap": True}],
+        }
+
+    @staticmethod
+    def create_teams_connect_card(connect_url: str) -> dict:
+        """The bot's reply to an @mention in a team that isn't connected: a
+        connect link for whoever mentioned it."""
+        branding_name = settings.urls.branding_name
+        assistant_name = settings.urls.assistant_name
+        return {
+            "type": "AdaptiveCard",
+            ADAPTIVE_CARD_SCHEMA_KEY: ADAPTIVE_CARD_SCHEMA_URL,
+            "version": "1.4",
+            "body": [
+                {
+                    "type": "TextBlock",
+                    "text": f"Connect this team to {branding_name} to get alerts and ask questions here.",
+                    "wrap": True,
+                },
+                {
+                    "type": "ActionSet",
+                    "actions": [{"type": "Action.OpenUrl", "title": "Connect this team", "url": connect_url}],
+                },
+                {
+                    "type": "TextBlock",
+                    "text": (
+                        f"This button works for 7 days and only for the person who mentioned {assistant_name}, "
+                        f"signed in to {branding_name} as an admin."
+                    ),
+                    "wrap": True,
+                    "size": "Small",
+                    "isSubtle": True,
+                },
+            ],
+        }
 
     # ==================== Google Chat Bot Messaging Methods ====================
 
@@ -2777,8 +3055,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Connect this space to {branding_name}",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {
@@ -2827,8 +3104,7 @@ class CommonService:
                     "card": {
                         "header": {
                             "title": f"Welcome to {branding_name}!",
-                            "imageUrl": branding_logo,
-                            "imageType": "CIRCLE",
+                            **({"imageUrl": branding_logo, "imageType": "CIRCLE"} if branding_logo else {}),
                         },
                         "sections": [
                             {

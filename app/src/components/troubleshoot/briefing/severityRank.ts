@@ -12,7 +12,7 @@ export const SOURCE_SEVERITY_TO_RANK: Record<SourceSeverity, NubiRank> = {
 };
 
 export const MAPPING_DISCLOSURE =
-  'Assumes the mapping HIGH = P1 · MEDIUM = P2 · LOW/INFO = P3. This mapping is not defined in the product yet — it must be agreed before this column ships, because it decides every number above.';
+  'Source severity maps to an expected rank — HIGH → P1, MEDIUM → P2, LOW/INFO/DEBUG → P3. Each issue is compared against that expectation below.';
 
 export type Disagreement = 'below' | 'agreed' | 'above' | 'unscored';
 

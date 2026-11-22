@@ -42,8 +42,14 @@ func TestLintDefinition(t *testing.T) {
 			{ID: "start", Type: "core.print"},
 			{ID: "route", Type: "core.switch", DependsOn: []string{"start"}, Params: map[string]any{
 				"cases": []any{map[string]any{"value": "a", "next": "branch-a"}}, "default_next": "branch-b"}},
-			{ID: "branch-a", Type: "core.print", DependsOn: []string{"route"}},
+			{ID: "branch-a", Type: "core.print", DependsOn: []string{"route", "start"}},
 			{ID: "branch-b", Type: "core.print"},
+		}, nil},
+		{"branch depends on a task outside the switch's past", []model.Task{
+			{ID: "side", Type: "core.print"},
+			{ID: "route", Type: "core.switch", Params: map[string]any{
+				"cases": []any{map[string]any{"value": "a", "next": "branch-a"}}}},
+			{ID: "branch-a", Type: "core.print", DependsOn: []string{"route", "side"}},
 		}, []string{"switch_target_depends_on:branch-a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

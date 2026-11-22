@@ -1,6 +1,8 @@
 package security
 
 import (
+	"database/sql"
+	"errors"
 	"log/slog"
 	"nudgebee/services/internal/database"
 	"os"
@@ -58,7 +60,11 @@ func CustomRolesEnabled(tenantId string) bool {
 		"SELECT status FROM feature_flag WHERE feature_id = $1 AND tenant_id = $2::uuid AND account_id IS NULL",
 		FeatureCustomRoles, tenantId)
 	if err != nil {
-		// No row (the common case) — the feature stays off for this tenant.
+		// No row (the common case) — the feature stays off for this tenant. Any
+		// other error also leaves it off, but is logged: it is not a tenant choice.
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Error("custom roles: unable to read the CUSTOM_ROLES flag", "tenant_id", tenantId, "error", err)
+		}
 		return false
 	}
 	return status == "enabled"

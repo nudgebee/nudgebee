@@ -181,7 +181,13 @@ func (a *gcloudProvider) ListResources(ctx providers.CloudProviderContext, accou
 		}
 		serviceResources, err := service.GetResources(ctx, account, regionName)
 		if err != nil {
-			ctx.GetLogger().Error("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
+			// A service the collector does not list resources for is not a failure;
+			// the sync above already ignores it.
+			log := ctx.GetLogger().Error
+			if errors.Is(err, errors.ErrUnsupported) {
+				log = ctx.GetLogger().Debug
+			}
+			log("failed to fetch resources", "error", err, "service", serviceName, "region", regionName)
 			return providers.ListResourcesResponse{
 				Items: resources,
 			}, err
@@ -280,7 +286,15 @@ func (a *gcloudProvider) ListEvents(ctx providers.CloudProviderContext, account 
 
 		// Fallback to Cloud Logging method
 		// Requires: notification channels configured, Cloud Logging enabled
-		return getGCPAlertIncidents(ctx, account, query)
+		listedAt := time.Now().UTC()
+		fallback, fallbackErr := getGCPAlertIncidents(ctx, account, query)
+		if fallbackErr != nil {
+			return fallback, fallbackErr
+		}
+		// The fallback does not list what is open, so it ends nothing; the
+		// snapshot only keeps the batch-wide close off the firings left open.
+		fallback.Ongoing = unlistedIncidentSnapshot(listedAt)
+		return fallback, nil
 	}
 
 	// v3 API succeeded - return results (even if empty, which means no alerts firing)
@@ -337,6 +351,19 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 	}
 
 	if err := common.ValidateCliCommand(command, gcloudBlockedCommands); err != nil {
+		return "", err
+	}
+
+	// Handle backslash line continuations before parsing
+	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
+	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
+	execArgs, err := shlex.Split(cleanCommand)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse GCP CLI command: %w", err)
+	}
+	// The same boundary as the workspace path: no credential export, no
+	// collector-local file transfer.
+	if err := validateGcloudWorkspaceBoundary(execArgs); err != nil {
 		return "", err
 	}
 
@@ -404,50 +431,29 @@ func (a *gcloudProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, a
 		Timeout: 30 * time.Second,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud auth command failed", "error", err, "stderr", stderr)
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud auth command failed", "error", err, "stderr", stderr)
 		return "", fmt.Errorf("gcloud auth failed: %w", err)
 	}
 
-	// Handle backslash line continuations before parsing
-	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
-	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
-
-	// Execute the user command, choosing the executor based on pipelining.
 	// Reuse the same baseEnv (with CLOUDSDK_CONFIG) so gcloud finds the auth state
 	// from the activate-service-account call above.
-	var stdout string
-	opts := common.SecureCommandOptions{
-		Command: cleanCommand,
-		Env:     append(baseEnv, "GOOGLE_APPLICATION_CREDENTIALS="+tmpFile.Name()),
-	}
-
-	// Determine if the command uses a pipe (pipeline)
-	// We use shlex to properly handle quoted strings so that a pipe character inside a quote
-	// doesn't trigger pipeline execution.
-	usePipeline := false
-	execArgs, err := shlex.Split(cleanCommand)
-	if err == nil {
-		for _, arg := range execArgs {
-			if arg == "|" {
-				usePipeline = true
-				break
-			}
-		}
-	} else {
-		// If parsing fails, we fall back to a naive check
-		if strings.Contains(cleanCommand, "|") {
-			usePipeline = true
-		}
-	}
-
-	if usePipeline {
-		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
-	} else {
-		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
-	}
-
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command:   cleanCommand,
+		Env:       append(baseEnv, "GOOGLE_APPLICATION_CREDENTIALS="+tmpFile.Name()),
+		Untrusted: true,
+	})
 	if err != nil {
-		ctx.GetLogger().Error("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("gcloud CLI command execution failed", "error", err, "stderr", stderr, "command", command, "stdout", stdout)
 		return stdout, fmt.Errorf("gcloud CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 
@@ -510,19 +516,27 @@ func validateGcloudWorkspaceBoundary(args []string) error {
 		if (contains("auth") && !isGcloudPrintAccessToken(args)) || contains("config", "set") || contains("config", "unset") || contains("init") {
 			return errors.New("GCP authentication and persistent configuration commands are not allowed")
 		}
+		// The command runs as the account's activated service account. --account
+		// could name another credential gcloud can find on its own, such as the
+		// collector's own GCE/GKE metadata identity.
+		for _, arg := range args[1:] {
+			if arg == "--account" || strings.HasPrefix(arg, "--account=") {
+				return errors.New("GCP CLI commands run as the connected account; --account is not allowed")
+			}
+		}
 		if contains("storage", "cp") || contains("storage", "mv") || contains("storage", "rsync") || contains("compute", "scp") {
-			return errors.New("GCP workspace CLI cannot transfer collector-local files")
+			return errors.New("GCP CLI cannot transfer collector-local files")
 		}
 	case "gsutil":
 		if contains("config") {
 			return errors.New("gsutil config is not allowed")
 		}
 		if contains("cp") || contains("mv") || contains("rsync") {
-			return errors.New("GCP workspace CLI cannot transfer collector-local files")
+			return errors.New("GCP CLI cannot transfer collector-local files")
 		}
 	case "bq":
 		if contains("extract") || contains("load") {
-			return errors.New("BigQuery workspace CLI cannot transfer collector-local files")
+			return errors.New("BigQuery CLI cannot transfer collector-local files")
 		}
 	}
 	return nil
@@ -600,7 +614,7 @@ func executeGcloudStructured(ctx providers.CloudProviderContext, command string,
 		maxOutput = 1024 * 1024
 	}
 	truncated := false
-	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated})
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{Command: command, Env: env, Timeout: timeout, MaxOutputBytes: maxOutput, OutputTruncated: &truncated, Untrusted: true})
 	result := providers.CliExecutionResult{Stdout: stdout, Stderr: stderr, OutputTruncated: truncated}
 	if err == nil {
 		return result, nil

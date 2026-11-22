@@ -152,6 +152,13 @@ type OwnerResult struct {
 	OwnerName    string `json:"owner_name,omitempty"` // resolved display name (user display_name/username, or group name)
 	Source       string `json:"source,omitempty"`     // manual | rule
 	Via          string `json:"via,omitempty"`        // self | namespace | cluster
+	// NoActiveResource is set when no active resource of ResourceType has this key, so
+	// ownership was never evaluated (the read-time orphan guard). It is what tells "an
+	// owner assigned here would stay hidden" apart from "nobody owns this yet" — both
+	// are found=false. It says nothing about other types: a live node's id asked for as
+	// a workload is flagged too. Reported only to callers who may assign owners, and
+	// never when the lookup itself failed.
+	NoActiveResource bool `json:"no_active_resource,omitempty"`
 }
 
 // OwnerDto is a stored owner row for listing.

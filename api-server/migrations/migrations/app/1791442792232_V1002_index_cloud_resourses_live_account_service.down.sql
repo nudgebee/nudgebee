@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_cloud_resourses_live_account_service;

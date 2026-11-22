@@ -21,8 +21,10 @@ jest.mock('next-auth/react', () => ({
 
 const mockHasReadAccess = jest.fn().mockReturnValue(true);
 const mockIsUiFeatureEnabled = jest.fn().mockReturnValue(false);
+const mockHasFeatureAccess = jest.fn().mockResolvedValue(false);
 jest.mock('@lib/auth', () => ({
   hasReadAccess: (...args) => mockHasReadAccess(...args),
+  hasFeatureAccess: (...args) => mockHasFeatureAccess(...args),
   isUiFeatureEnabled: (...args) => mockIsUiFeatureEnabled(...args),
 }));
 
@@ -92,6 +94,7 @@ describe('GlobalPageSearch', () => {
     mockDataContextValue = { selectedCluster: null, allCluster: [], setSelectedCluster: mockSetSelectedCluster };
     mockHasReadAccess.mockReturnValue(true);
     mockIsUiFeatureEnabled.mockReturnValue(false);
+    mockHasFeatureAccess.mockResolvedValue(false);
     mockWindowOpen = jest.spyOn(window, 'open').mockImplementation(() => {});
   });
 
@@ -377,41 +380,35 @@ describe('GlobalPageSearch', () => {
   });
 
   describe('Ask AI hand-off', () => {
-    const getPinnedAskAiButton = (container) => container.querySelector('#global-search-ask-ai-top');
+    const getPinnedAskAiButton = () => document.body.querySelector('#global-search-ask-ai-top');
 
     it('shows a persistent Ask AI entry pinned above the results', () => {
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
-      expect(screen.getByText('Ask nubi anything')).toBeInTheDocument();
-      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
-    it('hides the pinned Ask AI entry while scoping by @account', () => {
+    it('keeps the pinned Ask AI entry visible while scoping by @account', () => {
       mockDataContextValue = {
         selectedCluster: null,
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
         setSelectedCluster: mockSetSelectedCluster,
       };
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: '@' } });
-      expect(getPinnedAskAiButton(container)).not.toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
-    it('shows contextual "Ask nubi about" copy on the pinned row, with no redundant message in the empty results body, when the typed query matches no page', () => {
-      const { container } = render(<GlobalPageSearch />);
+    it('keeps the Ask AI shortcut when the typed query matches no page', () => {
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
-      expect(screen.getByText('Ask nubi about “zzzznotarealpage”')).toBeInTheDocument();
-      // The pinned row above already explains the empty result — a plain
-      // "No results found" underneath it would just repeat the same thing.
       expect(screen.queryByText('No results found')).not.toBeInTheDocument();
-      // Stays visible (not just its copy) even with zero results — it's the
-      // sole Ask AI entry point now that the empty state has none of its own.
-      expect(getPinnedAskAiButton(container)).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
-    it('falls back to a plain "No results found" message when @-mentioning matches no account (pinned row is hidden there)', () => {
+    it('shows the empty state and keeps the Ask AI shortcut when @ matches no account', () => {
       mockDataContextValue = {
         selectedCluster: null,
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
@@ -421,6 +418,7 @@ describe('GlobalPageSearch', () => {
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: '@zzzznotarealaccount' } });
       expect(screen.getByText('No results found')).toBeInTheDocument();
+      expect(getPinnedAskAiButton()).toBeInTheDocument();
     });
 
     it('submits the query, then navigates to the seeded conversation, when the pinned Ask AI button is clicked', async () => {
@@ -430,10 +428,10 @@ describe('GlobalPageSearch', () => {
         allCluster: [{ value: 'aws-1', label: 'AWS Prod', cloud_provider: 'AWS' }],
         setSelectedCluster: mockSetSelectedCluster,
       };
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
       fireEvent.change(getSearchInput(), { target: { value: 'zzzznotarealpage' } });
-      fireEvent.click(getPinnedAskAiButton(container));
+      fireEvent.click(getPinnedAskAiButton());
       expect(mockAiGenerateInvestigate).toHaveBeenCalledWith({
         account_id: 'aws-1',
         query: 'zzzznotarealpage',
@@ -443,9 +441,9 @@ describe('GlobalPageSearch', () => {
     });
 
     it('opens a blank chat from the pinned button when no account is resolvable', () => {
-      const { container } = render(<GlobalPageSearch />);
+      render(<GlobalPageSearch />);
       openSearch();
-      fireEvent.click(getPinnedAskAiButton(container));
+      fireEvent.click(getPinnedAskAiButton());
       expect(mockPush).toHaveBeenCalledWith('/ask-nudgebee');
       expect(mockAiGenerateInvestigate).not.toHaveBeenCalled();
     });

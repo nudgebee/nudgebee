@@ -6,7 +6,7 @@ import apiRecommendations from '@api1/recommendation';
 import { Modal } from '@ui/Modal';
 import { Select } from '@ui/Select';
 import { Label } from '@ui/Label';
-import { MemoryHeadroomCheck, MemoryUsageFacts } from './MemoryUsageFacts';
+import { MemoryHeadroomCheck, MemoryUsageFacts, RightSizingSource } from './MemoryUsageFacts';
 import { toast as snackbar } from '@ui/Toast';
 import { ANNOTATIONS, CI_PREFIX, CI_REQUEST_ANNOTATIONS } from '@lib/annotationKeys';
 import { detectGitOpsManager } from '@utils/workloadManager';
@@ -192,12 +192,15 @@ const KubernetesRightSizingPopupForm = ({
     Number.isFinite(parseFloat(currentMemRequest)) && Number.isFinite(parseFloat(currentMemLimit))
       ? Math.min(parseFloat(currentMemRequest), parseFloat(currentMemLimit))
       : currentMemRequest;
-  const memNbalgoBase = higherOf(data?.memory?.nbalgoBase, memRequestFloor);
+  // The stored right-sizing figure (what Optimize shows), when the caller found
+  // one, replaces the usage peak as the base — under the same floor.
+  const rightSizing = data?.memory?.rightSizing;
+  const memNbalgoBase = higherOf(rightSizing ? rightSizing.request : data?.memory?.nbalgoBase, memRequestFloor);
   // The limit's base is the current LIMIT, not the request — sharing one base
   // collapses a 192Mi limit onto the request's value. Never below the request's
   // base, though: with no limit set, the usage peak can sit under a generous
   // request, and both are multiplied by the same buffer.
-  const memNbalgoLimit = higherOf(data?.memory?.nbalgoBase, currentMemLimit, memNbalgoBase);
+  const memNbalgoLimit = higherOf(rightSizing ? rightSizing.limit : data?.memory?.nbalgoBase, currentMemLimit, memNbalgoBase);
   const cpuNbalgoBase = higherOf(data?.cpu?.nbalgoBase, currentCpuRequest);
 
   // `|| undefined` (not `|| ''`) so `'' * bufferMultiplier === 0` can't sneak a
@@ -690,6 +693,14 @@ const KubernetesRightSizingPopupForm = ({
     updateDataBasedOnButtonValueForMemory(buttonValue);
   };
 
+  // The stored figure already carries its algorithm's headroom, and Optimize
+  // applies it with no buffer; anything else opens on +10%, which the caller's
+  // prefill already includes.
+  const usesRightSizing = Boolean(rightSizing);
+  useEffect(() => {
+    setSelectedButtons((prev) => ({ ...prev, memBuffer: usesRightSizing ? 0 : 3 }));
+  }, [usesRightSizing]);
+
   const handleSelectedMemoryAlgo = (buttonId, buttonValue) => {
     setSelectedButtons(buttonId);
     setSelectedButtons((prevSelectedButtons) => ({
@@ -713,6 +724,16 @@ const KubernetesRightSizingPopupForm = ({
       let changed = false;
       if (prevData.memory) {
         const memory = { ...prevData.memory };
+        // The caller floored the stored figure at the allocation its evidence
+        // showed; the spec can show more, and the proposal must not sit below it.
+        if (rightSizing && memNbalgoBase && !(parseFloat(memory.request) >= memNbalgoBase)) {
+          memory.request = parseMemValue(memNbalgoBase);
+          changed = true;
+        }
+        if (rightSizing && memNbalgoLimit && !(parseFloat(memory.limit) >= memNbalgoLimit)) {
+          memory.limit = parseMemValue(memNbalgoLimit);
+          changed = true;
+        }
         if (!knownValue(memory.request) && memNbalgoBase) {
           memory.request = parseMemValue(memNbalgoBase * 1.1);
           changed = true;
@@ -1064,8 +1085,13 @@ const KubernetesRightSizingPopupForm = ({
                   handleInputChange={handleInputChange}
                   currentMemoryExtra={memoryUsage && <MemoryUsageFacts usage={memoryUsage} limitMb={currentMemLimit} />}
                   recommendedMemoryExtra={
-                    memoryUsage && (
-                      <MemoryHeadroomCheck usage={memoryUsage} request={updatedData?.memory?.request} limit={updatedData?.memory?.limit} />
+                    (rightSizing || memoryUsage) && (
+                      <>
+                        {rightSizing && <RightSizingSource rightSizing={rightSizing} keptCurrent={memNbalgoBase > rightSizing.request} />}
+                        {memoryUsage && (
+                          <MemoryHeadroomCheck usage={memoryUsage} request={updatedData?.memory?.request} limit={updatedData?.memory?.limit} />
+                        )}
+                      </>
                     )
                   }
                 />

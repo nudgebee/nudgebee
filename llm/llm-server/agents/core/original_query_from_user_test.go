@@ -38,7 +38,7 @@ func TestOriginalQueryFromUser_ReachesToolCalls(t *testing.T) {
 			OriginalQuery:         "what happened in the last 30m",
 			OriginalQueryFromUser: fromUser,
 			// A sub-agent's request: the conversation source is not carried down.
-		}, "logs", tool, `{"command":"all logs for app api last 24h, limit 5000"}`, nil, "", "tool-call-1", "")
+		}, "logs", tool, `{"command":"all logs for app api last 24h, limit 5000"}`, nil, "", "tool-call-1", "", toolcore.ToolRequestTypeRead)
 		require.NoError(t, err)
 		assert.Equal(t, "what happened in the last 30m", tool.got.OriginalQuery)
 		assert.Equal(t, fromUser, tool.got.OriginalQueryFromUser)
@@ -67,4 +67,18 @@ func TestSeedOriginalQuery(t *testing.T) {
 	assert.False(t, seedOriginalQuery(&underParent))
 	assert.Equal(t, "why is api failing", underParent.OriginalQuery)
 	assert.True(t, underParent.OriginalQueryFromUser, "a sub-agent keeps what its parent recorded")
+}
+
+// The approval gate's verdict reaches the tool, so a tool that hands out a
+// credential (the SCM proxy token) can allow changes only for an approved
+// write.
+func TestRequestTypeReachesToolCalls(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"account"})
+	for _, requestType := range []toolcore.ToolRequestType{toolcore.ToolRequestTypeRead, toolcore.ToolRequestTypeUpdate, ""} {
+		tool := &capturingTool{}
+		_, err := callNbTool(ctx, NBAgentRequest{AccountId: "account", UserId: "user", ConversationId: "conversation", MessageId: "message", AgentId: "agent"},
+			"github", tool, `{"command":"gh pr list"}`, nil, "", "tool-call-1", "", requestType)
+		require.NoError(t, err)
+		assert.Equal(t, requestType, tool.got.RequestType)
+	}
 }

@@ -248,7 +248,7 @@ func TestLooksLikeTruncatedAWSDNS(t *testing.T) {
 		want bool
 	}{
 		{"truncated_s3", "nb-ml-models-v2.s3.us-east", true},
-		{"truncated_s3_cloudtrail", "aws-cloudtrail-logs-740395098545-d2547ae0.s3.us-east", true},
+		{"truncated_s3_cloudtrail", "aws-cloudtrail-logs-777777777777-d2547ae0.s3.us-east", true},
 		{"truncated_rds", "mydb.abc123.us-east-1.rds", true},
 		{"complete_s3", "nb-ml-models-v2.s3.us-east-1.amazonaws.com", false},
 		{"complete_elb", "my-alb.us-east-1.elb.amazonaws.com", false},

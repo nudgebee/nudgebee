@@ -351,14 +351,16 @@ class SlackOAuthFlow(OAuthFlow):
             bot_token: Optional[str] = oauth_response.get("access_token")
             # NOTE: oauth.v2.access doesn't include bot_id in response
             bot_id: Optional[str] = None
+            team_url: Optional[str] = None
             if bot_token is not None:
                 auth_test = self.client.auth_test(token=bot_token)
                 bot_id = auth_test["bot_id"]
+                team_url = auth_test.get("url")
 
             expires_in = oauth_response.get("expires_in")
             token_expires_at = utc_now() + timedelta(seconds=expires_in) if expires_in else None
 
-            return MessagingPlatform(
+            installation = MessagingPlatform(
                 id=uuid_module.uuid4(),
                 username=installer.get("id"),
                 app_id=oauth_response.get("app_id"),
@@ -369,6 +371,8 @@ class SlackOAuthFlow(OAuthFlow):
                 scopes=oauth_response.get("scope"),  # comma-separated string
                 bot_id=bot_id,
             )
+            installation.team_url = team_url
+            return installation
 
         except SlackApiError as e:
             message = f"Failed to fetch oauth.v2.access result with code: {code} - error: {e}"

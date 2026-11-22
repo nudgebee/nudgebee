@@ -19,9 +19,16 @@ import (
 
 // notYetArchived keeps the archive UPDATEs off rows already at their target: an
 // UPDATE writes a new row version and fires the updated_at trigger even when
-// nothing changed. Both columns are nullable, so `status != 'Deleted'` would
-// skip (Deleted, NULL) rows and `is_active = false` would skip NULL.
-const notYetArchived = `(is_active IS DISTINCT FROM false OR status IS DISTINCT FROM 'Deleted')`
+// nothing changed. It selects the rows that are still live; is_active is
+// nullable and NULL counts as live, so `is_active = true` would skip those.
+//
+// It must stay the same expression as the predicate of
+// idx_cloud_resourses_live_account_service (migration V1002): Postgres uses a
+// partial index only when the query implies its predicate. Most of an
+// account's rows are already archived, and without that index every archive
+// UPDATE reads all of them to find the few still live. A row that is already
+// inactive keeps whatever status it has.
+const notYetArchived = `(is_active IS NOT FALSE)`
 
 // gcpRegionShape matches a real GCP regional value (geo-direction-number, e.g.
 // us-central1, asia-south1). It deliberately rejects "global" and multi-region
@@ -226,7 +233,7 @@ var globalServices = map[string]bool{
 	"awsiam":           true,
 	"amazons3":         true, // S3 buckets are global (though they have a region attribute)
 	"amazonroute53":    true,
-	"awscloudfront":    true,
+	"amazoncloudfront": true, // the provider lists distributions once, account-wide
 	"awswaf":           true,
 	"awsorganizations": true,
 	"awsconfig":        true, // AWS Config is account-level, not region-scoped
@@ -259,6 +266,14 @@ func resolveArchiveRegions(crawled, archive []string) []string {
 		return archive
 	}
 	return crawled
+}
+
+// boundRequestedRegions splits regions a caller asked to sync on an account with
+// a region allowlist: crawl is the part the allowlist permits, and archive is
+// every requested region, so rows in a requested region that left the list are
+// retired rather than left active with nothing to refresh them.
+func boundRequestedRegions(requested, allowed []string) (crawl, archive []string) {
+	return lo.Intersect(requested, allowed), append([]string(nil), requested...)
 }
 
 func StoreResources(ctx *security.RequestContext, accountId string, serviceName string, regions ...string) (StoreResourcesResponse, error) {
@@ -427,6 +442,23 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 			"service", serviceName,
 			"account", accountId,
 			"provider", accountInfo.CloudProvider)
+	} else if len(regions) > 0 && strings.EqualFold(accountInfo.CloudProvider, "aws") && !isGlobalAwsService(serviceName) {
+		// Regions a caller passes in are bounded by the allowlist too. A region
+		// outside it is one the account's policy forbids calling, and one denied
+		// region fails the whole service, so crawling it would stop the service
+		// from being stored at all. A requested region that left the list is not
+		// crawled but is still archived, so its rows are retired just as on the
+		// self-discovery path above.
+		if allowed := awsProvider.ConfiguredRegions(accountInfo); len(allowed) > 0 {
+			regions, archiveRegions = boundRequestedRegions(regions, allowed)
+			if len(regions) == 0 {
+				ctx.GetLogger().Info("skipping resource sync: no requested region is in the account allowlist",
+					"service", serviceName,
+					"account", accountId,
+					"requested_regions", archiveRegions)
+				return StoreResourcesResponse{Duration: time.Since(t0)}, nil
+			}
+		}
 	}
 
 	// For global AWS services, the regions list above is a stale cache of where
@@ -643,23 +675,25 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 			}, err
 		}
 		resourceDbData := map[string]any{
-			"id":                   uuid.New().String(),
-			"created_at":           t,
-			"created_by":           nilString,
-			"updated_at":           t,
-			"updated_by":           nilString,
-			"resourse_id":          item.Id,
-			"name":                 item.Name,
-			"type":                 item.Type,
-			"status":               lo.Ternary(item.Status != "", item.Status, providers.ResourceStatusActive),
-			"resourse_created_on":  item.CreatedAt.UTC(),
-			"account":              accountId,
-			"cloud_provider":       account.CloudProvider,
-			"region":               item.Region,
-			"arn":                  item.Arn,
-			"tenant":               ctx.GetSecurityContext().GetTenantId(),
-			"tags":                 string(tagsStr),
-			"meta":                 string(metaStr),
+			"id":                  uuid.New().String(),
+			"created_at":          t,
+			"created_by":          nilString,
+			"updated_at":          t,
+			"updated_by":          nilString,
+			"resourse_id":         item.Id,
+			"name":                item.Name,
+			"type":                item.Type,
+			"status":              lo.Ternary(item.Status != "", item.Status, providers.ResourceStatusActive),
+			"resourse_created_on": item.CreatedAt.UTC(),
+			"account":             accountId,
+			"cloud_provider":      account.CloudProvider,
+			"region":              item.Region,
+			"arn":                 item.Arn,
+			"tenant":              ctx.GetSecurityContext().GetTenantId(),
+			"tags":                string(tagsStr),
+			// Redacted on the serialized form: enrichment above runs after the
+			// provider call, and JSON has no hand-built typed containers to miss.
+			"meta":                 providers.RedactMetaJSON(string(metaStr)),
 			"service_name":         item.ServiceName,
 			"first_seen":           t,
 			"last_seen":            t,
@@ -834,6 +868,31 @@ func storeResourcesInsert(ctx *security.RequestContext, dbms *common.DatabaseMan
 			_, err = tx.NamedExec(query, maps.Values(batchMap))
 			if err != nil {
 				return nil, err
+			}
+		}
+
+		// nb-40328: the AWS/GCP conflict clause above deliberately skips `region`,
+		// so any provider's casing fix for region (not just the BigQuery one that
+		// prompted this) never reaches pre-existing rows. Backfill here for every
+		// AWS/GCP service, case-only, guarded against the 5-column unique index.
+		if !strings.EqualFold(cloudProvider, "azure") {
+			if _, normalizeErr := tx.Exec(`
+				update cloud_resourses t
+				set region = lower(t.region)
+				where t.account = $1
+				  and lower(t.service_name) = $2
+				  and t.region <> lower(t.region)
+				  and not exists (
+				    select 1 from cloud_resourses d
+				    where d.account = t.account
+				      and d.resourse_id = t.resourse_id
+				      and d.type = t.type
+				      and d.service_name = t.service_name
+				      and d.region = lower(t.region)
+				      and d.id <> t.id
+				  )`,
+				accountId, strings.ToLower(serviceName)); normalizeErr != nil {
+				return nil, fmt.Errorf("normalize stored region casing for %s: %w", serviceName, normalizeErr)
 			}
 		}
 

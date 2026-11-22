@@ -61,7 +61,7 @@ _APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
-from amqp.exceptions import PreconditionFailed  # noqa: E402
+from amqp.exceptions import NotFound, PreconditionFailed  # noqa: E402
 from kombu import Exchange  # noqa: E402
 
 from rabbitmq import rabbitmq_client as rc  # noqa: E402
@@ -119,12 +119,13 @@ class TestQueueArgumentsReachKombu(unittest.TestCase):
         self.assertNotIn("x-message-ttl", queue.queue_arguments)
         self.assertIn("x-dead-letter-exchange", queue.queue_arguments)
 
-    def test_declare_and_consume_agree_on_arguments(self):
-        """Drift here is a 406 on the first reconnect, not a startup error.
+    def test_consumer_queue_is_never_redeclared_by_kombu(self):
+        """kombu re-declares a Consumer's queues on every reconnect.
 
-        kombu's Consumer re-declares its queues every time the connection is
-        revived, so a queue declared one way at startup and another way on
-        reconnect leaves a live pod that can never reattach.
+        With our arguments, that is a 406 PRECONDITION_FAILED on every queue
+        created before the fix -- a burst of broker channel errors on every pod
+        start. _declare_topology owns creating the queue; the consumer only
+        attaches.
         """
         consumer = _make_consumer()
         captured = {}
@@ -135,108 +136,88 @@ class TestQueueArgumentsReachKombu(unittest.TestCase):
 
         consumer.get_consumers(fake_consumer, mock.MagicMock())
 
-        self.assertEqual(
-            captured["queue"].queue_arguments,
-            consumer._main_queue(_exchange()).queue_arguments,
-        )
+        self.assertTrue(captured["queue"].no_declare)
 
 
-class TestLegacyQueueFallback(unittest.TestCase):
-    """A queue that predates the fix exists without our arguments.
+class TestMainQueueCreatedOnlyWhenMissing(unittest.TestCase):
+    """Existing queues are used as they are; only a missing one is created.
 
-    RabbitMQ will not change a live queue's arguments, so the declare answers
-    PRECONDITION_FAILED forever. _declare_topology runs from __init__, which
-    runs at gunicorn import time, so retrying that would mean the pod never
-    boots -- an upgrade would take out every collector at once.
+    Brokers hold these queues in two shapes: without arguments (created before
+    the fix -- every long-lived install) and with them (created since). RabbitMQ
+    answers a declare whose arguments differ from the live queue's with 406 and
+    never changes a live queue, so the existence check must not send arguments.
     """
 
     @staticmethod
-    def _consumer_with_legacy_broker():
+    def _consumer(main_queue_exists: bool):
         consumer = _make_consumer()
-        channel = mock.MagicMock()
+        first, second = mock.MagicMock(name="first"), mock.MagicMock(name="second")
 
         def queue_declare(*args, **kwargs):
             name = kwargs.get("queue") or (args[0] if args else "")
-            if name == consumer.queue_name:  # the .dlq declares fine
-                raise PreconditionFailed("inequivalent arg 'x-message-ttl'")
+            if name == consumer.queue_name and kwargs.get("passive") and not main_queue_exists:
+                raise NotFound("no queue")
             return mock.MagicMock()
 
-        channel.queue_declare.side_effect = queue_declare
+        first.queue_declare.side_effect = queue_declare
+        # kombu passes the arguments through the channel's transport hook.
+        second.prepare_queue_arguments.side_effect = lambda arguments, **_kw: arguments
         consumer.connection = mock.MagicMock()
-        consumer.connection.channel.return_value = channel
-        return consumer, channel
+        consumer.connection.clone.return_value.channel.side_effect = [first, second]
+        return consumer, first, second
 
-    def test_precondition_failed_attaches_instead_of_retrying(self):
-        consumer, channel = self._consumer_with_legacy_broker()
+    @staticmethod
+    def _main_declares(channel, name):
+        return [c for c in channel.queue_declare.call_args_list if c.kwargs.get("queue") == name]
+
+    def test_existing_queue_is_checked_passively_and_bound(self):
+        consumer, first, _second = self._consumer(main_queue_exists=True)
+
+        consumer._declare_topology()
+
+        declares = self._main_declares(first, consumer.queue_name)
+        self.assertEqual(len(declares), 1)
+        self.assertTrue(declares[0].kwargs["passive"])
+        self.assertNotIn("arguments", declares[0].kwargs, "an existence check must not compare arguments")
+        self.assertIn(
+            mock.call(queue=consumer.queue_name, exchange="test-ex", routing_key="test-rk"),
+            first.queue_bind.call_args_list,
+        )
+        self.assertEqual(consumer.connection.clone.return_value.channel.call_count, 1)
+        consumer.connection.clone.return_value.release.assert_called_once()
+
+    def test_missing_queue_is_created_with_arguments(self):
+        """This is what recreates the queue after a broker comes up empty."""
+        consumer, _first, second = self._consumer(main_queue_exists=False)
+
+        consumer._declare_topology()
+
+        declares = self._main_declares(second, consumer.queue_name)
+        self.assertEqual(len(declares), 1)
+        self.assertFalse(declares[0].kwargs["passive"])
+        self.assertEqual(declares[0].kwargs["arguments"], consumer._queue_arguments())
+
+    def test_precondition_failed_is_not_retried(self):
+        """Retrying cannot win -- RabbitMQ never changes a live entity."""
+        consumer = _make_consumer()
+        channel = mock.MagicMock()
+        channel.queue_declare.side_effect = PreconditionFailed("inequivalent arg")
+        consumer.connection = mock.MagicMock()
+        consumer.connection.clone.return_value.channel.return_value = channel
 
         consumer._declare_topology()  # must return; a retry loop hangs the test
 
-        self.assertTrue(consumer._legacy_queue)
-        self.assertEqual(
-            consumer.connection.channel.call_count,
-            1,
-            "PRECONDITION_FAILED must not be retried -- that is the boot wedge",
-        )
-        channel.close.assert_called_once()
-
-    def test_legacy_queue_is_declared_bare_and_still_declared(self):
-        """Bare, so it matches the broker. Still declared, so a wipe self-heals.
-
-        kombu re-declares on every reconnect, and that is what puts the queue
-        back when the broker comes up without it -- a recreated PVC being the
-        case that matters. Marking the queue no_declare would look like the
-        right way to say "attach to what exists" and would silently remove the
-        only thing that recreates it.
-        """
-        consumer, _channel = self._consumer_with_legacy_broker()
-        consumer._declare_topology()
-
-        queue = consumer._main_queue(_exchange())
-
-        self.assertIsNone(queue.queue_arguments, "must match the bare queue the broker holds")
-        self.assertFalse(queue.no_declare, "must still be declared so a wiped broker gets it back")
-
-    def test_deleting_the_legacy_queue_lets_a_running_consumer_pick_up_arguments(self):
-        """The operator's remedy must work without restarting the pod.
-
-        Deleting the bare queue is how an existing installation gets the TTL and
-        the dead-letter-exchange. If the "this queue is legacy" decision were
-        sticky for the process lifetime, the next reconnect would recreate the
-        queue bare and silently undo exactly what the operator just did.
-        """
-        consumer, channel = self._consumer_with_legacy_broker()
-        consumer._declare_topology()
-        self.assertTrue(consumer._legacy_queue, "precondition: started out on a legacy broker")
-
-        # The operator deletes the bare queue; the broker now takes our arguments.
-        channel.queue_declare.side_effect = None
-        channel.queue_declare.return_value = mock.MagicMock()
-
-        captured = {}
-
-        def fake_consumer(queues, **_kwargs):
-            captured["queue"] = queues[0]
-            return mock.MagicMock()
-
-        consumer.get_consumers(fake_consumer, mock.MagicMock())
-
-        self.assertFalse(consumer._legacy_queue)
-        self.assertIn(
-            "x-message-ttl",
-            captured["queue"].queue_arguments,
-            "reconnect after the delete must declare the queue we actually want",
-        )
+        self.assertEqual(consumer.connection.clone.return_value.channel.call_count, 1)
 
     def test_connection_errors_are_still_retried(self):
-        """Only 406 is terminal. A broker that is merely down must be waited for."""
+        """A broker that is merely down must be waited for."""
         consumer = _make_consumer()
         consumer.connection = mock.MagicMock()
-        consumer.connection.channel.side_effect = [OSError("broker down"), mock.MagicMock()]
+        consumer.connection.clone.return_value.channel.side_effect = [OSError("broker down"), mock.MagicMock()]
 
         consumer._declare_topology()
 
-        self.assertFalse(consumer._legacy_queue)
-        self.assertEqual(consumer.connection.channel.call_count, 2)
+        self.assertEqual(consumer.connection.clone.return_value.channel.call_count, 2)
 
 
 if __name__ == "__main__":

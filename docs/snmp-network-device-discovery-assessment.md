@@ -4,7 +4,7 @@ This is the spike requested by [issue #383](https://github.com/nudgebee/nudgebee
 
 ## Recommendation
 
-Gather the first-release requirements, then scope a read-only LibreNMS API integration for devices, ports, and active alerts. Validate topology access against a real LibreNMS deployment before promising graph edges. Defer native SNMP polling until a concrete use case requires devices that are not already managed by a monitoring system.
+Start from the existing forager discovery pipeline. Native SNMP fits as another inventory method beside SSH; LibreNMS may be an optional in-network source feeding the same pipeline. Confirm the network-device schema and first-release requirements before implementing either source, and validate topology access before promising graph edges.
 
 ## What “SNMP support” can mean
 
@@ -22,15 +22,17 @@ Native polling is technically viable in Go: GoSNMP supports SNMP v1/v2c/v3, walk
 
 ## Fit with Nudgebee
 
-Nudgebee already has account-scoped integration configuration in [`integration_config.go`](../api-server/services/integrations/core/integration_config.go) and registered graph sources in [`sources/registry.go`](../api-server/services/knowledge_graph/sources/registry.go). Graph nodes and edges record tenant and source provenance; their current account field is named `CloudAccountID` in [`types.go`](../api-server/services/knowledge_graph/core/types.go). A LibreNMS connector should use that source/provenance path and keep device/interface identities stable. It should not model network devices as cloud resource types. If topology is added later, define dedicated graph node types for physical devices (such as switches and routers) rather than overloading compute or cloud-resource types; reserve the existing NodeTypeNetworkInterface constant for interface entities. A generic monitoring-account identity may be needed if the existing cloud-account scope cannot represent a LibreNMS instance cleanly.
+Network-device discovery already lives in **forager discovery** ([`vmpackage/`](../api-server/services/vmpackage/)): the in-network agent runs `discovery_sweep` within `allowed_cidrs`, SSH `discovery_inventory` uses versioned content packs, cron schedules scans, and `discovery_target` account links feed resource matching. Reachability, credential locality, scheduling, and account mapping therefore have an existing foundation; the effort estimates above describe the general polling work, not a requirement to build all of it again. Native SNMP should extend forager inventory, while an optional LibreNMS source should feed the same discovery → resource-match → knowledge-graph path. This needs agent-repository/content-pack work and agreed graph types for switches, routers, and interfaces, rather than a separate api-server inventory connector.
+
+Normalized SNMP or LibreNMS inventory should retain the existing datasource's `own` / `discovery_target` account association through resource matching and graph ingestion. Graph nodes and edges record tenant and source provenance; their account field is named `CloudAccountID` in [`types.go`](../api-server/services/knowledge_graph/core/types.go). Keep device/interface identities stable within that scope. Define dedicated graph node types for physical devices (such as switches and routers) rather than overloading compute or cloud-resource types; reserve the existing `NodeTypeNetworkInterface` constant for interface entities. The required network-device schema is an explicit design decision, not a reason to introduce a parallel account-identity model.
 
 ## Follow-up scope
 
 Before implementation, confirm:
 
 - First-release entities: devices, interfaces, active alerts, metrics, and/or topology.
-- Whether the LibreNMS deployment is reachable from the Nudgebee service or requires an in-network agent. If private-network reachability is required, evaluate whether the existing account-scoped vm_agent/proxy path can route the read-only HTTPS API calls; confirm the deployment model rather than assuming compatibility.
+- How an optional forager LibreNMS source normalizes its read-only HTTPS results into the existing discovery pipeline; prove compatibility against the target deployment.
 - Supported LibreNMS versions, expected inventory/alert refresh cadence, and whether alert acknowledgement is read-only or in scope.
 - Whether neighbor data is available through the deployed API and has stable identifiers suitable for graph edges.
 
-**Suggested first phase:** read-only device, interface, and active-alert sync through LibreNMS API v0, with topology and native polling explicitly out of scope until those questions are answered.
+**Suggested first phase:** define the forager inventory and graph contract for network devices, then scope native SNMP and/or an optional read-only LibreNMS source against it. Keep alert writes and unproven topology edges outside that first implementation.

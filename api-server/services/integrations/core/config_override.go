@@ -86,7 +86,7 @@ func configOverrideFor(ctx *security.RequestContext, accountId, integrationName 
 	if o.AccountId == "" || o.IntegrationName == "" {
 		return ConfigOverride{}, false
 	}
-	if o.AccountId != accountId || !strings.EqualFold(o.IntegrationName, integrationName) {
+	if o.AccountId != accountId || !strings.EqualFold(strings.TrimSpace(o.IntegrationName), strings.TrimSpace(integrationName)) {
 		return ConfigOverride{}, false
 	}
 	return o, true

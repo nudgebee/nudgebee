@@ -125,6 +125,111 @@ func TestMatchesRule(t *testing.T) {
 	}
 }
 
+// NB-40110: a rule's Source filter (kubernetes/prometheus/pagerduty/datadog, the
+// TriageRuleModal.tsx dropdown values) must match the raw vendor-specific values
+// nudgebee writes to events.source, not just the group name itself.
+func TestMatchesRule_SourceGroups(t *testing.T) {
+	testCases := []struct {
+		name        string
+		matchSource string
+		eventSource string
+		expectMatch bool
+	}{
+		{"kubernetes rule matches kubernetes_api_server event", "kubernetes", "kubernetes_api_server", true},
+		{"kubernetes rule does not match a differently-sourced event", "kubernetes", "pagerduty_webhook", false},
+		{"pagerduty rule matches pagerduty_webhook event", "pagerduty", "pagerduty_webhook", true},
+		{"datadog rule matches datadog_webhook event", "datadog", "datadog_webhook", true},
+		{"prometheus rule matches the agent's prometheus event", "prometheus", "prometheus", true},
+		{"prometheus rule matches the alertmanager webhook event", "prometheus", "prometheus_alertmanager_webhook", true},
+		{"an unmapped literal source still matches itself", "AWS_CloudWatch_Alarm", "AWS_CloudWatch_Alarm", true},
+		// A rule or mute written while pushed alarms were stored as EventBridge
+		// events still covers them now they are stored as alarms.
+		{"EventBridge rule matches an EventBridge event", "AWS_EventBridge", "AWS_EventBridge", true},
+		{"EventBridge rule matches a CloudWatch alarm event", "AWS_EventBridge", "AWS_CloudWatch_Alarm", true},
+		{"CloudWatch alarm rule does not match other EventBridge events", "AWS_CloudWatch_Alarm", "AWS_EventBridge", false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			event := &models.Event{Source: &tc.eventSource}
+			rule := &TriageRule{MatchSource: &tc.matchSource}
+			assert.Equal(t, tc.expectMatch, MatchesRule(event, rule))
+		})
+	}
+}
+
+// Every catalog option must be matchable by MatchesRule (NB-40110: a selectable source that can
+// never match an event is the bug this guards against).
+func TestTriageSourceCatalog(t *testing.T) {
+	seen := map[string]bool{}
+	for _, s := range triageSourceCatalog {
+		assert.NotEmpty(t, s.Label, "catalog label must not be empty")
+		assert.NotEmpty(t, s.Value, "catalog value must not be empty")
+		assert.False(t, seen[s.Value], "duplicate catalog value %q", s.Value)
+		seen[s.Value] = true
+
+		raws := triageMatchSources(s.Value)
+		require.NotEmpty(t, raws, "value %q resolves to no event source", s.Value)
+		for _, raw := range raws {
+			rule := &TriageRule{MatchSource: &s.Value}
+			event := &models.Event{Source: &raw}
+			assert.True(t, MatchesRule(event, rule), "option %q should match event source %q", s.Value, raw)
+		}
+	}
+}
+
+// With no account sources, it falls back to the provider's curated catalog (cross-platform
+// options included); an empty provider returns the whole catalog.
+func TestListTriageSources(t *testing.T) {
+	assert.Len(t, ListTriageSources("", nil), len(triageSourceCatalog))
+
+	values := map[string]bool{}
+	for _, s := range ListTriageSources("aws", nil) { // case-insensitive
+		values[s.Value] = true
+	}
+	assert.True(t, values["AWS_EventBridge"], "AWS provider should offer its own source")
+	assert.True(t, values["pagerduty"], "cross-platform source should always be offered")
+	assert.True(t, values["datadog"], "cross-platform source should always be offered")
+	assert.False(t, values["kubernetes"], "K8s source should not appear for an AWS account")
+	assert.False(t, values["GCP_Metric_Alert"], "GCP source should not appear for an AWS account")
+	assert.False(t, values["azure_monitor_webhook"], "Azure source should not appear for an AWS account")
+}
+
+// The list is built from the account's own sources: known ones collapse into their grouped option,
+// uncurated ones get a title-cased label, and sources the account lacks are not offered.
+func TestListTriageSourcesFromAccountSources(t *testing.T) {
+	// The two AWS feeds collapse into the single grouped option, with no always-shown base.
+	aws := triageSourceValues(ListTriageSources("AWS", []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}))
+	assert.Equal(t, []string{"AWS_EventBridge"}, aws, "both AWS feeds collapse into one option, no base")
+	assert.NotContains(t, aws, "pagerduty", "an account with no PagerDuty events is not offered PagerDuty")
+	assert.NotContains(t, aws, "datadog", "an account with no Datadog events is not offered Datadog")
+
+	// Uncurated sources (custom integration / extra feed) show with a title-cased label.
+	labels := map[string]string{}
+	for _, s := range ListTriageSources("AWS", []string{"AWS_CloudTrail", "dynatrace_webhook"}) {
+		labels[s.Value] = s.Label
+	}
+	assert.Equal(t, "AWS CloudTrail", labels["AWS_CloudTrail"])
+	assert.Equal(t, "Dynatrace Webhook", labels["dynatrace_webhook"])
+
+	// The collector's Azure_Monitor_Alert collapses into the single curated "Azure Monitor" option.
+	azure := triageSourceValues(ListTriageSources("Azure", []string{"Azure_Monitor_Alert"}))
+	assert.Equal(t, []string{"azure_monitor_webhook"}, azure, "Azure collector source maps to the grouped Azure option")
+
+	// K8s: the raw api-server and prometheus feeds collapse into their groups; PagerDuty shows only
+	// because the account has it; Datadog (absent) does not.
+	k8s := triageSourceValues(ListTriageSources("K8s", []string{"kubernetes_api_server", "prometheus", "prometheus_alertmanager_webhook", "pagerduty_webhook"}))
+	assert.Equal(t, []string{"kubernetes", "prometheus", "pagerduty"}, k8s)
+}
+
+func triageSourceValues(sources []TriageSource) []string {
+	out := make([]string, 0, len(sources))
+	for _, s := range sources {
+		out = append(out, s.Value)
+	}
+	return out
+}
+
 func TestMatchesLabels(t *testing.T) {
 	testCases := []struct {
 		name        string
@@ -330,6 +435,11 @@ func TestCreateAndDeleteTriageRule(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, enabled, "Rule should be disabled after soft delete")
 	})
+
+	// Re-enabling a disabled rule, and whether a plain edit preserves it, are
+	// covered by TestUpdateTriageRuleEnabledField_DB — this test's rule depends
+	// on the account lookup above finding real seeded data, so it isn't a
+	// hermetic place for that coverage (#40111).
 
 	// Cleanup - hard delete
 	t.Cleanup(func() {

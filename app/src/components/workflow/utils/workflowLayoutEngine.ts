@@ -3,6 +3,7 @@ import { getTaskDescription } from './taskDescription';
 import { validateTaskData } from '@components/workflow/hooks/useTaskValidation';
 import { parseConditionLabel, hasConditionalStyling } from './conditionParser';
 import { createTaskLabel } from '@components/workflow/constants/nodeCategories';
+import { buildTriggerEdge } from './triggerEdges';
 
 interface LayoutConfig {
   minHorizontalSpacing?: number;
@@ -313,13 +314,7 @@ const buildTriggerToRootEdges = (triggerNodeId: string, rootTasks: any[], taskId
   rootTasks.forEach((task: any) => {
     const targetNodeId = taskIdToNodeId.get(task.id);
     if (!targetNodeId) return;
-    edges.push({
-      id: `trigger-edge-${triggerNodeId}-${targetNodeId}`,
-      source: triggerNodeId,
-      target: targetNodeId,
-      type: 'smoothstep',
-      style: { stroke: 'rgb(192, 192, 192)', strokeWidth: 1 },
-    });
+    edges.push(buildTriggerEdge(triggerNodeId, targetNodeId));
   });
   return edges;
 };

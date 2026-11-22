@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -122,7 +123,7 @@ func newCustomParallelPlannerProbeWithEngine(t *testing.T, query, instructions s
 	}
 
 	baseCtx := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	goCtx := context.WithValue(baseCtx.GetContext(), ContextKeyModelTier, ModelTierReasoning)
+	goCtx := context.WithValue(baseCtx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 	ctx := security.NewRequestContext(
 		goCtx,
 		baseCtx.GetSecurityContext(),

@@ -20,6 +20,7 @@ import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText } from '@components/cloudaccount/common';
+import { resourceCreatedAt } from '@components/cloudaccount/resourceCreatedAt';
 import { ds } from '@utils/colors';
 
 const INSTANCE_HEADER = [
@@ -133,7 +134,7 @@ const InstancesView = (props: {
           });
           data.push({ component: <TagsCell tags={item.tags} /> });
           data.push({
-            component: <Datetime value={item.meta?.CreationDate || item.meta?.timeCreated || item.created_at} />,
+            component: <Datetime value={resourceCreatedAt(item)} />,
           });
           data.push({ component: <Currency value={item?.spends_aggregate?.aggregate?.sum?.amount} precison={1} /> });
           data.push({
@@ -257,9 +258,10 @@ const InstancesView = (props: {
           value={selectedTagKey}
           options={availableTagKeys}
           onSelect={(e: any) => {
-            setPage(0);
-            setSelectedTagKey(e.target.value || null);
-            if (!e.target.value) {
+            const nextKey = e.target.value || null;
+            if (nextKey !== selectedTagKey) {
+              setPage(0);
+              setSelectedTagKey(nextKey);
               setSelectedTagValue(null);
             }
           }}

@@ -2,14 +2,19 @@ package observability
 
 import (
 	"log/slog"
+	"math"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/testenv"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,6 +270,62 @@ func TestBuildWorkloadMetricsResponse(t *testing.T) {
 		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
 	})
 
+	// A filter matching nothing on SolarWinds came back as one series with labels
+	// {} and no samples, and was saved as an evidence card with nothing in it.
+	t.Run("nil when the only series has no labels and no samples", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{{Metric: map[string]string{}}}},
+		}}
+		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Null samples are carried as NaN (Datadog's [ts, null], Prometheus "NaN");
+	// ±Inf marshals as null too. A card of nothing but gaps shows nothing.
+	t.Run("nil when every sample is non-finite", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{}, Timestamps: []int64{1, 2}, Values: []float64{math.NaN(), math.NaN()}},
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{math.Inf(1), math.Inf(-1)}},
+			}},
+		}}
+		assert.Nil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Zero is a measurement (error counts read `or vector(0)`), not an absence.
+	t.Run("series of real zeros is data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{0, 0}},
+			}},
+		}}
+		assert.NotNil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	t.Run("one finite sample among gaps is data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "web-abc"}, Timestamps: []int64{1, 2}, Values: []float64{math.NaN(), 0.25}},
+			}},
+		}}
+		assert.NotNil(t, buildWorkloadMetricsResponse(queryMeta, out))
+	})
+
+	// Labels come from the series that carries data, not an empty one ahead of it.
+	t.Run("labels lifted from first series with data", func(t *testing.T) {
+		out := OutputMetricQuery{Results: []QueryResult{
+			{QueryKey: "empty", Payload: []Result{{Metric: map[string]string{}}}},
+			{QueryKey: "cpu_usage", Payload: []Result{
+				{Metric: map[string]string{"pod": "gap"}, Values: []float64{math.NaN()}},
+				{Metric: map[string]string{"pod": "web-abc"}, Values: []float64{0.5}},
+			}},
+		}}
+		resp := buildWorkloadMetricsResponse(queryMeta, out)
+		require.NotNil(t, resp)
+		jsonResp, ok := resp.(playbooks.PlaybookActionResponseJson)
+		require.True(t, ok, "expected PlaybookActionResponseJson")
+		assert.Equal(t, "web-abc", jsonResp.Labels["pod"])
+	})
+
 	// Regression for the reviewer-flagged label-extraction fix: labels must come
 	// from the first result that actually has a payload, not blindly Results[0].
 	t.Run("labels lifted from first non-empty payload", func(t *testing.T) {
@@ -346,4 +407,40 @@ func TestAutoExecuteByWorkloadIntegration(t *testing.T) {
 	require.NoError(t, mErr)
 	t.Logf("labels: %v", resp.GetAdditionalInfo())
 	t.Logf("metric data:\n%s", string(data))
+}
+
+func mockMetastore(t *testing.T) sqlmock.Sqlmock {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+	return mock
+}
+
+func TestGetValidPrometheusExpressionFromEventRules_Sources(t *testing.T) {
+	expectedQuery := `SELECT expr FROM event_rules WHERE alert = $1 AND account_id = $2 AND enabled = true AND expr IS NOT NULL AND expr != '' AND source IN ('prometheus', 'prometheus_alertmanager_webhook', 'prometheus_user', 'nudgebee', 'chronosphere', 'chronosphere_user') ORDER BY (right(source, 8) = '_webhook'), updated_at DESC LIMIT 1`
+
+	mock := mockMetastore(t)
+	alertName := "NodeHighCpu"
+	accountID := "acc-123"
+	chronosphereExpr := `100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 90`
+
+	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
+		WithArgs(alertName, accountID).
+		WillReturnRows(sqlmock.NewRows([]string{"expr"}).AddRow(chronosphereExpr))
+
+	ctx := playbooks.NewPlaybookActionContext("tenant-1", accountID, slog.Default(), playbooks.PlaybookEvent{
+		Name: alertName,
+	})
+
+	action := &prometheusAction{}
+	expr, err := action.getValidPrometheusExpressionFromEventRules(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, chronosphereExpr, expr)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

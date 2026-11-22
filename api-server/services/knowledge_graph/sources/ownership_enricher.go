@@ -172,7 +172,7 @@ func (e *OwnershipEnricher) buildUserNodeIDs(dbms *database.DatabaseManager, ten
 		SELECT u.id::text, u.username::text
 		FROM users u
 		JOIN tenant_users tu ON tu.user = u.id
-		WHERE tu.tenant = $1 AND u.status = 'active'
+		WHERE tu.tenant = $1 AND u.status = 'active' AND u.kind = 'person'
 	`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query tenant users: %w", err)

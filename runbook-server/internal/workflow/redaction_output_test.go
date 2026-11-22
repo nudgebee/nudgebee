@@ -1,9 +1,9 @@
 package workflow
 
 import (
-	"net/url"
 	"testing"
 
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model"
 
 	"github.com/stretchr/testify/assert"
@@ -48,7 +48,7 @@ func TestRedactSecretsFromTasks_LeavesChildOutputReadable(t *testing.T) {
 // Libraries put the failing request in an error — a URL carrying an api_key —
 // without the author printing anything, so every error is scrubbed.
 func TestRedactExecutionSecrets_ScrubsTaskChildAndRunErrors(t *testing.T) {
-	values := SecretValues(map[string]any{"k": "Zx9-canary"})
+	values := logsafe.SecretValues(map[string]any{"k": "Zx9-canary"})
 	details := &model.WorkflowExecutionDetails{
 		Error: "run failed: api_key=Zx9-canary",
 		Tasks: []model.TaskExecutionDetails{{
@@ -79,7 +79,7 @@ func TestRedactExecutionSecrets_ScrubsIndirectCredentialInInputs(t *testing.T) {
 		{ID: "useIt", Input: rendered, RenderedParams: rendered, Output: "value is Zx9-canary"},
 	}}
 
-	RedactExecutionSecrets(details, wfDef, SecretValues(map[string]any{"k": "Zx9-canary"}))
+	RedactExecutionSecrets(details, wfDef, logsafe.SecretValues(map[string]any{"k": "Zx9-canary"}))
 
 	task := details.Tasks[0]
 	assert.Equal(t, "value is ***", task.Input["message"])
@@ -92,34 +92,6 @@ func TestRedactExecutionSecrets_ScrubsIndirectCredentialInInputs(t *testing.T) {
 
 func TestRedactExecutionSecrets_HandlesNil(t *testing.T) {
 	assert.NotPanics(t, func() { RedactExecutionSecrets(nil, model.WorkflowDefinition{}, nil) })
-}
-
-func TestSecretValues_CoversURLEncodedForms(t *testing.T) {
-	secret := "p@ss/w+rd 1"
-	values := SecretValues(map[string]any{"k": secret})
-
-	for _, form := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
-		assert.Contains(t, values, form)
-		assert.Equal(t, "x=***", ScrubSecretValues("x="+form, values))
-	}
-}
-
-// Short values would blank every "true" or "8080" in unrelated errors.
-func TestSecretValues_SkipsShortAndNonStringValues(t *testing.T) {
-	values := SecretValues(map[string]any{"a": "true", "b": 8080, "c": "long-enough"})
-	assert.Equal(t, []string{"long-enough"}, values)
-	assert.Equal(t, "flag true on port 8080", ScrubSecretValues("flag true on port 8080", values))
-}
-
-// A secret containing another must be replaced whole, not leave its tail behind.
-func TestScrubSecretValues_ReplacesLongestFirst(t *testing.T) {
-	values := SecretValues(map[string]any{"short": "abcdef", "long": "abcdef-ghijkl"})
-	assert.Equal(t, "key=***", ScrubSecretValues("key=abcdef-ghijkl", values))
-}
-
-func TestScrubSecretValues_EmptyInputs(t *testing.T) {
-	assert.Equal(t, "", ScrubSecretValues("", []string{"abcdef"}))
-	assert.Equal(t, "nothing", ScrubSecretValues("nothing", nil))
 }
 
 func TestRedactSecretsFromTasks_LeavesEmptyOutputAlone(t *testing.T) {

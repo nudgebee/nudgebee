@@ -12,15 +12,20 @@ func TestPrometheusActionParamsStep(t *testing.T) {
 
 	// Zero keeps the agent on its own default: no key at all, not "0".
 	params := prometheusActionParams(start, end, queries, false, 0)
-	if _, ok := params["steps"]; ok {
-		t.Fatalf("steps should be absent at zero, got %v", params["steps"])
+	for _, key := range []string{"step", "steps"} {
+		if _, ok := params[key]; ok {
+			t.Fatalf("%s should be absent at zero, got %v", key, params[key])
+		}
 	}
 
-	// A dashboard panel sends the step it can draw; the agent reads `steps`
-	// as a string.
+	// A dashboard panel sends the step it can draw, as a string. `step` must be
+	// set too: relay-server only checks `step` and otherwise overwrites it with
+	// its own default, which the agent reads ahead of `steps`.
 	params = prometheusActionParams(start, end, queries, false, 3600)
-	if got := params["steps"]; got != "3600" {
-		t.Fatalf("steps = %v, want \"3600\"", got)
+	for _, key := range []string{"step", "steps"} {
+		if got := params[key]; got != "3600" {
+			t.Fatalf("%s = %v, want \"3600\"", key, got)
+		}
 	}
 	if got := params["instant"]; got != false {
 		t.Fatalf("instant = %v, want false", got)

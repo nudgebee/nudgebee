@@ -182,6 +182,14 @@ You can **dry-run** a definition (see the [Glossary](#glossary) — it really ex
 
 Every record carries `TenantID` and `AccountID`. Every API call must supply them via headers (see [Authentication](#authentication)). The server never returns data across tenants.
 
+A run executes in its workflow's account and acts as the workflow's last editor (`updated_by`), whatever triggered it; a dry run and the Task Runner act as the caller, and hook actions carry no user at all. A task can work on another account of the same tenant through an optional `account_id` param (often a template such as `{{ event.cloud_account_id }}`). For most tasks, saving only checks that the account belongs to the tenant. The AI steps `llm.nubi`, `llm.investigate` and `llm.mcp_call` are stricter, because they hand a whole account to an agent:
+
+- **Saving** a literal `account_id` requires the caller to be able to read that account (built-in role or a `workflows` grant) — `internal/workflow/ai_step_account_validation.go`, applied to every nested step and to hook actions.
+- **Running** re-checks the resolved value, which is the only check a template gets (`internal/tasks/ai/account_param.go`): it must belong to the tenant and be readable by the user the run acts as. A step that runs without a user is refused another account.
+- **Pre-approved tools** (`approved_tools` on `llm.nubi`) are refused whenever the step targets another account.
+
+The two chat steps return the account they used as `account_id`, which the builder needs to link to the conversation.
+
 ### Config and secrets
 
 `/configs` stores key/value config per tenant or per account. Secret values are encrypted at rest with `nudgebee_encryption_key` and auto-decrypted when read.
@@ -244,6 +252,7 @@ LOG_LEVEL=info
 AUTO_PILOT_DATABASE_URL=postgres://temporal:temporal@localhost:5432/temporal?sslmode=disable
 TEMPORAL_GRPC_ENDPOINT=localhost:7233
 ACTION_API_SERVER_TOKEN=  # outbound only; set if your upstream services-server requires it
+WORKFLOW_SERVER_TOKEN=local-dev-token  # required; send it as X-ACTION-TOKEN
 NUDGEBEE_ENCRYPTION_KEY=  # set in real envs; empty disables decryption
 EOF
 
@@ -343,6 +352,7 @@ All config is read by Viper from environment variables (and an optional `.env` f
 |---|---|---|
 | `action_api_server_token` | — | **Outbound only.** Value runbook-server attaches as `X-ACTION-TOKEN` when calling upstream backends (services-server, integrations, audit). Not validated on inbound requests. |
 | `action_api_server_token_header` | `X-ACTION-TOKEN` | Header name for the outbound token above. |
+| `workflow_server_token` | — | **Required, inbound.** Every caller sends it as `X-ACTION-TOKEN` (see [Authentication](#authentication)). The server refuses to start without it. |
 | `llm_server_token` | — | Token used when calling the LLM server. |
 | `llm_server_token_header` | `X-ACTION-TOKEN` | |
 | `nudgebee_encryption_key` | — | Symmetric key used to encrypt secret configs. |
@@ -388,7 +398,7 @@ All config is read by Viper from environment variables (and an optional `.env` f
 |---|---|---|
 | `nudgebee_namespace` | `nudgebee` | K8s namespace. Auto-detected from `/var/run/secrets/kubernetes.io/serviceaccount/namespace` when running inside a pod. |
 | `runbook_server_event_sync_interval_seconds` | `30` | Event registry refresh interval. |
-| `runbook_server_task_scripting_mode` | `agent` | How scripting tasks are dispatched. |
+| `runbook_server_task_scripting_mode` | `agent` | How scripting tasks are dispatched when the step's account doesn't decide it: `agent` or `kubernetes`. Scripts never run inside runbook-server itself. |
 | `runbook_server_relay_command_execution_timeout_seconds` | `120` | |
 | `runbook_server_relay_pod_execution_timeout_seconds` | `120` | |
 | `runbook_server_llm_retry_attempts` | `180` | |
@@ -398,12 +408,13 @@ All config is read by Viper from environment variables (and an optional `.env` f
 | `llm_server_tool_shell_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.12` | Image for shell tasks. |
 | `script_executor_node_image` | `node:22-alpine` | |
 | `script_executor_powershell_image` | `mcr.microsoft.com/powershell:lts-alpine-3.17` | |
+| `script_executor_github_cli_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.13` | Image for the GitHub CLI step (ships a pinned `gh`); mirror it for air-gapped installs. |
 
 ---
 
 ## HTTP API
 
-All routes from [`api/server.go`](api/server.go). Most endpoints expect tenant headers (`x-tenant-id`, `x-user-id`, plus `account_id` in the body for the `/rpc` action) so the server can build a `SecurityContext`. There is **no inbound token middleware** — runbook-server trusts whatever is in front of it (the upstream gateway / app layer). See [Authentication](#authentication) for the full story. `/health` and `/swagger/*` need no headers.
+All routes from [`api/server.go`](api/server.go). Most endpoints expect tenant headers (`x-tenant-id`, `x-user-id`, plus `account_id` in the body for the `/rpc` action) so the server can build a `SecurityContext`. Every request needs the service token (`X-ACTION-TOKEN`) and a user; see [Authentication](#authentication). `/health` and `/swagger/*` need neither.
 
 ### Workflows
 
@@ -464,7 +475,7 @@ Both `/runs/*` and `/executions/*` are accepted (aliases of each other).
 
 | Method | Path | What it does |
 |---|---|---|
-| `POST` | `/approvals/:token` | Resolves a paused approval task. The token is signed with `approval_signing_key`. |
+| `POST` | `/approvals/:token` | Resolves a paused approval task from a signed email link. The body carries `status`, `approver` and `sig`; the signature (`approval_signing_key`) is verified here, and the run records `email:<approver>`. Slack and Teams approval cards don't use it: they send the card's token to the `workflow_complete_approval` action, which decides as the clicking user. |
 
 ### Tasks
 
@@ -495,17 +506,31 @@ Both `/runs/*` and `/executions/*` are accepted (aliases of each other).
 
 ---
 
-runbook-server does **not** enforce a token on inbound requests. Grep confirms `ServiceApiServerToken` is read in `config/config.go` and only **set as an outbound header** when this service calls upstream backends (`services/audit/service.go`, `services/security/security_context.go`, `services/integrations/service.go`, `services/service/service.go`). No middleware in `api/server.go` or `api/handlers.go` validates an inbound `X-ACTION-TOKEN`. Trust comes from whatever sits in front of runbook-server (the app gateway, k8s NetworkPolicy, etc.) — deploy accordingly.
+## Authentication
 
-What the server *does* read from inbound requests, in [`api/common.go`](api/common.go):
+**Service token.** Every request must carry `X-ACTION-TOKEN` equal to `workflow_server_token` ([`api/service_token.go`](api/service_token.go)); the server refuses to start without one (the Helm chart generates it). Exempt: `/health`, `/swagger/*`, `/openapi.json`, `/approvals/:token` (the link's HMAC signature over token, status and approver, checked against `approval_signing_key`, is the credential) and `/webhook/*` (the per-workflow `X-Webhook-Secret`, or the integration token for `/webhook/by-integration/*`).
 
-- **Direct REST handlers** (`/workflows`, `/configs`, `/webhook`, etc.) call `buildContextFromRequestPayload` and read `x-tenant-id` + `x-user-id` from headers (falling back to the request body for `tenant_id` / `user_id` / `account_id` if headers are absent). The tenant id is required; the user id defaults to a system user.
-- **`/rpc` action handler** calls `buildContextFromPayload` and reads tenant / user / role from the JSON body's `session_variables` (Hasura-style envelope) — falling back to the same `x-tenant-id` / `x-user-id` headers.
-- The resulting `SecurityContext` carries roles (`super_admin` / `tenant_admin` / `account_admin` / `account_read_admin`) that handlers consult before touching data via `HasAccountAccess` / `HasTenantAccess`.
+**User.** Handlers build a `SecurityContext` in [`api/common.go`](api/common.go) from `x-tenant-id` / `x-user-id` (REST, with body fallbacks) or `session_variables` (`/rpc`). The user's roles and custom-role grants are loaded from services-server; a `role` claimed in `session_variables` is ignored. A request with no user is refused — it is never upgraded to admin. Only the webhook routes may proceed without a user, and the runs they start act as the workflow's owner (below).
 
-`/health` and `/swagger/*` read nothing. Approval URLs handed to humans carry an HMAC-signed token (`approval_signing_key`) — that signature is the only auth on `POST /approvals/:token`.
+### Whose rights a run uses
 
-> **Heads up:** if you expose runbook-server directly to the internet without an auth-enforcing gateway, anyone who can set `x-tenant-id` / `x-user-id` can act as any tenant. This is by design for the in-cluster deployment model; do not change it without a corresponding middleware.
+Every run has a **principal**, stamped when it starts (`Workflow.PrincipalUserID`, carried to each activity as `_run_as_user_id`):
+
+| Run started by | Principal |
+|---|---|
+| Manual trigger, draft run, retrigger, AI (Nubi), dry-run, `tasks/:type/execute` | The requester |
+| Schedule, event, webhook, optimization | The workflow's owner, `workflows.run_as_user_id` |
+| `core.call-workflow` child | The calling run's principal |
+
+The owner is set on create and whenever a version is made live (publish-as-live, make-live). Pause/resume and draft edits never change it. If the owner is deleted, the column becomes NULL and every effectful step refuses.
+
+Schedules are registered from the **live** version's triggers (cron and inputs), not the draft: a draft edit to a schedule takes effect when that version is made live. Otherwise an editor could change what a schedule does with its owner's rights without publishing.
+
+Before each step runs, [`internal/tasks/authz.go`](internal/tasks/authz.go) checks it against the principal: the principal must be active in the tenant, may run automations on the workflow's account, and must hold the step type's declared `<module>:<class>` (built-in account role, or custom grant) on the account the step targets (`account_id`, else the workflow's account). A refused step fails with a non-retryable `StepPermissionDenied` error naming the user, permission and account. Every registered task type must declare its requirement — `TestEveryRegisteredTaskDeclaresAStepRequirement` fails otherwise; free-form tasks (CLIs, scripts, HTTP, SSH, DB queries) are `Write`.
+
+The same table gives every task type a tier: how much the step can change, whoever runs it. **Read** (reads, notes, tickets, data shaping) runs automatically by default; **change** (a bounded change such as a restart or a scale, or a message sent outside the run) asks first in production; **unrestricted** (free-form input — a CLI command, script, query, HTTP or SSH request — or a step that starts others it cannot see) asks first everywhere. A definition's optional `max_tier` is a ceiling for its runs: the executor stamps it on every step and hook (and on child workflows), and the task wrapper refuses a step above it before any other check, so a step that only appears at run time cannot exceed it. Nothing sets `max_tier` yet; installing a packaged agent's automation will. `TestEveryStepDeclaresATier` fails for a task type without a tier.
+
+Not covered: the optimizer engine (`services/optimizer`) calls rightsize tasks directly, outside the step check.
 
 ---
 
@@ -540,6 +565,8 @@ Built-in task categories:
 | `tickets` | `internal/tasks/tickets` | Create / update tickets. |
 
 Use `GET /tasks` to see the live list, parameter schemas, and descriptions.
+
+---
 
 ---
 
@@ -604,7 +631,7 @@ Output lands in `docs/swagger/`. At runtime, browse it at <http://localhost:8000
 
 ## Deployment notes
 
-- The [`Dockerfile`](Dockerfile) is multi-stage and Alpine-based. The final image bundles `iputils`, `ca-certificates`, `nodejs`, and PowerShell 7.4 so scripting tasks can run inside the container.
+- The [`Dockerfile`](Dockerfile) is multi-stage, with a UBI 9 micro runtime. The final image bundles `iputils`, `traceroute` and `ca-certificates` for the network tasks; scripting tasks never run inside the container.
 - When running in Kubernetes, the process auto-detects the namespace from `/var/run/secrets/kubernetes.io/serviceaccount/namespace` and overwrites `nudgebee_namespace`.
 - The first run in a new Temporal namespace needs the Temporal **search attributes** registered (`nb_tenant_id`, `nb_account_id`, `nb_workflow_id`, etc.). The local `temporal-setup-job` from `docker-compose.test.yml` does this for dev; production clusters need an equivalent one-shot job.
 - The HTTP server only needs port `API_PORT` exposed. Everything else (Temporal, RabbitMQ, Postgres) is outbound.

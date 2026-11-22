@@ -6,7 +6,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 import type { WorkflowDryRunResponse } from '@api1/workflow/types';
 import { useTenantBranding } from '@hooks/useTenantBranding';
-import { getLlmSessionId, buildAskNudgebeeHref } from '../utils/llmChat';
+import { getLlmSessionId, getLlmAccountId, buildAskNudgebeeHref } from '../utils/llmChat';
 import { ds } from '@utils/colors';
 
 interface DryRunResultModalProps {
@@ -116,7 +116,7 @@ const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, re
                           tone='secondary'
                           icon={<SafeIcon alt={`Ask ${assistantName}`} src={nubiIconUrl} height={20} width={20} />}
                           data-testid='dry-run-go-to-chat-btn'
-                          onClick={() => window.open(buildAskNudgebeeHref(accountId, sid), '_blank', 'noopener,noreferrer')}
+                          onClick={() => window.open(buildAskNudgebeeHref(getLlmAccountId(task, accountId), sid), '_blank', 'noopener,noreferrer')}
                         >
                           Go to chat
                         </Button>

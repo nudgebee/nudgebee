@@ -25,6 +25,7 @@ from notifications_server.message_templates.slack.finding import (
     SUPPRESS_ACTION_NAME,
 )
 from notifications_server.models.db_base import BaseDB
+from notifications_server.services import auto_optimize_approval
 from notifications_server.services.actions import (
     Actions,
     validate_and_get_user_id,
@@ -33,11 +34,12 @@ from notifications_server.services.actions import (
 )
 from notifications_server.services.channel_ingest import ChannelIngestService
 from notifications_server.services.common import CommonService
+from notifications_server.services import remediation_actions, remediation_thread
 from notifications_server.services.events import Events, event_cache
 from notifications_server.services.messaging_installations import load_installation, load_installation_by_team
 from notifications_server.services.ms_teams.bot_installations import record_team_installations
 from notifications_server.services.ms_teams.bot_sender import forget_changed_channels
-from notifications_server.services.bot_messages import get_bot_joined_message
+from notifications_server.services.bot_messages import get_bot_joined_message, get_budget_exceeded_message
 from notifications_server.utils.action_requests import ActionRequestBody, verify_action_request
 from notifications_server.utils.transformer import SLACK_SIGNIN_SECRET, Transformer
 
@@ -162,6 +164,17 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         return data
 
     def execute_action(self, data, background_tasks=None):
+        if remediation_actions.is_view_submission(data):
+            # A remediation modal's submit (#40734): it has no channel or message of its own.
+            return remediation_actions.handle_view_submission(self, data)
+        if remediation_actions.is_block_action(data):
+            # The remediation loop's thread buttons (#40734), before anything else is read: a modal must open within
+            # Slack's 3-second trigger_id, and these clicks act as the clicker's Identity Sync user, not their email.
+            try:
+                return remediation_actions.handle_block_action(self, data)
+            except Exception:
+                LOG.exception("Error processing a remediation click")
+                return None
         data = self.normalize_legacy_payload(data)
         channel_id = data["channel"]["id"]
         team_id = data["team"]["id"]
@@ -203,6 +216,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 slack_user_id,
                 data["message"]["thread_ts"],
                 data["message"].get("ts"),
+                user_email=user_email,
             )
             return
 
@@ -229,7 +243,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             action_params = action.get("action_params", {})
             if isinstance(action_params, str):
                 action_params = json.loads(action_params)
-            if action_name == "ask_ai":
+            if action_name in ("ask_ai", "workflow_approval_action"):
                 handler(channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks)
             else:
                 handler(channel_id, team_id, slack_user_id, user_email, data, action_params)
@@ -386,7 +400,13 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             self.handle_suppress_finding(channel_id, team_id, user_email, action, data)
         elif action_id == "select_followup_option_dropdown":
             self.event_service.update_followup_for_event(
-                action, channel_id, team_id, slack_user_id, data["message"]["thread_ts"], data["message"].get("ts")
+                action,
+                channel_id,
+                team_id,
+                slack_user_id,
+                data["message"]["thread_ts"],
+                data["message"].get("ts"),
+                user_email=user_email,
             )
         elif action_id == "select_account_dropdown":
             selected_option = action.get("selected_option", {})
@@ -418,7 +438,9 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
         )
         return json.dumps(self.action_service.skip_auto_optimize_execution(params=params))
 
-    def handle_approval_action(self, channel_id, team_id, _slack_user_id, _user_email, data, action_params):
+    def handle_approval_action(
+        self, channel_id, team_id, slack_user_id, user_email, data, action_params, background_tasks=None
+    ):
         try:
             message = data.get("message", {})
             message_ts = message.get("ts")
@@ -430,8 +452,18 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             token = message.get("metadata", {}).get("event_payload", {}).get("token")
             status = action_params.get("status")
             if not token or not status:
-                LOG.error(f"Missing token or status in approval action: token={token}, status={status}")
+                LOG.error(
+                    "Missing token or status in approval action: token present=%s, status=%s", bool(token), status
+                )
                 return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
+            if auto_optimize_approval.is_auto_optimize_token(token):
+                return self.handle_auto_optimize_approval(
+                    channel_id, team_id, slack_user_id, user_email, message, token, status
+                )
+            if remediation_thread.is_token(token):
+                return self.handle_remediation_approval(
+                    channel_id, team_id, slack_user_id, message, token, status, background_tasks
+                )
             params = ApprovalParams(
                 channel_id=channel_id,
                 team_id=team_id,
@@ -439,6 +471,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 message_ts=message_ts,
                 token=token,
                 status=status,
+                user_email=user_email,
             )
             self.action_service.handle_approval_action(params=params)
             return json.dumps({"status": "success"})
@@ -447,7 +480,77 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
             message_ts = data.get("message", {}).get("ts")
             return self.reply_with_error(channel_id, team_id, message_ts, UNABLE_TO_PROCESS_REQUEST)
 
-    def handle_workflow_approval_selection(self, channel_id, team_id, _, action, data):
+    def handle_auto_optimize_approval(self, channel_id, team_id, slack_user_id, user_email, message, token, status):
+        """Decides an Auto Optimize approval as the clicking user. Once it's settled
+        the buttons are replaced by the outcome; otherwise they stay for someone
+        else, and only the reply says why this click didn't decide it."""
+        message_ts = message.get("ts")
+        outcome = auto_optimize_approval.decide(token, status, user_email)
+        text = outcome.message
+        if outcome.settled:
+            text = f"<@{slack_user_id}>: {outcome.message}"
+            blocks = [b for b in message.get("blocks") or [] if b.get("type") != "actions"]
+            if blocks:
+                blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": text}]})
+                self.common_service.update_slack_message_with_blocks(channel_id, team_id, message_ts, blocks)
+        self.common_service.slack_reply_in_thread(channel_id, team_id, message_ts, text)
+        return json.dumps({"status": "settled" if outcome.settled else "not_decided"})
+
+    def handle_remediation_approval(self, channel_id, team_id, slack_user_id, message, token, status, background_tasks):
+        """Run or Decline on a remediation step in an alert's thread (#40734), decided as the clicker's linked
+        user. A run takes up to minutes, past Slack's 3-second answer, so it is decided in the background, on
+        remediation_thread.RUNS.
+        Once settled the step's buttons are replaced by the outcome; otherwise they stay, and only the
+        clicker's reply says why."""
+        message_ts = message.get("ts")
+        thread_ts = message.get("thread_ts") or message_ts
+        app_id = self.common_service.app_id
+        parsed = remediation_thread.parse_token(token)
+        if parsed:
+            retired = remediation_thread.tenant_loop_on(parsed[0])
+            if retired:
+                # The loop draws the thread as fix options now: a step message's buttons are retired.
+                remediation_actions.retire_step_buttons(
+                    self, channel_id, team_id, slack_user_id, message, ids=parsed[:3], background_tasks=background_tasks
+                )
+                return json.dumps({"status": "retired"})
+
+        def settle():
+            # After the response to Slack, so on its own session and services (the request's are closed).
+            # app_id: only the app that posted the step may edit it.
+            service = SlackActionsBaseService(self.engine, self.slack_app, self.teams_app)
+            service.common_service.app_id = app_id
+            try:
+                outcome = remediation_thread.decide(token, status, slack_user_id)
+                if outcome.settled:
+                    blocks = [b for b in message.get("blocks") or [] if b.get("type") != "actions"]
+                    line = f"<@{slack_user_id}>: {outcome.message}"
+                    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": line}]})
+                    service.common_service.update_slack_message_with_blocks(channel_id, team_id, message_ts, blocks)
+                text = outcome.message
+            except Exception:
+                # On the remediation pool nobody reads the result: log it, and tell the clicker.
+                LOG.exception("remediation step click for %s: not settled", message_ts)
+                text = remediation_thread.UNREACHABLE.format(brand=settings.urls.branding_name)
+            try:
+                service.common_service.post_slack_ephemeral_response(
+                    channel_id, team_id, slack_user_id, text, thread_ts
+                )
+            finally:
+                service.close()
+
+        if str(status).lower() == "run":
+            self.common_service.post_slack_ephemeral_response(
+                channel_id, team_id, slack_user_id, "Running it. The result shows here when it finishes.", thread_ts
+            )
+        if background_tasks is not None:
+            # After Slack's answer, and on the remediation pool, not this server's request threads.
+            background_tasks.add_task(remediation_thread.RUNS.submit, settle)
+        else:
+            remediation_thread.RUNS.submit(settle)
+        return json.dumps({"status": "accepted"})
+
+    def handle_workflow_approval_selection(self, channel_id, team_id, user_email, action, data):
         try:
             selected_option = action.get("selected_option", {})
             status = selected_option.get("value", "")
@@ -472,6 +575,7 @@ class SlackInteractiveActionsService(SlackActionsBaseService):
                 message_ts=message_ts,
                 token=token,
                 status=status,
+                user_email=user_email,
             )
             self.action_service.handle_approval_action(params=params)
             return json.dumps({"status": "success"})
@@ -692,6 +796,17 @@ def _finalize_card_after_analysis(service, context, outcome):
 _CLARIFICATION_WAITING_STATUSES = {"WAITING", "WAITING_FOR_CLIENT", "WAITING_FOR_CLIENT_TOOL"}
 
 
+def _is_remediation_step_approval(message):
+    """A plan step's approval (run_step), which the alert's conversation holds
+    along with the investigation when the remediation loop is on. The remediation
+    card posts it; it is not the investigation's question."""
+    try:
+        cfg = json.loads(message.get("message_config") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(cfg, dict) and str(cfg.get("confirmationKey") or "").startswith("run_step:")
+
+
 def _fetch_event_conversation(context, user_id, session_id):
     """Flat ai_get_conversation_v3 delta for an `event-<fingerprint>` session, or
     None. Same RPC the Thinking-Steps poller uses."""
@@ -731,9 +846,11 @@ def _surface_event_clarification(service, context, user_id, fingerprint):
 
         pending = None
         for m in sorted(messages, key=lambda r: r.get("updated_at") or "", reverse=True):
-            if (m.get("message_type") or "").lower() == "followup" and (
-                m.get("status") or ""
-            ).upper() in _CLARIFICATION_WAITING_STATUSES:
+            if (
+                (m.get("message_type") or "").lower() == "followup"
+                and (m.get("status") or "").upper() in _CLARIFICATION_WAITING_STATUSES
+                and not _is_remediation_step_approval(m)
+            ):
                 pending = m
                 break
 
@@ -828,6 +945,8 @@ _EVENT_ANALYSIS_PROGRESS_SECTIONS = (
 # Advances the panel only -- no content to post for this one.
 _EVENT_ANALYSIS_SILENT_SECTIONS = ("log_analysis",)
 _EVENT_ANALYSIS_MAX_POLL_FAILURES = 3
+# Starting a fresh analysis can take much of a minute.
+_EVENT_ANALYSIS_RERUN_TIMEOUT_SECONDS = 90
 
 _active_event_analysis_pollers = 0
 _event_analysis_pollers_lock = threading.Lock()
@@ -950,30 +1069,58 @@ def _close_event_analysis_stream(service, token, context, stream_ts, outcome, ta
         LOG.debug("event analysis poller: failed to close progress panel for event %s: %s", context.event_id, e)
 
 
-def _post_final_writeup(service, context, detailed, investigation, summary):
+def _thread_investigation_key(context):
+    return f"thread-investigation:{context.channel_id}:{context.thread_ts}:{context.event_id}"
+
+
+def _mark_investigation_posted(service, context) -> bool:
+    """Record that this thread got the event's investigation; True when it had not before. Best effort: with no
+    cache it reports False only when a post is known."""
+    try:
+        return service.event_service.cache.claim_card_action(_thread_investigation_key(context), 7 * 24 * 3600)
+    except Exception:
+        LOG.debug("event analysis: thread investigation mark not stored for event %s", context.event_id)
+        return True
+
+
+def _post_final_writeup(service, context, detailed, investigation, summary, investigation_posted, sent=None):
     """Post the closing write-up without repeating the investigation.
 
     nudgebee/nudgebee#38925: detailed_response is no longer a rewrite of the
     investigation -- it now opens with that investigation verbatim and appends
-    the affected components, code findings and firing history. The
-    investigation was already posted to this thread, so posting the whole
-    write-up after it would print the same text twice in a row. Post only what
-    the write-up adds; when it adds nothing, still close with a one-line ping so
-    the user learns the analysis finished. Returns True iff settled.
+    the affected components, code findings and firing history. When this run
+    posted the investigation to this thread (investigation_posted), posting the
+    whole write-up after it would print the same text twice in a row: post only
+    what the write-up adds, and when it adds nothing, still close with a
+    one-line ping so the user learns the analysis finished. When it did not (an
+    analysis that had already finished, such as one reused for a repeat of the
+    alert), the whole write-up goes out: the investigation it opens with as its
+    own message first, as a running analysis posts it (one Slack section holds
+    3000 characters, so the two in one message would cut the write-up's own
+    sections), then the rest; sent (the poller's) records it, so a retry after a
+    failed second post does not post it again. Returns True iff settled.
     """
-    content, preamble = final_writeup(detailed, investigation, summary)
+    detailed_text, investigation_text = (detailed or "").strip(), (investigation or "").strip()
+    if not investigation_posted and investigation_text and detailed_text.startswith(investigation_text):
+        investigation_posted = _post_investigation_content(
+            service, context, investigation_text, dict(_EVENT_ANALYSIS_PROGRESS_SECTIONS)["investigation"]
+        )
+        if investigation_posted and sent is not None:
+            sent.add("investigation")
+    content, preamble = final_writeup(detailed, investigation, summary, investigation_posted)
     return _post_investigation_content(service, context, content, preamble, mention=True)
 
 
-def final_writeup(detailed, investigation, summary):
+def final_writeup(detailed, investigation, summary, investigation_posted):
     """(content, preamble) closing an analysis thread: what the write-up adds
-    to the investigation already posted, "That's everything" when it adds
-    nothing, or the summary when there's no write-up. Shared with Teams."""
+    to the investigation, when investigation_posted says it is in the thread
+    already ("That's everything" when it adds nothing); the whole write-up when
+    it is not; or the summary when there's no write-up. Shared with Teams."""
     detailed = (detailed or "").strip()
     investigation = (investigation or "").strip()
 
     added = detailed
-    if investigation and detailed.startswith(investigation):
+    if investigation_posted and investigation and detailed.startswith(investigation):
         added = detailed[len(investigation) :].strip()
 
     if added:
@@ -991,7 +1138,8 @@ def _post_investigation_content(service, context, content, preamble, mention=Fal
     if not content:
         return True
     preamble = (preamble or "").strip()
-    body = Transformer.markdown_to_slack_markdown(content)
+    citation_page_url = settings.urls.investigate_url(context.account_id, context.event_id, utm_source="slack")
+    body = Transformer.markdown_to_slack_markdown(content, citation_page_url)
     text = f"{preamble}\n\n{body}" if preamble else body
     if mention:
         text = f"{text}\n\n<@{context.slack_user_id}>"
@@ -1059,6 +1207,65 @@ def _run_event_analysis_poller(engine, slack_app, teams_app, context, user_id, t
             _active_event_analysis_pollers -= 1
 
 
+def investigation_url(event_id) -> str:
+    return f"{settings.base_url}/investigate?id={event_id}"
+
+
+def rerun_failed_event_analysis(event_id, account_id, user_id, tenant_id, timeout) -> Optional[str]:
+    """Start a fresh analysis of an event whose last one failed before this ask.
+    Polled with regenerate False, llm-server reads a failed analysis back for up
+    to a day (llm_server_event_analysis_freshness_hours), so asking again would
+    only repeat that failure. None when the run started, or may have (the next
+    poll tells); otherwise what to tell the user. Shared with Teams."""
+    try:
+        Events.call_event_analysis_api(
+            event_id=event_id,
+            account_id=account_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            timeout=timeout,
+            regenerate=True,
+        )
+        return None
+    except Exception as e:
+        refused = analysis_refusal(e)
+        if refused:
+            return refused
+        LOG.warning("event analysis: re-running the failed analysis of %s failed: %s", event_id, e)
+    return None
+
+
+def analysis_refusal(error) -> Optional[str]:
+    """What to tell the user when llm-server refused an analysis outright, or
+    None when the error may pass (a timeout, a restart) and asking again can
+    help. Shared with Teams."""
+    if not isinstance(error, requests.HTTPError) or error.response is None:
+        return None
+    status = error.response.status_code
+    if status == 429:
+        return get_budget_exceeded_message()
+    if status == 503:
+        return f"{settings.urls.assistant_name} is analyzing a lot of alerts right now. Try again in a few minutes."
+    if status == 404:
+        return f"{settings.urls.branding_name} no longer has this alert, so it can't be analyzed."
+    return None
+
+
+def _slack_analysis_failed(event_id) -> str:
+    return (
+        "I couldn't finish analyzing this alert. To see what went wrong, "
+        f"<{investigation_url(event_id)}|open it in {settings.urls.branding_name}> "
+        "and use *Refresh investigation* to run it again."
+    )
+
+
+def _end_db_transactions(service):
+    """The poller only reads installations; ending its transactions before each
+    wait keeps them from holding table locks for the whole analysis."""
+    service.session.close()
+    service.common_service.session.close()
+
+
 def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, stream_ts):
     """regenerate is always False here, so /v1/analyze/event is idempotent --
     this only ever reports current DB state, never dispatches new work.
@@ -1100,6 +1307,7 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         # We stopped watching -- llm-server didn't report a failure.
                         _finalize_card_after_analysis(service, context, outcome="in_progress")
                         return
+                    _end_db_transactions(service)
                     time.sleep(settings.slack.event_analysis_poll_seconds)
                     continue
                 failures = 0
@@ -1114,6 +1322,8 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                     if field not in sent and task_statuses.get(field) == "COMPLETED":
                         if _post_investigation_content(service, context, result.get(field), preamble):
                             sent.add(field)
+                            if field == "investigation":
+                                _mark_investigation_posted(service, context)
                             LOG.info("event analysis poller: posted %s for event %s", field, context.event_id)
                             _advance_event_analysis_panel(service, token, context, stream_ts, field)
 
@@ -1129,6 +1339,8 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         result.get("detailed_response"),
                         result.get("investigation"),
                         result.get("summary"),
+                        investigation_posted="investigation" in sent,
+                        sent=sent,
                     ):
                         _close_event_analysis_stream(service, token, context, stream_ts, outcome="completed")
                         _finalize_card_after_analysis(service, context, outcome="completed")
@@ -1143,14 +1355,16 @@ def _poll_event_analysis(engine, slack_app, teams_app, context, user_id, token, 
                         context.channel_id,
                         context.team_id,
                         context.thread_ts,
-                        (
-                            f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. "
-                            "Mind trying again?"
-                        ),
+                        f"<@{context.slack_user_id}> {_slack_analysis_failed(context.event_id)}",
                     )
-                    LOG.warning("event analysis poller: llm-server reported FAILED for event %s", context.event_id)
+                    LOG.warning(
+                        "event analysis poller: llm-server reported FAILED for event %s (%s)",
+                        context.event_id,
+                        result.get("status_reason") or "no reason given",
+                    )
                     return
 
+                _end_db_transactions(service)
                 time.sleep(settings.slack.event_analysis_poll_seconds)
 
             LOG.warning("event analysis poller: timed out for event %s", context.event_id)
@@ -1245,17 +1459,32 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
             _surface_event_clarification(service, context, user_id, result.get("event_fingerprint"))
 
             status = (result.get("status") or "").upper()
+            reason = None
+            if status == "FAILED":
+                # It failed before this ask: run it again rather than report that failure.
+                reason = rerun_failed_event_analysis(
+                    context.event_id,
+                    context.account_id,
+                    user_id,
+                    context.tenant_id,
+                    _EVENT_ANALYSIS_RERUN_TIMEOUT_SECONDS,
+                )
+                if reason is None:
+                    status = "IN_PROGRESS"
             if status == "COMPLETED":
-                # A repeat click after an earlier one already finished --
-                # summary/investigation were already posted then, so only the
-                # write-up goes out now. The panel never got past the
+                # Already finished: a repeat click, or an analysis reused for a
+                # repeat of the alert, whose investigation was never posted to
+                # this thread. Nothing of it was posted by this run, so the
+                # whole write-up goes out. The panel never got past the
                 # placeholder, so that's all that needs closing.
+                # A repeat click in a thread that already got the investigation posts only what the write-up adds.
                 _post_final_writeup(
                     service,
                     context,
                     result.get("detailed_response"),
                     result.get("investigation"),
                     result.get("summary"),
+                    investigation_posted=not _mark_investigation_posted(service, context),
                 )
                 _close_event_analysis_stream(
                     service, token, context, stream_ts, "completed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
@@ -1294,10 +1523,7 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                     context.channel_id,
                     context.team_id,
                     context.thread_ts,
-                    (
-                        f"<@{context.slack_user_id}> Hmm, looks like something went sideways with the "
-                        "investigation. Mind if we try that again?"
-                    ),
+                    f"<@{context.slack_user_id}> {reason or _slack_analysis_failed(context.event_id)}",
                 )
                 _close_event_analysis_stream(
                     service, token, context, stream_ts, "failed", task_ids=[_EVENT_ANALYSIS_PLACEHOLDER_TASK_ID]
@@ -1305,6 +1531,7 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                 _finalize_card_after_analysis(service, context, outcome="failed")
         except Exception as e:
             LOG.exception("Event analysis background task failed: %s", e)
+            refused = analysis_refusal(e)
             # Best-effort: this recovery runs with no safety net above it (the
             # outer block is try/finally, not try/except), and both calls
             # below are live Slack requests that can themselves fail (e.g. a
@@ -1325,7 +1552,8 @@ def _run_event_analysis_background(engine, slack_app, teams_app, context: EventA
                     context.channel_id,
                     context.team_id,
                     context.thread_ts,
-                    f"<@{context.slack_user_id}> Hmm, something went wrong while analyzing this. Mind trying again?",
+                    f"<@{context.slack_user_id}> "
+                    + (refused or "Hmm, something went wrong while analyzing this. Mind trying again?"),
                 )
             except Exception:
                 LOG.exception("Recovery after analysis failure also failed")

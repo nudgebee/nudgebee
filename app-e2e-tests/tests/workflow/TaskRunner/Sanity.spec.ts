@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { test, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { TaskRunnerLocators } from "./taskRunnerLocators";
@@ -14,7 +15,7 @@ test("Task Runner sanity - login, open tab, validate ListTaskDefinitions API, ve
 
   await loginPage.doFullLogin();
   await locators.automationSidenavBtn.waitFor({ state: "visible", timeout: 30000 });
-  await locators.automationSidenavBtn.click();
+  await clickSidenavRail(locators.automationSidenavBtn);
   await page.waitForURL(/\/(auto-pilot|automation)/, { timeout: 30000 });
   await locators.taskRunnerTab.waitFor({ state: "visible", timeout: 30000 });
 

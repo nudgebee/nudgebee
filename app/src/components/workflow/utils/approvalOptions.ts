@@ -35,3 +35,27 @@ function pickOptions(params: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((o): o is string => typeof o === 'string' && o.length > 0);
 }
+
+const IM_PROVIDER_NAMES: Record<string, string> = { slack: 'Slack', ms_teams: 'Microsoft Teams' };
+
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length > 0 ? (v as Record<string, unknown>) : null;
+
+// The approver's question and where else they can answer. Rendered input first, like
+// resolveApprovalOptions; in_app (or unset) sends nothing, so it names no channel (#41476).
+export function describePendingApproval(renderedInput: unknown, configuredParams: unknown): { message: string; respondHint: string } {
+  const run = asRecord(renderedInput);
+  const config = asRecord(configuredParams);
+  const rawMessage = run?.message ?? config?.message;
+  const message = rawMessage == null ? '' : String(rawMessage).trim();
+  return { message, respondHint: respondHintFor(run?.approval_type ?? config?.approval_type, run?.im_provider ?? config?.im_provider) };
+}
+
+function respondHintFor(approvalType: unknown, imProvider: unknown): string {
+  if (approvalType === 'instant_message') {
+    const name = typeof imProvider === 'string' ? IM_PROVIDER_NAMES[imProvider] : undefined;
+    return name ? `Respond below or in ${name}` : 'Respond below or in the approval message';
+  }
+  if (approvalType === 'email') return 'Respond below or from the approval email';
+  return 'Respond below';
+}

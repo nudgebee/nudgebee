@@ -190,11 +190,25 @@ const sampleSuggestions = [
     cloud_account_id: 'acc-2',
     confidence: 'low',
     current_threshold: 5,
-    suggested_threshold: 5,
+    suggested_threshold: 12,
     operator: 'gt',
     estimated_reduction: 100,
-    recommendation_type: 'disable',
-    metric_stats: { recommendation_type: 'disable', risk_level: 'review' },
+    recommendation_type: 'tune_threshold',
+    metric_stats: { recommendation_type: 'tune_threshold', risk_level: 'review' },
+  },
+  {
+    // "Investigate, do not retune", as stored before such rows stopped carrying a value.
+    alert_name: 'TargetDown',
+    source: 'prometheus',
+    cloud_account_id: 'acc-2',
+    confidence: 'low',
+    current_threshold: 10,
+    suggested_threshold: 93.81,
+    operator: '>',
+    estimated_reduction: 98,
+    recommendation_type: 'investigate_signal',
+    recommendation_label: 'Investigate',
+    metric_stats: { recommendation_type: 'investigate_signal' },
   },
 ];
 
@@ -249,6 +263,17 @@ describe('ThresholdSuggestionsManager (integration)', () => {
     expect(screen.getByText('Suppresses all')).toBeInTheDocument();
     expect(screen.getAllByText('AWS CloudWatch').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Prometheus').length).toBeGreaterThan(0);
+  });
+
+  it('shows an "investigate" row as Investigate, with no new value and no reduction', async () => {
+    render(<ThresholdSuggestionsManager />);
+
+    await waitFor(() => expect(screen.getByText('TargetDown')).toBeInTheDocument());
+    expect(screen.getByText('Investigate')).toBeInTheDocument();
+    // Only the two tunings read "Tune Threshold"; the investigate row must not fall back to it.
+    expect(screen.getAllByText('Tune Threshold')).toHaveLength(2);
+    expect(screen.queryByText(/93\.81/)).not.toBeInTheDocument();
+    expect(screen.queryByText('98%')).not.toBeInTheDocument();
   });
 
   it('refetches with source filter on dropdown change', async () => {

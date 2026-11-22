@@ -102,6 +102,25 @@ func WithAgentRunID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, agentRunIDKey{}, id)
 }
 
+// workspaceTokenKey types the context value carrying the execution token
+// llm-server issued for an analysis.
+type workspaceTokenKey struct{}
+
+// WithWorkspaceToken tags ctx with the execution token llm-server issued for
+// an analysis. Model calls made through llm-server on this context
+// authenticate with it, so they run as the user (or system user) who started
+// the analysis rather than with the pod's own token. The token stays in
+// memory: it must never be put into a child process's environment.
+func WithWorkspaceToken(ctx context.Context, token string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if token == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workspaceTokenKey{}, token)
+}
+
 // bridgeCall is what a Client tells the llm-server bridge about one call, and
 // what the bridge reports back about it.
 type bridgeCall struct {
@@ -189,7 +208,13 @@ func (m *llmServerModel) GenerateContent(ctx context.Context, messages []llms.Me
 		return nil, fmt.Errorf("create llm-server request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Workspace-Token", m.token)
+	// The pod token is the fallback for an analysis dispatched by an
+	// llm-server that does not issue one.
+	token, _ := ctx.Value(workspaceTokenKey{}).(string)
+	if token == "" {
+		token = m.token
+	}
+	req.Header.Set("X-Workspace-Token", token)
 	resp, err := m.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("llm-server request: %w", err)

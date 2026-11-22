@@ -11,7 +11,9 @@ import { Select } from '@ui/Select';
 import Tooltip from '@ui/Tooltip';
 import HistoryIcon from '@mui/icons-material/History';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import apiKnowledgeBase from '@api1/knowledge-base';
+import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKubernetes from '@api1/kubernetes';
 import Loader from '@shared/Loader';
@@ -21,7 +23,7 @@ import { EmptyState } from '@ui/EmptyState';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { EditIcon, DeleteIconRed as deleteIcon, serviceNowIcon, jiraIcon, ManualTriggerIconBlue } from '@assets';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { ds } from '@utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { Card } from '@ui/Card';
@@ -33,6 +35,9 @@ import { formatTrigger, formatDuration, formatDocuments } from '@components/llm/
 import { isKbRetriggerDisabled } from '@components/llm/kbRetrigger';
 import KBDocumentsModal from '@components/llm/KBDocumentsModal';
 import KnowledgeBaseFormModal from '@components/llm/KnowledgeBaseFormModal';
+import { CODE_AGENT_NAME, TOOL_INSTRUCTIONS_PRESET } from '@components/llm/toolInstructionsPreset';
+import KnowledgeBaseSharingModal from '@components/llm/KnowledgeBaseSharingModal';
+import SkillSourcesSection, { SkillDetailsModal, shortCommit } from '@components/llm/SkillSourcesSection';
 
 // Context-tag options are built from the account's real resources: Service = k8s
 // workloads, Namespace = k8s namespaces. The full "Group: value" string is what
@@ -96,7 +101,13 @@ const getKbStatusTone = (status) =>
   status === 'active' ? 'success' : status === 'processing' ? 'warning' : status === 'error' ? 'critical' : 'neutral';
 
 // Three-dots menu items for a KB (retrigger / history / delete), gated by type + access.
-const getKbMenuItems = (knowledgeBase, hasAccess) => [
+// `options.offForAll` adds "Turn off for all accounts" (an organisation KB seen
+// from one account, by a tenant admin); `options.sharing` adds "Who can use it"
+// (an integration's organisation KB, for a tenant admin, #40605);
+// `options.noHistory` drops Load History where there is no account to read it in.
+// A skill synced from a skill source (source_id) gets "Skill details", and can
+// only be deleted once its source no longer has it (archived).
+const getKbMenuItems = (knowledgeBase, hasAccess, options = {}) => [
   // Retrigger for every KB: a user-created KB has no source to re-sync, but its
   // stored content still needs re-embedding when its vectors are lost or the
   // way content is indexed changes.
@@ -106,14 +117,22 @@ const getKbMenuItems = (knowledgeBase, hasAccess) => [
     icon: RefreshIcon,
     disabled: isKbRetriggerDisabled(knowledgeBase, hasAccess),
   },
-  {
-    label: 'Load History',
-    value: 'history',
-    icon: HistoryIcon,
-  },
+  ...(options.noHistory
+    ? []
+    : [
+        {
+          label: 'Load History',
+          value: 'history',
+          icon: HistoryIcon,
+        },
+      ]),
+  ...(options.sharing ? [{ label: 'Who can use it', value: 'sharing', icon: PeopleOutlineIcon }] : []),
+  ...(options.offForAll ? [{ label: 'Turn off for all accounts', value: 'off_for_all', icon: RefreshIcon }] : []),
+  ...(knowledgeBase.source_id ? [{ label: 'Skill details', value: 'skill_details', icon: InfoOutlinedIcon }] : []),
   // Delete: manual KBs, or archived integration KBs (their integration is
-  // disabled, so the sync won't recreate the row).
-  ...(knowledgeBase.kb_type === 'manual' || knowledgeBase.status === 'archived'
+  // disabled, so the sync won't recreate the row). A synced skill only once
+  // archived: the backend refuses otherwise, and the next sync would bring it back.
+  ...((knowledgeBase.kb_type === 'manual' && !knowledgeBase.source_id) || knowledgeBase.status === 'archived'
     ? [
         {
           label: 'Delete',
@@ -158,8 +177,31 @@ const KbStatusLabel = ({ knowledgeBase }) => {
 KbStatusLabel.propTypes = { knowledgeBase: PropTypes.object };
 
 // Edit button (manual KBs) + three-dots menu — shared by the card and table views.
-const KnowledgeBaseActions = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onViewHistory, hasAccess }) => {
+const KnowledgeBaseActions = ({
+  knowledgeBase,
+  onEdit,
+  onDelete,
+  onRetrigger,
+  onViewHistory,
+  onTurnOffForAll,
+  onSharing,
+  onSkillDetails,
+  hasAccess,
+  menuOptions,
+}) => {
   const handleMenuClick = (item) => {
+    if (item.value === 'skill_details') {
+      onSkillDetails(knowledgeBase);
+      return;
+    }
+    if (item.value === 'off_for_all') {
+      onTurnOffForAll(knowledgeBase);
+      return;
+    }
+    if (item.value === 'sharing') {
+      onSharing(knowledgeBase);
+      return;
+    }
     if (item.value === 'edit') {
       onEdit(knowledgeBase);
     } else if (item.value === 'delete') {
@@ -173,7 +215,8 @@ const KnowledgeBaseActions = ({ knowledgeBase, onEdit, onDelete, onRetrigger, on
 
   return (
     <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexShrink: 0 }}>
-      {hasAccess && knowledgeBase.kb_type === 'manual' && (
+      {/* A synced skill's content and scope come from its skill source. */}
+      {hasAccess && knowledgeBase.kb_type === 'manual' && !knowledgeBase.source_id && (
         <Button
           tone='ghost'
           size='sm'
@@ -183,7 +226,7 @@ const KnowledgeBaseActions = ({ knowledgeBase, onEdit, onDelete, onRetrigger, on
         />
       )}
       <ThreeDotsMenu
-        menuItems={getKbMenuItems(knowledgeBase, hasAccess)}
+        menuItems={getKbMenuItems(knowledgeBase, hasAccess, menuOptions)}
         data={knowledgeBase}
         onMenuClick={handleMenuClick}
         sx={{ p: ds.space[1], '& .MuiSvgIcon-root': { fontSize: 'var(--ds-text-title)' } }}
@@ -197,7 +240,11 @@ KnowledgeBaseActions.propTypes = {
   onDelete: PropTypes.func,
   onRetrigger: PropTypes.func,
   onViewHistory: PropTypes.func,
+  onTurnOffForAll: PropTypes.func,
+  onSharing: PropTypes.func,
+  onSkillDetails: PropTypes.func,
   hasAccess: PropTypes.bool,
+  menuOptions: PropTypes.shape({ offForAll: PropTypes.bool, sharing: PropTypes.bool, noHistory: PropTypes.bool }),
 };
 
 const statusTone = (status) => {
@@ -328,10 +375,17 @@ const TestRetrievalPanel = ({
     () => [
       { value: '', label: 'All knowledge bases' },
       ...knowledgeBases
-        .filter((kb) => kb.status === 'active' && kb.enabled !== false && (!accountId || kb.account_id === accountId))
+        .filter(
+          (kb) =>
+            kb.status === 'active' &&
+            kb.enabled !== false &&
+            !kb.switched_off &&
+            // Organisation KBs (no account_id) are retrievable in every account that lists them.
+            (!accountId || kb.account_id === accountId || !kb.account_id)
+        )
         .map((kb) => ({
           value: kb.id,
-          label: accountId ? kb.name : `${kb.name} — ${kb.account_name || kb.account_id || 'Unknown connection'}`,
+          label: accountId ? kb.name : `${kb.name} — ${kb.account_name || kb.account_id || (kb.visibility ? 'Organisation' : 'Unknown connection')}`,
         })),
     ],
     [knowledgeBases, accountId]
@@ -535,7 +589,7 @@ TestRetrievalPanel.propTypes = {
   error: PropTypes.string,
 };
 
-const KnowledgeBaseTab = ({ accountId }) => {
+const KnowledgeBaseTab = ({ accountId, focusKbId = null }) => {
   // Tenant-wide mode: when no accountId is in scope (b-Cortex opened from
   // the global sidebar where the page has no current account), fetch every
   // KB the caller can read across the tenant. The backend handler routes
@@ -543,29 +597,47 @@ const KnowledgeBaseTab = ({ accountId }) => {
   // HasAccountAccess. Create and the account-level settings stay hidden;
   // a row's actions run against the one account it belongs to.
   const isTenantWide = !accountId;
-  // Grouped integration rows that span several accounts have no single
-  // account to act in, so they resolve to '' and stay read-only.
+  const tenantAdmin = isTenantAdmin();
+  // Organisation KBs belong to the tenant: no account_id, and visibility says
+  // which accounts see them. Writes to one go through its owner (empty
+  // account_id) and need a tenant admin; in an account's view its switch is
+  // that account's own on/off (switched_off), not the KB's.
+  // An integration's knowledge base is one of these too (#40605).
+  const isOrgKb = (kb) => Boolean(kb) && !kb.account_id && Boolean(kb.visibility) && kb.visibility !== 'account';
   const kbAccountId = (kb) => {
+    if (isOrgKb(kb)) return '';
     if (!isTenantWide) return accountId;
     if (!kb) return '';
-    if (kb.accounts) return kb.accounts.length === 1 ? kb.accounts[0].id || '' : '';
     return kb.account_id || '';
   };
-  const canWriteKb = (kb) => Boolean(kbAccountId(kb)) && hasWriteAccess(kbAccountId(kb));
+  const canWriteKb = (kb) => (isOrgKb(kb) ? tenantAdmin : Boolean(kbAccountId(kb)) && hasWriteAccess(kbAccountId(kb)));
+  // Reads (load history, documents) of an organisation KB go through the
+  // account viewing it; the tenant-wide view has none.
+  const kbReadAccountId = (kb) => (isOrgKb(kb) ? accountId || '' : kbAccountId(kb));
   // The account the create/edit form works in: the page's, or in tenant-wide
   // mode the account of the KB being edited (set by handleEdit).
   const [editAccountId, setEditAccountId] = useState('');
+  // For a selected-accounts KB being edited: the accounts it is shared with.
+  const [formScopeAccountIds, setFormScopeAccountIds] = useState([]);
   const formAccountId = isTenantWide ? editAccountId : accountId;
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [knowledgeBases, setKnowledgeBases] = useState([]);
   const [error, setError] = useState(null);
   const [formModalOpen, setFormModalOpen] = useState(false);
+  // Set while the form was opened from "Add tool instructions".
+  const [formPreset, setFormPreset] = useState(null);
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [selectedKnowledgeBase, setSelectedKnowledgeBase] = useState(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyKB, setHistoryKB] = useState(null);
   const [documentsKB, setDocumentsKB] = useState(null);
+  const [sharingKB, setSharingKB] = useState(null);
+  const [skillDetailsKB, setSkillDetailsKB] = useState(null);
+  // Skill sources (tenant admins): the section lists them, and synced rows look
+  // their repository up by source_id.
+  const [skillSources, setSkillSources] = useState([]);
+  const [skillSourcesLoading, setSkillSourcesLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('manual');
   const [agents, setAgents] = useState([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
@@ -619,6 +691,19 @@ const KnowledgeBaseTab = ({ accountId }) => {
   // Create and the account-level settings need the page's account, so they
   // stay hidden in tenant-wide mode. Row actions use canWriteKb instead.
   const hasAccess = !isTenantWide && hasWriteAccess(accountId);
+  // Tenant admins can also add organisation KBs from the tenant-wide view.
+  const canCreate = hasAccess || (isTenantWide && tenantAdmin);
+  // "Who can use it" choices in the form, for tenant admins only. "This
+  // account" is the page's account, or in the tenant-wide view the account of
+  // the KB being edited; with no account (a tenant-wide create, or an
+  // organisation KB edited there) only the organisation scopes are offered.
+  const formScopeOptions = tenantAdmin
+    ? [
+        ...(formAccountId ? [{ value: 'account', label: isTenantWide ? 'Its account' : 'This account' }] : []),
+        { value: 'organisation', label: 'Organisation' },
+        { value: 'selected_accounts', label: 'Selected accounts' },
+      ]
+    : null;
 
   // silent = background poll: skip the full-page spinner and error toasts.
   // isStale lets an account-scoped caller discard a response that resolved after
@@ -648,7 +733,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
             : response.data.map((kb) => {
                 if (!pending.includes(kb.id)) return kb;
                 const local = knowledgeBasesRef.current.find((prev) => prev.id === kb.id);
-                return local ? { ...kb, enabled: local.enabled } : kb;
+                return local ? { ...kb, enabled: local.enabled, switched_off: local.switched_off } : kb;
               })
         );
         setError(null);
@@ -666,6 +751,17 @@ const KnowledgeBaseTab = ({ accountId }) => {
     }
   };
 
+  // A link to one knowledge base (a fix step's runbook) opens its documents once the list has loaded, once per link.
+  const focusedKbRef = useRef(null);
+  useEffect(() => {
+    if (!focusKbId || loading || focusedKbRef.current === focusKbId) return;
+    focusedKbRef.current = focusKbId;
+    const kb = knowledgeBases.find((k) => k.id === focusKbId);
+    if (kb) setDocumentsKB(kb);
+    // A failed list already said so; this is for a list that loaded without it.
+    else if (!error) snackbar.error('This knowledge base is not available here');
+  }, [focusKbId, loading, knowledgeBases, error]);
+
   useEffect(() => {
     let cancelled = false;
     fetchKnowledgeBases(false, () => cancelled);
@@ -674,6 +770,52 @@ const KnowledgeBaseTab = ({ accountId }) => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
+
+  const fetchSkillSources = async (silent = false, isStale = () => false) => {
+    if (!tenantAdmin) return;
+    if (!silent) setSkillSourcesLoading(true);
+    try {
+      const response = await apiKnowledgeBase.listSkillSources();
+      if (isStale()) return;
+      if (response.errors && response.errors.length > 0) {
+        if (!silent) snackbar.error(response.errors[0]?.message || 'Failed to load repositories');
+        return;
+      }
+      setSkillSources(response.data || []);
+    } catch (err) {
+      console.error('Error fetching skill sources:', err);
+    } finally {
+      if (!silent) setSkillSourcesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSkillSources();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tenantAdmin]);
+
+  // A new source's first sync runs in the background: refresh until no source
+  // is still pending or syncing, so its status and skills appear on their own.
+  const sourcesSyncing = skillSources.some((s) => s.status === 'pending' || s.status === 'syncing');
+  // Re-created when the account changes, like the 60s poll below, so it never
+  // writes one account's list over another's; silent, so a failing call
+  // doesn't toast every 10s.
+  useEffect(() => {
+    if (!sourcesSyncing) return undefined;
+    let cancelled = false;
+    const isStale = () => cancelled;
+    const intervalId = setInterval(() => {
+      fetchSkillSources(true, isStale);
+      fetchKnowledgeBases(true, isStale);
+    }, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourcesSyncing, accountId, isTenantWide]);
+
+  const sourcesById = useMemo(() => Object.fromEntries(skillSources.map((s) => [s.id, s])), [skillSources]);
 
   // Agents and tools back the `@`/`#` suggestions in the content box. Both load
   // for the form's account, which in tenant-wide mode is unset until an edit
@@ -768,12 +910,25 @@ const KnowledgeBaseTab = ({ accountId }) => {
   }, [accountId, isTenantWide]);
 
   const handleCreate = () => {
+    setFormPreset(null);
     setSelectedKnowledgeBase(null);
     setFormAgentIds([]);
+    setFormScopeAccountIds([]);
+    if (isTenantWide) setEditAccountId('');
+    setFormModalOpen(true);
+  };
+
+  // Starts a note for the code agent only; saving also marks it always load.
+  const handleCreateToolInstructions = () => {
+    setFormPreset(TOOL_INSTRUCTIONS_PRESET);
+    setSelectedKnowledgeBase(null);
+    setFormAgentIds([CODE_AGENT_NAME]);
+    setFormScopeAccountIds([]);
     setFormModalOpen(true);
   };
 
   const handleEdit = async (knowledgeBase) => {
+    setFormPreset(null);
     const kbAccount = kbAccountId(knowledgeBase);
     // Tenant-wide: point the form's agent / tool / tag loaders at this KB's account.
     if (isTenantWide) setEditAccountId(kbAccount);
@@ -790,11 +945,26 @@ const KnowledgeBaseTab = ({ accountId }) => {
         // its real state on first paint. A failure here is not fatal: the KB is
         // still editable, the picker just opens with nothing ticked, so warn
         // rather than silently implying it is mapped to nobody.
-        const agentsResponse = await apiKnowledgeBase.getKBAgents(kbAccount, knowledgeBase.id);
-        if (agentsResponse.errors && agentsResponse.errors.length > 0) {
-          snackbar.error('Failed to fetch the agents this knowledge base is mapped to');
+        // An organisation KB is used by all agents of every account that sees
+        // it, so it has no per-account mappings to load.
+        if (isOrgKb(knowledgeBase)) {
+          setFormAgentIds([]);
+        } else {
+          const agentsResponse = await apiKnowledgeBase.getKBAgents(kbAccount, knowledgeBase.id);
+          if (agentsResponse.errors && agentsResponse.errors.length > 0) {
+            snackbar.error('Failed to fetch the agents this knowledge base is mapped to');
+          }
+          setFormAgentIds(agentsResponse.data || []);
         }
-        setFormAgentIds(agentsResponse.data || []);
+        let sharedWith = [];
+        if (knowledgeBase.visibility === 'selected_accounts') {
+          const overrides = await apiKnowledgeBase.listKnowledgeBaseAccountOverrides(knowledgeBase.id);
+          if (overrides.errors && overrides.errors.length > 0) {
+            snackbar.error('Failed to load the accounts this knowledge base is shared with');
+          }
+          sharedWith = (overrides.data || []).filter((o) => o.enabled).map((o) => o.account_id);
+        }
+        setFormScopeAccountIds(sharedWith);
         setSelectedKnowledgeBase(response.data);
         setFormModalOpen(true);
       } else {
@@ -863,6 +1033,53 @@ const KnowledgeBaseTab = ({ accountId }) => {
     }
   };
 
+  // This account's own switch for an organisation KB: the KB stays on for the
+  // rest of the organisation. Optimistic, like handleToggleEnabled.
+  const handleToggleAccountSwitch = async (knowledgeBase, nextOn) => {
+    const { id } = knowledgeBase;
+    const applyLocally = (on) => setKnowledgeBases((prev) => prev.map((kb) => (kb.id === id ? { ...kb, switched_off: !on } : kb)));
+
+    setTogglingEnabledIds((prev) => [...prev, id]);
+    applyLocally(nextOn);
+    try {
+      const response = await apiKnowledgeBase.setKnowledgeBaseAccountOverride(accountId, id, nextOn);
+      if (response.errors && response.errors.length > 0) {
+        applyLocally(!nextOn);
+        snackbar.error(response.errors[0]?.message || 'Failed to update knowledge base');
+        return;
+      }
+      snackbar.success(
+        nextOn ? `"${knowledgeBase.name}" is used in this account again` : `"${knowledgeBase.name}" is off for this account; other accounts keep it`
+      );
+    } catch (err) {
+      applyLocally(!nextOn);
+      console.error('Error updating knowledge base account switch:', err);
+      snackbar.error('An error occurred while updating the knowledge base');
+    } finally {
+      setTogglingEnabledIds((prev) => prev.filter((pendingId) => pendingId !== id));
+    }
+  };
+
+  // A tenant admin turns an organisation KB off for every account. It then
+  // leaves every account's list; the tenant-wide view turns it back on.
+  const handleTurnOffForAll = async (knowledgeBase) => {
+    try {
+      setSubmitting(true);
+      const response = await apiKnowledgeBase.setKnowledgeBaseEnabled('', knowledgeBase.id, false);
+      if (response.errors && response.errors.length > 0) {
+        snackbar.error(response.errors[0]?.message || 'Failed to update knowledge base');
+        return;
+      }
+      snackbar.success(`"${knowledgeBase.name}" is off for all accounts`);
+      fetchKnowledgeBases();
+    } catch (err) {
+      console.error('Error turning knowledge base off for all accounts:', err);
+      snackbar.error('An error occurred while updating the knowledge base');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleViewHistory = (knowledgeBase) => {
     setHistoryKB(knowledgeBase);
     setHistoryModalOpen(true);
@@ -913,7 +1130,27 @@ const KnowledgeBaseTab = ({ accountId }) => {
                       <Label text={kb.note_category === 'sop' ? 'SOP' : 'Fact'} tone='neutral' />
                     </Box>
                   )}
+                  {isOrgKb(kb) && (
+                    <Box component='span' sx={{ display: 'inline-flex', flexShrink: 0 }} data-testid='kb-org-badge'>
+                      <Label text={kb.visibility === 'selected_accounts' ? 'Selected accounts' : 'Organisation'} tone='info' />
+                    </Box>
+                  )}
+                  {kb.source_id && (
+                    <Tooltip title='Synced from a repository. Change it there; the repository settings decide who can use it.' placement='top'>
+                      <Box component='span' sx={{ display: 'inline-flex', flexShrink: 0, cursor: 'help' }} data-testid='kb-synced-badge'>
+                        <Label text='Synced' tone='info' />
+                      </Box>
+                    </Tooltip>
+                  )}
                 </Box>
+                {kb.source_id && (
+                  <Typography
+                    sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontFamily: 'var(--ds-font-mono)' }}
+                    data-testid='kb-synced-source'
+                  >
+                    {[sourcesById[kb.source_id]?.repo || kb.skill_meta?.source_path, shortCommit(kb.skill_meta?.commit)].filter(Boolean).join(' · ')}
+                  </Typography>
+                )}
                 {kb.context_tags?.length > 0 && (
                   <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], marginTop: ds.space[1] }}>
                     {kb.context_tags.slice(0, 2).map((tag) => (
@@ -952,13 +1189,25 @@ const KnowledgeBaseTab = ({ accountId }) => {
         type: 'status',
         width: '130px',
         render: (kb) =>
-          // A tenant-wide grouped row covers several accounts' KB rows; when
-          // they disagree there is no single switch position to show, so the
-          // rollup states it rather than picking one.
-          kb.enabledMixed ? (
-            <Tooltip title={`${kb.enabledCount} of ${kb.accounts?.length ?? 0} accounts have this enabled`} placement='top'>
-              <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
-                <Label text='mixed' tone='warning' />
+          isOrgKb(kb) && !isTenantWide ? (
+            <Tooltip
+              title={
+                kb.visibility === 'selected_accounts' && !tenantAdmin
+                  ? 'Shared with selected accounts by your organisation. Only a tenant admin can change which accounts use it.'
+                  : 'Shared by your organisation. Turning this off excludes it for this account only; other accounts keep it.'
+              }
+              placement='top'
+            >
+              <Box component='span' sx={{ display: 'inline-flex' }}>
+                <Switch
+                  size='sm'
+                  checked={kb.enabled !== false && !kb.switched_off}
+                  loading={togglingEnabledIds.includes(kb.id)}
+                  disabled={!hasWriteAccess(accountId) || (kb.visibility === 'selected_accounts' && !tenantAdmin)}
+                  onChange={(_event, checked) => handleToggleAccountSwitch(kb, checked)}
+                  aria-label={`${kb.switched_off ? 'Use' : 'Stop using'} knowledge base ${kb.name} in this account`}
+                  data-testid='kb-account-switch'
+                />
               </Box>
             </Tooltip>
           ) : (
@@ -966,6 +1215,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
               title={
                 kb.status === 'archived'
                   ? 'Source unavailable: this KB cannot be retrieved. Your preference is retained for when the source returns.'
+                  : isOrgKb(kb)
+                  ? 'Use this organisation KB in every account that can see it. Turning this off excludes it for all of them.'
                   : 'Allow this KB in new retrievals. Turning this off retains stored content and does not stop source sync.'
               }
               placement='top'
@@ -990,7 +1241,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
         // Drill into documents only once the source is Ready; while syncing or
         // failed the stored set is in flux or stale.
         render: (kb) =>
-          kb.document_count > 0 && kb.status === 'active' ? (
+          kb.document_count > 0 && kb.status === 'active' && kbReadAccountId(kb) ? (
             <Button
               tone='link'
               size='sm'
@@ -1100,32 +1351,16 @@ const KnowledgeBaseTab = ({ accountId }) => {
               label: 'Account',
               type: 'text-short',
               render: (kb) => {
-                // Grouped tenant-wide rows carry `accounts` (one entry per
-                // member of the integration cluster); single-row KBs fall
-                // back to the per-row account_name.
-                const accounts = kb.accounts && kb.accounts.length > 0 ? kb.accounts : [{ id: kb.account_id, name: kb.account_name }];
-                const MAX_VISIBLE = 3;
-                const visible = accounts.slice(0, MAX_VISIBLE);
-                const overflow = accounts.length - visible.length;
-                const fullList = accounts.map((a) => a.name || a.id || '—').join(', ');
-                return (
-                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], alignItems: 'center' }}>
-                    {visible.map((a) => (
-                      <Chip key={a.id || a.name} tone='neutral' size='2xs' variant='tag'>
-                        {a.name || a.id || '—'}
-                      </Chip>
-                    ))}
-                    {overflow > 0 && (
-                      <Tooltip title={fullList} placement='top'>
-                        <Box component='span' sx={{ display: 'inline-flex', cursor: 'default' }}>
-                          <Chip tone='info' size='2xs' variant='count'>
-                            +{overflow}
-                          </Chip>
-                        </Box>
-                      </Tooltip>
-                    )}
-                    {accounts.length === 0 && <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>—</Typography>}
-                  </Box>
+                if (isOrgKb(kb)) {
+                  return <Label text={kb.visibility === 'selected_accounts' ? 'Selected accounts' : 'Organisation'} tone='info' />;
+                }
+                const name = kb.account_name || kb.account_id;
+                return name ? (
+                  <Chip tone='neutral' size='2xs' variant='tag'>
+                    {name}
+                  </Chip>
+                ) : (
+                  <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }}>—</Typography>
                 );
               },
             },
@@ -1138,14 +1373,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
         render: (kb) =>
           kb.created_at ? (
             <Tooltip
-              title={
-                // Grouped tenant-wide rows show the most recent creation across
-                // member accounts (#33339), so label it as such to avoid
-                // implying a single provisioning event.
-                (isTenantWide ? 'Last added ' : '') +
-                formatExactDate(kb.created_at) +
-                (kb.created_by?.display_name ? ` by ${kb.created_by.display_name}` : '')
-              }
+              title={formatExactDate(kb.created_at) + (kb.created_by?.display_name ? ` by ${kb.created_by.display_name}` : '')}
               placement='top'
             >
               <Box component='span' sx={{ cursor: 'help' }}>
@@ -1163,20 +1391,28 @@ const KnowledgeBaseTab = ({ accountId }) => {
         label: '',
         type: 'actions',
         render: (kb) =>
-          kbAccountId(kb) ? (
+          kbAccountId(kb) || isOrgKb(kb) ? (
             <KnowledgeBaseActions
               knowledgeBase={kb}
               onEdit={handleEdit}
               onDelete={handleDelete}
               onRetrigger={handleRetrigger}
               onViewHistory={handleViewHistory}
+              onTurnOffForAll={handleTurnOffForAll}
+              onSharing={setSharingKB}
+              onSkillDetails={setSkillDetailsKB}
               hasAccess={canWriteKb(kb)}
+              menuOptions={{
+                offForAll: isOrgKb(kb) && !isTenantWide && tenantAdmin,
+                sharing: isOrgKb(kb) && kb.kb_type === 'integration' && tenantAdmin,
+                noHistory: !kbReadAccountId(kb),
+              }}
             />
           ) : null,
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handlers intentionally omitted, see docstring above
-    [hasAccess, accountId, isTenantWide, togglingEnabledIds]
+    [hasAccess, accountId, isTenantWide, togglingEnabledIds, tenantAdmin, sourcesById]
   );
 
   // Applies the picker's selection to llm_kb_agent_mappings. The KB itself is
@@ -1203,23 +1439,45 @@ const KnowledgeBaseTab = ({ accountId }) => {
   };
 
   const handleFormSubmit = async (data) => {
-    const { agentIds = [], ...kbPayload } = data;
+    const { agentIds = [], visibility, accountIds = [], ...kbPayload } = data;
+    const toOrg = visibility === 'organisation' || visibility === 'selected_accounts';
+    const wasOrg = isOrgKb(selectedKnowledgeBase);
     try {
       setSubmitting(true);
       let response;
       let kbId;
 
       if (selectedKnowledgeBase) {
-        response = await apiKnowledgeBase.updateKnowledgeBase(formAccountId, selectedKnowledgeBase.id, kbPayload);
+        response = await apiKnowledgeBase.updateKnowledgeBase(wasOrg ? '' : formAccountId, selectedKnowledgeBase.id, kbPayload);
         if (response.errors && response.errors.length > 0) {
           const errorMessage = response.errors[0]?.message || 'Failed to update knowledge base';
           snackbar.error(errorMessage);
           return;
         }
         kbId = selectedKnowledgeBase.id;
+        // A scope change is a separate step after the content is saved.
+        const previous = selectedKnowledgeBase.visibility || 'account';
+        const accountsChanged =
+          visibility === 'selected_accounts' &&
+          (accountIds.length !== formScopeAccountIds.length || accountIds.some((id) => !formScopeAccountIds.includes(id)));
+        if (visibility && (visibility !== previous || accountsChanged)) {
+          const scoped = await apiKnowledgeBase.updateKnowledgeBaseVisibility(
+            kbId,
+            visibility,
+            accountIds,
+            visibility === 'account' ? formAccountId : ''
+          );
+          if (scoped.errors && scoped.errors.length > 0) {
+            snackbar.error(`Saved, but who can use it was not changed: ${scoped.errors[0]?.message || 'unknown error'}`);
+            return;
+          }
+        }
         snackbar.success('Knowledge base updated successfully');
       } else {
-        response = await apiKnowledgeBase.createKnowledgeBase(accountId, kbPayload);
+        response = await apiKnowledgeBase.createKnowledgeBase(toOrg ? '' : accountId, {
+          ...kbPayload,
+          ...(toOrg ? { visibility, accountIds } : {}),
+        });
         if (response.errors && response.errors.length > 0) {
           const errorMessage = response.errors[0]?.message || 'Failed to create knowledge base';
           snackbar.error(errorMessage);
@@ -1229,11 +1487,27 @@ const KnowledgeBaseTab = ({ accountId }) => {
         snackbar.success('Knowledge base created successfully');
       }
 
-      if (kbId) {
-        await syncAgentMappings(kbId, agentIds, formAgentIds);
+      // Organisation KBs are used by all agents in every account that sees
+      // them, so only account KBs carry agent mappings.
+      if (kbId && !toOrg && !wasOrg && formAccountId) {
+        // A new note has no mappings yet, even when the form opened with some picked.
+        // The preset maps the code agent below with always-load set, in one call.
+        const toSync = formPreset ? agentIds.filter((id) => id !== CODE_AGENT_NAME) : agentIds;
+        await syncAgentMappings(kbId, toSync, selectedKnowledgeBase ? formAgentIds : []);
+        if (formPreset && agentIds.includes(CODE_AGENT_NAME)) {
+          const marked = await apiKnowledgeBase.mapKnowledgeBaseToAgent(formAccountId, kbId, CODE_AGENT_NAME, true);
+          if (marked?.errors?.length > 0) {
+            snackbar.error(`Saved, but not set to always load: ${marked.errors[0]?.message || 'unknown error'}`);
+          }
+        }
+      } else if (kbId && wasOrg && visibility === 'account' && formAccountId) {
+        // Moved back to one account: it loses the implicit all-agents use, so
+        // map it to all agents there to keep it working.
+        await syncAgentMappings(kbId, [KB_AGENT_WILDCARD], []);
       }
 
       setFormModalOpen(false);
+      setFormPreset(null);
       setSelectedKnowledgeBase(null);
       setFormAgentIds([]);
       fetchKnowledgeBases();
@@ -1336,7 +1610,8 @@ const KnowledgeBaseTab = ({ accountId }) => {
             >
               Knowledge Base
             </Typography>
-            <ScopeChip accountId={accountId} />
+            {/* Tenant admins manage organisation KBs from the tenant-wide view. */}
+            <ScopeChip accountId={accountId} readOnly={!tenantAdmin} />
           </Box>
           <Typography
             sx={{
@@ -1345,7 +1620,9 @@ const KnowledgeBaseTab = ({ accountId }) => {
             }}
           >
             {isTenantWide
-              ? 'Viewing all knowledge bases across this tenant. Switch to an account-scoped page to create one, or to manage one shared across several accounts.'
+              ? tenantAdmin
+                ? 'Viewing all knowledge bases across this tenant. Knowledge bases you add here are shared with the organisation.'
+                : 'Viewing all knowledge bases across this tenant. Switch to an account-scoped page to create one, or to manage one shared across several accounts.'
               : "Account-scoped document library with AI semantic search-upload docs, map to agents, and they'll automatically search when needed."}
           </Typography>
         </Box>
@@ -1355,8 +1632,13 @@ const KnowledgeBaseTab = ({ accountId }) => {
           <Button tone='secondary' size='sm' onClick={() => setRetrievalOpen((open) => !open)} aria-expanded={retrievalOpen}>
             Test retrieval
           </Button>
-          {hasAccess && (
-            <Button tone='primary' size='sm' onClick={handleCreate}>
+          {canCreate && !isTenantWide && (
+            <Button tone='secondary' size='sm' onClick={handleCreateToolInstructions} data-testid='kb-add-tool-instructions-btn'>
+              Add tool instructions
+            </Button>
+          )}
+          {canCreate && (
+            <Button tone='primary' size='sm' onClick={handleCreate} data-testid='kb-add-btn'>
               Add Knowledge Base
             </Button>
           )}
@@ -1386,7 +1668,7 @@ const KnowledgeBaseTab = ({ accountId }) => {
       )}
 
       {/* Empty State */}
-      {knowledgeBases.length === 0 && (
+      {knowledgeBases.length === 0 && activeTab !== 'sources' && (
         <EmptyState
           surface
           size='section'
@@ -1397,67 +1679,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
         />
       )}
 
-      {/* Knowledge Base List — tabbed by source */}
-      {knowledgeBases.length > 0 &&
+      {/* Knowledge Base List — tabbed by source; org admins also get the skill sources tab */}
+      {(knowledgeBases.length > 0 || tenantAdmin) &&
         (() => {
-          // Tenant-wide rollup: integration-backed KBs (ServiceNow,
-          // Confluence, etc.) get provisioned once per account, so a
-          // tenant operator sees N near-identical rows. Collapse by
-          // (integration_id, name) into a single logical row that lists
-          // the member accounts as chips. Custom (no integration_id)
-          // and per-account views keep one row per KB.
-          const groupedKBs = isTenantWide
-            ? (() => {
-                const grouped = new Map();
-                const standalone = [];
-                for (const kb of knowledgeBases) {
-                  if (!kb.integration_id) {
-                    standalone.push(kb);
-                    continue;
-                  }
-                  const key = `${kb.integration_id}|${kb.name}`;
-                  const existing = grouped.get(key);
-                  if (existing) {
-                    // Defensive dedup — if an account ends up with two KBs
-                    // sharing the same (integration_id, name) (backfill
-                    // drift, migration bug), skip the duplicate account so
-                    // the Account-chip column doesn't surface the same name
-                    // twice and React doesn't warn about duplicate keys.
-                    if (!existing.accounts.some((acc) => acc.id === kb.account_id)) {
-                      existing.accounts.push({ id: kb.account_id, name: kb.account_name });
-                      // The enable switch is per KB row, so members can
-                      // disagree. Track the tally and flag disagreement rather
-                      // than letting the first member's value speak for all.
-                      if (kb.enabled !== false) existing.enabledCount += 1;
-                      existing.enabled = existing.enabled && kb.enabled !== false;
-                      existing.enabledMixed = existing.enabledCount > 0 && existing.enabledCount < existing.accounts.length;
-                    }
-                    // "Added" for a grouped row = the most recent creation
-                    // across member accounts (deterministic; #33339). Without
-                    // this the row inherited whichever member the backend
-                    // returned first, so the same KB showed different times in
-                    // the tenant rollup vs a per-account view. Keep created_by
-                    // aligned with the chosen timestamp so the tooltip stays
-                    // coherent.
-                    if (kb.created_at && (!existing.created_at || new Date(kb.created_at) > new Date(existing.created_at))) {
-                      existing.created_at = kb.created_at;
-                      existing.created_by = kb.created_by;
-                    }
-                  } else {
-                    grouped.set(key, {
-                      ...kb,
-                      accounts: [{ id: kb.account_id, name: kb.account_name }],
-                      enabled: kb.enabled !== false,
-                      enabledCount: kb.enabled !== false ? 1 : 0,
-                      enabledMixed: false,
-                    });
-                  }
-                }
-                return [...grouped.values(), ...standalone];
-              })()
-            : knowledgeBases;
-          const integrationKBs = groupedKBs.filter((kb) => kb.kb_type === 'integration');
-          const userKBs = groupedKBs.filter((kb) => kb.kb_type === 'manual');
+          const integrationKBs = knowledgeBases.filter((kb) => kb.kb_type === 'integration');
+          const userKBs = knowledgeBases.filter((kb) => kb.kb_type === 'manual');
           const visibleKBs = activeTab === 'integration' ? integrationKBs : userKBs;
           // columns lives at component scope via useMemo so CustomTable
           // gets a stable reference across renders.
@@ -1473,15 +1699,30 @@ const KnowledgeBaseTab = ({ accountId }) => {
                   tabOptions: [
                     { value: 'manual', text: 'User', count: userKBs.length },
                     { value: 'integration', text: 'Integration', count: integrationKBs.length },
+                    ...(tenantAdmin ? [{ value: 'sources', text: 'Repositories', count: skillSources.length }] : []),
                   ],
                 }}
               />
               <Box sx={{ mt: ds.space[2] }}>
-                <MemoryTable
-                  columns={columns}
-                  rows={visibleKBs}
-                  emptyText={`No ${activeTab === 'integration' ? 'integration' : 'user'} knowledge bases yet.`}
-                />
+                {activeTab === 'sources' ? (
+                  <SkillSourcesSection
+                    sources={skillSources}
+                    skills={knowledgeBases.filter((kb) => kb.source_id)}
+                    // The same Use in answers switch as the skill's row, so a repository's skills can be switched off from its list.
+                    renderSkillSwitch={columns.find((c) => c.key === 'enabled')?.render}
+                    loading={skillSourcesLoading}
+                    onChanged={() => {
+                      fetchSkillSources();
+                      fetchKnowledgeBases(true);
+                    }}
+                  />
+                ) : (
+                  <MemoryTable
+                    columns={columns}
+                    rows={visibleKBs}
+                    emptyText={`No ${activeTab === 'integration' ? 'integration' : 'user'} knowledge bases yet.`}
+                  />
+                )}
               </Box>
             </Box>
           );
@@ -1492,10 +1733,12 @@ const KnowledgeBaseTab = ({ accountId }) => {
         open={formModalOpen}
         onClose={() => {
           setFormModalOpen(false);
+          setFormPreset(null);
           setSelectedKnowledgeBase(null);
           setFormAgentIds([]);
         }}
         onSubmit={handleFormSubmit}
+        preset={formPreset}
         editKnowledgeBase={selectedKnowledgeBase}
         loading={submitting}
         agents={agents}
@@ -1505,6 +1748,11 @@ const KnowledgeBaseTab = ({ accountId }) => {
         contextTagOptions={contextTagOptions}
         contextTagsLoading={contextTagsLoading}
         initialAgentIds={formAgentIds}
+        // Tool instructions are always account-scoped: an organisation or shared note has no
+        // per-agent mapping, so it could not be tied to the code agent or marked always load.
+        scopeOptions={formPreset ? null : formScopeOptions}
+        initialVisibility={selectedKnowledgeBase?.visibility || (isTenantWide ? 'organisation' : 'account')}
+        initialAccountIds={formScopeAccountIds}
       />
 
       {/* Delete Confirmation Modal */}
@@ -1571,21 +1819,34 @@ const KnowledgeBaseTab = ({ accountId }) => {
           setHistoryModalOpen(false);
           setHistoryKB(null);
         }}
-        accountId={kbAccountId(historyKB)}
+        accountId={kbReadAccountId(historyKB)}
         kbId={historyKB?.id}
         kbName={historyKB?.name}
       />
 
-      {/* Documents drilldown. Tenant-wide rows carry their own account_id; a
-          grouped integration row resolves to its first member, whose KB reads
-          the same shared integration collection. */}
+      {/* Documents drilldown. Tenant-wide rows carry their own account_id. */}
       <KBDocumentsModal
         open={Boolean(documentsKB)}
         onClose={() => setDocumentsKB(null)}
-        accountId={accountId || documentsKB?.account_id}
+        accountId={kbReadAccountId(documentsKB) || documentsKB?.account_id}
         kbId={documentsKB?.id}
         kbName={documentsKB?.name}
         canEdit={Boolean(documentsKB) && canWriteKb(documentsKB)}
+        knowledgeBase={documentsKB}
+      />
+
+      <KnowledgeBaseSharingModal
+        open={Boolean(sharingKB)}
+        onClose={() => setSharingKB(null)}
+        knowledgeBase={sharingKB}
+        onSaved={fetchKnowledgeBases}
+      />
+
+      <SkillDetailsModal
+        open={Boolean(skillDetailsKB)}
+        onClose={() => setSkillDetailsKB(null)}
+        knowledgeBase={skillDetailsKB}
+        source={skillDetailsKB ? sourcesById[skillDetailsKB.source_id] : null}
       />
     </Box>
   );
@@ -1595,6 +1856,8 @@ KnowledgeBaseTab.propTypes = {
   // Optional: empty / unset means tenant-wide read-only mode (b-Cortex
   // opened from the global sidebar, no current account in scope).
   accountId: PropTypes.string,
+  // Knowledge base whose documents open on load, from a link to it.
+  focusKbId: PropTypes.string,
 };
 
 export default KnowledgeBaseTab;

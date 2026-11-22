@@ -473,7 +473,7 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		"You MUST execute every query via `es_metrics_query` before answering.",
 		"For custom/non-standard metrics with no user-supplied exact field path, discover field names via a `size:1` sample document or `metrics_labels_list` BEFORE writing the final query.",
 		tsRule,
-		"NEVER use `size:0` or `aggs` in queries — use filter queries only.",
+		"For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with `size:0`: metric aggs (`avg`, `sum`, `max`, `value_count`) optionally inside `terms` (with `order` and `size` for top-N) or `date_histogram`. For `aggregate_metric_double` fields (APM `transaction.duration.summary`), the average is a `sum` aggregation divided by a `value_count` aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.",
 		"NEVER return the generated DSL as the final answer — users want metric values.",
 		"NEVER query log-specific indices for metric data.",
 		// `__name__` is OURS, not the model's invention: for Beats-family indices the
@@ -482,12 +482,13 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		// queryable, and a `term` filter on it silently matches nothing — 13 times in one
 		// traced investigation. Forbidding it outright (the previous wording) stopped
 		// nothing, because it named no replacement. Explain the translation instead.
-		"`__name__` in a RESULT is not a queryable field — it is the metric's fully-qualified field path. To select that metric, use an `exists` filter on the path itself (e.g. `{\"exists\":{\"field\":\"kubernetes.pod.cpu.usage.nanocores\"}}`), never `{\"term\":{\"__name__\":...}}`. On OTel indices, which do have a real metric-name field, filter `name.keyword` instead.",
+		"`__name__` and the other labels in a RESULT are names this backend builds for each series; they are not guaranteed to be field names in the index. Never filter on `__name__`. Depending on the layout, `__name__` is a numeric field's path (select it with an `exists` filter on that path) or the value of a metric-name field (filter that field). When a query matches nothing, the tool returns real documents from the index: take field paths and value shapes from those documents, not from result labels.",
+		"Never report data as missing or not ingested unless the tool said the index has no documents. A query that matched nothing, or a check that did not run, only shows that this query found nothing: say what you could not find and why.",
 		// Sampling first is cheaper and more reliable than any built-in field list: it
 		// returns only fields this account actually populates. Measured on a customer
 		// estate: one sampled document is ~4KB and names every metric in its dataset,
 		// against ~400KB for the full mapping, most of which is unpopulated template.
-		"When you do not know an index's fields, FETCH A SAMPLE FIRST: `{\"query\":{\"match_all\":{}},\"size\":2}` with a recent time range. The `__name__` values in the result are this environment's real metric paths and the label keys are its real dimensions. Prefer them over any field name you assume.",
+		"When you do not know an index's fields, FETCH A SAMPLE FIRST: `{\"query\":{\"match_all\":{}},\"size\":2}` with a recent time range. The result's series labels show what the index holds, but they may be shortened; when a filter built from them matches nothing, use the documents the tool returns instead.",
 		"Do not ask the user for clarification — make the best assumption and proceed.",
 	}
 	if schemas[schemaOTel] {
@@ -575,8 +576,8 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		ToolUsage: map[string][]string{
 			tools.ToolESMetricsQuery: {
 				"Executes an Elasticsearch DSL query against the metrics API.",
-				"Input: JSON object with `index` (index pattern) and `query` (DSL body with filter queries — NO aggs or size:0).",
-				"Output: Metric time-series results (timestamps and values) extracted from document hits.",
+				"Input: JSON object with `index` (index pattern) and `query` (DSL body: filter queries for time series; aggs with size:0 for averages, sums, counts and top-N).",
+				"Output: Metric time-series results (timestamps and values) built from document hits or aggregation buckets.",
 			},
 			tools.ToolMetricsList: {
 				"Lists available metric names in an Elasticsearch index.",
@@ -760,7 +761,7 @@ func esSchemaGuidance(
 	)
 	instructions = append(instructions, discoveryHints...)
 	instructions = append(instructions,
-		"**Query Patterns:** Use `bool`/`filter` queries only. Do NOT use `size:0` or `aggs` — the backend extracts time-series from document hits, not aggregation results.",
+		"**Query Patterns:** Use `bool`/`filter` queries for time series. For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with `size:0`: metric aggs (`avg`, `sum`, `max`, `value_count`) optionally inside `terms` (with `order` and `size` for top-N) or `date_histogram`. For `aggregate_metric_double` fields (APM `transaction.duration.summary`), the average is a `sum` aggregation divided by a `value_count` aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.",
 	)
 
 	return instructions

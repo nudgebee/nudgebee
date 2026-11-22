@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +97,7 @@ func LoadExistingConfig(id, tenant, name, tool string) (ExistingConfig, error) {
 	// a zero-length slice is "not found" and a non-nil error is always a real DB failure.
 	var ids []string
 	if id != "" {
-		if err := dbManager.Select(&ids, `SELECT id FROM integrations WHERE id = $1 AND tenant_id = $2 LIMIT 1`, id, tenant); err != nil {
+		if err := dbManager.Select(&ids, `SELECT id FROM integrations WHERE id = $1 AND tenant_id = $2 AND type = $3 LIMIT 1`, id, tenant, tool); err != nil {
 			return result, fmt.Errorf("lookup integration by id: %w", err)
 		}
 	}
@@ -356,7 +357,7 @@ func quickValidateZenDuty(ctx context.Context, configuration models.TicketConfig
 	if configuration.Password == "" {
 		return fmt.Errorf("zenduty api token is required")
 	}
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 	if _, err := client.ListTeams(ctx); err != nil {
 		return fmt.Errorf("zenduty auth failed: %w", err)
 	}
@@ -649,7 +650,14 @@ func validateGithubConfigurationAndReturnMetadata(ctx context.Context, configura
 			for {
 				collabs, resp, err := client.Repositories.ListCollaborators(ctx, *repo.Owner.Login, *repo.Name, collabOpts)
 				if err != nil {
-					slog.Warn("Failed to fetch GitHub collaborators (may lack permission)", "repo", *repo.Name, "error", err)
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+					if isGithubForbidden(err) {
+						slog.Debug("Skipping GitHub collaborators, token lacks permission", "repo", *repo.Name, "error", err)
+					} else {
+						slog.Warn("Failed to fetch GitHub collaborators", "repo", *repo.Name, "error", err)
+					}
 					break
 				}
 				for _, u := range collabs {
@@ -676,6 +684,13 @@ func validateGithubConfigurationAndReturnMetadata(ctx context.Context, configura
 		{"projects": projects},
 		{"users": users},
 	}, nil
+}
+
+// isGithubForbidden reports a plain 403 from the GitHub API. Rate-limit 403s are
+// returned as their own error types by go-github and are not matched.
+func isGithubForbidden(err error) bool {
+	var errResp *github.ErrorResponse
+	return errors.As(err, &errResp) && errResp.Response != nil && errResp.Response.StatusCode == http.StatusForbidden
 }
 
 func validateServiceNowConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
@@ -731,7 +746,7 @@ func validatePagerDutyConfigurationAndReturnMetadata(ctx context.Context, config
 }
 
 func validateZenDutyConfigurationAndReturnMetadata(ctx context.Context, configuration models.TicketConfigurations) ([]map[string]interface{}, error) {
-	client := clients.CreateZenDutyClient(configuration.Password)
+	client := clients.CreateZenDutyClient(configuration.Password, configuration.URL)
 
 	services, teams, err := client.ListAllServicesWithTeams(ctx)
 	if err != nil {
@@ -919,10 +934,11 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 	var integrationID string
 	var foundExisting bool
 
-	// Check if integration exists by ID and belongs to current tenant
+	// Check if integration exists by ID, belongs to current tenant and is this ticket tool,
+	// so the id of any other integration type can't be updated through this path
 	if config.ID != "" && config.Tenant != "" {
 		var count int
-		err := dbManager.Get(&count, `SELECT COUNT(*) FROM integrations WHERE id = $1 AND tenant_id = $2`, config.ID, config.Tenant)
+		err := dbManager.Get(&count, `SELECT COUNT(*) FROM integrations WHERE id = $1 AND tenant_id = $2 AND type = $3`, config.ID, config.Tenant, config.Tool)
 		if err == nil && count > 0 {
 			integrationID = config.ID
 			foundExisting = true
@@ -989,7 +1005,8 @@ func SaveTicketConfiguration(config models.TicketConfigurations, metadata []map[
 				)
 				VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW(), $5, $5)
 				ON CONFLICT (integration_id, name)
-				DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by
+				DO UPDATE SET value = EXCLUDED.value, is_encrypted = EXCLUDED.is_encrypted,
+					updated_at = NOW(), updated_by = EXCLUDED.updated_by
 			`, integrationID, name, cv.value, cv.isEncrypted, config.CreatedBy)
 			if err != nil {
 				return response, fmt.Errorf("failed to upsert config value %s: %w", name, err)
@@ -1170,6 +1187,26 @@ func FetchActiveIssueTemplates(ctx *gin.Context, request models.IssueTemplateMet
 	}
 
 	return fetchCreateMetaCached(ctx, config, request.Input.ProjectKey)
+}
+
+func FetchTransitionMetadata(ctx *gin.Context, request models.IssueTemplateMetaRequest) (interface{}, error) {
+	tenantID := request.SessionVariables.UserTenantID
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant id missing from request")
+	}
+	config, err := fetchToolConfigurationForTenant(request.Input.IntegrationId, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	manager, ok := ticketmgr.GetTicketManager(config.Tool)
+	if !ok {
+		return nil, fmt.Errorf("ticket transitions not supported for tool %s (integration %s)", config.Tool, config.ID)
+	}
+	provider, ok := manager.(ticketmgr.TransitionMetadataProvider)
+	if !ok {
+		return map[string]interface{}{"data": []interface{}{}}, nil
+	}
+	return provider.GetTransitionMeta(ctx, config, request.Input.ProjectKey)
 }
 
 // fetchCreateMetaCached returns the create-meta for (integration, project), serving

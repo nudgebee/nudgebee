@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -70,8 +71,12 @@ func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AzureOrchestratorAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (a *AzureOrchestratorAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (a *AzureOrchestratorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
+}
+func (a *AzureOrchestratorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
+}
 
 // IsWatchCapable: drives action sub-agents whose async outcome completes later,
 // so it may register a background watch.
@@ -84,7 +89,7 @@ func (a *AzureOrchestratorAgent) IsWatchCapable() bool { return true }
 func (a *AzureOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	// Reduced cloud core (azure_execute + SDG + events + recommendations + delegate
 	// + search_tools); specialists reached on-demand via search_tools.
-	return getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteAzureCliCommand)
+	return withAlertPlanTools(ctx, a.accountId, getCloudLeanSupportedTools(ctx, a.accountId, a.GetName(), tools.ToolExecuteAzureCliCommand))
 }
 
 func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -99,6 +104,12 @@ func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, q
 		return core.NBAgentPrompt{}
 	}
 	if n := memoryNudgeIfEnabled(); n != "" {
+		promptText += "\n\n" + n
+	}
+	if n := workspaceNbctlNudgeIfEnabled(query.AccountId); n != "" {
+		promptText += "\n\n" + n
+	}
+	if n := mcpIntegrationsNudge(query.AccountId); n != "" {
 		promptText += "\n\n" + n
 	}
 	return core.ParsePromptToNBAgentPrompt(promptText)

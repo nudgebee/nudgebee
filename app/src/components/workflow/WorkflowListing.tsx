@@ -10,6 +10,7 @@ import Tooltip from '@ui/Tooltip';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Label } from '@ui/Label';
+import FailedStepsMark from './components/FailedStepsMark';
 import { CodeBlock } from '@ui/CodeBlock';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
@@ -22,6 +23,7 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess, hasPermission, missingPermissionMessage, getUserSession } from '@lib/auth';
+import { renderSlot } from '@lib/slots';
 import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import { readPersistedAccounts, writePersistedAccounts } from './utils/accountFilterPersistence';
 import { workflowFilterKey, type PersistedWorkflowFilters } from './utils/listingFilterPersistence';
@@ -34,6 +36,7 @@ import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
 import { getAutomationToggleAction } from './automationMenu';
+import { findWorkflowSavedBySession, parseConversationPollResult } from './aiBuildSession';
 import { buildWorkflowExportJson, buildWorkflowShareUrl, sanitizeWorkflowDefinitionForExport } from './workflowExport';
 import {
   manualTriggerIcon,
@@ -129,9 +132,20 @@ const renderUserTooltip = (user?: { display_name?: string; username?: string } |
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25 }}>
       <Text value={user.display_name} sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }} />
-      {!!user.username && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
+      {isPersonUsername(user.username) && <Text value={user.username} sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)' }} />}
     </Box>
   );
+};
+
+// A person signs in with an email; an account that is not a person (one an extension
+// creates to act on its own) has a username that is not one.
+const isPersonUsername = (username?: string) => !!username && username.includes('@');
+
+// The byline names a person by first name, and any other account by its whole name, so
+// "Release Checker Bot" does not read as "Release".
+const bylineName = (user?: { display_name?: string; username?: string } | null) => {
+  if (!user?.display_name) return '';
+  return !user.username || isPersonUsername(user.username) ? user.display_name.split(' ')[0] : user.display_name;
 };
 
 interface WorkflowActionsCellProps {
@@ -222,7 +236,7 @@ interface LastExecutionCellProps {
 // Renders the "Last Execution" column. Reads LiveExecutionStatusContext so
 // the row updates in place when a triggered execution transitions states —
 // no listing refetch required.
-const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
+export const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   const liveStatuses = useContext(LiveExecutionStatusContext);
   const override = liveStatuses[workflow.id];
   const status = override?.status || workflow.last_execution_status;
@@ -246,6 +260,13 @@ const LastExecutionCell: React.FC<LastExecutionCellProps> = ({ workflow }) => {
   return (
     <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)', flexDirection: 'row', alignItems: 'center' }}>
       <Label text={status.toLowerCase()} tone={getStatusTone(status)} textTransform='capitalize' />
+      {/* A live override is a newer run than the listing's count describes. */}
+      {!override && (
+        <FailedStepsMark
+          info={{ failed_step_count: workflow.last_execution_failed_step_count }}
+          testId={`workflow-last-run-failed-steps-${workflow.id}`}
+        />
+      )}
       {version !== undefined && version !== null && (
         <>
           <Text value='·' sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)', mx: 'var(--ds-space-0)' }} />
@@ -289,6 +310,8 @@ const WorkflowListing: React.FC = () => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
+  // Set while the run dialog is open for an automation the AI window has just built.
+  const openRunAfterTriggerRef = useRef(false);
   const persistKey = useMemo(() => workflowFilterKey(), []);
   // The "Created By" filter is sourced from the tenant user list
   // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
@@ -1018,7 +1041,12 @@ const WorkflowListing: React.FC = () => {
       }
 
       const triggerData = response?.data?.workflow_execute;
-      if (triggerData?.execution_id) {
+      if (triggerData?.execution_id && openRunAfterTriggerRef.current) {
+        // Started from the AI window, for an automation the user has not seen run: open the run
+        // itself, where its steps, errors and any approval show as they happen.
+        snackbar.success(`Automation "${selectedWorkflow.name}" triggered successfully!`);
+        router.push(`/automation/${selectedWorkflow.id}?accountId=${selectedWorkflow.account_id}&executionId=${triggerData.execution_id}#executions`);
+      } else if (triggerData?.execution_id) {
         snackbar.success(`Automation "${selectedWorkflow.name}" triggered successfully!`);
         // Begin polling the new execution. The poller seeds an immediate
         // RUNNING + startTime override so the row updates in place — no
@@ -1040,6 +1068,7 @@ const WorkflowListing: React.FC = () => {
     setTriggerModalOpen(false);
     setSelectedWorkflow({ id: '', name: '' });
     setTriggerLoading(false);
+    openRunAfterTriggerRef.current = false;
   };
 
   const handleAiGenerateWorkflow = async (query: string) => {
@@ -1122,125 +1151,6 @@ const WorkflowListing: React.FC = () => {
     }
   };
 
-  const parseConversationPollResult = (conversation: any) => {
-    const status = conversation.status;
-    const messages = conversation.llm_conversation_messages || [];
-    const reversedMessages = [...messages].reverse();
-    const lastGenMsg = reversedMessages.find((m: any) => m.message_type === 'generation');
-    const lastFollowupMsg = reversedMessages.find((m: any) => m.message_type === 'followup');
-
-    if (status === 'COMPLETED') {
-      // After plan approval, the workflow JSON is stored on the followup message's response.
-      // For direct generation (no plan approval), it's on the generation message.
-      let workflowJson = '';
-      const followupResponse = (lastFollowupMsg?.response || '').trimStart();
-      if (followupResponse.startsWith('{')) {
-        workflowJson = lastFollowupMsg?.response || '';
-      }
-      if (!workflowJson) {
-        const genResponse = (lastGenMsg?.response || '').trimStart();
-        if (genResponse.startsWith('{')) {
-          workflowJson = lastGenMsg?.response || '';
-        }
-      }
-      // Automation / post-approval builds keep JSON out of `response` (that holds a human-readable
-      // summary, and the last followup `response` is just the user's "Approve and Build" click).
-      // The built workflow lives in the finalize tool call — use it as the success signal.
-      if (!workflowJson) {
-        const finalizeCall = reversedMessages
-          .flatMap((m: any) => m.llm_conversation_agents || [])
-          .flatMap((a: any) => a.llm_conversation_tool_calls || [])
-          .find((tc: any) => tc.tool_name === 'finalize' && tc.status === 'success');
-        if (finalizeCall?.response) {
-          workflowJson = finalizeCall.response;
-        }
-      }
-      // Don't fall back to non-JSON responses — they're text answers, not workflows.
-      // The polling loop handles COMPLETED without workflowJson separately.
-      // `summaryText` is the human-readable build summary (markdown) shown on the success screen.
-      const summaryText = lastGenMsg?.response || '';
-      return { status: 'COMPLETED', workflowJson, summaryText, conversationId: conversation.id };
-    }
-
-    if (status === 'FAILED') {
-      // The generation message's own `response` is empty for the Automation flow — the actionable
-      // detail (e.g. an auto-save failure with the runbook server's reason) lives on the agent
-      // record. Fall back to the last agent response before the generic message.
-      const agentResponse = (lastGenMsg?.llm_conversation_agents || [])
-        .map((a: any) => a?.response)
-        .filter(Boolean)
-        .pop();
-      return {
-        status: 'FAILED',
-        errorMessage: lastGenMsg?.response || agentResponse || 'Automation generation failed. Please try again.',
-      };
-    }
-
-    if (status !== 'WAITING') {
-      return null;
-    }
-
-    // WAITING: could be plan approval or config approval. The followup question
-    // text lives in three places depending on the backend version:
-    //   1) message_config.question — canonical location (always populated)
-    //   2) followup message.message — also populated by the backend
-    //   3) followup message.response — legacy; backend stopped writing this in
-    //      llm-server #29309 to avoid duplicate rendering in ask-nudgebee chat.
-    // Read in that order so we recover the plan text regardless of backend
-    // version.
-    const agents = lastGenMsg?.llm_conversation_agents || [];
-    const lastAgent = agents[agents.length - 1];
-    let planOptions: string[] | undefined;
-    let followupType: string | undefined;
-    let configQuestion = '';
-    let agentId = lastAgent?.id;
-
-    let followupData: any;
-
-    const rawConfig = lastFollowupMsg?.message_config;
-    if (rawConfig) {
-      try {
-        const config = typeof rawConfig === 'string' ? JSON.parse(rawConfig) : rawConfig;
-        planOptions = config.followupOptions;
-        followupType = config.followupType;
-        followupData = config.followupData;
-        configQuestion = typeof config.question === 'string' ? config.question : '';
-        if (config.agentId) {
-          agentId = config.agentId;
-        }
-      } catch {
-        // ignore parse errors
-      }
-    }
-
-    const followupResponse = lastFollowupMsg?.response || '';
-    const followupMessage = lastFollowupMsg?.message || '';
-    const genResponse = lastGenMsg?.response || '';
-    let planText: string;
-    if (configQuestion) {
-      planText = configQuestion;
-    } else if (followupMessage) {
-      planText = followupMessage;
-    } else if (followupResponse && !followupResponse.trimStart().startsWith('{')) {
-      planText = followupResponse;
-    } else {
-      planText = genResponse;
-    }
-    planText = planText.replace(/^Here's my plan for building your workflow:\s*/i, '');
-    planText = planText.replace(/\s*Would you like to approve this plan or request changes\?\s*$/i, '');
-
-    return {
-      status: 'WAITING',
-      planText,
-      planOptions,
-      followupType,
-      followupData,
-      conversationId: conversation.id,
-      messageId: lastFollowupMsg?.id,
-      agentId,
-    };
-  };
-
   const handlePollWorkflowConversation = async (sessionId: string) => {
     if (!createAccountId) {
       return null;
@@ -1251,7 +1161,16 @@ const WorkflowListing: React.FC = () => {
       if (!conversation) {
         return null;
       }
-      return parseConversationPollResult(conversation);
+      const result = parseConversationPollResult(conversation);
+      if (result?.status !== 'COMPLETED') {
+        return result;
+      }
+      // Whether the build produced an automation is decided by the saved automation, not by the
+      // tool calls the conversation recorded: the builder can save without a finalize call, and a
+      // finalize call does not mean the save went through. `saved` stays unset when the check
+      // itself failed, and the modal then falls back to the conversation's own signal.
+      const savedWorkflow = await findWorkflowSavedBySession(createAccountId, sessionId);
+      return savedWorkflow === undefined ? result : { ...result, saved: savedWorkflow !== null, savedWorkflow: savedWorkflow ?? undefined };
     } catch (error) {
       console.error('Error polling workflow conversation:', error);
       return null;
@@ -1265,6 +1184,31 @@ const WorkflowListing: React.FC = () => {
     await apiWorkflow.aiGenerateWorkflow(createAccountId, query, conversationId, sessionId, undefined, true, messageId, agentId, 'Automation');
   };
 
+  // Run now and Activate on the AI window's success screen hand over to what the row menu
+  // already does: the run dialog and the activate confirmation. The window closes first; the
+  // automation it built is the row both act on. That automation is not in the list yet, so the
+  // list is refreshed: it is there behind the dialog, and still there if the user cancels.
+  const showBuiltWorkflowInList = () => {
+    setCurrentPage(1);
+    setPageOffsetTokens({ 1: '' });
+    listWorkflows(1, rowsPerPage, '');
+  };
+
+  const handleRunBuiltWorkflow = (savedWorkflow: any) => {
+    setAiGenerateModalOpen(false);
+    showBuiltWorkflowInList();
+    setSelectedWorkflow(savedWorkflow);
+    openRunAfterTriggerRef.current = true;
+    setTriggerModalOpen(true);
+  };
+
+  const handleActivateBuiltWorkflow = (savedWorkflow: any) => {
+    setAiGenerateModalOpen(false);
+    showBuiltWorkflowInList();
+    setSelectedWorkflow(savedWorkflow);
+    setResumeModalOpen(true);
+  };
+
   const handleWorkflowCompleted = async (_workflowJson: string, _conversationId: string, sessionId: string) => {
     // The workflow is auto-saved server-side (source "Automation"). Locate the new row
     // by its chat-session lineage (created_from_session_id) and open it in the builder.
@@ -1273,16 +1217,10 @@ const WorkflowListing: React.FC = () => {
     if (!createAccountId) {
       return;
     }
-    try {
-      const res: any = await apiWorkflow.listWorkflows([createAccountId], undefined, undefined, undefined, 50, '', '', undefined, undefined);
-      const workflows = res?.data?.workflow_list?.workflows || [];
-      const match = sessionId ? workflows.find((w: any) => w.created_from_session_id === sessionId) : undefined;
-      if (match?.id) {
-        router.push(`/automation/${match.id}?accountId=${createAccountId}`);
-        return;
-      }
-    } catch (error) {
-      console.error('Failed to locate the saved automation by session:', error);
+    const match = await findWorkflowSavedBySession(createAccountId, sessionId);
+    if (match?.id) {
+      router.push(`/automation/${match.id}?accountId=${createAccountId}`);
+      return;
     }
     // Fallback: stay on the listing and refresh so the new automation is at least visible.
     snackbar.success('Automation created and saved.');
@@ -1399,6 +1337,7 @@ const WorkflowListing: React.FC = () => {
                     >
                       {workflow.name || '-'}
                     </Link>
+                    {renderSlot('AutomationRowBadge', { workflowId: workflow.id })}
                     <Box
                       sx={{
                         display: 'flex',
@@ -1421,7 +1360,7 @@ const WorkflowListing: React.FC = () => {
                           <Tooltip title={renderUserTooltip(workflow.created_by_user)} arrow placement='top'>
                             <span>
                               <Text
-                                value={`· ${workflow.created_by_user.display_name.split(' ')[0]}`}
+                                value={`· ${bylineName(workflow.created_by_user)}`}
                                 sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
@@ -1441,7 +1380,7 @@ const WorkflowListing: React.FC = () => {
                           <Tooltip title={renderUserTooltip(workflow.updated_by_user)} arrow placement='top'>
                             <span>
                               <Text
-                                value={`· ${workflow.updated_by_user.display_name.split(' ')[0]}`}
+                                value={`· ${bylineName(workflow.updated_by_user)}`}
                                 sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', cursor: 'default' }}
                               />
                             </span>
@@ -1608,7 +1547,7 @@ const WorkflowListing: React.FC = () => {
     if (!canFilterByCreatedBy) return;
     const fetchActiveUsers = async () => {
       try {
-        const response = await apiUser.listUsers({ status: 'active' });
+        const response = await apiUser.listUsers({ status: 'active', includeBees: true });
         const users = response?.data || [];
         // Two users can share a display_name — the backend filter already matches
         // every user with that name, so dedup here rather than listing the same
@@ -2040,6 +1979,8 @@ const WorkflowListing: React.FC = () => {
           onPollConversation={handlePollWorkflowConversation}
           onApproveOrRespond={handleApproveOrRespondWorkflow}
           onWorkflowCompleted={handleWorkflowCompleted}
+          onRunNow={hasWriteAccess(createAccountId) ? handleRunBuiltWorkflow : undefined}
+          onActivate={hasWriteAccess(createAccountId) ? handleActivateBuiltWorkflow : undefined}
           loading={aiGenerateLoading}
         />
 
@@ -2059,7 +2000,12 @@ const WorkflowListing: React.FC = () => {
 
         <WorkflowTemplatesModal open={templateModalOpen} onClose={handleCloseTemplateModal} accountId={createAccountId} />
 
-        <ConfigurationManager accountOptions={writableAccountOptions} open={configModalOpen} onClose={handleConfigModalClose} />
+        <ConfigurationManager
+          accountOptions={writableAccountOptions}
+          defaultAccountId={selectedAccounts.length === 1 ? selectedAccounts[0] : undefined}
+          open={configModalOpen}
+          onClose={handleConfigModalClose}
+        />
 
         <ListingLayout id='workflow-listing-box'>
           <ListingLayout.Toolbar

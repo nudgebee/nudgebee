@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/tmc/langchaingo/llms"
@@ -123,13 +123,13 @@ func JudgeClaims(
 
 	options := []llms.CallOption{
 		llms.WithTemperature(0.0),
-		core.WithThinkingLevel(core.ThinkingLevelFastTask),
+		llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask),
 	}
 	if cfg.model != "" {
 		options = append(options, llms.WithModel(cfg.model))
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		sc,
 		sc.GetSecurityContext().GetUserId(),
 		firstAccount(sc),

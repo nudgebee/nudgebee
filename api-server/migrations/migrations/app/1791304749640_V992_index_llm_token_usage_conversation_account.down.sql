@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_llm_token_usage_conv_account_created_at;

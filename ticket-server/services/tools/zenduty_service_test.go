@@ -42,3 +42,17 @@ func TestZenDutyUrgencyValuesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// The reverse direction (Get/List/Create reading ZenDuty's numeric urgency
+// back into ticket.Severity) must map the same two wire values.
+func TestZenDutyUrgencyToString(t *testing.T) {
+	cases := map[int]string{
+		clients.ZenDutyUrgencyLow:  "low",
+		clients.ZenDutyUrgencyHigh: "high",
+	}
+	for urgency, want := range cases {
+		if got := clients.MapUrgencyToString(urgency); got != want {
+			t.Errorf("MapUrgencyToString(%d) = %q, want %q", urgency, got, want)
+		}
+	}
+}

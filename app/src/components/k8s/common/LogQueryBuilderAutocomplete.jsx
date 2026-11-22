@@ -32,9 +32,9 @@ import { Button as DsButton } from '@ui/Button';
 import { Chip as DsChip } from '@ui/Chip';
 import { Input } from '@ui/Input';
 import DsTooltip from '@ui/Tooltip';
-import { generateQuery } from './LogGenerateQuery';
+import { generateQuery, isPromQLFamilyProvider } from './LogGenerateQuery';
 import { getLineOperators } from './QueryBuilder';
-import { getOperatorsForLabel, getOperatorDisplayLabel, normalizeLegacyOperator } from './operatorCatalog';
+import { getOperatorsForLabel, getOperatorDisplayLabel, narrowOperatorsForLabel, normalizeLegacyOperator } from './operatorCatalog';
 
 // TODO: move server-side when service_map/knowledge_graph gain a backend
 // GetSupportedOperators. Both are served by triage/service_map.go and
@@ -78,6 +78,134 @@ import { ds } from '@utils/colors';
 const shouldNormalizeOperators = (provider) => provider !== 'service_map' && provider !== 'knowledge_graph';
 const normalizeChip = (chip) => (chip?.operator ? { ...chip, operator: normalizeLegacyOperator(chip.operator) } : chip);
 const normalizeOperation = (op) => (op?.op ? { ...op, op: normalizeLegacyOperator(op.op) } : op);
+
+// Grafana-style chaining for the Prometheus label-value picker:
+// scope a label's value lookup by the other label=value chips already selected, so
+// picking `pod` after `namespace=foo` only offers pods that exist in that namespace.
+// Only operators the backend's PromQL matcher builder supports qualify (GetSupportedOperators);
+// the label currently being queried is excluded so its own dropdown doesn't self-filter.
+const PROMQL_MATCHER_OPERATORS = ['_eq', '_neq', '_regex'];
+const escapeRegExpValue = (value) => (typeof value === 'string' ? value : '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const buildLabelMatchersForScoping = (queryItems, excludeLabel) => {
+  const byLabel = new Map();
+  (queryItems || []).forEach((chip) => {
+    const operator = normalizeLegacyOperator(chip.operator);
+    if (chip.label === excludeLabel || !chip.value || !PROMQL_MATCHER_OPERATORS.includes(operator)) return;
+    if (!byLabel.has(chip.label)) byLabel.set(chip.label, []);
+    byLabel.get(chip.label).push({ operator, value: chip.value });
+  });
+
+  const matchers = [];
+  byLabel.forEach((entries, label) => {
+    if (entries.length === 1) {
+      matchers.push({ label, operator: entries[0].operator, value: entries[0].value });
+      return;
+    }
+    // Multiple chips on the same label (e.g. two `namespace=` selections) mean OR in the
+    // UI, which a repeated `=` matcher can't express in PromQL -- `{namespace="a",
+    // namespace="b"}` ANDs to zero series instead. Collapse same-label `_eq` entries into
+    // one regex-alternation matcher; anything else (mixed/non-eq operators) has no single
+    // correct combination, so skip scoping by that label rather than guess wrong.
+    if (entries.every((e) => e.operator === '_eq')) {
+      matchers.push({ label, operator: '_regex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
+    }
+  });
+  return matchers;
+};
+
+// Loki counterpart of buildLabelMatchersForScoping above:
+// scope a label's value lookup by sibling chips as a LogQL stream selector, the same
+// chaining the Prometheus picker got. LogQL selectors use the same four matcher
+// operators as PromQL (=, !=, =~, !~); GetSupportedOperators() in loki.go also lists
+// contains/like-family operators, but those are line/label filters valid only in the
+// query pipeline, not inside `{...}`, so they're excluded here.
+const LOKI_SELECTOR_OPERATORS = ['_eq', '_neq', '_regex', '_nregex'];
+const renderLokiMatcher = (label, operator, value) => {
+  switch (operator) {
+    case '_neq':
+      return `${label}!="${value}"`;
+    case '_regex':
+      return `${label}=~"${value}"`;
+    case '_nregex':
+      return `${label}!~"${value}"`;
+    default:
+      return `${label}="${value}"`;
+  }
+};
+const buildLokiSelectorForScoping = (queryItems, excludeLabel) => {
+  const byLabel = new Map();
+  (queryItems || []).forEach((chip) => {
+    const operator = normalizeLegacyOperator(chip.operator);
+    if (chip.label === excludeLabel || !chip.value || !LOKI_SELECTOR_OPERATORS.includes(operator)) return;
+    if (!byLabel.has(chip.label)) byLabel.set(chip.label, []);
+    byLabel.get(chip.label).push({ operator, value: chip.value });
+  });
+
+  const matchers = [];
+  byLabel.forEach((entries, label) => {
+    if (entries.length === 1) {
+      matchers.push({ label, operator: entries[0].operator, value: entries[0].value });
+      return;
+    }
+    // Same merge rule as buildLabelMatchersForScoping: a label can only appear once in a
+    // selector, so collapse same-label `=` chips into `=~"a|b"` and same-label `!=` chips
+    // into `!~"a|b"`. Any other combination has no single valid matcher -- skip scoping by
+    // that label rather than guess wrong.
+    if (entries.every((e) => e.operator === '_eq')) {
+      matchers.push({ label, operator: '_regex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
+    } else if (entries.every((e) => e.operator === '_neq')) {
+      matchers.push({ label, operator: '_nregex', value: entries.map((e) => escapeRegExpValue(e.value)).join('|') });
+    }
+  });
+  if (matchers.length === 0) return '';
+
+  // Loki rejects a selector with no positive (=, =~) matcher at all -- "queries require
+  // at least one regexp or equality matcher that does not have an empty-compatible
+  // value" (reproduced live: a lone `!=`/`!~` chip, or an all-`!=` merge, errors the
+  // lookup outright). Mirrors the fallback loki.go's extractLabelSelectors already
+  // applies to the real submitted query: prepend a catch-all positive match on the
+  // first matcher's label so the selector stays valid.
+  if (!matchers.some((m) => m.operator === '_eq' || m.operator === '_regex')) {
+    matchers.unshift({ label: matchers[0].label, operator: '_regex', value: '.+' });
+  }
+  return `{${matchers.map((m) => renderLokiMatcher(m.label, m.operator, m.value)).join(',')}}`;
+};
+
+// For PromQL-family providers (isPromQLFamilyProvider), a label can only appear once
+// in a selector's match list. generateQuery can merge repeated `=` or repeated `!=`
+// chips on the same label into one regex matcher, but any other combination (mixing
+// `=`/`!=`, or anything alongside `_regex`/`_nregex`) has no single valid PromQL
+// matcher -- block adding that chip instead of silently building a query that will
+// fail. Returns a user-facing reason, or null
+// when the chip is fine to add.
+//
+// Knowledge Graph sends its chips as one object keyed by name (labels / attributes are
+// map[string]string on the backend), so a second chip for the same key silently
+// replaced the first in the request while both stayed on screen (#42120). A node has
+// one value per key, so the pair could never match under AND anyway -- block it.
+const MATCHER_OPERATORS = ['_eq', '_neq', '_regex', '_nregex'];
+const describeChipConflict = (queryItems, label, operator, logProvider, providerType) => {
+  if (logProvider === 'knowledge_graph') {
+    return (queryItems || []).some((chip) => chip.label === label)
+      ? `"${label}" already has a filter. A node has only one value for it, so remove that chip first to filter on a different value.`
+      : null;
+  }
+  const normalizedOperator = normalizeLegacyOperator(operator);
+  if (!isPromQLFamilyProvider(logProvider, providerType) || !MATCHER_OPERATORS.includes(normalizedOperator)) {
+    return null;
+  }
+  const existingOperators = (queryItems || []).filter((chip) => chip.label === label).map((chip) => normalizeLegacyOperator(chip.operator));
+  if (existingOperators.length === 0) {
+    return null;
+  }
+  const combined = new Set([...existingOperators, normalizedOperator]);
+  const mergeable = combined.size === 1 && (combined.has('_eq') || combined.has('_neq'));
+  if (mergeable) {
+    return null;
+  }
+  return `"${label}" already has a filter with a different operator -- only repeating "=" or only repeating "!=" on the same label is supported.`;
+};
+
 const normalizeBlock = (block) => ({
   ...block,
   queryItems: Array.isArray(block?.queryItems) ? block.queryItems.map(normalizeChip) : block?.queryItems,
@@ -197,9 +325,9 @@ const KgSegmentedChip = ({ chipKey, operator, value, onDismiss }) => {
 };
 
 // Rich "Filter by <heading>" help popover — guided flow + quick input + keyboard
-// shortcuts + tips. Exported so the KG section-header ⓘ renders the same content
-// the in-field ⓘ shows for logs / service-map (kept in sync with the inline copy
-// in the render below).
+// shortcuts + tips. Rendered only by the KG section-header ⓘ, so its copy names the
+// Knowledge Graph's operators (KNOWLEDGE_GRAPH_OPERATORS) and keys; the in-field ⓘ
+// for logs / service-map keeps its own inline copy in the render below.
 export const PropertyFilterHelp = ({ heading }) => (
   <Box>
     <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)', mb: 0 }}>
@@ -208,7 +336,7 @@ export const PropertyFilterHelp = ({ heading }) => (
     <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', mb: ds.space[3] }}>
       {heading === 'Attribute'
         ? 'Attributes are resource-level metadata (e.g. cluster, namespace, pod).'
-        : 'Labels classify nodes by type (e.g. service, host, pod).'}
+        : 'Labels are the key/value tags on a node (e.g. app, environment, team).'}
     </Typography>
 
     <Typography
@@ -225,8 +353,8 @@ export const PropertyFilterHelp = ({ heading }) => (
     </Typography>
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
       {[
-        `Click the selector and pick a ${heading.toLowerCase()} from the dropdown`,
-        'Choose an operator (=, !=, LIKE, etc.)',
+        `Click the selector and pick ${heading === 'Attribute' ? 'an' : 'a'} ${heading.toLowerCase()} from the dropdown`,
+        'Choose the = operator (the only one the Knowledge Graph supports)',
         `Select a value for that ${heading.toLowerCase()}`,
         'Filter is applied automatically as a chip',
       ].map((text, i) => (
@@ -278,7 +406,7 @@ export const PropertyFilterHelp = ({ heading }) => (
           color: 'var(--ds-gray-700)',
         }}
       >
-        service.name = my-api
+        {heading === 'Attribute' ? 'namespace = default' : 'environment = production'}
       </Box>
     </Box>
 
@@ -414,6 +542,10 @@ const LogQueryBuilderAutocomplete = ({
   logProvider,
   providerOverride,
   operatorDescriptors,
+  // The field line filters target, threaded from KubernetesLogs via QueryModeSwitcher
+  // (#39573). Defaults to the legacy spelling, so the Knowledge Graph and Service Map
+  // renderers of this component are unchanged.
+  logTextField = 'content',
   params,
   queryOperations = [],
   onQueryItemsChange,
@@ -864,7 +996,22 @@ const LogQueryBuilderAutocomplete = ({
   // Labels with no known type keep the full list.
   const getLabelDataType = (labelName) => labels.find((l) => (l.label || l.index || l.field) === labelName)?.data_type;
 
-  const operatorsForLabel = (labelName) => resolveMockOperators(logProvider, operatorDescriptors, getLabelDataType(labelName));
+  const operatorsForLabel = (labelName) =>
+    narrowOperatorsForLabel(resolveMockOperators(logProvider, operatorDescriptors, getLabelDataType(labelName)), logProvider, labelName);
+
+  // Providers whose logs builder offers line filters (the Operations panel).
+  const hasLineOperations = ['loki', 'otel_clickhouse', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider);
+
+  // Prometheus and Loki label-value lookups are scoped by sibling chips
+  // (buildLabelMatchersForScoping / buildLokiSelectorForScoping above), so the per-label
+  // value cache below goes stale the moment those chips change -- e.g. reopening the `pod`
+  // dropdown after swapping `namespace` must refetch, not replay the previous namespace's
+  // cached pod list.
+  useEffect(() => {
+    if ((logProvider === 'prometheus' && providerType === 'metrics') || logProvider === 'loki') {
+      setValues({});
+    }
+  }, [JSON.stringify(queryBlocks), logProvider, providerType]);
 
   // Fetch values for a specific label
   const fetchValuesForLabel = async (labelName) => {
@@ -915,12 +1062,19 @@ const LogQueryBuilderAutocomplete = ({
             },
           });
         } else if (logProvider === 'loki') {
+          const activeBlock = getActiveBlock();
+          const selector = buildLokiSelectorForScoping(activeBlock?.queryItems, labelName);
+          // Request.query is forwarded to the relay as a raw querystring tail on Loki's
+          // label-values call (see the pre-existing `start=..&end=..` fallback this is built
+          // alongside) -- Loki's real API takes query/start/end as independent params, so the
+          // selector has to be added as a `query=` pair in that same string, not sent bare.
+          const timeRangeQuery = `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`;
           response = await observability.fetchLogLabelValues({
             account_id: accountId,
             label_name: findLabel.label,
             ...(providerOverride ? { log_provider: providerOverride } : {}),
             request: {
-              query: `start=${params.startTime * 1000000}&end=${params.endTime * 1000000}`,
+              query: selector ? `query=${encodeURIComponent(selector)}&${timeRangeQuery}` : timeRangeQuery,
             },
           });
         } else if (
@@ -933,7 +1087,8 @@ const LogQueryBuilderAutocomplete = ({
             logProvider == 'hive' ||
             logProvider == 'openobserve' ||
             logProvider == 'cubeapm' ||
-            logProvider == 'splunk_enterprise') &&
+            logProvider == 'splunk_enterprise' ||
+            logProvider === 'otel_clickhouse') &&
           providerType == 'logs'
         ) {
           response = await observability.fetchLogLabelValues({
@@ -960,7 +1115,10 @@ const LogQueryBuilderAutocomplete = ({
           response = await observability.metricsLabelValueList(
             accountId,
             findLabel.label,
-            { metric_name: activeBlock.selectedMetric },
+            {
+              metric_name: activeBlock.selectedMetric,
+              ...(logProvider === 'prometheus' ? { label_matchers: buildLabelMatchersForScoping(activeBlock.queryItems, labelName) } : {}),
+            },
             providerOverride ? { metricProvider: providerOverride } : undefined
           );
         } else if (logProvider === 'ES' && providerType === 'metrics') {
@@ -1103,6 +1261,8 @@ const LogQueryBuilderAutocomplete = ({
           if (onQueryItemsChange && queryBlocks.length === 1) {
             onQueryItemsChange(updatedChips);
           }
+          // A lookup queued by later keystrokes would re-arm the step for this label (#41139).
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           setInputValue('');
           setPendingChip({ label: '', operator: '', value: '' });
           setCurrentStep('label');
@@ -1288,7 +1448,8 @@ const LogQueryBuilderAutocomplete = ({
           block.selectedMetric,
           block.aggregator,
           block.aggregatorBy,
-          providerType
+          providerType,
+          logTextField
         );
 
         // Handle array-based queries
@@ -1354,6 +1515,11 @@ const LogQueryBuilderAutocomplete = ({
         );
         if (validOperator) {
           const activeBlock = getActiveBlock();
+          const conflict = describeChipConflict(activeBlock.queryItems, label, validOperator.value, logProvider, providerType);
+          if (conflict) {
+            snackbar.error(conflict);
+            return;
+          }
           const newChip = { label, operator: validOperator.value, value, id: chipIdCounter.current++ };
           const updatedChips = [...activeBlock.queryItems, newChip];
 
@@ -1362,6 +1528,9 @@ const LogQueryBuilderAutocomplete = ({
           if (onQueryItemsChange && queryBlocks.length === 1) {
             onQueryItemsChange(updatedChips);
           }
+          // Drop the debounced lookup for the text just committed: firing after this
+          // reset, it would put the field back on the "value for <label>" step (#41139).
+          if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
           setInputValue('');
           setPendingChip({ label: '', operator: '', value: '' });
           setCurrentStep('label');
@@ -1404,6 +1573,9 @@ const LogQueryBuilderAutocomplete = ({
   };
 
   const handleSuggestionSelect = async (suggestion) => {
+    // A pick supersedes the debounced lookup for the text typed before it; left
+    // pending, it would overwrite the step this pick sets (#41139).
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setShowSuggestions(false);
     setSelectedIndex(-1);
 
@@ -1451,7 +1623,10 @@ const LogQueryBuilderAutocomplete = ({
 
       // Input shows the friendly label (=, contains, ...) while pendingChip
       // holds the backend token so the eventually-created chip is correct.
-      const operatorDisplay = suggestion.label ?? suggestion.value;
+      // Enter re-parses the input by splitting on whitespace, so a multi-word label
+      // like `= (equals)` would leak `(equals)` into the value — write the operator's
+      // token instead whenever the label would not survive that split.
+      const operatorDisplay = suggestion.label && !/\s/.test(suggestion.label) ? suggestion.label : suggestion.value ?? suggestion.label;
       const newInputValue = pendingChip.label + ' ' + operatorDisplay + ' ';
       setPendingChip({ ...pendingChip, operator: suggestion.value });
       setInputValue(newInputValue);
@@ -1486,6 +1661,15 @@ const LogQueryBuilderAutocomplete = ({
     } else if (suggestion.type === 'value') {
       // When value is selected, immediately create a chip
       const activeBlock = getActiveBlock();
+      const conflict = describeChipConflict(activeBlock.queryItems, pendingChip.label, pendingChip.operator, logProvider, providerType);
+      if (conflict) {
+        snackbar.error(conflict);
+        setInputValue('');
+        setPendingChip({ label: '', operator: '', value: '' });
+        setCurrentStep('label');
+        setSuggestions([]);
+        return;
+      }
       const newChip = {
         label: pendingChip.label,
         operator: pendingChip.operator,
@@ -2167,9 +2351,9 @@ const LogQueryBuilderAutocomplete = ({
             )}
           </Box>
 
-          {/* Operations for Loki, New Relic, Dynatrace, and Loggly — logs only.
+          {/* Operations for Loki, ClickHouse logs, New Relic, Dynatrace, and Loggly — logs only.
               Operations are line/log filters; the metrics screen never shows them, regardless of integration. */}
-          {['loki', 'newrelic', 'dynatrace', 'loggly'].includes(logProvider) && providerType !== 'metrics' && activeBlockId === block.id && (
+          {hasLineOperations && providerType !== 'metrics' && activeBlockId === block.id && (
             <Box
               sx={{
                 width: '50%',

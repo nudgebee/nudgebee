@@ -14,6 +14,7 @@ import ShowChartIcon from '@mui/icons-material/ShowChart';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
+import PersonOutlineIcon from '@mui/icons-material/PersonOutline';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import { Stat } from '@ui/Stat';
@@ -24,6 +25,7 @@ import { ToggleGroup } from '@ui/ToggleGroup';
 import CustomTable2 from '@shared/tables/CustomTable';
 import { fmtCost, fmtTokens, fmtDuration } from '@components/llm/cost-analyser/format';
 import type { GatewayFilters } from '../useGatewayData';
+import { canViewGatewayUserAccess } from '@lib/auth';
 import type { GatewayGranularity, GatewayGroupRow, GatewayTimeSeriesRow, GatewayUsageMetrics } from '@api1/gateway-usage';
 
 dayjs.extend(utc);
@@ -143,6 +145,8 @@ function SectionHeader({ title, icon }: { title: string; icon: React.ReactNode }
 }
 
 export function OverviewView({ metrics, filters, loading, error, onSelectDay }: OverviewViewProps) {
+  // Non-admins get totals over their own requests only (#38965), so say so and drop the user table.
+  const tenantWide = canViewGatewayUserAccess();
   const totals = metrics?.totals;
   const overallRows = metrics?.time_series?.by_dimension?.overall ?? [];
   const [metric, setMetric] = React.useState<Metric>('cost');
@@ -182,6 +186,7 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-5)' }}>
+      {!tenantWide && <SectionHeader title='Your usage' icon={<PersonOutlineIcon />} />}
       {/* KPI strip. */}
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-3)' }} id='gateway-kpi-row'>
         <Card sx={{ flex: '1 1 180px', minWidth: 160 }}>
@@ -194,7 +199,12 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
           <Stat label='Total cost' value={fmtCost(totals?.total_cost_usd)} />
         </Card>
         <Card sx={{ flex: '1 1 180px', minWidth: 160 }}>
-          <Stat label='Cache-hit rate' value={`${(totals?.cache_hit_rate_pct ?? 0).toFixed(1)}%`} />
+          <Stat
+            id='gateway-kpi-cache'
+            label='Cache-hit rate'
+            value={`${(totals?.cache_hit_rate_pct ?? 0).toFixed(1)}%`}
+            sub={`Saved ${fmtCost(totals?.cache_savings_usd ?? 0)} by caching`}
+          />
         </Card>
         <Card sx={{ flex: '1 1 180px', minWidth: 160 }}>
           <Stat label='Avg latency' value={fmtDuration((totals?.avg_latency_seconds ?? 0) * 1000)} />
@@ -218,6 +228,7 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
             shape='bar'
             format={metric === 'cost' ? fmtCost : fmtCount}
             compactFormat={metric === 'cost' ? undefined : fmtCountCompact}
+            legendFormat={metric === 'cost' ? undefined : fmtTokens}
             integerY={metric !== 'cost'}
             onSelectPoint={handleSelectPoint}
             id='gateway-usage-over-time'
@@ -234,10 +245,12 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
         <SectionHeader title='By model' icon={<AutoAwesomeOutlinedIcon />} />
         <BreakdownTable keyHeader='Model' rows={metrics?.breakdowns?.model ?? []} id='gateway-model-table' />
       </Card>
-      <Card>
-        <SectionHeader title='By user' icon={<PeopleOutlineIcon />} />
-        <BreakdownTable keyHeader='User' rows={metrics?.breakdowns?.user ?? []} id='gateway-user-table' />
-      </Card>
+      {tenantWide && (
+        <Card>
+          <SectionHeader title='By user' icon={<PeopleOutlineIcon />} />
+          <BreakdownTable keyHeader='User' rows={metrics?.breakdowns?.user ?? []} id='gateway-user-table' />
+        </Card>
+      )}
     </Box>
   );
 }

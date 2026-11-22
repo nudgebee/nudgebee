@@ -3,8 +3,16 @@ package mq
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+
+	"nudgebee/relay-server/pkg/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,16 +59,60 @@ func TestHasConsumersUsesFreshCacheOnly(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled, "a stale probe must go back to the broker")
 }
 
-// The payload must match llm-server's consumer (cacheInvalidationMessage,
-// field account_ids) and api-server's publisher.
-func TestLLMCacheInvalidationPayloadWireFormat(t *testing.T) {
-	b, err := json.Marshal(LLMCacheInvalidationPayload{AccountIDs: []string{"acct-1"}})
+// The wire format is shared with every service on nb_replica_broadcast
+// (#40807). docs/fixtures/replica_message.json is the one copy of it.
+func TestReplicaMessage_MatchesSharedFixture(t *testing.T) {
+	raw, err := os.ReadFile("../../../../../docs/fixtures/replica_message.json")
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"account_ids":["acct-1"]}`, string(b))
+	var decoded replicaMessage
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	assert.Equal(t, replicaMessage{
+		Type:   "example_changed",
+		Keys:   []string{"00000000-0000-0000-0000-000000000001"},
+		Sender: "services-server/pod-a",
+	}, decoded)
+	encoded, err := json.Marshal(decoded)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(raw), string(encoded))
 }
 
-func TestNewLLMCacheInvalidatorDisabledWithoutExchange(t *testing.T) {
-	inv := NewLLMCacheInvalidator(&ConnectionManager{}, "", nil)
+func TestLLMCacheInvalidator_PublishesIntegrationChanged(t *testing.T) {
+	mr := miniredis.RunT(t)
+	port, err := strconv.Atoi(mr.Port())
+	require.NoError(t, err)
+	cfg := &config.Config{}
+	cfg.Cache.Provider = "redis"
+	cfg.Cache.Redis.Host, cfg.Cache.Redis.Port = mr.Host(), port
+
+	sub := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = sub.Close() })
+	pubsub := sub.Subscribe(context.Background(), replicaBroadcastChannel)
+	t.Cleanup(func() { _ = pubsub.Close() })
+	_, err = pubsub.Receive(context.Background())
+	require.NoError(t, err)
+
+	inv := NewLLMCacheInvalidator(cfg, nil)
+	redisInv, ok := inv.(*redisLLMCacheInvalidator)
+	require.True(t, ok, "redis provider must give the redis invalidator")
+	t.Cleanup(func() { _ = redisInv.Close() })
+	inv.InvalidateAccounts("acct-1", "", "acct-2", "acct-1")
+
+	select {
+	case msg := <-pubsub.Channel():
+		var got replicaMessage
+		require.NoError(t, json.Unmarshal([]byte(msg.Payload), &got))
+		assert.Equal(t, "integration_changed", got.Type)
+		assert.Equal(t, []string{"acct-1", "acct-2"}, got.Keys)
+		assert.True(t, strings.HasPrefix(got.Sender, "relay-server/"), "sender %q", got.Sender)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no message published")
+	}
+}
+
+func TestNewLLMCacheInvalidatorOffWithoutRedis(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Cache.Provider = "in_memory"
+	inv := NewLLMCacheInvalidator(cfg, nil)
 	_, isNoop := inv.(noopLLMCacheInvalidator)
 	assert.True(t, isNoop)
 	inv.InvalidateAccounts("acct-1") // must not panic or block

@@ -163,3 +163,19 @@ describe('capSeriesByAccount', () => {
     );
   });
 });
+
+describe('capSeries with a preference', () => {
+  const series = (label: string, values: number[]): RawSeries => ({ label, timestamps: values.map((_, i) => i), values });
+
+  it('keeps a preferred series ahead of a busier one', () => {
+    const raw = [series('loud', [900, 950]), series('quiet-breacher', [0, 0]), series('mid', [50, 60])];
+    const { kept, dropped } = capSeries(raw, 2, (s) => s.label === 'quiet-breacher');
+    expect(kept.map((s) => s.label)).toEqual(['loud', 'quiet-breacher']);
+    expect(dropped).toBe(1);
+  });
+
+  it('changes nothing when every series fits', () => {
+    const raw = [series('a', [1]), series('b', [2])];
+    expect(capSeries(raw, 5, () => true).kept).toBe(raw);
+  });
+});

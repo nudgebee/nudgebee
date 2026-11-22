@@ -90,7 +90,12 @@ export class DashboardsLocators extends CommonLocators {
     this.rows = this.tableBody.locator("tr");
     this.emptyStateHeading = this.listingRoot.getByRole("heading", { name: "No Data Available" });
 
-    this.dashboardsNavBtn = page.locator("#dashboards-sidenavbutton");
+    // Dashboards was folded into the Home rail button's hover flyout — the
+    // #dashboards-sidenavbutton top-level id is gone, same move Infra made for
+    // K8s/Cloud (see GlobalLocators.openInfraSection). Builds from before that
+    // still have both buttons, Dashboards after Home, so `.last()` picks
+    // Dashboards there and Home (the only match) on newer builds.
+    this.dashboardsNavBtn = page.locator("#dashboards-sidenavbutton").or(page.locator("#home-sidenavbutton")).last();
     this.sidenavDashboardList = page.locator("#sidenav-dashboards-list");
     this.sidenavDashboardGroups = page.locator("#sidenav-dashboards-groups");
     this.groupingRoot = page.locator("#k8s-grouping");
@@ -109,7 +114,8 @@ export class DashboardsLocators extends CommonLocators {
     this.exitDialogSaveBtn = page.locator("#dashboard-exit-save-btn");
 
     this.dialog = page.getByRole("dialog");
-    this.dialogTitle = page.locator("#alert-dialog-title");
+    // The closed "Create a New Dashboard" chooser stays mounted with its own #alert-dialog-title, so the newest (last-portaled) dialog's title is the one read.
+    this.dialogTitle = page.locator("#alert-dialog-title:visible").last();
     this.dialogCancelBtn = this.dialog.locator("#cancel");
     this.dialogConfirmBtn = this.dialog.locator("#submit");
 
@@ -150,20 +156,20 @@ export class DashboardsLocators extends CommonLocators {
   }
 
   /**
-   * Opens the toolbar's "New dashboard" menu and returns once its items are
-   * mounted. The three authoring entry points are DropdownMenu items, so none of
-   * them is in the DOM until the trigger has been clicked — clicking one
+   * Opens the toolbar's "New dashboard" chooser and returns once its cards are
+   * mounted. The four authoring entry points are cards in a modal, so none of
+   * them is in the DOM until the button has been clicked — clicking one
    * straight off the toolbar waits out its full timeout on an element that was
    * never going to appear.
    *
-   * Retried as a whole: the menu closes on an outside click, and the click that
-   * opens it can land while the listing is still swapping its skeleton for rows.
+   * Retried as a whole: the click that opens it can land while the listing is
+   * still swapping its skeleton for rows.
    */
   async openAuthoringMenu(): Promise<void> {
     await expect(async () => {
-      // Only click when the menu is shut. An open MUI menu lays its own invisible
-      // backdrop over the page, including over the trigger, so a second click on an
-      // already-open menu lands on the backdrop and waits out its timeout.
+      // Only click when the chooser is shut. An open modal lays its backdrop over
+      // the page, including over the button, so a second click on an already-open
+      // chooser lands on the backdrop and waits out its timeout.
       if (!(await this.newBlankDashboardBtn.isVisible().catch(() => false))) {
         await this.newDashboardBtn.click({ timeout: 5000 });
       }
@@ -171,19 +177,19 @@ export class DashboardsLocators extends CommonLocators {
     }).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
   }
 
-  /** Opens the blank-dashboard editor from the authoring menu. */
+  /** Opens the blank-dashboard editor from the authoring chooser. */
   async startBlankDashboard(): Promise<void> {
     await this.openAuthoringMenu();
     await this.newBlankDashboardBtn.click();
   }
 
-  /** Opens the Import dashboard modal from the authoring menu. */
+  /** Opens the Import dashboard modal from the authoring chooser. */
   async openImportModal(): Promise<void> {
     await this.openAuthoringMenu();
     await this.importDashboardBtn.click();
   }
 
-  /** Opens the template gallery from the authoring menu. */
+  /** Opens the template gallery from the authoring chooser. */
   async openTemplateGallery(): Promise<void> {
     await this.openAuthoringMenu();
     await this.templateGalleryBtn.click();

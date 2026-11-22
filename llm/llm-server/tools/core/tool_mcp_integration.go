@@ -8,13 +8,20 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/relay"
+	"nudgebee/llm/security"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
-// mcpIntegrationToolCache caches MCP tools discovered from integrations (30min TTL).
+// mcpIntegrationToolCache caches MCP tools discovered from integrations (30min
+// TTL). A list holding an integration's placeholder is kept only until that
+// integration's next retry is due (mcpUnavailableTool.retryAfter), which comes
+// from its stored health so every pod follows the same clock (#40994).
 type mcpIntegrationToolCache struct {
 	mutex sync.RWMutex
 	data  map[string]struct {
@@ -30,10 +37,34 @@ var mcpIntegrationToolCacheInstance = &mcpIntegrationToolCache{
 	}),
 }
 
+// mcpDiscoveryRetryMin is how soon a failed discovery is tried again. An MCP
+// server restart takes about a minute, and before #40766 it could cost a pod
+// that integration's tools for the full 30 minutes.
+const mcpDiscoveryRetryMin = time.Minute
+
+// mcpDiscoveryRetryAfter returns how long to keep a tool list in which an
+// integration's discovery has been failing for failingFor. The wait equals the
+// time the integration has already been down, between mcpDiscoveryRetryMin and
+// defaultCacheTTL: retries come at about 1, 2, 4, 8, 16 and 32 minutes after
+// the first failure, then every 30 minutes. A short outage is picked up within
+// a minute or two, while an integration that is down for good (a deleted
+// endpoint, expired credentials) costs no more discovery calls than it did
+// before.
+//
+// It is derived from elapsed time, not from a failure count, because several
+// requests can miss the cache at once and each runs its own discovery: a count
+// would grow with every one of them and push the first retry out.
+func mcpDiscoveryRetryAfter(failingFor time.Duration) time.Duration {
+	return min(max(failingFor, mcpDiscoveryRetryMin), defaultCacheTTL)
+}
+
 // mcpImplType is the metric-label value emitted for MCP integration tools.
 // Kept as a package-level const so call sites stay self-describing and
 // future tool types can add their own constants alongside.
 const mcpImplType = "mcp"
+
+// ToolImplTypeMCP is ImplTypeFor's value for an MCP integration tool.
+const ToolImplTypeMCP = mcpImplType
 
 // mcpDiscoveryImplType is a circuit-breaker toolType distinct from
 // mcpImplType, used only for discoverMCPTools' RecordSuccess/RecordFailure
@@ -96,24 +127,21 @@ func mcpToolsAvailableSnapshot() []common.ToolsAvailableEntry {
 	return out
 }
 
-// InvalidateAccountIntegrationCache busts every llm-server cache that
-// depends on integration state for the given account, in this process and
-// across all replicas (via the existing Redis pub/sub channel).
+// InvalidateAccountIntegrationCache drops, on this replica, every llm-server
+// cache that depends on integration state for the given account (shared Redis
+// entries included, via the registered invalidators). Every replica runs it
+// for the same change (replica broadcast or fanout), so it must not reload or
+// broadcast again: doing so made each replica re-send a tool invalidation to
+// all the others.
 //
-// Callers (api-server) invoke this after any successful integration
-// mutation — create / update status / delete — regardless of integration
-// type. The broad scope is deliberate: MCP integrations alter the agent
-// tool list, LLM provider integrations alter cached provider credentials,
-// and future integration types may add their own caches via
-// RegisterToolCacheInvalidator. Treating "an integration changed" as a
-// single coherent event avoids silent staleness when a new integration
-// adds a cache that nobody remembered to wire into the per-type rules.
-//
-// Delegates to InvalidateToolCache so the work goes through the existing,
-// already-tested invalidation chain (custom tools, DTO views, MCP tools,
-// LLM provider config, account config summary) and broadcast.
+// The broad scope is deliberate: MCP integrations alter the agent tool list,
+// LLM provider integrations alter cached provider credentials, and future
+// integration types may add their own caches via RegisterToolCacheInvalidator.
+// Treating "an integration changed" as a single coherent event avoids silent
+// staleness when a new integration adds a cache that nobody remembered to wire
+// into the per-type rules.
 func InvalidateAccountIntegrationCache(accountId string) {
-	InvalidateToolCache(accountId)
+	invalidateCachesForAccount(accountId)
 }
 
 // get returns a defensive copy of the cached slice so callers can never
@@ -130,16 +158,79 @@ func (c *mcpIntegrationToolCache) get(accountId string) ([]NBTool, bool) {
 	return nil, false
 }
 
-func (c *mcpIntegrationToolCache) set(accountId string, tools []NBTool) {
+// set stores the account's tool list and returns how long it will be kept:
+// defaultCacheTTL, or less when the list holds an integration's placeholder, which
+// is kept until that integration's retry is due.
+func (c *mcpIntegrationToolCache) set(accountId string, tools []NBTool) time.Duration {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
+	ttl := defaultCacheTTL
+	for _, t := range tools {
+		unavailable, ok := t.(mcpUnavailableTool)
+		if !ok {
+			continue
+		}
+		retry := unavailable.retryAfter
+		if retry <= 0 {
+			retry = mcpDiscoveryRetryMin
+		}
+		ttl = min(ttl, retry)
+	}
 	c.data[accountId] = struct {
 		tools  []NBTool
 		expiry time.Time
 	}{
 		tools:  tools,
-		expiry: time.Now().Add(defaultCacheTTL),
+		expiry: time.Now().Add(ttl),
 	}
+	return ttl
+}
+
+// shorten makes the account's cached list expire within d, if it would
+// otherwise be kept longer.
+func (c *mcpIntegrationToolCache) shorten(accountId string, d time.Duration) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	item, ok := c.data[accountId]
+	if !ok {
+		return
+	}
+	if limit := time.Now().Add(d); item.expiry.After(limit) {
+		item.expiry = limit
+		c.data[accountId] = item
+	}
+}
+
+// deleteIntegration drops every cached list holding a tool or the placeholder of
+// the integration, restricted to accountIds when that is not empty.
+func (c *mcpIntegrationToolCache) deleteIntegration(integrationID string, accountIds []string) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+	only := make(map[string]bool, len(accountIds))
+	for _, id := range accountIds {
+		only[id] = true
+	}
+	for accountId, item := range c.data {
+		if len(only) > 0 && !only[accountId] {
+			continue
+		}
+		for _, t := range item.tools {
+			if mcpToolIntegrationID(t) == integrationID {
+				delete(c.data, accountId)
+				break
+			}
+		}
+	}
+}
+
+func mcpToolIntegrationID(t NBTool) string {
+	switch v := t.(type) {
+	case mcpIntegrationTool:
+		return v.config.IntegrationID
+	case mcpUnavailableTool:
+		return v.integrationID
+	}
+	return ""
 }
 
 func (c *mcpIntegrationToolCache) delete(accountId string) {
@@ -157,6 +248,9 @@ type mcpIntegrationConfig struct {
 	URL             string
 	AuthType        string
 	LLMInstructions string
+	// WriteTools are the server's own tool names whose calls change something,
+	// so they ask for approval. Every other tool runs as before.
+	WriteTools []string
 	// Auth credentials (decrypted)
 	BearerToken       string
 	Username          string
@@ -178,10 +272,68 @@ type mcpIntegrationTool struct {
 	mcpToolName string // Original name as known by the MCP server (e.g. "list_users")
 	toolDesc    string
 	toolSchema  ToolSchema
+	// readOnlyHint is the server's own annotations.readOnlyHint for the tool:
+	// true only when the server says the tool does not change anything.
+	readOnlyHint bool
+}
+
+// MCPReadOnlyHinter is an MCP tool that reports whether its server marks it
+// read-only (annotations.readOnlyHint). It is a hint from the server, not a
+// classification: core does not act on it; a run policy may.
+type MCPReadOnlyHinter interface {
+	MCPReadOnlyHint() bool
+}
+
+// MCPReadOnlyHint reports the server's readOnlyHint for the tool.
+func (m mcpIntegrationTool) MCPReadOnlyHint() bool { return m.readOnlyHint }
+
+// MCPIntegrationNamer is an MCP tool that names the integration its calls go
+// to, so an approval card can say where a write lands.
+type MCPIntegrationNamer interface {
+	MCPIntegrationName() string
+}
+
+// MCPIntegrationName is the name of the MCP integration the tool belongs to.
+func (m mcpIntegrationTool) MCPIntegrationName() string { return m.config.IntegrationName }
+
+// mcpReadOnlyHint reads a tool's annotations.readOnlyHint: true only for an
+// object whose readOnlyHint is the boolean true. Any other shape (annotations
+// not an object, readOnlyHint a string) counts as not read-only.
+func mcpReadOnlyHint(annotations json.RawMessage) bool {
+	var parsed struct {
+		ReadOnlyHint any `json:"readOnlyHint"`
+	}
+	if len(annotations) == 0 || json.Unmarshal(annotations, &parsed) != nil {
+		return false
+	}
+	hint, _ := parsed.ReadOnlyHint.(bool)
+	return hint
 }
 
 func (m mcpIntegrationTool) Name() string {
 	return m.toolName
+}
+
+// InferToolRequestType reports a write for the tools the integration lists
+// in write_tools, so they ask for approval; others stay unclassified, as before.
+func (m mcpIntegrationTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
+	if slices.Contains(m.config.WriteTools, m.mcpToolName) {
+		return ToolRequestTypeUpdate, nil
+	}
+	return "", nil
+}
+
+// approvalMark: an MCP tool asks only when its integration lists it.
+func (m mcpIntegrationTool) approvalMark() ToolApproval {
+	if slices.Contains(m.config.WriteTools, m.mcpToolName) {
+		return ToolApprovalAlways
+	}
+	return ToolApprovalNever
+}
+
+// IntegrationID is the MCP integration the tool belongs to.
+func (m mcpIntegrationTool) IntegrationID() string {
+	return m.config.IntegrationID
 }
 
 func (m mcpIntegrationTool) Description() string {
@@ -199,6 +351,10 @@ func (m mcpIntegrationTool) InputSchema() ToolSchema {
 func (m mcpIntegrationTool) GetType() NBToolType {
 	return NBToolTypeTool
 }
+
+// ResultCanChange: an MCP server does not say whether a result is stable, and
+// browser, ticket and deploy tools return something new on every call (#39635).
+func (m mcpIntegrationTool) ResultCanChange() bool { return true }
 
 // GetImplType reports the tool implementation class for metrics labeling.
 // MCP integration tools share an HTTP/relay path and per-integration
@@ -266,8 +422,18 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 	}
 
 	response, err := executeMCPViaRelay(ctx.GoContext(), ctx.AccountId, m.config, "tools/call", callParams, sessionKey, time.Duration(config.Config.LlmServerMCPExecutionTimeoutSeconds)*time.Second)
+	// Record what the call says about the server (#40994). A call that timed
+	// out or got a 5xx starts a probe rather than counting as a failure: a slow
+	// or broken tool on a live server is not an outage.
+	outcome := classifyMCPOutcome(err, false)
+	if outcome.kind == mcpOutcomeSuspect {
+		probeSuspectMCPIntegration(ctx.AccountId, m.config)
+	} else {
+		recordMCPHealth(ctx.AccountId, m.config, outcome, false)
+	}
 	if err != nil {
-		log.Error("mcp-integration: tool call failed", "error", err)
+		// Debug: the integration's health logs once when it changes.
+		log.Debug("mcp-integration: tool call failed", "error", err)
 		// Emit the failure as JSON so the tool response is consistently JSON
 		// whether the call succeeds (MCP server JSON-RPC) or fails. This is an
 		// integration-layer error (not the MCP server's), so it is labelled as
@@ -316,7 +482,7 @@ func (m mcpIntegrationTool) Call(ctx NbToolContext, input NBToolCallRequest) (NB
 // envelope (`{"result":{"content":[{"type":"text","text":"..."}]}}`) escapes
 // every quote and newline of the real output and adds nothing the model can
 // use. Text parts are joined with newlines; any other part (image, resource)
-// is kept as its JSON, matching nbCustomMCPTool.Call. A result with no
+// is kept as its JSON. A result with no
 // content returns its structuredContent JSON if it has one, else "" — the
 // executor classifies "" as an empty result and gives the model its
 // no-output message. A reply without a result (a JSON-RPC error object,
@@ -465,6 +631,9 @@ func executeMCPViaRelay(ctx context.Context, accountID string, cfg mcpIntegratio
 		AgentType:    agentType,
 		NoAgent:      noAgent,
 		Timeout:      duration,
+		// Failures are recorded as the integration's health, which logs once
+		// when it changes; the relay client need not log every retry.
+		Quiet: true,
 	}
 
 	response, err := relay.Execute(ctx, body)
@@ -490,14 +659,15 @@ func parseMCPRelayResponse(response map[string]any) (string, error) {
 
 	statusCode, _ := response["status_code"].(float64)
 	if statusCode >= 400 {
-		return "", fmt.Errorf("MCP server returned status %d: %s", int(statusCode), dataStr)
+		return "", &mcpStatusError{Code: int(statusCode), Body: dataStr}
 	}
 
 	return dataStr, nil
 }
 
 // ListMCPIntegrationTools returns MCP tools discovered from integrations for the account.
-// Results are cached with 30min TTL.
+// Results are cached with 30min TTL, or until the next retry when an
+// integration's discovery failed (mcpDiscoveryRetryAfter).
 func ListMCPIntegrationTools(accountId string) []NBTool {
 	if accountId == "" {
 		return nil
@@ -510,7 +680,29 @@ func ListMCPIntegrationTools(accountId string) []NBTool {
 	common.MetricsToolCacheLookup(mcpImplType, "miss")
 
 	tools := loadMCPIntegrationToolsFromDB(accountId)
-	// Only cache successful discoveries — don't cache nil/empty on failure
+	// A nil list means the integrations could not be read. It is not cached,
+	// so the next lookup tries again. A list in which one integration's
+	// discovery failed is not nil: it holds that integration's placeholder next
+	// to the other integrations' tools, so set keeps it only until the retry is
+	// due.
+	if tools != nil {
+		if retryAfter := mcpIntegrationToolCacheInstance.set(accountId, tools); retryAfter < defaultCacheTTL {
+			slog.Info("mcp-integration: tool discovery failed, tool list cached until the retry",
+				"account_id", accountId, "retry_after", retryAfter.String())
+		}
+	}
+	return tools
+}
+
+// ListMCPIntegrationToolsFresh is ListMCPIntegrationTools discovered now,
+// not from the cache: for a caller that must see a server's current tools
+// and annotations (a governed run's tool set). The fresh list also refreshes
+// the cache.
+func ListMCPIntegrationToolsFresh(accountId string) []NBTool {
+	if accountId == "" {
+		return nil
+	}
+	tools := loadMCPIntegrationToolsFromDB(accountId)
 	if tools != nil {
 		mcpIntegrationToolCacheInstance.set(accountId, tools)
 	}
@@ -535,7 +727,8 @@ func ListMCPIntegrationToolDtos(accountId string) []ToolDto {
 			ExecutorType: ToolExecutorTypeMCP,
 			NBToolType:   NBToolTypeTool,
 			InputSchema:  mcpTool.toolSchema,
-			Config:       map[string]any{"integration_id": mcpTool.config.IntegrationID},
+			Config:       map[string]any{"integration_id": mcpTool.config.IntegrationID, "mcp_tool_name": mcpTool.mcpToolName},
+			Approval:     ApprovalMode(mcpTool),
 			IsConfigured: true,
 		})
 	}
@@ -543,18 +736,45 @@ func ListMCPIntegrationToolDtos(accountId string) []ToolDto {
 }
 
 // loadMCPIntegrationToolsFromDB queries MCP integrations and discovers tools via relay.
+//
+// It returns nil only when the integrations could not be read. An account with
+// no MCP integration gets an empty list that is not nil, so the caller caches
+// it like any other answer; an integration change invalidates it.
 func loadMCPIntegrationToolsFromDB(accountId string) []NBTool {
-	configs := loadMCPIntegrationConfigs(accountId)
-	if len(configs) == 0 {
+	configs, ok := loadMCPIntegrationConfigs(accountId)
+	if !ok {
 		return nil
 	}
 
-	var allTools []NBTool
+	allTools := []NBTool{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 10)
 
+	// An integration that is down is not discovered again until its retry is
+	// due on the shared clock in its stored health (#40994). Without the
+	// stored health every integration is discovered, as before.
+	ids := make([]string, 0, len(configs))
 	for _, cfg := range configs {
+		ids = append(ids, cfg.IntegrationID)
+	}
+	stored, err := mcpHealthStoreInstance.load(ids)
+	if err != nil {
+		slog.Warn("mcp-integration: unable to read integration health", "error", err, "account_id", accountId)
+	}
+	now := time.Now()
+
+	for _, cfg := range configs {
+		if entry, ok := stored[cfg.IntegrationID][mcpHealthScope(cfg, accountId)]; ok {
+			if wait, skip := mcpHealthSkip(entry, now); skip {
+				placeholder := newMCPUnavailableTool(cfg, entry.Status)
+				placeholder.retryAfter = wait
+				mu.Lock()
+				allTools = append(allTools, placeholder)
+				mu.Unlock()
+				continue
+			}
+		}
 		wg.Add(1)
 		go func(c mcpIntegrationConfig) {
 			defer wg.Done()
@@ -583,11 +803,13 @@ func loadMCPIntegrationToolsFromDB(accountId string) []NBTool {
 }
 
 // loadMCPIntegrationConfigs queries the integrations table for enabled MCP integrations.
-func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
+// The second result is false when they could not be read, which is not the same
+// as the account having none.
+func loadMCPIntegrationConfigs(accountId string) ([]mcpIntegrationConfig, bool) {
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		slog.Error("mcp-integration: failed to get database manager", "error", err)
-		return nil
+		return nil, false
 	}
 
 	rows, err := dbms.Query(`
@@ -605,7 +827,7 @@ func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
 	`, accountId)
 	if err != nil {
 		slog.Error("mcp-integration: failed to query integrations", "error", err, "account_id", accountId)
-		return nil
+		return nil, false
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
@@ -613,6 +835,17 @@ func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
 		}
 	}()
 
+	configs, err := scanMCPIntegrationConfigs(rows)
+	if err != nil {
+		slog.Error("mcp-integration: error iterating integration rows", "error", err, "account_id", accountId)
+		return nil, false
+	}
+	return configs, true
+}
+
+// scanMCPIntegrationConfigs reads rows of (integration id, name, config name,
+// config value, config encrypted) into one config per integration, in row order.
+func scanMCPIntegrationConfigs(rows *sqlx.Rows) ([]mcpIntegrationConfig, error) {
 	configMap := make(map[string]*mcpIntegrationConfig)
 	configOrder := []string{}
 
@@ -671,6 +904,8 @@ func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
 			cfg.CustomHeaderValue = val
 		case "llm_instructions":
 			cfg.LLMInstructions = val
+		case "write_tools":
+			cfg.WriteTools = ParseToolNameList(val)
 		case "oauth_token_url":
 			cfg.OAuthTokenURL = val
 		case "oauth_client_id":
@@ -684,15 +919,14 @@ func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("mcp-integration: error iterating integration rows", "error", err, "account_id", accountId)
-		return nil
+		return nil, err
 	}
 
 	configs := make([]mcpIntegrationConfig, 0, len(configOrder))
 	for _, id := range configOrder {
 		configs = append(configs, *configMap[id])
 	}
-	return configs
+	return configs, nil
 }
 
 // mcpUnavailableTool is a sentinel returned in place of an enabled MCP
@@ -700,12 +934,28 @@ func loadMCPIntegrationConfigs(accountId string) []mcpIntegrationConfig {
 // VISIBLE to the planner — which otherwise improvises unpredictably when the
 // tools silently vanish — and returns a consistent JSON "unavailable" error.
 type mcpUnavailableTool struct {
+	integrationID   string
 	integrationName string
 	reason          string
+	// retryAfter is how long the account's list may keep this placeholder
+	// before the integration is tried again; zero means mcpDiscoveryRetryMin.
+	retryAfter time.Duration
 }
 
 func newMCPUnavailableTool(cfg mcpIntegrationConfig, reason string) mcpUnavailableTool {
-	return mcpUnavailableTool{integrationName: cfg.IntegrationName, reason: reason}
+	return mcpUnavailableTool{integrationID: cfg.IntegrationID, integrationName: cfg.IntegrationName, reason: reason}
+}
+
+// unavailableAfterFailure is the placeholder for a discovery that just failed,
+// kept until the retry its stored health calls for. Without a stored verdict
+// (the health could not be written, or the relay itself was unreachable) it is
+// retried after mcpDiscoveryRetryMin.
+func unavailableAfterFailure(cfg mcpIntegrationConfig, reason string, health mcpHealthEntry, known bool) mcpUnavailableTool {
+	t := newMCPUnavailableTool(cfg, reason)
+	if known && health.FailingSince != nil {
+		t.retryAfter = mcpDiscoveryRetryAfter(time.Since(*health.FailingSince))
+	}
+	return t
 }
 
 func (t mcpUnavailableTool) Name() string {
@@ -736,6 +986,13 @@ func (t mcpUnavailableTool) Call(_ NbToolContext, _ NBToolCallRequest) (NBToolRe
 
 // discoverMCPTools calls tools/list on an MCP server via relay and returns NBTools.
 func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
+	tools, _ := runMCPDiscovery(accountId, cfg, false)
+	return tools
+}
+
+// runMCPDiscovery is discoverMCPTools that also returns the outcome it
+// recorded. authoritative (Check now) skips the hold.
+func runMCPDiscovery(accountId string, cfg mcpIntegrationConfig, authoritative bool) ([]NBTool, mcpOutcome) {
 	log := slog.With("integration_id", cfg.IntegrationID, "integration_name", cfg.IntegrationName, "account_id", accountId)
 	start := time.Now()
 	defer func() {
@@ -746,10 +1003,14 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	if err != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "failure")
-		log.Error("mcp-integration: failed to discover tools", "error", err)
+		// Debug, as are the two failures below: the integration's health logs
+		// once when it changes (#40994), not on every retry.
+		log.Debug("mcp-integration: failed to discover tools", "error", err)
+		o := classifyMCPOutcome(err, true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
 		// Keep the integration visible (and consistently reported) instead of
 		// silently vanishing, which makes the agent improvise. See A2 fix.
-		return []NBTool{newMCPUnavailableTool(cfg, classifyMCPError(err))}
+		return []NBTool{unavailableAfterFailure(cfg, classifyMCPError(err), health, known)}, o
 	}
 
 	// Parse JSON-RPC response
@@ -763,6 +1024,9 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 					Properties map[string]map[string]interface{} `json:"properties"`
 					Required   []string                          `json:"required"`
 				} `json:"inputSchema"`
+				// Raw, and read by mcpReadOnlyHint: a server that sends it in
+				// another shape must not fail the whole tool list.
+				Annotations json.RawMessage `json:"annotations"`
 			} `json:"tools"`
 		} `json:"result"`
 		Error *struct {
@@ -780,19 +1044,23 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 	if err := json.Unmarshal([]byte(response), &rpcResp); err != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "parse_error")
-		log.Error("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
-		return []NBTool{newMCPUnavailableTool(cfg, "invalid_response")}
+		log.Debug("mcp-integration: failed to parse tools/list response", "error", err, "response", truncate(response, 500))
+		// The server answered, but with nothing usable: an error, not an outage.
+		o := mcpFailure(mcpHealthError, "invalid tools/list response", true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
+		return []NBTool{unavailableAfterFailure(cfg, "invalid_response", health, known)}, o
 	}
 
 	if rpcResp.Error != nil {
 		toolCircuitBreakerInstance.RecordFailure(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 		common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "json_rpc_error")
-		log.Error("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
-		return []NBTool{newMCPUnavailableTool(cfg, "discovery_error")}
+		log.Debug("mcp-integration: tools/list returned error", "code", rpcResp.Error.Code, "message", rpcResp.Error.Message)
+		o := mcpFailure(mcpHealthError, fmt.Sprintf("tools/list returned error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message), true)
+		health, known := recordMCPHealth(accountId, cfg, o, authoritative)
+		return []NBTool{unavailableAfterFailure(cfg, "discovery_error", health, known)}, o
 	}
 
 	tools := make([]NBTool, 0, len(rpcResp.Result.Tools))
-	prefix := sanitizeToolPrefix(cfg.IntegrationName)
 
 	for _, t := range rpcResp.Result.Tools {
 		if t.Name == "" {
@@ -829,13 +1097,14 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		}
 
 		// Prefix tool name with integration name for uniqueness
-		toolName := prefix + "_" + t.Name
+		toolName := MCPToolName(cfg.IntegrationName, t.Name)
 
 		tools = append(tools, mcpIntegrationTool{
-			config:      cfg,
-			toolName:    toolName,
-			mcpToolName: t.Name,
-			toolDesc:    t.Description,
+			config:       cfg,
+			toolName:     toolName,
+			mcpToolName:  t.Name,
+			toolDesc:     t.Description,
+			readOnlyHint: mcpReadOnlyHint(t.Annotations),
 			toolSchema: ToolSchema{
 				Type:       schemaType,
 				Properties: props,
@@ -844,10 +1113,45 @@ func discoverMCPTools(accountId string, cfg mcpIntegrationConfig) []NBTool {
 		})
 	}
 
+	discovered := make([]string, 0, len(rpcResp.Result.Tools))
+	for _, t := range rpcResp.Result.Tools {
+		discovered = append(discovered, t.Name)
+	}
+	warnMissingWriteTools(log, cfg.WriteTools, discovered)
 	toolCircuitBreakerInstance.RecordSuccess(mcpDiscoveryImplType, CircuitBreakerKey{AccountId: accountId, InstanceId: cfg.IntegrationID})
 	common.MetricsToolDiscovery(mcpImplType, accountId, cfg.IntegrationID, "success")
+	o := mcpSuccess(true, len(tools))
+	recordMCPHealth(accountId, cfg, o, authoritative)
 	log.Info("mcp-integration: discovered tools", "count", len(tools))
-	return tools
+	return tools, o
+}
+
+// MCPToolName is the name an MCP server's tool is offered under: the
+// integration's name as a prefix, then the server's own tool name.
+func MCPToolName(integrationName, serverTool string) string {
+	return sanitizeToolPrefix(integrationName) + "_" + serverTool
+}
+
+// ParseToolNameList reads write_tools: tool names separated by commas, as the
+// integration form saves list fields.
+func ParseToolNameList(value string) []string {
+	var names []string
+	for _, name := range strings.Split(value, ",") {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// warnMissingWriteTools logs write_tools entries the server no longer offers,
+// e.g. after a rename, since the renamed tool would no longer ask.
+func warnMissingWriteTools(log *slog.Logger, writeTools []string, discovered []string) {
+	for _, name := range writeTools {
+		if !slices.Contains(discovered, name) {
+			log.Warn("mcp-integration: write tool not offered by the server; it will not ask for approval", "write_tool", name)
+		}
+	}
 }
 
 // sanitizeToolPrefix creates a valid tool name prefix from an integration name.

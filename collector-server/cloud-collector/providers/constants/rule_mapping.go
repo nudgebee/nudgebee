@@ -61,6 +61,10 @@ func initializeMappings() {
 		{UnattachedVolume, ProviderAWS, AwsEC2OrphanedVolume, CategoryRightSizing},
 		{UnattachedVolume, ProviderAzure, AzureDiskUnattachedVolume, CategoryRightSizing},
 
+		{DiskPerformanceOverprovisioned, ProviderAWS, AwsEC2EBSPerformanceOverprovisioned, CategoryRightSizing},
+		{DiskPerformanceOverprovisioned, ProviderAzure, AzureDiskPerformanceOverprovisioned, CategoryRightSizing},
+		{DiskPerformanceOverprovisioned, ProviderGCP, GCPDiskPerformanceOverprovisioned, CategoryRightSizing},
+
 		// SECURITY - Encryption
 		{EncryptionAtRest, ProviderAWS, AwsEC2EBSEncrypt, CategorySecurity},
 		{EncryptionAtRest, ProviderAWS, AwsRDSStorageEncrypted, CategorySecurity},

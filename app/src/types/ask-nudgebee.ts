@@ -72,6 +72,8 @@ export interface ConversationV3Agent {
   parent_agent_id: string | null;
   status: string;
   references: string | null;
+  /** Structured plan JSON, only on the synthetic `notebook` agent (#41443). */
+  plan_state: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -108,6 +110,10 @@ export interface GenerateQueryRequest {
   // both scopes the fields the generator is shown and pins the index the
   // generated query resolves against. Ignored by backends with no index concept.
   index?: string;
+  // Optional row limit for ai_generate_log_query — the logs tab's "Limit"
+  // dropdown. Caps the limit written into the generated query (a smaller count
+  // stated in the question is kept), so the bar shows a limit the run applies.
+  limit?: number;
 }
 
 export interface InvestigateRequest {
@@ -121,6 +127,17 @@ export interface InvestigateRequest {
   config?: ModelConfig;
   source?: string;
   images?: string[];
+  // A pick of one of an alert's fix options (remediation loop): the server checks it and writes the message.
+  remediation_pick?: RemediationPick;
+}
+
+// RemediationPick is a structured pick of a fix option: the event whose fixes were shown, their plan_version, the
+// option (from 1) and how it is carried out (run: the assistant runs it after an approval; pr: a pull request).
+export interface RemediationPick {
+  event_id: string;
+  plan_version: string;
+  option: number;
+  kind: 'run' | 'pr';
 }
 
 export interface FollowupRequest {
@@ -134,7 +151,8 @@ export interface FollowupRequest {
   // soft-skips the question and ends the conversation with a structured marker. A hard
   // terminate already exists as a separate action (see useLLMInvestigationControl's stop).
   resolution?: 'dismiss';
-  // Optional user-supplied note recorded with a 'dismiss' resolution. Ignored otherwise.
+  // Optional user-supplied note recorded with a 'dismiss' resolution, or (remediation loop) with an answer to an
+  // approval of a change on an alert. Ignored otherwise.
   reason?: string;
 }
 
@@ -181,8 +199,10 @@ export interface ConversationComparisonRequest {
   extractEventIdsFromTitle?: boolean;
 }
 
-export interface FeedbackForSessionRequest {
-  account_id: string;
+// Request for the caller's own feedback, scoped server-side to the
+// authenticated user — see getOwnFeedbackForSessionId.
+export interface OwnFeedbackForSessionRequest {
+  cloud_account_id: string;
   session_id: string | string[];
 }
 
@@ -225,14 +245,16 @@ export interface DeleteSavedConversationRequest {
 
 export interface ListAgentsRequest {
   accountId: string | number;
+  /** Also return organisation agents this account switched off (management lists only). */
+  includeSwitchedOff?: boolean;
 }
 
 export interface ListToolsRequest {
   accountId: string | number;
-}
-
-export interface ListFunctionsRequest {
-  accountId: string | number;
+  /** Only entries of this type; omitted returns tools and agents. */
+  nbToolType?: 'tool' | 'agent';
+  /** Also return organisation tools this account switched off (management lists only). */
+  includeSwitchedOff?: boolean;
 }
 
 // Agent/tool definitions are open-ended objects; only account_id is required.
@@ -281,26 +303,6 @@ export interface GetWorkspaceFileRequest {
   conversation_id?: string;
   path?: string;
   download?: boolean;
-}
-
-export interface AiFunctionData {
-  name: string;
-  description?: string;
-  prompt?: string;
-  variables?: string[];
-  variable_defaults?: Record<string, string>;
-  status?: string;
-  version?: string;
-}
-
-export interface UpdateFunctionData {
-  name?: string;
-  description?: string;
-  prompt?: string;
-  variables?: string[];
-  variable_defaults?: Record<string, string>;
-  status?: string;
-  version?: string;
 }
 
 export interface StopInvestigateRequest {

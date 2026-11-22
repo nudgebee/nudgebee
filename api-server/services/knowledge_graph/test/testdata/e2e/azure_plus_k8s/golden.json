@@ -1,7 +1,7 @@
 {
   "nodes": [
     {
-      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:my-aks",
+      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:rg1:my-aks",
       "node_type": "ManagedCluster",
       "specific_type": "AKSCluster",
       "cloud_account_id": "test-account-azure-1",
@@ -106,7 +106,7 @@
   "edges": [
     {
       "src_key": "k8s:test-account-k8s-1::Cluster::my-aks",
-      "dst_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:my-aks",
+      "dst_key": "azure:test-account-azure-1:eastus:ManagedCluster:rg1:my-aks",
       "relationship_type": "RUNS_ON",
       "cloud_account_id": "test-account-azure-1",
       "tenant_id": "test-tenant-1",

@@ -279,11 +279,7 @@ func (t *RipgrepTool) Execute(ctx context.Context, input map[string]any) core.NB
 		// Check if it's just "no matches found"
 		if exitError, ok := err.(*exec.ExitError); ok {
 			if exitError.ExitCode() == 1 {
-				return core.NBToolResponse{
-					Status:      "success",
-					Observation: "No matches found",
-					Data:        map[string]any{"matches": []string{}},
-				}
+				return t.noMatchVerdict(ctx, pattern, repoDir)
 			}
 			// Exit code 2 = actual error (invalid pattern, bad path, etc.)
 			// Include the stderr output so agent knows what went wrong

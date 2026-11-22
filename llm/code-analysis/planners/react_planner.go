@@ -3622,6 +3622,7 @@ func (p *ReActPlanner) isRetriableSubmitError(errorMsg string) bool {
 		"Missing analysis title",
 		"Missing analysis description",
 		"Invalid input parameters",
+		"Invalid comment_responses",
 	}
 
 	errorLower := strings.ToLower(errorMsg)

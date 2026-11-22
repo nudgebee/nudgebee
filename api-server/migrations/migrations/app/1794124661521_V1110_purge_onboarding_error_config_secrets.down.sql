@@ -1,0 +1,2 @@
+-- Irreversible on purpose: the cleared values were stored cloud credentials.
+-- New rows already hold a redacted copy, so there is nothing to restore.

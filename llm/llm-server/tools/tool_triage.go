@@ -231,11 +231,17 @@ func (t TriageExplanationTool) InferToolRequestType(_ *security.RequestContext, 
 }
 
 func (t TriageExplanationTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	nbCtx = nbCtx.ForTarget()
 	eventID := stringArg(input, "event_id")
 	if eventID == "" {
 		return triageErrorResponse(errors.New("event_id is required")), nil
 	}
+	return onEventAccount(nbCtx, eventID, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.call(c.ForTarget(), eventID)
+	})
+}
+
+// call runs get_event_triage_explanation on the account onEventAccount picked.
+func (t TriageExplanationTool) call(nbCtx core.NbToolContext, eventID string) (core.NBToolResponse, error) {
 	data, err := doTriageActionRequest(nbCtx, "event_get_triage", map[string]any{"event_id": eventID})
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("triage: get_event_triage_explanation failed", "error", err, "event_id", eventID)
@@ -550,11 +556,17 @@ func (t EventClassificationTool) InferToolRequestType(_ *security.RequestContext
 }
 
 func (t EventClassificationTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	nbCtx = nbCtx.ForTarget()
 	eventID := stringArg(input, "event_id")
 	if eventID == "" {
 		return triageErrorResponse(errors.New("event_id is required")), nil
 	}
+	return onEventAccount(nbCtx, eventID, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.call(c.ForTarget(), eventID)
+	})
+}
+
+// call runs get_event_classification on the account onEventAccount picked.
+func (t EventClassificationTool) call(nbCtx core.NbToolContext, eventID string) (core.NBToolResponse, error) {
 	data, err := doTriageActionRequest(nbCtx, "event_get_classification", map[string]any{"event_id": eventID})
 	if err != nil {
 		// A missing classification is the common, expected case (most events are
@@ -708,11 +720,17 @@ func (t IncidentAssemblyTool) InferToolRequestType(_ *security.RequestContext, _
 }
 
 func (t IncidentAssemblyTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	nbCtx = nbCtx.ForTarget()
 	eventID := stringArg(input, "event_id")
 	if eventID == "" {
 		return triageErrorResponse(errors.New("event_id is required")), nil
 	}
+	return onEventAccount(nbCtx, eventID, func(c core.NbToolContext) (core.NBToolResponse, error) {
+		return t.call(c.ForTarget(), eventID)
+	})
+}
+
+// call runs get_event_incident_assembly on the account onEventAccount picked.
+func (t IncidentAssemblyTool) call(nbCtx core.NbToolContext, eventID string) (core.NBToolResponse, error) {
 	data, err := doTriageActionRequest(nbCtx, "event_get_impact", map[string]any{"event_id": eventID})
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("triage: get_event_incident_assembly failed", "error", err, "event_id", eventID)

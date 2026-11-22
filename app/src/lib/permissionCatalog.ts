@@ -92,6 +92,13 @@ const MODULE_ALIASES: Record<string, string> = {
   anomaly: 'anomalies',
   application: 'applications',
   audit: 'audits',
+  // bees_* are the Worker Bee pages and actions: a bee is a set of automations,
+  // so they share the workflows grant (bees_update_modes stays tenant-admin in
+  // the handler whatever the grant; bees_install/_uninstall are non-grantable).
+  bees: 'workflows',
+  // executions_* list workflow runs. runbook-server checks them against the
+  // workflows grant (ResolveAccountScope), so they classify there too.
+  executions: 'workflows',
   event: 'events',
   // Feature flags are tenant settings, not a domain of their own. Their two
   // reads (featureflags_list, features_list) are app-bootstrap calls EVERY role
@@ -123,12 +130,26 @@ const MODULE_ALIASES: Record<string, string> = {
 // verb in any token (no `<verb>`, no `_vN`/`grouping` query suffix). Keyed by
 // the RAW action name. Keep this list minimal — prefer fixing the action name.
 const ACTION_OVERRIDES: Record<string, PermissionClass> = {
+  // Approving lets the autopilot apply its planned changes: a run, granted
+  // apart from configuring the autopilot (autooptimize:Write).
+  autooptimize_update_approval: 'Execute',
+  // Asks for the same access as the rollback it previews (ApplyEventResolution).
+  events_check_rollback: 'Write',
+  // A batch read of resource owners; `resolve` is not an operation here.
+  ownership_resolve: 'Read',
+  // The flight checks run kubectl/AWS describe through the relay and store the
+  // health check against the plan, so they are runs, not reads.
+  upgrade_pre_flight_check: 'Execute',
+  upgrade_post_flight_check: 'Execute',
   aws_cloud_formation: 'Read', // returns a CloudFormation onboarding URL
   aws_org_status: 'Read',
   critiques_trend_all: 'Read', // `trend` is not a taxonomy verb; reads a critique time series like critiques_aggregate_all
   database_performance_insights: 'Read',
   event_revert_threshold_suggestion: 'Execute', // operational inverse of event_apply_threshold_suggestion (apply=Execute)
   integrations_autogen_options: 'Read',
+  // `diagnose` is not a taxonomy verb; a connection check with the stored
+  // credentials, like integrations_check_connection (Read).
+  integrations_diagnose_connection: 'Read',
   log_group: 'Read',
   notifications_google_chat_permission_status: 'Read',
   // Proxy for the whole live-cluster surface. Classified at the READ bar so a
@@ -150,6 +171,9 @@ const ACTION_OVERRIDES: Record<string, PermissionClass> = {
 // name → normalized module. The class still derives from the verb/`_v2` rule —
 // this only re-homes the module. Keep minimal; prefer renaming the action.
 const MODULE_OVERRIDES: Record<string, string> = {
+  // A forecast of a metric: the handler reads it with the metrics grant, as the
+  // AI's metric_forecast tool does.
+  forecast_generate: 'metrics',
   // Channel↔account mapping is Slack/Teams/etc. platform config, so it's
   // governed by the "Message Platform" (messagingplatforms) permission, not
   // notifications. Read (`_v2`) + the three write mutations move together.
@@ -161,6 +185,10 @@ const MODULE_OVERRIDES: Record<string, string> = {
   // governed by the accounts permission (accounts:Read) rather than a separate
   // agents grant. Kept in sync with get_agent_health_v2's PermissionModule.
   agents_list_health: 'accounts',
+  // Delivery history is read like the alerts it delivered: governed by events,
+  // matching notification_deliveries_v2's PermissionModule.
+  notifications_list_deliveries: 'events',
+  notifications_aggregate_deliveries: 'events',
   // Cluster catalog/summary backs the cluster picker — governed by accounts
   // (accounts:Read) alongside the accounts list. Kept in sync with
   // k8s_cluster_groupings_v2's PermissionModule.
@@ -174,6 +202,20 @@ const MODULE_OVERRIDES: Record<string, string> = {
   // (get_resource plus all enrichers and external observability fetches), not just
   // cluster resources.
   relay_forward_request: 'k8s',
+  // Run now starts a bee's trigger workflow on an account, the same right as
+  // running any automation there: workflows:Execute, as the handler checks it
+  // (runbook-server ExecuteWorkflow), not a separate bees grant.
+  bees_execute_run: 'workflows',
+  // How Nudgebee connects to a cloud account is account management, not work on
+  // its resources: the account's connection data (endpoints, project, cost-report
+  // bucket), the IAM permissions Nudgebee holds in it, the monitoring webhook it
+  // provisions there, and the checks run with its stored credentials. Governed
+  // by accounts, so a role meant for cloud resources cannot repoint the connection.
+  cloud_account_update: 'accounts',
+  cloud_update_cloudformation_permissions: 'accounts',
+  cloud_setup_monitoring_webhook: 'accounts',
+  cloud_check_credentials: 'accounts',
+  cloud_check_monitoring_permission: 'accounts',
 };
 
 // Modules that are never grantable via a custom role, and so never appear in the
@@ -255,6 +297,8 @@ const MODULE_OVERRIDES: Record<string, string> = {
 const NON_GRANTABLE_MODULES = new Set<string>([
   'auth',
   'billing',
+  // branding overrides are super-admin only (ee/branding/service.go)
+  'branding',
   'nudgebee',
   'product',
   'relay',
@@ -297,6 +341,56 @@ const NON_GRANTABLE_ACTIONS = new Set<string>([
   'customroles_update_user_assignments',
   'customroles_update_group_assignments',
   'customroles_update_group_account_assignments',
+  // AI Gateway administration is tenant-admin only (#38963, #38965); usage stays grantable
+  'llm_gateway_get_settings',
+  'llm_gateway_update_settings',
+  'llm_gateway_list_routing_rules',
+  'llm_gateway_create_routing_rule',
+  'llm_gateway_update_routing_rule',
+  'llm_gateway_delete_routing_rule',
+  'llm_gateway_list_tiers',
+  'llm_gateway_set_tier',
+  'llm_gateway_reset_tier',
+  'llm_gateway_list_models',
+  'llm_gateway_list_rate_limits',
+  'llm_gateway_upsert_rate_limit',
+  'llm_gateway_delete_rate_limit',
+  'llm_gateway_list_user_access',
+  'llm_gateway_upsert_user_access',
+  // every key in the tenant, and revoking any of them, is tenant-admin only, #38965
+  'users_list_tenant_tokens',
+  'users_delete_tenant_token',
+  // installing a Worker Bee creates its account and the role it acts with, and
+  // uninstalling removes them: privilege administration, tenant-admin only.
+  // Creating or deleting a bee's principal, or the user behind it, is the same.
+  'bees_install',
+  'bees_uninstall',
+  // sign-in internals, called only by the app server (NextAuth, SAML) as super
+  // admin. Their tables have no tenant column, so a grant would read any
+  // tenant's users: credential and token hashes (auth_by_username), roles and
+  // tenants.
+  'users_get_auth_by_username',
+  'users_get_by_provider_account',
+  'users_get_super_admin_role',
+  'tenant_by_user_v2',
+  // a user's profile, roles and tenants by id, across tenants: same server-only
+  // sign-in path; the app reads resolver names from the resolution rows instead
+  'users_get_details',
+  'bees_create_principal',
+  'bees_delete_principal',
+  'users_create_bee',
+  // Changing how far an installed bee goes, and previewing an install, are
+  // tenant-admin only in runbook-server (bee/modes.go, install.go checkInstaller).
+  'bees_update_modes',
+  'bees_check_install',
+  // Reloads the shared system templates for every tenant, not the caller's:
+  // tenant-admin only, never a grant.
+  'workflow_sync_templates',
+  // Their tables have no tenant column (query/service.go applies no tenant or
+  // account filter on a non-warehouse source), so no grant can be honoured
+  // safely; built-in roles only until the tables are tenant-scoped.
+  'traces_groupings_v2',
+  'traces_heatmap_v2',
 ]);
 
 export function normalizeModule(rawModule: string): string {
@@ -316,7 +410,8 @@ function refineAiModule(name: string): string {
   if (name.includes('_function')) return 'ai_functions';
   if (name.includes('_gc')) return 'ai_guardrails';
   if (name.includes('_rca')) return 'ai_rca';
-  if (name.includes('_query') || name.includes('_workflow') || name.includes('_recommendation')) return 'ai_generation';
+  if (name.includes('_query') || name.includes('_workflow') || name.includes('_dashboard') || name.includes('_recommendation'))
+    return 'ai_generation';
   return 'ai_misc';
 }
 
@@ -331,7 +426,9 @@ function refineAiModule(name: string): string {
 // admins understand what each grant does. Classification is grounded in each
 // module's backend handler authz (IsTenantAdmin/CanManage → tenant;
 // HasAccountAccess/ListAccountIds → account).
-export type ModuleScope = 'tenant' | 'account';
+//   - 'provider' → per-provider integration grants (`integrations.<type>`), which
+//                 are not derived from action names — see integrationProviderGrants.ts.
+export type ModuleScope = 'tenant' | 'account' | 'provider';
 
 const MODULE_SCOPE: Record<string, ModuleScope> = {
   // Tenant-wide configuration & identity.
@@ -365,7 +462,7 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // limits, data-privacy settings). Every handler forces the tenant from the
   // session-injected x-tenant-id and has no account dimension, so an
   // account-scoped binding for it would be inert (its handlers are neither
-  // /rpc/query nor on the gateway's ACCOUNT_ENFORCED_ACTIONS ledger, so the
+  // /rpc/query nor flagged `account_enforced` in actions.yaml, so the
   // scoped grant fails closed). Filing it under 'tenant' is what stops an admin
   // binding it to a group+account and believing it took effect.
   llm: 'tenant',
@@ -380,8 +477,6 @@ const MODULE_SCOPE: Record<string, ModuleScope> = {
   // family resolves the provider per account).
   critiques: 'account',
   database: 'account',
-  // executions_* are workflow runs — same per-account surface as `workflows`.
-  executions: 'account',
   k8s: 'account',
   agents: 'account',
   anomalies: 'account',
@@ -509,6 +604,17 @@ export type CatalogEntry = {
   // ticking Read/Write/Execute actually allows. Keyed by class; only classes
   // present in `classes` appear.
   actions: Partial<Record<PermissionClass, CatalogAction[]>>;
+  // What a class allows when no RPC action is classified to it — a grant only a
+  // run checks (RUN_TIME_GRANTS, integration use grants). The editor shows it in
+  // the box's tooltip.
+  notes?: Partial<Record<PermissionClass, string>>;
+  // Per class, a `<module>:<Class>` key the role editor ticks alongside that
+  // class, for grants that are useless on their own (a provider's Write needs
+  // the integration list).
+  requires?: Partial<Record<PermissionClass, string>>;
+  // The classes are separate rights, so the editor does not couple Write to
+  // Read (integration grants: managing an integration is not using it).
+  independentClasses?: boolean;
 };
 
 // An action as buildCatalog consumes it. A bare string is accepted for callers
@@ -550,4 +656,36 @@ export function buildCatalog(actions: CatalogInput[]): CatalogEntry[] {
       return { module, scope: moduleScope(module), classes, actions: entryActions };
     })
     .sort((a, b) => a.module.localeCompare(b.module));
+}
+
+// Classes a custom role can hold on a module although no RPC action is
+// classified to them: the run checks them, not the gateway. A domain step or
+// an AI agent's tool call that changes something needs Execute on its module
+// (runbook-server internal/tasks/authz.go stepRequirements, llm-server
+// security.ToolPathAccountAccess), and k8s has no Execute action in
+// actions.yaml, so without this the editor could only grant those changes
+// through Write. Steps that act through an integration (databases, tickets,
+// source control) need only that integration type's use grant, so their
+// modules need no entry here. Role editor only — an API key never runs steps,
+// so the token catalog does not offer them.
+export const RUN_TIME_GRANTS: ReadonlyArray<{ module: string; class: PermissionClass; note: string }> = [
+  {
+    module: 'k8s',
+    class: 'Execute',
+    note: 'Make changes to Kubernetes resources from automation steps and AI agent runs (restart, rightsize, kubectl), without Write. Checked when the step runs.',
+  },
+];
+
+// The catalog with RUN_TIME_GRANTS added to their modules. A class the module
+// already has from an action is left as it is.
+export function withRunTimeGrants(entries: CatalogEntry[]): CatalogEntry[] {
+  return entries.map((entry) => {
+    const extra = RUN_TIME_GRANTS.filter((g) => g.module === entry.module && !entry.classes.includes(g.class));
+    if (!extra.length) return entry;
+    return {
+      ...entry,
+      classes: CLASS_ORDER.filter((cls) => entry.classes.includes(cls) || extra.some((g) => g.class === cls)),
+      notes: { ...entry.notes, ...Object.fromEntries(extra.map((g) => [g.class, g.note])) },
+    };
+  });
 }

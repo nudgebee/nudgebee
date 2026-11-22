@@ -19,7 +19,7 @@ import {
 } from 'src/utils/common';
 import DateTime from '@shared/format/Datetime';
 import { Box, Typography } from '@mui/material';
-import apiTrace from '@api1/kubernetes/trace';
+import apiTrace, { toFilterList } from '@api1/kubernetes/trace';
 import observability from '@api1/observability';
 import k8sApi from '@api1/kubernetes';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -81,6 +81,10 @@ interface KubernetesTracesListingProps {
   // account default — so a group's drilldown queries the index the group was built
   // from. Undefined = this listing owns the index (its own picker).
   passedEsIndex?: string;
+  // Services the caller knows exist, offered in the Service filter next to the ones the
+  // trace store reports. A VM account passes its active systemd units and containers:
+  // the store only knows services that already sent spans.
+  serviceOptions?: string[];
 }
 
 interface SourceDestinationViewProps {
@@ -185,6 +189,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   displaySideFilters = true,
   traceIds = [],
   passedEsIndex,
+  serviceOptions,
 }) => {
   const router = useRouter();
   const { assistantName } = useTenantBranding();
@@ -204,44 +209,32 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const selectedK8sAccount = (router.query?.KubernetesDetails as string) || (router.query?.accountId as string) || accountId;
   const { selectedCluster } = useData();
 
-  const getInitialWorkload = () => {
+  const getInitialWorkload = (): string[] => {
     if (workloadName) {
       return [workloadName];
     }
-    if (router?.query?.workloadName) {
-      return [router.query.workloadName];
-    }
-    return [];
+    return toFilterList(router?.query?.workloadName);
   };
 
-  const getInitialDestinationWorkload = () => {
+  const getInitialDestinationWorkload = (): string[] => {
     if (destinationWorkload) {
       return [destinationWorkload];
     }
-    if (router?.query?.destinationWorkload) {
-      return [router.query.destinationWorkload];
-    }
-    return [];
+    return toFilterList(router?.query?.destinationWorkload);
   };
 
-  const getInitialNamespace = () => {
+  const getInitialNamespace = (): string[] => {
     if (namespace) {
       return [namespace];
     }
-    if (router?.query?.namespaceName) {
-      return [router.query.namespaceName];
-    }
-    return [];
+    return toFilterList(router?.query?.namespaceName);
   };
 
-  const getInitialDestinationNamespace = () => {
+  const getInitialDestinationNamespace = (): string[] => {
     if (destinationNamespace) {
       return [destinationNamespace];
     }
-    if (router?.query?.destinationNamespace) {
-      return [router.query.destinationNamespace];
-    }
-    return [];
+    return toFilterList(router?.query?.destinationNamespace);
   };
 
   const getInitialDuration = () => {
@@ -291,13 +284,16 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [namespaces, setNamespaces] = useState<string[]>([]);
   const [allWorkloads, _setAllWorkloads] = useState<string[]>([]);
   const [workloads, setWorkloads] = useState<string[]>([]);
-  const [selectedNamespace, setSelectedNamespace] = useState<any>(getInitialNamespace());
-  const [selectedWorkload, setSelectedWorkload] = useState<any>(getInitialWorkload());
+  // `string | string[]`, not `any`: the multi-select dropdowns set a list and the
+  // single-select `Service` picker sets a bare string. Typed as `any`, that mismatch
+  // reached the API layer unchecked and `_in` was sent a scalar (#41493).
+  const [selectedNamespace, setSelectedNamespace] = useState<string | string[]>(getInitialNamespace());
+  const [selectedWorkload, setSelectedWorkload] = useState<string | string[]>(getInitialWorkload());
   const [destinationNamespaces, setDestinationNamespaces] = useState<string[]>([]);
   const [destinationAllWorkloads, _setDestinationAllWorkloads] = useState<string[]>([]);
   const [destinationWorkloads, setDestinationWorkloads] = useState<string[]>([]);
-  const [destinationSelectedNamespace, setDestinationSelectedNamespace] = useState<any>(getInitialDestinationNamespace());
-  const [destinationSelectedWorkload, setDestinationSelectedWorkload] = useState<any>(getInitialDestinationWorkload());
+  const [destinationSelectedNamespace, setDestinationSelectedNamespace] = useState<string | string[]>(getInitialDestinationNamespace());
+  const [destinationSelectedWorkload, setDestinationSelectedWorkload] = useState<string | string[]>(getInitialDestinationWorkload());
   const [httpStatusCodes, setHttpStatusCodes] = useState<string[]>([]);
   const [selectedHttpStatus, setSelectedHttpStatus] = useState<string | string[]>(httpStatus);
   const [httpSpans, setHttpSpans] = useState<string[]>([]);
@@ -322,7 +318,15 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [inputTraceId, setInputTraceId] = useState<string>('');
   const { openWithContext: openNubiChat } = useNubiGlobalChat();
   const [traceProvider, setTraceProvider] = useState('');
+  // by_trace_natural_order_only from the provider's capabilities: the "By Traces" listing
+  // can only be returned newest first, so no other order may be offered or sent there.
+  const [byTraceNaturalOrderOnly, setByTraceNaturalOrderOnly] = useState(false);
   const [services, setServices] = useState<string[]>([]);
+  // The store's services plus any the caller supplied, deduplicated and sorted.
+  const serviceChoices = useMemo(
+    () => Array.from(new Set([...(serviceOptions || []), ...services])).sort((a, b) => a.localeCompare(b)),
+    [serviceOptions, services]
+  );
   // ES-only trace index picker: the chosen index (default resolved from the
   // per-account mapping / top-level trace_index), plus the cluster's trace index
   // options for the dropdown.
@@ -337,12 +341,37 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   }, [passedEsIndex]);
   // 'spans' (default) = one row per span; 'traces' = one row per trace (root span).
   const [traceView, setTraceView] = useState<TraceViewMode>('spans');
+  // A provider whose By Traces page is ranked by each trace's newest span can only list it
+  // newest first, and refuses any other order with a 400 the table used to show as an empty
+  // list (#41495). There the Duration sort is neither offered nor sent; the chosen sort is
+  // kept and still applies in By Spans.
+  //
+  // The constraint is read from the provider's capabilities rather than matched on a
+  // provider name, so the backend that enforces it is the one that declares it. Taken from
+  // the get_default_provider response this screen already awaits — not from
+  // useData().providerCapabilities as the sibling Trace Group tab does — because that
+  // context loads independently: a late answer there only delays gating a whole tab, while
+  // here it would let the first request go out with an order the provider refuses.
+  // Defaults to false, so an api-server that does not send the field yet behaves as before.
+  const byTraceNewestFirstOnly = traceView === 'traces' && byTraceNaturalOrderOnly;
+  const effectiveSort = useMemo<SortOrderObject>(
+    () => (byTraceNewestFirstOnly ? { name: 'Timestamp', order: 'desc' } : sortObject),
+    [byTraceNewestFirstOnly, sortObject]
+  );
+  const listingHeader = useMemo(
+    () =>
+      byTraceNewestFirstOnly
+        ? LISTING_HEADER.map((h) => (typeof h === 'object' && h.name === 'Duration' ? { ...h, sortEnabled: false } : h))
+        : LISTING_HEADER,
+    [byTraceNewestFirstOnly, LISTING_HEADER]
+  );
 
   useEffect(() => {
     if (traceData.length > 0) {
       return;
     }
     setTraceProvider('');
+    setByTraceNaturalOrderOnly(false);
     setLoading(true);
     handleClearAll();
     const init = async () => {
@@ -368,6 +397,9 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
       }
       const obs = res?.data?.data?.observability_get_default_provider;
       const provider = obs?.provider || '';
+      // Set with the provider, from the same response, so the two can never disagree
+      // about which provider's ordering rule is in force.
+      setByTraceNaturalOrderOnly(obs?.capabilities?.by_trace_natural_order_only === true);
       // ES: seed the index picker with the per-account resolved default and load the
       // cluster's trace index options — unless a parent pinned the index (drilldown),
       // in which case that index wins and there's no picker to populate.
@@ -599,7 +631,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     setData([]);
     setTotalCount(0);
     let sortCol = 'timestamp';
-    if (sortObject.name == 'Duration') {
+    if (effectiveSort.name == 'Duration') {
       sortCol = 'duration_ns';
     }
     apiTrace
@@ -619,7 +651,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         resource: resource.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         duration: getInitialDuration(),
         sortCol: sortCol,
-        sortOrder: sortObject.order,
+        sortOrder: effectiveSort.order,
         header: header.replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
         selectedStatusCode: selectedStatusCode,
         traceSource: selectedTracesSource,
@@ -774,7 +806,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     selectedHttpStatus,
     selectedHttpSpan,
     selectedK8sAccount,
-    sortObject,
+    effectiveSort,
     destinationSelectedNamespace,
     destinationSelectedWorkload,
     selectedStatusCode,
@@ -1328,7 +1360,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                   <>
                     <FilterDropdown
                       label='Service'
-                      options={services}
+                      options={serviceChoices}
                       value={selectedWorkload}
                       onSelect={(e: any) => {
                         setSelectedWorkload(e?.target?.value);
@@ -1619,14 +1651,14 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         <ListingLayout.Body>
           <CustomTable
             id='k8s-trace-listing'
-            headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : LISTING_HEADER}
+            headers={traceProvider === 'gcp' ? GCP_LISTING_HEADER : listingHeader}
             rowsPerPage={traceData.length > 0 ? traceData.length : recordsPerPage}
             tableData={data}
             onPageChange={handlePageChange}
             totalRows={traceData.length > 0 ? traceData.length : totalCount}
             loading={loading}
             onSortChange={handleSortChange}
-            sort={traceData.length > 0 ? {} : sortObject}
+            sort={traceData.length > 0 ? {} : effectiveSort}
             pageNumber={currentPage + 1}
             errorMessage={errorMsg}
             showExpandable={true}

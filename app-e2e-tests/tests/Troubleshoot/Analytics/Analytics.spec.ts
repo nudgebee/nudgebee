@@ -28,13 +28,11 @@ import {
   OVERVIEW_TILES,
   RECURRENCE_TILE,
   RECURRING_HEADING,
-  RECURRING_PANEL_TITLE,
   SEVEN_DAY_SWITCH_COPY,
   SPEC_TIMEOUT_MS,
   TROUBLESHOOT_PATH,
   URGENT_PROBLEMS_TILE,
   VOLUME_HEADING,
-  VOLUME_PANEL_TITLE,
 } from "./analyticsConstants";
 
 // Troubleshoot > Analytics — the fourth top-level tab of /troubleshoot

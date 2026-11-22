@@ -192,7 +192,7 @@ class OnDeviceEmbeddings(Embeddings):
 
             with torch.no_grad():
                 if callable(getattr(model, "encode_query", None)):
-                    embedding = model.encode_query(text, normalize_embeddings=True)
+                    embedding = model.encode_query(text, normalize_embeddings=True, show_progress_bar=False)
                 else:
                     embedding = model.encode(text, normalize_embeddings=True, show_progress_bar=False)
 

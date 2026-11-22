@@ -22,6 +22,7 @@ test_telemetry_health_checked_at.py. Whether the statements do what they say aga
 a real database is not something this harness can show.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -246,6 +247,254 @@ class TestProviderNoLongerNamed(unittest.TestCase):
     def test_a_first_post_has_nothing_to_release(self):
         released, _ = self._post(dict(ALL_ON), previous=None)
         self.assertEqual(released, [])
+
+
+def holder(source="agent", status="enabled", is_self=False, marked=False):
+    """One link of the account that holds the default column, as the claim reads it."""
+    return (source, status, is_self, marked)
+
+
+class TestDefaultClaimDecision(unittest.TestCase):
+    """Who keeps an account's default when the agent's connected provider heartbeats.
+
+    A default the user set in the UI carries a mark on its link; the agent never takes a
+    marked or user-sourced default, but still takes one only an agent claim put there.
+    """
+
+    def test_nothing_holds_the_default_so_the_agent_claims_it(self):
+        self.assertEqual(th._default_claim_decision([]), "claim")
+
+    def test_the_agent_already_holds_it(self):
+        self.assertEqual(th._default_claim_decision([holder(is_self=True)]), "keep")
+
+    def test_a_user_sourced_default_is_left_alone(self):
+        self.assertEqual(th._default_claim_decision([holder(source="user")]), "keep")
+
+    def test_an_agent_row_the_user_picked_is_left_alone(self):
+        """The bug: a user picks the agent's ClickHouse row for logs, and Loki's next
+        heartbeat took it back because the row's source is 'agent'."""
+        self.assertEqual(th._default_claim_decision([holder(marked=True)]), "keep")
+
+    def test_an_agent_row_only_an_agent_claim_put_there_is_taken_over(self):
+        """Unmarked agent-held defaults heal as before, e.g. one left on a provider the
+        cluster switched away from."""
+        self.assertEqual(th._default_claim_decision([holder()]), "claim")
+
+    def test_a_disabled_pick_does_not_block_the_agent(self):
+        self.assertEqual(th._default_claim_decision([holder(marked=True, status="disabled")]), "claim")
+        self.assertEqual(th._default_claim_decision([holder(source="user", status="disabled")]), "claim")
+
+    def test_the_agent_gives_way_when_an_enabled_pick_also_holds_it(self):
+        """Two rows hold the default: a pick re-enabled after a Disable, or a heartbeat
+        that raced a UI save. The agent clears its own claim."""
+        self.assertEqual(th._default_claim_decision([holder(is_self=True), holder(marked=True)]), "release")
+        self.assertEqual(th._default_claim_decision([holder(is_self=True), holder(source="user")]), "release")
+
+    def test_the_agent_never_clears_a_pick_of_its_own_row(self):
+        self.assertEqual(
+            th._default_claim_decision([holder(is_self=True, marked=True), holder(source="user")]),
+            "keep",
+        )
+
+    def test_a_default_the_user_turned_off_is_claimed_back(self):
+        """Decided with the k8s-agent#660 maintainer: turning off an agent-held default
+        without picking another leaves nothing holding it, so the next heartbeat claims it
+        again. With no default the resolver routes to the agent's own provider anyway, so
+        "off" could not change what serves the signal; the toggle shows what does."""
+        self.assertEqual(th._default_claim_decision([]), "claim")
+
+
+class _FakeSQL(str):
+    """psycopg2.sql stand-in: identifiers render as their names, so statements are text."""
+
+    def format(self, *args, **kwargs):
+        return _FakeSQL(str.format(self, *args, **{k: str(v) for k, v in kwargs.items()}))
+
+
+class TestDefaultClaimStatements(unittest.TestCase):
+    def _claim(self, holders):
+        statements = []
+
+        def run_query(statement, params=None):
+            statements.append((" ".join(str(statement).split()), params))
+            return list(holders) if str(statement).lstrip().startswith("SELECT") else []
+
+        fake_sql = mock.Mock(SQL=_FakeSQL, Identifier=lambda name: name)
+        with mock.patch.object(th, "sql", fake_sql), mock.patch.object(th.database, "run_query", side_effect=run_query):
+            th._maybe_set_default_provider(INTEGRATION, ACCOUNT, TENANT, "default_log_provider")
+        return [s for s, _ in statements[1:]], statements
+
+    def test_keep_writes_nothing(self):
+        writes, _ = self._claim([holder(marked=True)])
+        self.assertEqual(writes, [])
+
+    def test_claim_resets_only_unmarked_agent_rows_and_guards_against_any_enabled_pick(self):
+        writes, statements = self._claim([holder()])
+
+        self.assertEqual(len(writes), 2)
+        reset, set_self = writes
+        self.assertIn("SET default_log_provider = false", reset)
+        self.assertIn("i.source = 'agent'", reset)
+        self.assertIn("NOT (%s = ANY(ica.user_set_defaults))", reset)
+        self.assertIn("SET default_log_provider = true", set_self)
+        self.assertIn("ui.status != 'disabled'", set_self)
+        self.assertIn("ui.source = 'user' OR %s = ANY(u.user_set_defaults)", set_self)
+        self.assertIn("default_log_provider", statements[1][1])
+
+    def test_release_clears_only_the_agents_own_unmarked_link(self):
+        writes, statements = self._claim([holder(is_self=True), holder(marked=True)])
+
+        self.assertEqual(len(writes), 1)
+        self.assertIn("SET default_log_provider = false", writes[0])
+        self.assertIn("ica.integration_id = %s", writes[0])
+        self.assertIn("NOT (%s = ANY(ica.user_set_defaults))", writes[0])
+        self.assertEqual(statements[1][1][0], INTEGRATION)
+
+
+class _PGError(Exception):
+    def __init__(self, pgcode):
+        super().__init__(pgcode)
+        self.pgcode = pgcode
+
+
+class TestDefaultClaimBeforeMigration(unittest.TestCase):
+    """The collector can roll out before the migration adding user_set_defaults applies,
+    wherever it deploys independently of the migrations Job. Until then it leaves the
+    default alone instead of failing the rest of the heartbeat."""
+
+    def _claim_with(self, error):
+        run_query = mock.Mock(side_effect=error)
+        fake_sql = mock.Mock(SQL=_FakeSQL, Identifier=lambda name: name)
+        with mock.patch.object(th, "sql", fake_sql), mock.patch.object(th.database, "run_query", run_query):
+            th._maybe_set_default_provider(INTEGRATION, ACCOUNT, TENANT, "default_log_provider")
+        return run_query
+
+    def test_a_missing_column_skips_the_default_and_writes_nothing(self):
+        run_query = self._claim_with(_PGError("42703"))
+        self.assertEqual(run_query.call_count, 1)
+
+    def test_any_other_database_error_still_raises(self):
+        with self.assertRaises(_PGError):
+            self._claim_with(_PGError("40P01"))
+
+
+# The agent keeps naming its Loki for logs and reports its ClickHouse logs table beside
+# it (nudgebee/k8s-agent#660): clickhouseLogsTable is the table checked, empty when the
+# agent has no ClickHouse; clickhouseLogsConnection says the table is present.
+CLICKHOUSE_LOGS = {**ALL_ON, "clickhouseLogsConnection": True, "clickhouseLogsTable": "default.otel_logs"}
+
+
+class TestClickHouseLogsTable(unittest.TestCase):
+    def _post(self, activity_stats, previous):
+        """Handle one telemetry post; return the (provider, provider_type) links removed
+        and each upsert as (provider, connection_enabled, provider_type, default_column)."""
+        released, upserted = [], []
+
+        def run_query(_statement, params=None):
+            return [[previous]] if params == [AGENT] else []
+
+        with mock.patch.object(th.database, "run_query", side_effect=run_query), mock.patch.object(
+            th, "_notify_scanner_heartbeat"
+        ), mock.patch.object(
+            th,
+            "_upsert_integration",
+            side_effect=lambda *args, **kwargs: upserted.append((args[2], args[3], args[4], kwargs["default_column"])),
+        ), mock.patch.object(
+            th,
+            "_unlink_integration",
+            side_effect=lambda tenant, account, provider, provider_type: released.append((provider, provider_type)),
+        ):
+            th.handle_telemetry(
+                TENANT, ACCOUNT, AGENT, {"version": "0.1.28", "stats": {}, "activity_stats": activity_stats}
+            )
+        return released, upserted
+
+    def test_a_reported_logs_table_links_clickhouse_as_a_logs_candidate_without_claiming(self):
+        """So a user can pick ClickHouse for logs, while the agent's Loki keeps the claim."""
+        _, upserted = self._post(dict(CLICKHOUSE_LOGS), previous=None)
+
+        self.assertIn(("otel_clickhouse", True, "clickhouseLogsTable", None), upserted)
+        self.assertIn(("loki", True, "logsConnectionProvider", "default_log_provider"), upserted)
+
+    def test_moving_traces_away_keeps_the_link_logs_use(self):
+        now = {k: v for k, v in CLICKHOUSE_LOGS.items() if k != "traceProvider"}
+        now["tracesEnabled"] = False
+
+        released, _ = self._post(now, previous=CLICKHOUSE_LOGS)
+
+        self.assertEqual(released, [])
+
+    def test_clickhouse_used_by_neither_logs_nor_traces_is_unlinked(self):
+        now = {k: v for k, v in CLICKHOUSE_LOGS.items() if k != "traceProvider"}
+        now.update({"tracesEnabled": False, "clickhouseLogsConnection": False, "clickhouseLogsTable": ""})
+
+        released, _ = self._post(now, previous=CLICKHOUSE_LOGS)
+
+        self.assertIn("otel_clickhouse", [provider for provider, _ in released])
+
+    def test_an_agent_without_clickhouse_links_nothing_for_it(self):
+        now = {**ALL_ON, "clickhouseLogsConnection": False, "clickhouseLogsTable": "", "traceProvider": "jaeger"}
+
+        _, upserted = self._post(now, previous=None)
+
+        self.assertNotIn("otel_clickhouse", [provider for provider, *_ in upserted])
+
+    def test_an_older_agent_without_the_fields_keeps_the_link_traces_use(self):
+        """A post without clickhouseLogsConnection says nothing about the table."""
+        released, _ = self._post(dict(ALL_ON), previous=CLICKHOUSE_LOGS)
+
+        self.assertEqual(released, [])
+
+
+class TestClickHouseLogsCollectedFlag(unittest.TestCase):
+    """clickhouseLogsCollected gates ClickHouse as a logs provider. The merge into
+    connection_status keeps a key a post leaves out, so the agent UPDATE drops this one
+    when a post that reports flags omits it: a `true` cannot outlive the agent that sent
+    it (a rollback to an agent that predates the flag)."""
+
+    def _agent_update(self, activity_stats):
+        """Handle one telemetry post; return the agent UPDATE's text and params.
+
+        sql.SQL is swapped for the identity so the statement reaches run_query as text."""
+        updates = []
+
+        def run_query(statement, params=None):
+            if params and params[-1] == AGENT and len(params) == 6:
+                updates.append((" ".join(statement.split()), params))
+            return []
+
+        with mock.patch.object(th.sql, "SQL", side_effect=lambda text: text), mock.patch.object(
+            th.database, "run_query", side_effect=run_query
+        ), mock.patch.object(th, "_notify_scanner_heartbeat"), mock.patch.object(th, "_upsert_integration"):
+            th.handle_telemetry(
+                TENANT, ACCOUNT, AGENT, {"version": "0.1.28", "stats": {}, "activity_stats": activity_stats}
+            )
+        self.assertEqual(len(updates), 1)
+        return updates[0]
+
+    def test_the_update_removes_the_keys_it_is_given_after_the_merge(self):
+        statement, params = self._agent_update(dict(CLICKHOUSE_LOGS))
+
+        self.assertIn(
+            "connection_status = (COALESCE(connection_status, '{}'::jsonb) || %s::jsonb) - %s::text[]", statement
+        )
+        self.assertEqual(params[3], ["clickhouseLogsCollected"])
+
+    def test_a_post_that_sends_the_flag_keeps_what_it_says(self):
+        for value in (True, False):
+            with self.subTest(clickhouseLogsCollected=value):
+                _, params = self._agent_update({**CLICKHOUSE_LOGS, "clickhouseLogsCollected": value})
+
+                self.assertEqual(params[3], [])
+                self.assertIs(json.loads(params[2])["clickhouseLogsCollected"], value)
+
+    def test_a_post_that_reports_no_flags_clears_nothing(self):
+        """An empty or malformed activity_stats says nothing about any flag."""
+        for activity_stats in ({}, None, "not json"):
+            with self.subTest(activity_stats=activity_stats):
+                _, params = self._agent_update(activity_stats)
+
+                self.assertEqual(params[3], [])
 
 
 if __name__ == "__main__":

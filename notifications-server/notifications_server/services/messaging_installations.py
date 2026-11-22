@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from notifications_server.models.models import (
     Integration,
@@ -26,6 +26,7 @@ from notifications_server.models.models import (
     MessagingPlatform,
 )
 from notifications_server.security.secrets import decrypt, encrypt
+from notifications_server.services.cache import Cache
 from notifications_server.utils.datetime_utils import utc_now
 
 LOG = logging.getLogger(__name__)
@@ -57,6 +58,8 @@ WEBHOOK_PLATFORM_TYPES = frozenset({MS_TEAMS_WEBHOOK_TYPE, SLACK_WEBHOOK_TYPE, G
 TOKEN_FIELD = {"slack": "bot_token", "ms_teams": "access_token", "discord": "bot_token"}
 REFRESH_TOKEN_FIELD = "refresh_token"
 _SECRET_FIELDS = {"bot_token", "access_token", "refresh_token", "webhook_url"}
+# A Slack workspace's URL, from auth.test. api-server's delivery history reads this key to build message links.
+TEAM_URL_FIELD = "team_url"
 
 ORIGIN_LEGACY = "legacy"
 ORIGIN_INTEGRATION = "integration"
@@ -119,6 +122,7 @@ def build_installation(platform: str, integration: Integration, cfg: Dict[str, s
     inst.platform = platform
     inst.team_id = integration.name
     inst.team_name = cfg.get("team_name")
+    inst.team_url = cfg.get(TEAM_URL_FIELD)
     inst.client_id = cfg.get("client_id")
     inst.app_id = cfg.get("app_id")
     inst.username = cfg.get("installed_by")
@@ -129,6 +133,9 @@ def build_installation(platform: str, integration: Integration, cfg: Dict[str, s
     inst.token_expires_at = _parse_dt(cfg.get("token_expires_at"))
     inst.refresh_token_expires_at = _parse_dt(cfg.get("refresh_token_expires_at"))
     inst.channels = _default_channel_shape(platform, cfg)
+    # Kept beside the shape, not in it: routing compares channel shapes, and the name only labels delivery rows.
+    inst.default_channel_name = cfg.get("default_channel_name") or None
+    inst.thread_repeats = str(cfg.get("thread_repeats", "")).lower() != "false"
     inst._origin = ORIGIN_INTEGRATION
     inst._integration_id = integration.id
     return inst
@@ -366,11 +373,12 @@ async def load_google_chat_webhook_installations_async(session, tenant_id) -> Li
 
 
 def load_installations(session, tenant_id, platform: str) -> List[MessagingPlatform]:
-    """Sync union for (tenant, platform); integration rows win over legacy."""
+    """Sync union for (tenant, platform); integration rows win over legacy. MS
+    Teams has no legacy installs: a workspace reaches it only through a bound team."""
     if not tenant_id:
         return []
     integration = load_integration_installations(session, tenant_id, platform)
-    if integration:
+    if integration or platform == "ms_teams":
         return integration
     legacy = (
         session.query(MessagingPlatform)
@@ -384,73 +392,6 @@ def load_installation(session, tenant_id, platform: str) -> Optional[MessagingPl
     """Sync: the single install for (tenant, platform), or None (one per tenant)."""
     installs = load_installations(session, tenant_id, platform)
     return installs[0] if installs else None
-
-
-def load_ms_teams_installation_by_aad_tenant(session, aad_tenant_id) -> Optional[MessagingPlatform]:
-    """The enabled ms_teams install linked to a Microsoft tenant. The integration
-    name is the tenant id; installs saved before that carry "<object id>.<tenant
-    id>" (integrations until the rename migration runs, legacy rows always)."""
-    if not aad_tenant_id:
-        return None
-    suffix = f".{aad_tenant_id}"
-    integ = (
-        session.query(Integration)
-        .filter(
-            Integration.type == "ms_teams",
-            Integration.status != "disabled",
-            or_(Integration.name == aad_tenant_id, Integration.name.endswith(suffix, autoescape=True)),
-        )
-        # Deterministic if two tenants share a Microsoft tenant (the unique index
-        # is skipped while such data exists): the latest connection wins.
-        .order_by(Integration.updated_at.desc().nulls_last(), Integration.id)
-        .first()
-    )
-    if integ:
-        rows = session.query(IntegrationConfigValue).filter(IntegrationConfigValue.integration_id == integ.id).all()
-        return build_installation("ms_teams", integ, _decrypt_config(rows))
-    legacy = (
-        session.query(MessagingPlatform)
-        .filter(
-            MessagingPlatform.platform == "ms_teams",
-            or_(
-                MessagingPlatform.team_id == aad_tenant_id, MessagingPlatform.team_id.endswith(suffix, autoescape=True)
-            ),
-        )
-        .first()
-    )
-    if legacy:
-        legacy._origin = ORIGIN_LEGACY
-    return legacy
-
-
-def ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only: bool = False) -> Optional[str]:
-    """The NudgeBee tenant whose ms_teams install (integration, or legacy row) is
-    linked to this Microsoft tenant, or None. One Microsoft tenant links to one
-    NudgeBee tenant. Connect counts disabled integrations too, so a disabled
-    connection can't be claimed by another workspace."""
-    if not aad_tenant_id:
-        return None
-    suffix = f".{aad_tenant_id}"
-    query = session.query(Integration.tenant_id).filter(
-        Integration.type == "ms_teams",
-        or_(Integration.name == aad_tenant_id, Integration.name.endswith(suffix, autoescape=True)),
-    )
-    if enabled_only:
-        query = query.filter(Integration.status != "disabled")
-    integ = query.order_by(Integration.updated_at.desc().nulls_last(), Integration.id).first()
-    if integ:
-        return str(integ[0])
-    legacy = (
-        session.query(MessagingPlatform.tenant_id)
-        .filter(
-            MessagingPlatform.platform == "ms_teams",
-            or_(
-                MessagingPlatform.team_id == aad_tenant_id, MessagingPlatform.team_id.endswith(suffix, autoescape=True)
-            ),
-        )
-        .first()
-    )
-    return str(legacy[0]) if legacy else None
 
 
 def load_installation_by_team(
@@ -602,7 +543,18 @@ def upsert_messaging_integration(session, tenant_id, platform: str, name: str, c
         integ.updated_by = created_by
     _write_config_values(session, integ.id, config)
     session.commit()
+    # Sends read the tenant's installs from a cache; without this a new connection
+    # is invisible to them until the cached list expires.
+    try:
+        Cache().delete_cached_installations(tenant_id)
+    except Exception as e:
+        LOG.warning("Clearing cached installations for tenant %s failed: %s", tenant_id, e)
     return integ
+
+
+def persist_team_url(session, integration_id, team_url: str) -> None:
+    """Save a Slack install's workspace URL with its integration. The caller commits."""
+    _write_config_values(session, integration_id, {TEAM_URL_FIELD: team_url})
 
 
 def persist_messaging_token(

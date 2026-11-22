@@ -86,3 +86,27 @@ func TestBindStagesToEventMapsEveryNonLogStage(t *testing.T) {
 	bindStagesToEvent(security.NewRequestContextForSuperAdmin(), repo, eventID, "fp", "account", "agg")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// An investigation that pauses or fails writes its status by fingerprint (the
+// latest row wins). Binding only the investigation stage first gives this event
+// the latest row, so those writes can no longer land on an older event's
+// completed investigation; the summary and report rows are left alone.
+func TestBindStagesToEventInvestigationOnly(t *testing.T) {
+	rawDB, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rawDB.Close() })
+	repo := events.NewEventAnalysisRepository(&common.DatabaseManager{Db: sqlx.NewDb(rawDB, "postgres")})
+
+	const eventID = "event-new-firing"
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT analysis_id FROM event_analysis_mapping").WithArgs(eventID, events.AnalysisTypeInvestigation).
+		WillReturnRows(sqlmock.NewRows([]string{"analysis_id"}))
+	mock.ExpectQuery("INSERT INTO event_log_analysis").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("analysis-inv"))
+	mock.ExpectExec("INSERT INTO event_analysis_mapping").WithArgs(eventID, "analysis-inv", events.AnalysisTypeInvestigation).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	bindStagesToEvent(security.NewRequestContextForSuperAdmin(), repo, eventID, "fp", "account", "agg", events.AnalysisTypeInvestigation)
+	require.NoError(t, mock.ExpectationsWereMet())
+}

@@ -598,7 +598,7 @@ func (c SplunkEnterpriseConfig) AuthHeaders() map[string]string {
 // SearchEndpoint returns the search-jobs URL for this connection, scoped to the
 // configured app namespace so that app's field extractions and macros are in scope.
 func (c SplunkEnterpriseConfig) SearchEndpoint() string {
-	return fmt.Sprintf("%s/servicesNS/-/%s/search/v2/jobs", c.URL, neturl.PathEscape(c.App))
+	return fmt.Sprintf("%s/servicesNS/-/%s/search/jobs", c.URL, neturl.PathEscape(c.App))
 }
 
 // splunkEnterpriseConfigFromValues resolves a config list into a connection, decrypting

@@ -21,8 +21,8 @@ var elastiCacheClusterSchema = core.SpecificTypeSchema{
 		{Name: "configuration_endpoint"},
 		{Name: "primary_endpoint"},
 		{Name: "reader_endpoint"},
-		{Name: "node_group_endpoints"},
-		{Name: "cache_node_endpoints"},
+		{Name: "node_group_endpoints", Shape: core.PropertyShapeList},
+		{Name: "cache_node_endpoints", Shape: core.PropertyShapeList},
 		{Name: "dns_name"},
 		// Additional provider fields (not yet emitted by our extractor):
 		{Name: "cache_cluster_id"},

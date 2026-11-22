@@ -28,6 +28,28 @@ func (m ServiceNowWebhook) Category() core.IntegrationCategory {
 	return core.IntegrationCategoryIncidentWebhook
 }
 
+// WebhookLabelHelp describes the labels the incident and em_event paths build. Update it with the parser.
+func (m ServiceNowWebhook) WebhookLabelHelp() core.WebhookLabelHelp {
+	return core.WebhookLabelHelp{
+		Summary: "Incident fields become labels under their own name. When the ServiceNow integration is linked, every field of the incident record does.",
+		Labels: []core.WebhookLabelSource{
+			{Label: "priority", Source: "priority"},
+			{Label: "category", Source: "category"},
+			{Label: "assignment_group", Source: "assignment_group"},
+			{Label: "company", Source: "company"},
+			{Label: "location", Source: "location"},
+			{Label: "business_service", Source: "business_service"},
+			{Label: "cmdb_ci", Source: "cmdb_ci_display"},
+			{Label: "state", Source: "incident_state, else state"},
+		},
+		Notes: []string{
+			"Without the ServiceNow integration, values are exactly what the Business Rule sends, for example '1 - Critical' rather than '1', and custom u_ fields are not labels.",
+			"With it, a reference field carries its display value and the raw value is under <field>_value.",
+			"Event Management events send source, node, severity, resource and additional_info.<key> in place of the incident fields.",
+		},
+	}
+}
+
 func (m ServiceNowWebhook) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,

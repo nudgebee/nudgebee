@@ -176,7 +176,7 @@ test(
 
     // onSortByChange always applies 'desc', and the Event Count option maps to
     // fingerprint_event_count — exactly the value the Count column renders.
-    const rendered = await locators.columnValues("Count");
+    const rendered = await locators.eventCounts();
     expect(rendered.length, "The sorted listing rendered no Count cells to compare").toBeGreaterThan(1);
 
     // An event count is a non-negative integer, so digits are stripped out rather than

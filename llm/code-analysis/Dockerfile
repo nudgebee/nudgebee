@@ -66,8 +66,31 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
     go install github.com/cli/cli/v2/cmd/gh@v2.103.3
 
+# nbctl, Nubi's metrics and logs CLI in the workspace. It calls llm-server's
+# workspace nbctl proxy with the per-command execution token, never the
+# backend directly, and the proxy only serves read-only metrics and logs. Only
+# llm-server puts it to use, behind llm_server_workspace_nbctl_enabled. Built
+# from source like glab so the image builds for either architecture. v0.0.4
+# has logs query -o json as one object ({logs, series, truncated, partial,
+# total}); llm-server's nbctl shell hint describes that shape, so bump the two
+# together.
+ARG NBCTL_VERSION=v0.0.4
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+    go install github.com/nudgebee/nbctl@${NBCTL_VERSION}
+
 # Final stage
 FROM ghcr.io/nudgebee/alpine:3.23
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-code-analysis" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee code analysis agent" \
+      description="Code analysis agent used by Nudgebee to investigate and fix issues in source repositories."
 
 
 WORKDIR /app
@@ -76,6 +99,7 @@ WORKDIR /app
 # git, curl, openssh-client, bind-tools (dig), iputils (ping), net-tools (netstat), nmap-ncat (nc)
 # jq, grep, findutils, coreutils, sed, awk, tar, unzip, procps
 # ripgrep (rg), the_silver_searcher (ag)
+# py3-requests for skill scripts; tzdata so Python's zoneinfo resolves time zones
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches instead of a stale cached layer. Committed (not a build-arg) so each
@@ -106,42 +130,13 @@ RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" \
     ripgrep \
     the_silver_searcher \
     ca-certificates \
-    aws-cli \
     python3 \
     py3-pip \
     py3-pyflakes \
+    py3-requests \
+    tzdata \
     bash
 
-# Install Google Cloud SDK
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-        curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-x86_64.tar.gz && \
-        tar -xf google-cloud-cli-linux-x86_64.tar.gz && \
-        rm google-cloud-cli-linux-x86_64.tar.gz; \
-    elif [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
-        curl -O https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-arm.tar.gz && \
-        tar -xf google-cloud-cli-linux-arm.tar.gz && \
-        rm google-cloud-cli-linux-arm.tar.gz; \
-    fi && \
-    ./google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false && \
-    ./google-cloud-sdk/bin/gcloud components install beta alpha --quiet && \
-    rm -rf ./google-cloud-sdk/.install/.backup ./google-cloud-sdk/.install/.download && \
-    rm -rf ./google-cloud-sdk/platform/bundledpythonunix ./google-cloud-sdk/bin/gcloud-crc32c && \
-    rm -rf /root/.config/gcloud
-# Run gcloud on the system interpreter (which carries cryptography>=48, installed
-# below) instead of the SDK's bundled python. The bundle ships a frozen
-# cryptography (46.x) + pip that Google patches only on its own cadence, so it
-# accrued HIGH/MEDIUM CVEs we cannot apt/apk-upgrade; deleting it removes them.
-# gcloud-crc32c is a Go binary that only accelerates `gcloud storage` transfers
-# (unused here — GCS access goes through the Go SDK), so it is dead weight
-# carrying stdlib CVEs from Google's build toolchain. Validated: gcloud resolves
-# /usr/bin/python3 and the service-account auth crypto path works with the bundle
-# removed.
-ENV CLOUDSDK_PYTHON=/usr/bin/python3
-# Keep writable HOME directories out of PATH. Workspace commands may persist
-# files under HOME, but must not be able to shadow image-owned tools or relay
-# shims such as kubectl, ssh, git, and gh.
-ENV PATH=/app/google-cloud-sdk/bin:$PATH
 # Keep dependency/build caches in explicit, workspace-owned locations so the
 # runtime can share them across worktrees and remove them safely when idle.
 ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
@@ -154,55 +149,46 @@ ENV GOCACHE=/tmp/code-analysis/shared-cache/go-build \
     MAVEN_OPTS=-Dmaven.repo.local=/tmp/code-analysis/shared-cache/maven \
     GRADLE_USER_HOME=/tmp/code-analysis/shared-cache/gradle
 
-# Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)
-# from system Python packages used by apk-installed aws-cli.
-# The system packages aws-cli runs on are then upgraded past Alpine's py3-*
-# builds, which lag these fixes: certifi (GHSA-6q48-6c7w-9gw2), urllib3
-# (GHSA-mf9v-mfxr-j63j), and setuptools' vendored jaraco.context and wheel
-# (84.2.1 vendors 6.1.0 / 0.46.3; GHSA-58pv-8j8x-9vj2, GHSA-8rrh-rw8j-w5fx).
-RUN apk add --no-cache --virtual .build-deps \
-    gcc \
-    musl-dev \
-    python3-dev \
-    libffi-dev \
-    openssl-dev \
-    cargo \
-    make \
-    linux-headers && \
-    python3 -m venv /opt/azure-cli-venv && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
-    ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
-    pip install --no-cache-dir --break-system-packages --upgrade \
-        "cryptography>=48.0.1" "certifi>=2026.10.18" "urllib3>=2.7.0,<3" "jmespath>=1.1.0" "setuptools>=84.2.1" && \
-    apk del .build-deps
-# urllib3 2.8.0 warns on the `strict` argument Alpine's botocore still passes, once
-# per aws call. Silence that one warning so it stays out of command output.
-ENV PYTHONWARNINGS=ignore::FutureWarning:urllib3.poolmanager
-
-# Pre-install Azure CLI extensions to a fixed directory.
-# AZURE_EXTENSION_DIR decouples extension storage from AZURE_CONFIG_DIR,
-# ensuring extensions remain available when AZURE_CONFIG_DIR is overridden
-# per-session for auth isolation. Without this, dynamic extension installs
-# (e.g. log-analytics) trigger a CLI re-execution that loses login state.
-ENV AZURE_EXTENSION_DIR=/opt/azure-cli-extensions
-RUN mkdir -p /opt/azure-cli-extensions && \
-    az extension add --name log-analytics && \
-    az extension add --name costmanagement
-
 # Install build & development tools for code verification
 # These enable the agent to run build/lint/test commands on cloned repositories.
 # Go is copied from the builder stage instead of `apk add go` because Alpine
 # ships an older Go than the builder, which fails on target repos whose go.mod
 # requires a newer toolchain (e.g. nudgebee/api-server/services requires >= 1.26.1).
+#
+# gcc + musl-dev: `go test -race` needs cgo and a C compiler; without them a
+# race-enabled test target stops at "-race requires cgo". cgo stays off by
+# default (see go.env below), so a race run opts in with CGO_ENABLED=1.
+# yamllint: lets the agent confirm that a YAML file it edited (Helm values, plain
+# manifests) still parses. The stock config also reports style findings and exits
+# non-zero on a line over 80 characters, which reads as "I broke this" on a file
+# that was already like that. /usr/local/bin/yamllint therefore defaults to a
+# config that reports only syntax errors and duplicate keys. It is a wrapper
+# rather than an ENV so the default also holds on the /execute path, which builds
+# its own environment. A repository's own .yamllint, or a YAMLLINT_CONFIG_FILE set
+# by the caller, still wins. Helm chart templates are Go templates, not YAML, and
+# report a syntax error either way.
+# The last three lines fail the build if that default stops working: a valid
+# document must pass, a duplicate key and a broken indent must not.
 RUN apk add --no-cache \
     make \
     nodejs \
-    npm
+    npm \
+    gcc \
+    musl-dev \
+    yamllint \
+    && mkdir -p /etc/yamllint \
+    && printf 'rules:\n  key-duplicates: enable\n' > /etc/yamllint/syntax-only.yaml \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'export YAMLLINT_CONFIG_FILE="${YAMLLINT_CONFIG_FILE:-/etc/yamllint/syntax-only.yaml}"' \
+        'exec /usr/bin/yamllint "$@"' > /usr/local/bin/yamllint \
+    && chmod 755 /usr/local/bin/yamllint \
+    && printf 'a: 1\nb: [x, y]\n' | yamllint - \
+    && ! printf 'a: 1\na: 2\n' | yamllint - > /dev/null \
+    && ! printf 'a: 1\n b: 2\n' | yamllint - > /dev/null
 
 # Install common linters and package managers
 # Python tools are installed in a venv to avoid polluting system site-packages
-# (e.g. poetry pulls in urllib3 2.x which breaks apk-installed aws-cli)
 # Alpine's npm package lags npm's own dependency fixes (tar, minimatch, pacote), so
 # replace it with a pinned npm from the same major. The prefix keeps it out of the
 # paths `apk del` removes, and the apk copy has to go or scanners keep reporting it.
@@ -263,9 +249,17 @@ RUN npm install --no-save --prefix /tmp/undicifix "undici@${UNDICI_VERSION}" \
 # against modules that pin go >= 1.26.
 COPY --from=builder /usr/local/go /usr/local/go
 ENV PATH=/usr/local/go/bin:$PATH
+# gcc is installed above for race tests, and a C compiler on PATH flips Go's
+# default to CGO_ENABLED=1 for every build. Keep cgo off by default so the agent's
+# builds and the automatic build check compile exactly as they did without gcc.
+# Set in GOROOT/go.env rather than ENV so it also applies on the /execute path,
+# which builds its own environment. CGO_ENABLED=1 on a command still overrides it.
+RUN echo 'CGO_ENABLED=0' >> /usr/local/go/go.env \
+    && test "$(go env CGO_ENABLED)" = "0"
 COPY --from=builder /usr/local/bin/golangci-lint /usr/local/bin/golangci-lint
 COPY --from=glab-builder /usr/local/bin/glab /usr/local/bin/glab
 COPY --from=glab-builder /usr/local/bin/gh /usr/bin/gh
+COPY --from=glab-builder /usr/local/bin/nbctl /usr/local/bin/nbctl
 
 # Create a non-root user
 RUN adduser -D -g '' appuser
@@ -273,7 +267,7 @@ RUN adduser -D -g '' appuser
 # Create workspace directory and set ownership
 RUN mkdir -p /tmp/code-analysis && \
     mkdir -p /app/workspaces && \
-    chown -R appuser:appuser /tmp/code-analysis /app /opt/azure-cli-extensions
+    chown -R appuser:appuser /tmp/code-analysis /app
 
 # Copy binary from builder
 COPY --from=builder /app/code-analysis-agent .

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/services/security"
@@ -53,6 +54,10 @@ type LLMRequest struct {
 	// established authority for this run (an approved ticket, an approval task)
 	// names the tools that authority covers. Tools not listed still prompt.
 	ToolConfirmations map[string]string `json:"tool_confirmations,omitempty"`
+	// Headers are extra request headers for llm-server (a run claim, which
+	// llm-server honours only from a caller with the service token). Never
+	// part of the request body.
+	Headers map[string]string `json:"-"`
 }
 
 type LLMEventRequest struct {
@@ -134,20 +139,46 @@ var stoppedConversationStatuses = map[string]bool{
 }
 
 func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMResponse, error) {
-
-	if ctx.GetSecurityContext().GetTenantId() == "" {
-		return LLMResponse{}, errors.New("llm: tenant is required")
-	}
-
-	if err := common.ValidateStruct(request); err != nil {
+	convId, err := StartChat(ctx, request)
+	if err != nil {
 		return LLMResponse{}, err
 	}
 
-	headersMap := map[string]string{
+	// Polling for completion
+	retryAttempts := config.Config.RunbookServerLlmRetryAttempts
+	if retryAttempts <= 0 {
+		retryAttempts = 15
+	}
+	backoff := time.Duration(config.Config.RunbookServerLlmInitialBackoffSeconds) * time.Second
+	if backoff <= 0 {
+		backoff = 2 * time.Second
+	}
+	return pollChat(ctx, convId, request.AccountId, backoff, false, func(attempt int) bool { return attempt < retryAttempts })
+}
+
+func llmHeaders(ctx *security.RequestContext) map[string]string {
+	return map[string]string{
 		"x-tenant-id":                      ctx.GetSecurityContext().GetTenantId(),
 		"Content-Type":                     "application/json",
 		"x-user-id":                        ctx.GetSecurityContext().GetUserId(),
 		config.Config.LlmServerTokenHeader: config.Config.LlmServerToken,
+	}
+}
+
+// StartChat sends a chat request to llm-server and returns the conversation id
+// without waiting for the answer.
+func StartChat(ctx *security.RequestContext, request LLMRequest) (string, error) {
+	if ctx.GetSecurityContext().GetTenantId() == "" {
+		return "", errors.New("llm: tenant is required")
+	}
+
+	if err := common.ValidateStruct(request); err != nil {
+		return "", err
+	}
+
+	headersMap := llmHeaders(ctx)
+	for name, value := range request.Headers {
+		headersMap[name] = value
 	}
 
 	var capabilities map[string]any
@@ -198,42 +229,72 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 		common.HttpWithContext(ctx.GetContext()))
 
 	if err != nil {
-		return LLMResponse{}, err
+		return "", err
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to read body", "error", err)
-		return LLMResponse{}, err
+		return "", err
 	}
 
 	if resp.StatusCode != 200 && resp.StatusCode != 202 {
-		return LLMResponse{}, fmt.Errorf("llm: unable to process request %s", string(body))
+		return "", fmt.Errorf("llm: unable to process request %s", string(body))
 	}
 
 	chatResponse := llmChatResponse{}
 	if err := common.UnmarshalJson(body, &chatResponse); err != nil {
 		ctx.GetLogger().Error("llm: unable to process data", "data", string(body), "error", err)
-		return LLMResponse{}, err
+		return "", err
 	}
 
 	convId := chatResponse.Data.ConversationId
 	if convId == "" {
-		return LLMResponse{}, errors.New("llm: conversation_id not found in initial response")
+		return "", errors.New("llm: conversation_id not found in initial response")
 	}
+	return convId, nil
+}
 
-	// Polling for completion
-	retryAttempts := config.Config.RunbookServerLlmRetryAttempts
-	if retryAttempts <= 0 {
-		retryAttempts = 15
-	}
-	backoff := time.Duration(config.Config.RunbookServerLlmInitialBackoffSeconds) * time.Second
-	if backoff <= 0 {
-		backoff = 2 * time.Second
-	}
+// WaitForChat polls a conversation started by StartChat until it answers,
+// ends, or until passes. tick runs before every poll (a Temporal heartbeat).
+// A 401 or 403 from chat_get ends the wait with ErrChatRefused: a permission
+// the caller lacks does not appear while it waits.
+func WaitForChat(ctx *security.RequestContext, conversationID, accountID string, until time.Time, every time.Duration, tick func()) (LLMResponse, error) {
+	return pollChat(ctx, conversationID, accountID, every, true, func(int) bool {
+		if tick != nil {
+			tick()
+		}
+		return time.Now().Add(every).Before(until)
+	})
+}
 
-	for i := 0; i < retryAttempts; i++ {
+// StopChat stops a conversation that is still running (llm-server chat_stop).
+func StopChat(ctx *security.RequestContext, conversationID, accountID string) error {
+	req := llmChatRequest{
+		Action: llmAction{Name: "chat_stop"},
+		Input:  llmChatInput{Request: llmChatInputRequest{ConversationId: conversationID, AccountId: accountID}},
+	}
+	resp, err := common.HttpPost(fmt.Sprintf("%s/v1/completions/chat_stop", config.Config.LlmServerUrl),
+		common.HttpWithHeaders(llmHeaders(ctx)),
+		common.HttpWithJsonBody(req),
+		common.HttpWithContext(ctx.GetContext()))
+	if err != nil {
+		return err
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("llm: chat_stop returned %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// pollChat polls chat_get every backoff while more(attempt) says so. With
+// refusalEnds, a 401 or 403 returns ErrChatRefused instead of polling again.
+func pollChat(ctx *security.RequestContext, convId, accountId string, backoff time.Duration, refusalEnds bool, more func(attempt int) bool) (LLMResponse, error) {
+	headersMap := llmHeaders(ctx)
+	for i := 0; more(i); i++ {
 		select {
 		case <-ctx.GetContext().Done():
 			return LLMResponse{}, ctx.GetContext().Err()
@@ -245,12 +306,12 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 			Input: llmChatInput{
 				Request: llmChatInputRequest{
 					ConversationId: convId,
-					AccountId:      request.AccountId,
+					AccountId:      accountId,
 				},
 			},
 		}
 
-		resp, err = common.HttpPost(fmt.Sprintf("%s/v1/completions/chat_get", config.Config.LlmServerUrl),
+		resp, err := common.HttpPost(fmt.Sprintf("%s/v1/completions/chat_get", config.Config.LlmServerUrl),
 			common.HttpWithHeaders(headersMap),
 			common.HttpWithJsonBody(getReq),
 			common.HttpWithContext(ctx.GetContext()))
@@ -260,13 +321,16 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 			continue
 		}
 
-		body, err = io.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			ctx.GetLogger().Error("llm: unable to read body in chat_get", "error", err)
 			continue
 		}
 
+		if refusalEnds && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+			return LLMResponse{}, fmt.Errorf("%w (%d): %s", ErrChatRefused, resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 		if resp.StatusCode != 200 {
 			ctx.GetLogger().Warn("llm: chat_get returned non-200", "status", resp.StatusCode, "body", string(body))
 			continue
@@ -302,8 +366,14 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 
 		ctx.GetLogger().Info("llm: request in progress", "conversation_id", convId, "attempt", i+1)
 	}
-	return LLMResponse{}, errors.New("llm: max retry attempts reached")
+	return LLMResponse{}, ErrChatStillRunning
 }
+
+// ErrChatStillRunning: polling stopped before the conversation finished.
+var ErrChatStillRunning = errors.New("llm: max retry attempts reached")
+
+// ErrChatRefused: llm-server refused to show the conversation to the caller.
+var ErrChatRefused = errors.New("llm: not allowed to read the conversation")
 
 func ProcessEventRequest(ctx *security.RequestContext, request LLMEventRequest) (LLMResponse, error) {
 	return LLMResponse{}, errors.New("not supported")

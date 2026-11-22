@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/services/common"
 	"nudgebee/services/integrations"
 	"nudgebee/services/security"
 
@@ -11,7 +12,7 @@ import (
 )
 
 func TestBuildAzureMetricKql_MetricNamePath(t *testing.T) {
-	kql, err := buildAzureMetricKql("requests/duration", 1700000000000, 1700003600000, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, "requests/duration", 1700000000000, 1700003600000, 5, nil, nil)
 	assert.NoError(t, err)
 	assert.True(t, strings.HasPrefix(kql, "customMetrics"), "should query customMetrics table")
 	assert.Contains(t, kql, "where timestamp between (datetime(")
@@ -22,7 +23,7 @@ func TestBuildAzureMetricKql_MetricNamePath(t *testing.T) {
 
 func TestBuildAzureMetricKql_LabelsAndMatchers(t *testing.T) {
 	kql, err := buildAzureMetricKql(
-		"cpu",
+		azureAppInsightsMetricSchema, "cpu",
 		1700000000000, 1700003600000, 1,
 		map[string]string{"role": "api"},
 		[]LabelMatcher{{Label: "region", Operator: "_eq", Value: "us-east"}, {Label: "env", Operator: "_contains", Value: "prod"}},
@@ -34,13 +35,13 @@ func TestBuildAzureMetricKql_LabelsAndMatchers(t *testing.T) {
 }
 
 func TestBuildAzureMetricKql_UnsupportedOperator(t *testing.T) {
-	_, err := buildAzureMetricKql("cpu", 1, 2, 1, nil, []LabelMatcher{{Label: "x", Operator: "_regex", Value: "y"}})
+	_, err := buildAzureMetricKql(azureAppInsightsMetricSchema, "cpu", 1, 2, 1, nil, []LabelMatcher{{Label: "x", Operator: "_regex", Value: "y"}})
 	assert.Error(t, err)
 }
 
 func TestBuildAzureMetricKql_RawPassthrough(t *testing.T) {
 	raw := "performanceCounters\n| summarize avg(value) by bin(timestamp, 5m)"
-	kql, err := buildAzureMetricKql(raw, 1700000000000, 1700003600000, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, raw, 1700000000000, 1700003600000, 5, nil, nil)
 	assert.NoError(t, err)
 	// time-range guard injected after the table, original body preserved
 	assert.Contains(t, kql, "performanceCounters")
@@ -50,7 +51,7 @@ func TestBuildAzureMetricKql_RawPassthrough(t *testing.T) {
 
 func TestBuildAzureMetricKql_RawWithExistingTimeFilterUntouched(t *testing.T) {
 	raw := "customMetrics | where timestamp > ago(1h) | summarize avg(value)"
-	kql, err := buildAzureMetricKql(raw, 1, 2, 5, nil, nil)
+	kql, err := buildAzureMetricKql(azureAppInsightsMetricSchema, raw, 1, 2, 5, nil, nil)
 	assert.NoError(t, err)
 	assert.Equal(t, raw, kql)
 }
@@ -152,4 +153,40 @@ func TestInjectAzureKqlAfterTable_SkipsLetAndComments(t *testing.T) {
 	assert.Contains(t, out, "customMetrics\n| where ts > ago(1h)")
 	// the let-line pipe was not used as the split point
 	assert.NotContains(t, out, "let prefix = \"a\n")
+}
+
+// An HTTP 200 carrying tables and a top-level error object is a partial answer;
+// the error reaches the Note (#39201).
+func TestAzureMetricSource_FetchMetricsQuery_PartialErrorNote(t *testing.T) {
+	body := `{
+		"tables": [{"name": "PrimaryResult", "columns": [{"name": "timestamp"}, {"name": "value"}],
+			"rows": [["2023-11-14T22:13:20Z", 42]]}],
+		"error": {"code": "PartialError", "message": "There were some errors when processing your query.",
+			"details": [{"code": "EngineError", "message": "Query result set has exceeded the internal record count limit."}]}
+	}`
+	src := &AzureAppInsightsMetricSource{
+		getConfigs: func(_ *security.RequestContext, _ string) (integrations.AzureAppInsightsConfig, error) {
+			return integrations.AzureAppInsightsConfig{AzureAppInsightsAppID: "app"}, nil
+		},
+		execQuery: func(_ *security.RequestContext, _ integrations.AzureAppInsightsConfig, _ string) (AzureResponse, error) {
+			var out AzureResponse
+			return out, common.UnmarshalJson([]byte(body), &out)
+		},
+	}
+	out, err := src.FetchMetricsQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), FetchMetricsRequest{
+		AccountId: "acc",
+		Queries:   map[string]string{"q1": "cpu"},
+		StartTime: 1700000000000,
+		EndTime:   1700003600000,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, out.Results, 1)
+	assert.Len(t, out.Results[0].Payload, 1)
+	assert.Equal(t, "Azure reported a partial error: PartialError: There were some errors when processing your query. "+
+		"(EngineError: Query result set has exceeded the internal record count limit.). These results may be incomplete.",
+		out.Results[0].Note)
+
+	assert.Empty(t, azurePartialErrorNote(nil))
+	assert.Equal(t, "Azure reported a partial error: boom. These results may be incomplete.",
+		azurePartialErrorNote(&AzureQueryError{Message: "boom"}))
 }

@@ -195,6 +195,8 @@ func (a *argoCDHistoryAction) AutoExecute(ctx PlaybookActionContext) (PlaybookAc
 	}
 
 	// Match by service label (using serviceName), subject name as service label, or workload name.
+	// is_active = true rather than IS NOT FALSE so the partial index on active
+	// workloads applies; the column is NOT NULL, so the two select the same rows.
 	query := `
 		SELECT COALESCE(meta -> 'config' -> 'labels' ->> 'argocd.argoproj.io/instance', '')::text AS argo_instance_label,
 		       COALESCE(meta -> 'config' -> 'annotations' ->> 'argocd.argoproj.io/tracking-id', '')::text AS argo_tracking_id
@@ -205,7 +207,7 @@ func (a *argoCDHistoryAction) AutoExecute(ctx PlaybookActionContext) (PlaybookAc
 			OR ksw.labels ->> 'service'::text = $3
 			OR ksw.labels ->> 'tags.datadoghq.com/service'::text = $3
 			OR ksw.name = $3)
-		AND is_active IS NOT FALSE
+		AND is_active = true
 		-- Several rows can match the OR above; prefer one that actually carries ArgoCD
 		-- ownership ('' sorts last under DESC) over an arbitrary pick.
 		ORDER BY argo_instance_label DESC, argo_tracking_id DESC LIMIT 1`

@@ -311,7 +311,10 @@ query FilteredResourceCounts {
           count: r.count_resource || 0,
         }))
         .filter((s: { service_name: string; count: number }) => s.service_name)
-        .sort((a: { count: number }, b: { count: number }) => b.count - a.count);
+        .sort(
+          (a: { service_name: string; count: number }, b: { service_name: string; count: number }) =>
+            servicePriorityRank(a.service_name) - servicePriorityRank(b.service_name) || b.count - a.count
+        );
 
       return { data: services };
     } catch (error) {
@@ -320,6 +323,41 @@ query FilteredResourceCounts {
     }
   },
 };
+
+const SERVICE_PRIORITY_ORDER = [
+  // AWS — compute, storage, database, then networking/CDN
+  'AmazonEC2',
+  'AmazonS3',
+  'AmazonRDS',
+  'AWSLambda',
+  'AmazonEKS',
+  'AmazonECS',
+  'AmazonDynamoDB',
+  'AmazonElastiCache',
+  'AmazonCloudFront',
+  'AmazonVPC',
+  // GCP
+  'Compute Engine',
+  'Cloud Storage',
+  'Cloud SQL',
+  'Kubernetes Engine',
+  'Cloud Run',
+  'Cloud Functions',
+  'BigQuery',
+  'Networking',
+  // Azure
+  'microsoft.compute/virtualmachines',
+  'microsoft.storage/storageaccounts',
+  'microsoft.sql/servers',
+  'microsoft.containerservice/managedclusters',
+  'microsoft.web/sites',
+  'microsoft.documentdb/databaseaccounts',
+  'microsoft.cache/redis',
+  'microsoft.network/virtualnetworks',
+];
+
+const SERVICE_PRIORITY_RANK = new Map(SERVICE_PRIORITY_ORDER.map((name, i) => [name, i] as const));
+const servicePriorityRank = (name: string) => SERVICE_PRIORITY_RANK.get(name) ?? Number.MAX_SAFE_INTEGER;
 
 // Billing line item types to exclude (not actual resources)
 const EXCLUDED_RESOURCE_TYPES = [

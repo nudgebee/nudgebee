@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/events"
+	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/model" // Updated import
 	"nudgebee/runbook/internal/storage"
 	"nudgebee/runbook/internal/tasks"
@@ -21,7 +23,7 @@ import (
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/security"
-	"nudgebee/runbook/services/ticket"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -50,7 +52,11 @@ type WorkflowService interface {
 	RetriggerWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) (string, error)
 	ListWorkflows(ctx *security.RequestContext, accountIds []string, request model.ListWorkflowRequest) (model.ListWorkflowResponse, error)
 	SearchAIInvocableWorkflows(ctx *security.RequestContext, accountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
+	SearchAIInvocableWorkflowsInOtherAccounts(ctx *security.RequestContext, excludeAccountId, query string, limit int) (model.AIWorkflowSearchResponse, error)
+	ListAIToolSettings(ctx *security.RequestContext, accountIds []string) (model.ListAIToolSettingsResponse, error)
+	UpdateAISettings(ctx *security.RequestContext, accountId, id string, aiInvocable, aiAutoApprove bool) (model.AIToolSetting, error)
 	GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error)
+	GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error)
 	UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error)
 	DeleteWorkflow(ctx *security.RequestContext, accountId, id string) error
 	ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error)
@@ -60,7 +66,9 @@ type WorkflowService interface {
 	GetDetailedWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*model.WorkflowExecutionDetails, error)
 	UpdateWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) error
 	CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error
+	CompleteApprovalTaskFromLink(ctx *security.RequestContext, token, status, approverEmail string, result any) error
 	CompleteApprovalTaskFromUI(ctx *security.RequestContext, accountID, workflowID, executionID, taskID, status, comments string) error
+	CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error
 	CancelWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) error
 	PauseWorkflow(ctx *security.RequestContext, accountId, id string) error
 	ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error
@@ -123,6 +131,9 @@ type Service struct {
 	taskRegistry     *tasks.TaskRegistry
 	workflowExecutor *WorkflowExecutor
 	configService    configSvc.ConfigService
+	// runGate decides runs of automations bound to an agent; nil (no extension
+	// registered) refuses them all.
+	runGate RunGate
 
 	// Temporal namespace retention, read lazily and cached once known. It is
 	// the hard ceiling on how far back the execution dashboard can look.
@@ -142,6 +153,9 @@ func NewService(temporalClient client.Client, store model.WorkflowStore, dataCon
 	if len(templateStore) > 0 {
 		s.templateStore = templateStore[0]
 	}
+	if runGateFactory != nil {
+		s.runGate = runGateFactory(RunGateDeps{Store: store, TaskRegistry: taskRegistry, Workflows: s})
+	}
 	return s
 }
 
@@ -153,6 +167,7 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 	}
 
 	tenantID := ctx.GetSecurityContext().GetTenantId()
+	configValue := s.nonSecretConfigValues(ctx, accountID)
 
 	validateHooks := func(hooks *model.Hooks, ownerID string) error {
 		if hooks == nil {
@@ -175,6 +190,19 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 				if taskImpl.InputSchema() != nil {
 					if err := taskImpl.InputSchema().Validate(action.Params); err != nil {
 						return common.ErrorBadRequest(fmt.Sprintf("hook '%s[%d]' for '%s' parameters validation failed: %v", hookType, i, ownerID, err))
+					}
+					owner := fmt.Sprintf("hook '%s[%d]' for '%s'", hookType, i, ownerID)
+					for paramName, prop := range taskImpl.InputSchema().Properties {
+						if prop.Type != types.PropertyTypeTicket && prop.Type != types.PropertyTypeIntegration {
+							continue
+						}
+						strVal, _ := action.Params[paramName].(string)
+						if strVal == "" {
+							continue
+						}
+						if _, err := validateIntegrationParam(ctx, owner, paramName, prop, strVal, configValue); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -272,29 +300,31 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 						continue
 					}
 
-					// Skip DB-level validation for template expressions — they resolve at execution time
-					if strings.Contains(strVal, "{{") {
+					if prop.Type == types.PropertyTypeTicket || prop.Type == types.PropertyTypeIntegration {
+						resolvedID, err := validateIntegrationParam(ctx, fmt.Sprintf("task '%s'", task.ID), paramName, prop, strVal, configValue)
+						if err != nil {
+							return err
+						}
+						// The account-scoped lookup predates the kind check and stays limited to what it
+						// covered: a literal value on a parameter that declares a single integration type.
+						if prop.Type == types.PropertyTypeIntegration && prop.SubType != "" && resolvedID != "" && !isTemplated(strVal) {
+							if lookupAccount, known := integrationLookupAccount(accountID, task); known {
+								if _, err := integrations.GetIntegration(ctx, lookupAccount, prop.SubType, resolvedID); err != nil {
+									return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
+								}
+							}
+						}
 						continue
 					}
 
-					switch prop.Type {
-					case types.PropertyTypeAccount:
+					// Skip DB-level validation for template expressions — they resolve at execution time
+					if isTemplated(strVal) {
+						continue
+					}
+
+					if prop.Type == types.PropertyTypeAccount {
 						if err := cloud.ValidateAccount(ctx, strVal); err != nil {
 							return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-						}
-					case types.PropertyTypeTicket:
-						if err := ticket.ValidateTicketConfig(ctx, strVal); err != nil {
-							return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-						}
-					case types.PropertyTypeIntegration:
-						if prop.SubType != "" {
-							resolvedID, err := integrations.ResolveIntegrationID(ctx, strVal, []string{prop.SubType})
-							if err != nil {
-								return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-							}
-							if _, err := integrations.GetIntegration(ctx, accountID, prop.SubType, resolvedID); err != nil {
-								return common.ErrorBadRequest(fmt.Sprintf("task '%s' parameter '%s' validation failed: %v", task.ID, paramName, err))
-							}
 						}
 					}
 				}
@@ -348,6 +378,10 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 			}
 		}
 		return nil
+	}
+
+	if err := validateAIStepAccounts(ctx, accountID, wf.Definition); err != nil {
+		return err
 	}
 
 	return validateRecursive(wf.Definition.Tasks)
@@ -530,6 +564,13 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 		// saved row carries an unattended-run opt-in waiting for the moment a
 		// human ticks ai_invocable, which is not what that human agreed to.
 		wf.AIAutoApprove = false
+		// Nor is it born switched on. The model can write "status": "ACTIVE" into
+		// the definition, and honouring it starts an event, webhook or schedule
+		// trigger firing before anyone has reviewed the automation. Switching it
+		// on is the user's call, through Activate. INACTIVE (missing configs) stays.
+		if wf.Status == model.WorkflowStatusActive {
+			wf.Status = model.WorkflowStatusPaused
+		}
 	}
 
 	validStatuses := []model.WorkflowStatus{model.WorkflowStatusActive, model.WorkflowStatusPaused, model.WorkflowStatusInactive}
@@ -617,65 +658,42 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	return storedId, token, nil
 }
 
+// hasScheduleTrigger reports whether any trigger is a schedule.
+func hasScheduleTrigger(triggers []model.Trigger) bool {
+	for _, t := range triggers {
+		if t.Type == model.WorkflowTriggerSchedule {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenantId, accountId string, wf *model.Workflow) (client.WorkflowRun, string, error) {
 	scheduleClient := s.temporalClient.ScheduleClient()
 
 	var webhookToken string
 	scheduleCount := 0
 
-	// Live execution snapshot for scheduled runs, resolved lazily on the first
-	// schedule trigger so webhook-only workflows skip the lookup. Scheduled runs
-	// must bake and execute the live version, not the draft (H1).
+	// Schedules run the live version as the workflow's owner, so their cron and
+	// inputs come from the live version's triggers too, not the draft. A draft
+	// save must not change what a schedule does with the owner's rights; only
+	// making a version live does (#41035).
 	var liveExecDef model.WorkflowDefinition
 	var liveVersionMemo map[string]any
+	liveLoaded := false
+	if d, m, rerr := s.resolveLiveExecution(ctx.GetContext(), id); rerr == nil {
+		liveExecDef, liveVersionMemo, liveLoaded = d, m, true
+	} else if hasScheduleTrigger(wf.Definition.Triggers) {
+		return nil, "", rerr
+	}
 
-	// Process all triggers
-	for i, trigger := range wf.Definition.Triggers {
-		switch trigger.Type {
-		case model.WorkflowTriggerSchedule:
-			if c, ok := trigger.Params["cron"].(string); ok && c != "" {
-				cron := c
-				var overlapPolicy string
-				var catchupWindow string
-				inputs := make(map[string]any)
-
-				// Extract schedule configuration params
-				if op, ok := trigger.Params["overlap_policy"].(string); ok {
-					overlapPolicy = op
-				}
-				if cw, ok := trigger.Params["catchup_window"].(string); ok {
-					catchupWindow = cw
-				}
-
-				// Extract workflow inputs from params (everything else)
-				for k, v := range trigger.Params {
-					if k != "cron" && k != "overlap_policy" && k != "catchup_window" {
-						inputs[k] = v
-					}
-				}
-
-				// If workflow is Inactive, ensure schedule is removed.
-				if wf.Status == model.WorkflowStatusInactive {
-					// Logic to remove schedules handled below
-				} else {
-					// Create or update this specific schedule. Resolve the live
-					// version once (the schedule executes it, not the draft) and
-					// reuse it across every schedule trigger on this workflow.
-					if liveVersionMemo == nil {
-						d, m, rerr := s.resolveLiveExecution(ctx.GetContext(), id)
-						if rerr != nil {
-							return nil, "", rerr
-						}
-						liveExecDef, liveVersionMemo = d, m
-					}
-					paused := wf.Status == model.WorkflowStatusPaused
-					err := s.createOrUpdateSchedule(ctx.GetContext(), id, tenantId, accountId, wf, scheduleCount, cron, overlapPolicy, catchupWindow, inputs, paused, liveExecDef, liveVersionMemo)
-					if err != nil {
-						return nil, "", fmt.Errorf("failed to create or update schedule index %d: %w", scheduleCount, err)
-					}
-					scheduleCount++
-				}
-			} else {
+	if liveLoaded {
+		for i, trigger := range liveExecDef.Triggers {
+			if trigger.Type != model.WorkflowTriggerSchedule {
+				continue
+			}
+			c, ok := trigger.Params["cron"].(string)
+			if !ok || c == "" {
 				// A schedule trigger with no cron registers nothing, so the workflow
 				// looks scheduled and active and never fires. Trigger.Validate now
 				// rejects this on create and update, which is where it can still be
@@ -685,7 +703,38 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 				// unactivatable with no in-product repair, so log and carry on.
 				slog.Warn("schedule trigger has no cron expression; no schedule registered",
 					"workflowID", id, "accountID", accountId, "triggerIndex", i)
+				continue
 			}
+			// If workflow is Inactive, its schedules are removed below.
+			if wf.Status == model.WorkflowStatusInactive {
+				continue
+			}
+			var overlapPolicy, catchupWindow string
+			inputs := make(map[string]any)
+			if op, ok := trigger.Params["overlap_policy"].(string); ok {
+				overlapPolicy = op
+			}
+			if cw, ok := trigger.Params["catchup_window"].(string); ok {
+				catchupWindow = cw
+			}
+			// Workflow inputs are every other param.
+			for k, v := range trigger.Params {
+				if k != "cron" && k != "overlap_policy" && k != "catchup_window" {
+					inputs[k] = v
+				}
+			}
+			paused := wf.Status == model.WorkflowStatusPaused
+			if err := s.createOrUpdateSchedule(ctx.GetContext(), id, tenantId, accountId, wf, scheduleCount, c, overlapPolicy, catchupWindow, inputs, paused, liveExecDef, liveVersionMemo); err != nil {
+				return nil, "", fmt.Errorf("failed to create or update schedule index %d: %w", scheduleCount, err)
+			}
+			scheduleCount++
+		}
+	}
+
+	// Webhook triggers are registered from the draft: they only create the
+	// subscription and its secret; the run they start executes the live version.
+	for i, trigger := range wf.Definition.Triggers {
+		switch trigger.Type {
 		case model.WorkflowTriggerWebhook:
 			if trigger.Internal == nil || trigger.Internal.Name == "" {
 				return nil, "", common.ErrorBadRequest("webhook trigger requires params.integration_name")
@@ -738,7 +787,7 @@ func (s *Service) handleWorkflowTrigger(ctx *security.RequestContext, id, tenant
 	// We rely on the fact that we add SearchAttrWorkflowID to every schedule we create.
 	// Query: "nb_workflow_id = '<id>'"
 	listView, err := scheduleClient.List(ctx.GetContext(), client.ScheduleListOptions{
-		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
+		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, escapeTemporalString(id)),
 	})
 	if err != nil {
 		slog.Error("failed to list schedules for cleanup", "workflowID", id, "error", err)
@@ -792,6 +841,17 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 		return fmt.Errorf("tenantId and accountId are required for scheduling")
 	}
 
+	// Scheduled runs start on Temporal without passing runWorkflow, so the run
+	// gate never sees them: a bound automation must not get a schedule. Read
+	// from the store, never from wf, which may be bound from a request.
+	if s.runGate != nil {
+		if b, err := s.runGate.Binding(ctx, tenantId, workflowID); err != nil {
+			return fmt.Errorf("read binding of workflow %s before scheduling: %w", workflowID, err)
+		} else if b.IsAutomation() {
+			return common.ErrorBadRequest("a bound automation cannot have a schedule: only its agent starts it")
+		}
+	}
+
 	scheduleClient := s.temporalClient.ScheduleClient()
 	scheduleID := fmt.Sprintf("workflow-schedule-%s-%d", workflowID, index)
 
@@ -825,6 +885,14 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 	wfCopy.Definition = execDef
 
 	ensureUpdatedByUser(&wfCopy)
+	// Scheduled runs have no requester: they act as the owner, baked here.
+	// Every path that changes the owner (create, publish-as-live, set-live)
+	// re-registers triggers, so the baked value follows it.
+	owner, err := s.workflowOwner(ctx, tenantId, &wfCopy)
+	if err != nil {
+		return err
+	}
+	wfCopy.PrincipalUserID = owner
 
 	// IMPORTANT: Deep copy Inputs slice because we will modify elements within it
 	if execDef.Inputs != nil {
@@ -894,7 +962,7 @@ func (s *Service) createOrUpdateSchedule(ctx context.Context, workflowID string,
 
 	// Check if schedule exists
 	handle := scheduleClient.GetHandle(ctx, scheduleID)
-	_, err := handle.Describe(ctx)
+	_, err = handle.Describe(ctx)
 	exists := err == nil
 
 	if exists {
@@ -960,6 +1028,30 @@ func setTriggeredByUser(wf *model.Workflow, triggererID string) {
 		ID:          triggererID,
 		DisplayName: displayName,
 	}
+}
+
+// runPrincipal is whose rights every step of a run is checked against: the
+// requester when there is one (manual, retrigger, AI), else the workflow's
+// owner (event, webhook, optimization — these arrive with the system user).
+func (s *Service) runPrincipal(ctx *security.RequestContext, wf *model.Workflow) (string, error) {
+	if u := ctx.GetSecurityContext().GetUserId(); u != "" && u != security.GetSystemUserId() {
+		return u, nil
+	}
+	return s.workflowOwner(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), wf)
+}
+
+// workflowOwner reads the workflow's owner from the store. Always the store,
+// never wf.RunAsUserID: callers pass request-bound workflows (create, update),
+// and a client must not be able to name the user its schedule acts as. ""
+// (no owner) makes every effectful step refuse, which is the intended outcome
+// for an owner that was deleted. A read error is returned, not treated as "no
+// owner": the run is not started rather than started to be refused.
+func (s *Service) workflowOwner(ctx context.Context, tenantID string, wf *model.Workflow) (string, error) {
+	owner, err := s.store.GetRunAsUserID(ctx, tenantID, wf.ID)
+	if err != nil {
+		return "", fmt.Errorf("read owner of workflow %s: %w", wf.ID, err)
+	}
+	return owner, nil
 }
 
 // resolveLiveExecution loads a workflow's live version and returns the definition
@@ -1032,7 +1124,10 @@ func (s *Service) ExecuteWorkflow(ctx *security.RequestContext, accountId, id st
 	// AI-originated runs face extra restrictions on top of the caller's own
 	// permissions. Checked after the live definition is resolved so the gate
 	// inspects what will actually run, not the draft.
-	if ctx.IsAITriggered() {
+	//
+	// A bound automation is not opted in to the assistant at large: the run
+	// gate in runWorkflow decides instead (only its agent).
+	if ctx.IsAITriggered() && !wf.Binding.IsAutomation() {
 		if err := s.assertAIInvocationAllowed(ctx, accountId, wf); err != nil {
 			return "", err
 		}
@@ -1104,6 +1199,38 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		runWorkflowID = id
 	}
 
+	// A bound automation runs only when the run gate allows it. Checked on
+	// this shared tail so no execution path skips it.
+	var decision RunDecision
+	if wf.Binding.IsAutomation() {
+		if s.runGate == nil {
+			return "", errBoundAutomationUnavailable()
+		}
+		var err error
+		if decision, err = s.runGate.CheckRun(ctx, accountId, wf, memo, triggerType, inputs); err != nil {
+			return "", err
+		}
+	} else if wf.Binding.IsTrigger() && triggerType == model.WorkflowTriggerManual && s.runGate != nil {
+		// A person starting an agent's trigger by hand: the extension decides,
+		// and says whose rights the run has.
+		var err error
+		if decision, err = s.runGate.CheckTriggerRun(ctx, accountId, wf, memo, inputs, runWorkflowID); err != nil {
+			return "", err
+		}
+	}
+	boundRunStarted := decision.Started
+	approval := decision.Approval
+	// Only the run tail decides whether a run waits on an approval gate.
+	wf.ApprovalGate = ""
+	if approval != nil {
+		gated, err := withApprovalGate(wf.Definition, approval)
+		if err != nil {
+			return "", err
+		}
+		wf.Definition = gated
+		wf.ApprovalGate = approval.Ref
+	}
+
 	searchAttributes := make(map[string]any)
 	if len(wf.Tags) > 0 {
 		var tags []string
@@ -1138,6 +1265,11 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	if ctx.IsAITriggered() {
 		memo[model.MemoWorkflowAITriggered] = true
 	}
+	if wf.ApprovalGate != "" {
+		memo[model.MemoApprovalGate] = wf.ApprovalGate
+	} else {
+		delete(memo, model.MemoApprovalGate)
+	}
 
 	// Determine workflow timeout
 	workflowTimeout := 1 * time.Hour // Default
@@ -1147,6 +1279,10 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		} else {
 			slog.Warn("Invalid workflow timeout duration, using default", "timeout", wf.Definition.Timeout, "error", err)
 		}
+	}
+	// A gated run first waits for its approval, then gets its own time.
+	if approval != nil {
+		workflowTimeout += approval.Timeout
 	}
 
 	options := client.StartWorkflowOptions{
@@ -1171,14 +1307,36 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 
 	ensureUpdatedByUser(wf)
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
-	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	// A run that acts as its stored owner is not the requester's: it does not
+	// get the requester's tenant-wide configs.
+	wf.RestrictToAccountConfigs = decision.RunAsOwner || !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	var principal string
+	var err error
+	if decision.RunAsOwner {
+		principal, err = s.workflowOwner(ctx.GetContext(), wf.TenantID, wf)
+	} else {
+		principal, err = s.runPrincipal(ctx, wf)
+	}
+	if err != nil {
+		if decision.NotStarted != nil {
+			decision.NotStarted(err)
+		}
+		return "", err
+	}
+	wf.PrincipalUserID = principal
 
 	// Thread the request context so the tracing.Propagator injects the
 	// caller's trace context into the workflow header (start call is a fast
 	// gRPC roundtrip; matches the retrigger path below).
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
+		if decision.NotStarted != nil {
+			decision.NotStarted(err)
+		}
 		return "", err
+	}
+	if boundRunStarted != nil {
+		boundRunStarted(we.GetRunID())
 	}
 	if triggerType == model.WorkflowTriggerManual {
 		emitWorkflowAudit(
@@ -1190,6 +1348,20 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 		)
 	}
 	return we.GetRunID(), nil // Return the actual Temporal Run ID
+}
+
+// WebhookRunInputs builds a webhook run's inputs: webhook_payload is the raw body and
+// webhook_json the parsed body, set only when the body is a JSON object or array.
+func WebhookRunInputs(payload []byte) map[string]any {
+	inputs := map[string]any{"webhook_payload": string(payload)}
+	var parsed any
+	if json.Unmarshal(payload, &parsed) == nil {
+		switch parsed.(type) {
+		case map[string]any, []any:
+			inputs["webhook_json"] = parsed
+		}
+	}
+	return inputs
 }
 
 // FanOutWebhookEvent dispatches a webhook payload to every active workflow whose
@@ -1232,7 +1404,6 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 	if json.Unmarshal(payload, &payloadData) != nil {
 		payloadData = string(payload)
 	}
-	payloadString := string(payload)
 
 	// Build the template context once. The payload is identical across every
 	// subscriber's filter render, and Render does not mutate the context, so
@@ -1280,7 +1451,7 @@ func (s *Service) FanOutWebhookEvent(ctx *security.RequestContext, integrationNa
 				}
 			}
 
-			inputs := map[string]any{"webhook_payload": payloadString}
+			inputs := WebhookRunInputs(payload)
 			runID, exerr := s.ExecuteWorkflow(ctx, wf.AccountID, wf.ID, model.WorkflowTriggerWebhook, inputs)
 			if exerr != nil {
 				sawFailure = true
@@ -1343,6 +1514,10 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 
 	if wf.Status != model.WorkflowStatusActive && wf.Status != model.WorkflowStatusPaused {
 		return "", fmt.Errorf("workflow %s is not active or paused", workflowId)
+	}
+	// A bound automation runs only when its agent starts it.
+	if wf.Binding.IsAutomation() {
+		return "", errBoundAutomationUnavailable()
 	}
 
 	// 3b. Prefer the EXACT version the original execution ran, and re-run that
@@ -1456,6 +1631,11 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 	ensureUpdatedByUser(&wfCopy)
 	setTriggeredByUser(&wfCopy, ctx.GetSecurityContext().GetUserId())
 	wfCopy.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
+	principal, err := s.runPrincipal(ctx, &wfCopy)
+	if err != nil {
+		return "", err
+	}
+	wfCopy.PrincipalUserID = principal
 
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wfCopy, mergedInputs)
 	if err != nil {
@@ -1523,6 +1703,7 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
 		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
 		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
+		PrincipalUserID:          ctx.GetSecurityContext().GetUserId(),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)
@@ -1590,7 +1771,7 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 		}
 	}
 
-	response.Error = ScrubSecretValues(response.Error, s.secretValues(ctx, accountId))
+	response.Error = logsafe.ScrubSecretValues(response.Error, s.secretValues(ctx, accountId))
 
 	return response, nil
 }
@@ -1603,7 +1784,7 @@ const optimizationEventType = "optimization.recommendation"
 // the gates EventRegistry.Match applies, in order, with the same evaluator. Read-only:
 // nothing stored, no run, no tenant data read. Tenancy is checked here instead.
 func (s *Service) CheckTriggerMatch(ctx *security.RequestContext, accountId string, request model.CheckTriggerMatchRequest) (model.CheckTriggerMatchResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeRead) {
 		return model.CheckTriggerMatchResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 	if request.Payload == nil {
@@ -1618,7 +1799,7 @@ func (s *Service) CheckTriggerMatch(ctx *security.RequestContext, accountId stri
 		}
 		filter, _ = request.Params["filter"].(string)
 		if filter == "" {
-			if eventType, _ := request.Params["event_type"].(string); eventType == "" {
+			if len(model.Trigger{Params: request.Params}.EventTypes()) == 0 {
 				// Registry.Refresh drops these — an unfiltered wildcard would match
 				// every event in the account, so it is never registered.
 				return model.CheckTriggerMatchResponse{
@@ -1711,10 +1892,10 @@ func checkEventTriggerGates(request model.CheckTriggerMatchRequest) (model.Check
 		payloadType, _ = request.Payload["aggregation_key"].(string)
 	}
 	// An empty params.event_type is a wildcard rule: evaluated against every event.
-	if triggerType, _ := request.Params["event_type"].(string); triggerType != "" && triggerType != payloadType {
+	if triggerTypes := (model.Trigger{Params: request.Params}).EventTypes(); len(triggerTypes) > 0 && !slices.Contains(triggerTypes, payloadType) {
 		return model.CheckTriggerMatchResponse{
 			Gate:   model.CheckTriggerGateEventType,
-			Reason: fmt.Sprintf("this event's type is '%s', but the trigger listens for '%s'", payloadType, triggerType),
+			Reason: fmt.Sprintf("this event's type is '%s', but the trigger listens for '%s'", payloadType, strings.Join(triggerTypes, "', '")),
 		}, true
 	}
 
@@ -1793,6 +1974,7 @@ func (s *Service) DryRunWorkflowAsync(ctx *security.RequestContext, accountId st
 		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
 		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
 		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
+		PrincipalUserID:          ctx.GetSecurityContext().GetUserId(),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)
@@ -1812,11 +1994,28 @@ func dryRunWorkflowName(name string) string {
 	return "dry-run-" + time.Now().Format(time.RFC3339)
 }
 
-// escapeTemporalString escapes single quotes in a string to prevent injection in Temporal visibility queries.
-// Temporal uses SQL-like syntax where string literals are enclosed in single quotes, and single quotes
-// within the string are escaped by doubling them (e.g. ' -> ”).
+// escapeTemporalString escapes a value for a single-quoted string literal in a
+// Temporal visibility query. Temporal parses the query with a MySQL-style
+// tokenizer, which reads a backslash as an escape character as well as a doubled
+// quote, so both are escaped: backslashes first, then quotes. Every value written
+// into a visibility query goes through this.
 func escapeTemporalString(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), "'", "''")
+}
+
+// temporalIDPattern matches the IDs a caller passes to the execution APIs:
+// UUIDs, and UUIDs with a prefix such as "dry-run-" or "workflow-schedule-".
+var temporalIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$`)
+
+// checkTemporalIDs refuses a caller-supplied ID that is not a plain ID, before
+// any visibility query is built from it.
+func checkTemporalIDs(ids ...string) error {
+	for _, id := range ids {
+		if !temporalIDPattern.MatchString(id) {
+			return common.ErrorBadRequest("invalid id")
+		}
+	}
+	return nil
 }
 
 // validateWorkflowInputs checks if the provided inputs conform to the workflow's defined inputs.
@@ -2028,6 +2227,7 @@ func (s *Service) ListWorkflows(ctx *security.RequestContext, accountIds []strin
 		if workflows[i].Definition.Version == "" {
 			workflows[i].Definition.Version = "v1"
 		}
+		workflows[i].LastExecutionFailedStepCount = failedStepCountFromStatusMessage(workflows[i].LastExecutionStatus, workflows[i].LastExecutionStatusMessage)
 	}
 
 	// Reconcile stale RUNNING statuses by checking Temporal's actual execution status.
@@ -2063,9 +2263,9 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 		}
 
 		query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
-			model.SearchAttrTenantID, tenantID,
-			model.SearchAttrAccountID, workflows[i].AccountID,
-			model.SearchAttrWorkflowID, workflows[i].ID)
+			model.SearchAttrTenantID, escapeTemporalString(tenantID),
+			model.SearchAttrAccountID, escapeTemporalString(workflows[i].AccountID),
+			model.SearchAttrWorkflowID, escapeTemporalString(workflows[i].ID))
 
 		resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
@@ -2104,8 +2304,13 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 			closeTime = latestExec.CloseTime.AsTime()
 		}
 		var statusMessage string
-		if latestStatus == model.WorkflowExecutionStatusTimedOut {
+		switch latestStatus {
+		case model.WorkflowExecutionStatusTimedOut:
 			statusMessage = "Workflow execution timed out"
+		case model.WorkflowExecutionStatusCompleted:
+			failed := s.failedStepsFromMemo(latestExec.Memo)
+			statusMessage = failedStepsStatusMessage(failed)
+			workflows[i].LastExecutionFailedStepCount = failed.FailedStepCount
 		}
 		go func() {
 			dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -2115,6 +2320,27 @@ func (s *Service) reconcileRunningStatuses(ctx *security.RequestContext, workflo
 			}
 		}()
 	}
+}
+
+// GetWorkflowAccount resolves a workflow id to its account for a link that carries
+// none. A workflow the caller cannot read is reported as sql.ErrNoRows, like a missing one.
+func (s *Service) GetWorkflowAccount(ctx *security.RequestContext, id string) (string, error) {
+	if id == "" {
+		return "", fmt.Errorf("id is required")
+	}
+	// Same account set the Automations list uses, so the link and the list agree.
+	scope, err := ResolveAccountScope(ctx, nil)
+	if err != nil {
+		return "", sql.ErrNoRows
+	}
+	accountID, err := s.store.FindAccountID(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), id)
+	if err != nil {
+		return "", err
+	}
+	if !scope.TenantWide && !slices.Contains(scope.AccountIDs, accountID) {
+		return "", sql.ErrNoRows
+	}
+	return accountID, nil
 }
 
 func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string) (*model.Workflow, error) {
@@ -2253,6 +2479,11 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 		if !isValidStatus {
 			return model.Workflow{}, fmt.Errorf("invalid workflow status: %s", workflow.Status)
 		}
+	}
+	// An AI edit cannot switch an automation on either: ACTIVE is kept only when the
+	// automation already is. Activating stays its own step, which asks the user.
+	if ctx.IsAITriggered() && workflow.Status == model.WorkflowStatusActive && existingWf.Status != model.WorkflowStatusActive {
+		workflow.Status = existingWf.Status
 	}
 	// Always preserve LastExecutionStatus (system managed)
 	workflow.LastExecutionStatus = existingWf.LastExecutionStatus
@@ -2500,7 +2731,7 @@ func (s *Service) teardownWorkflowExternals(ctx *security.RequestContext, accoun
 	// List ALL schedules for this workflow using Search Attribute and delete them.
 	// Query: "nb_workflow_id = '<id>'"
 	listView, err := scheduleClient.List(ctx.GetContext(), client.ScheduleListOptions{
-		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, id),
+		Query: fmt.Sprintf("%s = '%s'", model.SearchAttrWorkflowID, escapeTemporalString(id)),
 	})
 	if err != nil {
 		// The schedules cannot be enumerated, so the sequential probe below is a
@@ -2744,14 +2975,18 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
+	if err := checkTemporalIDs(accountId, workflowId); err != nil {
+		return model.ListWorkflowExecutionResponse{}, err
+	}
+
 	if request.Limit <= 0 {
 		request.Limit = 50
 	}
 
 	var conditions []string
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowID, workflowId))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, ctx.GetSecurityContext().GetTenantId()))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, accountId))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, escapeTemporalString(ctx.GetSecurityContext().GetTenantId())))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, escapeTemporalString(accountId)))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowID, escapeTemporalString(workflowId)))
 
 	if request.Status != "" && request.Status != model.WorkflowExecutionStatusUnspecified {
 		// Temporal status values are case-sensitive in some contexts, but usually uppercase in query.
@@ -2879,6 +3114,7 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 				}
 			}
 		}
+		summary.FailedSteps = s.failedStepsFromMemo(info.Memo)
 
 		summaries = append(summaries, summary)
 	}
@@ -2998,6 +3234,11 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 	if !ctx.GetSecurityContext().CanReadAccountData(accountId, "workflows") {
 		return nil, common.ErrorUnauthorized("account not accessible")
 	}
+	// Validate at this entry point too (not only via ResolveTemporalWorkflowID),
+	// matching ListWorkflowExecutions so a malformed id fails fast.
+	if err := checkTemporalIDs(accountId, workflowId, executionId); err != nil {
+		return nil, err
+	}
 
 	temporalId, err := s.ResolveTemporalWorkflowID(ctx, accountId, workflowId, executionId)
 	if err != nil {
@@ -3012,7 +3253,10 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
 			listResp, listErr := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
-				Query: fmt.Sprintf("RunId = '%s'", executionId),
+				Query: fmt.Sprintf("%s='%s' AND %s='%s' AND RunId='%s'",
+					model.SearchAttrTenantID, escapeTemporalString(ctx.GetSecurityContext().GetTenantId()),
+					model.SearchAttrAccountID, escapeTemporalString(accountId),
+					escapeTemporalString(executionId)),
 			})
 			if listErr == nil && len(listResp.Executions) > 0 {
 				// Use the found Temporal Workflow ID
@@ -3149,6 +3393,7 @@ func (s *Service) GetDetailedWorkflowExecution(ctx *security.RequestContext, acc
 			}
 		}
 		workflowDetails.Memo = memoMap
+		workflowDetails.FailedSteps = s.failedStepsFromMemo(info.Memo)
 	}
 
 	// Prefer the version snapshot for definition display so the execution
@@ -3338,6 +3583,16 @@ func (s *Service) UpdateWorkflowExecution(ctx *security.RequestContext, accountI
 }
 
 func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error {
+	return s.completeApprovalTask(ctx, token, status, result, ctx.GetSecurityContext().GetUserId())
+}
+
+// CompleteApprovalTaskFromLink records a decision made through a signed
+// approval email link; the run names the address the link was sent to.
+func (s *Service) CompleteApprovalTaskFromLink(ctx *security.RequestContext, token, status, approverEmail string, result any) error {
+	return s.completeApprovalTask(ctx, token, status, result, "email:"+approverEmail)
+}
+
+func (s *Service) completeApprovalTask(ctx *security.RequestContext, token, status string, result any, approver string) error {
 	var taskTokenStr string
 	var accountID, workflowID, runID, taskID string
 
@@ -3415,7 +3670,7 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 
 	// Set/Overwrite mandatory fields
 	output["status"] = status
-	output["approver"] = ctx.GetSecurityContext().GetUserId()
+	output["approver"] = approver
 
 	// Merge IM thread coordinates the activity stashed via heartbeat (#29110)
 	// so downstream notifications.im tasks can reply in the same Slack thread
@@ -3512,7 +3767,28 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	if comments != "" {
 		result["comments"] = comments
 	}
+	// A run's approval gate is answered through its run gate, which checks the
+	// decider; the answer then carries the gate's reference, without which the
+	// run does not go on (checkApprovalGateAnswer).
+	gateRef := ""
+	if taskID == model.ApprovalGateTaskID {
+		if field := describeResp.GetWorkflowExecutionInfo().GetMemo().GetFields()[model.MemoApprovalGate]; field != nil {
+			if err := s.dataConverter.FromPayload(field, &gateRef); err != nil {
+				return fmt.Errorf("decode approval gate: %w", err)
+			}
+		}
+		if gateRef == "" || s.runGate == nil {
+			return common.Error{Code: 409, Message: "this run has no approval gate to answer"}
+		}
+		if err := s.runGate.DecideApproval(ctx, accountID, workflowID, gateRef, status); err != nil {
+			return err
+		}
+		result[approvalGateOutputRef] = gateRef
+	}
 	if err := s.CompleteApprovalTask(ctx, token, status, result); err != nil {
+		if gateRef != "" {
+			s.runGate.ApprovalNotDelivered(ctx, gateRef, err)
+		}
 		return err
 	}
 	emitWorkflowAudit(
@@ -3523,6 +3799,72 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 		map[string]any{"source": "ui"},
 	)
 	return nil
+}
+
+// CompleteApprovalTaskByToken records a decision taken on a chat approval card
+// as the caller, who must be allowed to approve in the app and belong to the
+// run's tenant. The token still identifies the approval; it no longer decides
+// who may answer it.
+func (s *Service) CompleteApprovalTaskByToken(ctx *security.RequestContext, token, status string) error {
+	parts := strings.Split(token, ":")
+	if len(parts) != 5 || slices.Contains(parts, "") {
+		return common.ErrorBadRequest("invalid approval token")
+	}
+	if status == "" {
+		return common.ErrorBadRequest("status is required")
+	}
+	accountID, temporalID, runID, taskID := parts[1], parts[2], parts[3], parts[4]
+	// The gate is answered through its run gate, which needs the automation;
+	// the card never carries one (the gate is always in_app).
+	if taskID == model.ApprovalGateTaskID {
+		return common.ErrorUnauthorized("this approval can only be answered in the app, by a person allowed to make its changes")
+	}
+
+	if ctx == nil || ctx.GetSecurityContext() == nil {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+	sc := ctx.GetSecurityContext()
+	if !sc.HasAccountAccess(accountID, security.SecurityAccessTypeUpdate) && !canRunWorkflows(sc, accountID) {
+		return common.ErrorUnauthorized("account not accessible")
+	}
+
+	describeResp, err := s.temporalClient.DescribeWorkflowExecution(ctx.GetContext(), temporalID, runID)
+	if err != nil {
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			return common.ErrorNotFound("approval not found")
+		}
+		return fmt.Errorf("describe workflow execution: %w", err)
+	}
+	info := describeResp.GetWorkflowExecutionInfo()
+	// The account in the token is plain text; the run's own attributes say
+	// whose it is. A run of another tenant or account reads as not found.
+	if s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrTenantID) != sc.GetTenantId() ||
+		s.searchAttrString(info.GetSearchAttributes(), model.SearchAttrAccountID) != accountID {
+		return common.ErrorNotFound("approval not found")
+	}
+	if runStatus := mapTemporalStatusToModelStatus(info.GetStatus()); runStatus != model.WorkflowExecutionStatusRunning {
+		return common.Error{Code: 409, Message: fmt.Sprintf("execution is no longer running (%s); approval cannot be recorded", runStatus)}
+	}
+	// The ids were checked, but the task token in front of them is what gets
+	// completed; it must be the one this run is waiting on.
+	queryResp, err := s.temporalClient.QueryWorkflow(ctx.GetContext(), temporalID, runID, "getApprovalToken", taskID)
+	if err != nil {
+		var queryFailed *serviceerror.QueryFailed
+		if errors.As(err, &queryFailed) {
+			return common.ErrorNotFound("approval not found")
+		}
+		return fmt.Errorf("resolve approval token: %w", err)
+	}
+	var pending string
+	if err := queryResp.Get(&pending); err != nil {
+		return fmt.Errorf("decode approval token: %w", err)
+	}
+	if subtle.ConstantTimeCompare([]byte(pending), []byte(token)) != 1 {
+		return common.ErrorNotFound("approval not found")
+	}
+
+	return s.CompleteApprovalTask(ctx, token, status, nil)
 }
 
 // fetchApprovalIMContext reads the IM thread coordinates the approval activity
@@ -3644,9 +3986,9 @@ func (s *Service) awaitExecutionClosed(ctx context.Context, temporalId, executio
 // being mislabelled.
 func (s *Service) syncLastExecutionStatus(ctx context.Context, tenantID, accountId, workflowId string) {
 	query := fmt.Sprintf("%s='%s' AND %s='%s' AND %s='%s'",
-		model.SearchAttrTenantID, tenantID,
-		model.SearchAttrAccountID, accountId,
-		model.SearchAttrWorkflowID, workflowId)
+		model.SearchAttrTenantID, escapeTemporalString(tenantID),
+		model.SearchAttrAccountID, escapeTemporalString(accountId),
+		model.SearchAttrWorkflowID, escapeTemporalString(workflowId))
 
 	resp, err := s.temporalClient.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
 		Query:    query,
@@ -3682,6 +4024,8 @@ func (s *Service) syncLastExecutionStatus(ctx context.Context, tenantID, account
 		statusMessage = "Execution canceled"
 	case model.WorkflowExecutionStatusTerminated:
 		statusMessage = "Execution terminated"
+	case model.WorkflowExecutionStatusCompleted:
+		statusMessage = failedStepsStatusMessage(s.failedStepsFromMemo(latestExec.Memo))
 	}
 	if err := s.store.SetLastExecutionStatus(ctx, tenantID, accountId, workflowId, latestStatus, closeTime, statusMessage, runVersion); err != nil {
 		slog.Error("failed to sync last execution status after cancel", "workflowID", workflowId, "error", err)
@@ -3947,8 +4291,8 @@ func (s *Service) newIsolatedTaskContext(ctx *security.RequestContext, accountId
 }
 
 func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType string, params map[string]any) (any, error) {
-	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write
-	// covers it too). A pure custom-role holder has no built-in account role, so
+	// Built-in account role, or a dynamic-RBAC workflows:Execute grant (Write does
+	// not imply it). A pure custom-role holder has no built-in account role, so
 	// the role check alone would 401 the Task Runner the gateway already admitted.
 	sc := ctx.GetSecurityContext()
 	if !sc.HasAccountAccess(accountId, security.SecurityAccessTypeCreate) &&
@@ -3971,6 +4315,9 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 
 	// Fetch configs and secrets for template rendering
 	var renderedParams map[string]any
+	// Masked out of the error and result below: unlike a workflow step, a Task
+	// Runner call does not go through TaskWrapper's scrubbing.
+	var secretValues []string
 	if s.configService != nil {
 		configs, err := s.configService.ListConfigsDecrypted(ctx.GetContext(), tenantId, &accountId, nil)
 		if err != nil {
@@ -3992,11 +4339,12 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 			templateContext := NewTemplateContext(nil, nil)
 			templateContext.Configs = configMap
 			templateContext.Secrets = secretMap
+			secretValues = logsafe.SecretValues(secretMap)
 
 			// Render params using template context
 			renderedValue, err := ProcessValue(params, templateContext)
 			if err != nil {
-				return nil, fmt.Errorf("failed to render task params: %w", err)
+				return nil, fmt.Errorf("failed to render task params: %s", logsafe.ScrubSecretValues(err.Error(), secretValues))
 			}
 			var ok bool
 			renderedParams, ok = renderedValue.(map[string]any)
@@ -4008,9 +4356,38 @@ func (s *Service) ExecuteTask(ctx *security.RequestContext, accountId, taskType 
 		renderedParams = params
 	}
 
+	// The same per-step check a workflow step passes, against the requester.
+	// The requester's permissions are already loaded; only their status is read.
+	authz := tasks.StepAuthorizer{
+		LoadContext: func(context.Context, string, string) (*security.SecurityContext, error) { return sc, nil },
+		UserStatus:  tasks.DefaultStepAuthorizer.UserStatus,
+	}
+	if err := authz.Authorize(ctx.GetContext(), tasks.StepAuthInput{
+		TaskName:      taskType,
+		TenantID:      tenantId,
+		Principal:     sc.GetUserId(),
+		StepAccountID: tasks.StepAccount(renderedParams, accountId),
+		Params:        renderedParams,
+	}); err != nil {
+		return nil, common.ErrorUnauthorized(logsafe.ScrubSecretValues(err.Error(), secretValues))
+	}
+
 	// Isolated execution: real store/client, no fabricated workflow identity.
 	taskCtx := s.newIsolatedTaskContext(ctx, accountId)
-	return task.Execute(taskCtx, renderedParams)
+	result, err := task.Execute(taskCtx, renderedParams)
+	return maskTaskOutcome(result, err, secretValues)
+}
+
+// maskTaskOutcome replaces the account's secret values in a Task Runner
+// result and error, which go straight back to the caller.
+func maskTaskOutcome(result any, err error, secretValues []string) (any, error) {
+	if len(secretValues) == 0 {
+		return result, err
+	}
+	if err != nil {
+		err = errors.New(logsafe.ScrubSecretValues(err.Error(), secretValues))
+	}
+	return logsafe.ScrubValue(result, secretValues), err
 }
 
 func (s *Service) ListMCPTools(ctx *security.RequestContext, accountId string, params map[string]any) (any, error) {
@@ -4046,7 +4423,7 @@ func (s *Service) secretValues(ctx *security.RequestContext, accountID string) [
 			secrets[cfg.Key] = cfg.Value
 		}
 	}
-	return SecretValues(secrets)
+	return logsafe.SecretValues(secrets)
 }
 
 func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId string, wf model.Workflow) error {
@@ -4070,6 +4447,10 @@ func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId strin
 	}
 
 	if err := ValidateNoSecretsInState(wf.Definition.Tasks); err != nil {
+		return common.ErrorBadRequest(err.Error())
+	}
+
+	if err := ValidateUnrenderedInputs(wf.Definition); err != nil {
 		return common.ErrorBadRequest(err.Error())
 	}
 
@@ -4103,11 +4484,15 @@ func (s *Service) GetWorkflowState(ctx *security.RequestContext, accountId, id s
 // This is needed because the Temporal Workflow ID can be dynamic (e.g., for webhooks/events) while the API might receive the
 // static runbook workflow definition ID.
 func (s *Service) ResolveTemporalWorkflowID(reqCtx *security.RequestContext, accountID, workflowDefinitionID, runID string) (string, error) {
+	if err := checkTemporalIDs(accountID, workflowDefinitionID, runID); err != nil {
+		return "", err
+	}
 	for range 3 {
-		query := fmt.Sprintf("%s='%s' and RunId='%s' and %s='%s' and %s='%s'",
-			model.SearchAttrWorkflowID, workflowDefinitionID, runID,
-			model.SearchAttrTenantID, reqCtx.GetSecurityContext().GetTenantId(),
-			model.SearchAttrAccountID, accountID)
+		query := fmt.Sprintf("%s='%s' and %s='%s' and %s='%s' and RunId='%s'",
+			model.SearchAttrTenantID, escapeTemporalString(reqCtx.GetSecurityContext().GetTenantId()),
+			model.SearchAttrAccountID, escapeTemporalString(accountID),
+			model.SearchAttrWorkflowID, escapeTemporalString(workflowDefinitionID),
+			escapeTemporalString(runID))
 
 		listResp, err := s.temporalClient.ListWorkflow(reqCtx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
 			Query:    query,
@@ -5110,12 +5495,16 @@ func (s *Service) CountWorkflowExecutions(ctx *security.RequestContext, req mode
 		return model.WorkflowExecutionCountResponse{}, common.ErrorUnauthorized("account not accessible")
 	}
 
+	if err := checkTemporalIDs(req.AccountID); err != nil {
+		return model.WorkflowExecutionCountResponse{}, err
+	}
+
 	tenantID := ctx.GetSecurityContext().GetTenantId()
 
 	// Build the Temporal query with filters
 	var conditions []string
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, tenantID))
-	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, req.AccountID))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrTenantID, escapeTemporalString(tenantID)))
+	conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrAccountID, escapeTemporalString(req.AccountID)))
 
 	if req.TriggerType != "" {
 		conditions = append(conditions, fmt.Sprintf("%s='%s'", model.SearchAttrWorkflowTrigger, escapeTemporalString(req.TriggerType)))
@@ -5363,6 +5752,9 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 		v.IsLive = true
 		wf.Status = status
 		wf.LiveVersionStatus = status
+		if err := s.recordOwner(ctx, accountId, id, wf); err != nil {
+			return nil, err
+		}
 
 		// (Re)register triggers for the just-published definition. Re-registering
 		// on every publish (rather than only on status flips) keeps the system
@@ -5396,6 +5788,26 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 	return v, nil
 }
 
+// recordOwner makes the caller the owner unattended runs of this workflow act
+// as. Called only when a version becomes live (publish-as-live, set-live) — the
+// deliberate "this is what runs now" act. Pause/resume and draft edits never
+// call it, so they cannot silently change whose rights an automation uses. A
+// system caller (no user) leaves the owner unchanged. wf, when given, is updated
+// in memory so trigger registration that follows bakes the new owner.
+func (s *Service) recordOwner(ctx *security.RequestContext, accountId, id string, wf *model.Workflow) error {
+	userID := ctx.GetSecurityContext().GetUserId()
+	if userID == "" || userID == security.GetSystemUserId() {
+		return nil
+	}
+	if err := s.store.SetRunAsUserID(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, userID); err != nil {
+		return err
+	}
+	if wf != nil {
+		wf.RunAsUserID = userID
+	}
+	return nil
+}
+
 // SetLiveWorkflowVersion flips workflows.live_version_id to the given version.
 // This is a pointer-only change: it does NOT modify the draft (workflows.definition)
 // or the workflow's status, so unpublished edits are preserved across rollbacks.
@@ -5419,6 +5831,9 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 			return nil, fmt.Errorf("workflow with ID %s not found: %w", id, sql.ErrNoRows)
 		}
 		return nil, fmt.Errorf("failed to set live workflow version: %w", err)
+	}
+	if err := s.recordOwner(ctx, accountId, id, nil); err != nil {
+		return nil, err
 	}
 	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
 	if err != nil {

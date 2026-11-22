@@ -301,12 +301,7 @@ def get_openai_llm(model_name: str) -> ChatOpenAI:
     return ChatOpenAI(
         model=model_name,
         api_key=SecretStr(Config.eval_llm_provider_api_key),
-        base_url=(
-            Config.eval_llm_provider_api_endpoint
-            if hasattr(Config, "openai_api_type")
-            and Config.eval_llm_provider_api_type.lower() != "openai"
-            else None
-        ),
+        base_url=Config.eval_llm_provider_api_endpoint or None,
         temperature=0,
         streaming=True,
     )

@@ -110,59 +110,62 @@ func TestIsRecoverableError_WorkspaceCommandFailedSentinel(t *testing.T) {
 	})
 }
 
+// executeResponseCases is the byte-payload table shared by the direct-IP
+// and k8s-proxy tests, so both decode paths stay wired to the classifier.
+var executeResponseCases = []struct {
+	name           string
+	responseBody   string
+	wantResponse   string
+	wantErr        bool
+	wantErrContain []string
+}{
+	{
+		name:         "successful command",
+		responseBody: `{"command_status":"success","response":"hello world","conversation_id":"c1"}`,
+		wantResponse: "hello world",
+		wantErr:      false,
+	},
+	{
+		name:         "successful command with empty stdout",
+		responseBody: `{"command_status":"success","response":"","conversation_id":"c1"}`,
+		wantResponse: "",
+		wantErr:      false,
+	},
+	{
+		name:         "legacy / minimal agent without command_status",
+		responseBody: `{"response":"legacy output","conversation_id":"c1"}`,
+		wantResponse: "legacy output",
+		wantErr:      false,
+	},
+	{
+		name:           "workspace-reported failure (the #30135 leak)",
+		responseBody:   `{"command_status":"failed","response":"","error":"kubectl: pods 'app-108' not found","conversation_id":"c1"}`,
+		wantResponse:   "",
+		wantErr:        true,
+		wantErrContain: []string{"failed", "pods 'app-108' not found"},
+	},
+	{
+		name:           "workspace-reported failure with partial stdout",
+		responseBody:   `{"command_status":"failed","response":"partial output before error","error":"oom-killed","conversation_id":"c1"}`,
+		wantResponse:   "partial output before error",
+		wantErr:        true,
+		wantErrContain: []string{"failed", "oom-killed"},
+	},
+	{
+		name:           "error field set even though status says success (defensive)",
+		responseBody:   `{"command_status":"success","response":"x","error":"stderr captured","conversation_id":"c1"}`,
+		wantResponse:   "x",
+		wantErr:        true,
+		wantErrContain: []string{"stderr captured"},
+	},
+}
+
 // TestExecuteDirect_WiresClassifierOntoDecodedResponse drives the
 // executeDirect → unmarshal → classify path against an httptest fake
 // workspace. Regression guard against a future refactor that drops the
 // classify call from the unmarshal block.
 func TestExecuteDirect_WiresClassifierOntoDecodedResponse(t *testing.T) {
-	tests := []struct {
-		name           string
-		responseBody   string
-		wantResponse   string
-		wantErr        bool
-		wantErrContain []string
-	}{
-		{
-			name:         "successful command",
-			responseBody: `{"command_status":"success","response":"hello world","conversation_id":"c1"}`,
-			wantResponse: "hello world",
-			wantErr:      false,
-		},
-		{
-			name:         "successful command with empty stdout",
-			responseBody: `{"command_status":"success","response":"","conversation_id":"c1"}`,
-			wantResponse: "",
-			wantErr:      false,
-		},
-		{
-			name:         "legacy / minimal agent without command_status",
-			responseBody: `{"response":"legacy output","conversation_id":"c1"}`,
-			wantResponse: "legacy output",
-			wantErr:      false,
-		},
-		{
-			name:           "workspace-reported failure (the #30135 leak)",
-			responseBody:   `{"command_status":"failed","response":"","error":"kubectl: pods 'app-108' not found","conversation_id":"c1"}`,
-			wantResponse:   "",
-			wantErr:        true,
-			wantErrContain: []string{"failed", "pods 'app-108' not found"},
-		},
-		{
-			name:           "workspace-reported failure with partial stdout",
-			responseBody:   `{"command_status":"failed","response":"partial output before error","error":"oom-killed","conversation_id":"c1"}`,
-			wantResponse:   "partial output before error",
-			wantErr:        true,
-			wantErrContain: []string{"failed", "oom-killed"},
-		},
-		{
-			name:           "error field set even though status says success (defensive)",
-			responseBody:   `{"command_status":"success","response":"x","error":"stderr captured","conversation_id":"c1"}`,
-			wantResponse:   "x",
-			wantErr:        true,
-			wantErrContain: []string{"stderr captured"},
-		},
-	}
-	for _, tc := range tests {
+	for _, tc := range executeResponseCases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -226,5 +229,34 @@ func TestExecuteDirect_TransportFailureNotMistakenForCommandFailure(t *testing.T
 		require.Error(t, gotErr)
 		assert.NotErrorIs(t, gotErr, ErrWorkspaceCommandFailed,
 			"decode failures must NOT wrap the sentinel — otherwise the proxy fallback short-circuits and the legitimately recoverable transport error is lost")
+	})
+}
+
+// TestHandleProxyResult_WiresClassifierOntoDecodedResponse runs the same
+// table through the k8s-proxy path, prod's fallback when direct IP fails.
+func TestHandleProxyResult_WiresClassifierOntoDecodedResponse(t *testing.T) {
+	logger := security.NewRequestContextForSuperAdmin().GetLogger()
+	for _, tc := range executeResponseCases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotResp, gotErr := handleProxyResult([]byte(tc.responseBody), logger, "test-pod")
+
+			assert.Equal(t, tc.wantResponse, gotResp)
+			if tc.wantErr {
+				require.Error(t, gotErr)
+				assert.ErrorIs(t, gotErr, ErrWorkspaceCommandFailed)
+				for _, want := range tc.wantErrContain {
+					assert.Contains(t, gotErr.Error(), want)
+				}
+			} else {
+				assert.NoError(t, gotErr)
+			}
+		})
+	}
+
+	t.Run("invalid JSON body", func(t *testing.T) {
+		gotResp, gotErr := handleProxyResult([]byte(`not-json`), logger, "test-pod")
+		assert.Equal(t, "not-json", gotResp, "proxy path returns the raw body on decode failure for triage")
+		require.Error(t, gotErr)
+		assert.NotErrorIs(t, gotErr, ErrWorkspaceCommandFailed)
 	})
 }

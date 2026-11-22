@@ -5,6 +5,7 @@ import SeriesChart from '@shared/charts/SeriesChart';
 import { resolveDatasetColor } from '@shared/charts/chartPlugins';
 import { ds } from '@utils/colors';
 import { formatDateTime } from '@lib/datetime';
+import { formatClockCompact } from '@shared/format/Datetime';
 
 // What the tune form's numbers are based on: how much memory the container
 // actually used, next to the limit it has. Without it the form shows a current
@@ -161,4 +162,26 @@ MemoryHeadroomCheck.propTypes = {
   usage: MemoryUsageFacts.propTypes.usage,
   request: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
   limit: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+};
+
+// Where the proposal came from when it is the stored right-sizing recommendation,
+// so it reads as the same figure Optimize shows and its age is visible.
+export const RightSizingSource = ({ rightSizing, keptCurrent }) => {
+  const updated = formatClockCompact(rightSizing?.updatedAt);
+  return (
+    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }} data-testid='right-sizing-source'>
+      Right-sizing recommends <b>{formatMb(rightSizing.request)}</b>
+      {updated ? ` · updated ${updated}` : ''}
+      {keptCurrent ? ' — below what the container has now, so the current allocation is kept.' : ''}
+    </Typography>
+  );
+};
+
+RightSizingSource.propTypes = {
+  rightSizing: PropTypes.shape({
+    request: PropTypes.number,
+    limit: PropTypes.number,
+    updatedAt: PropTypes.string,
+  }).isRequired,
+  keptCurrent: PropTypes.bool,
 };

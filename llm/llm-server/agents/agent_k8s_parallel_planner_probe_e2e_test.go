@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -47,7 +48,7 @@ func newK8sPlannerProbe(t *testing.T, query string) k8sPlannerProbe {
 	baseCtx := security.NewRequestContextForTenantAccountAdmin(
 		os.Getenv("TEST_TENANT"), userID, []string{accountID},
 	)
-	goCtx := context.WithValue(baseCtx.GetContext(), core.ContextKeyModelTier, core.ModelTierReasoning)
+	goCtx := context.WithValue(baseCtx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 	ctx := security.NewRequestContext(
 		goCtx,
 		baseCtx.GetSecurityContext(),

@@ -11,17 +11,23 @@ jest.mock('@shared/Loader', () => () => null);
 let mockSession: { data: any; status: string } = { data: {}, status: 'authenticated' };
 jest.mock('next-auth/react', () => ({
   useSession: () => mockSession,
+  // withAuth's unauthenticated-recovery path calls this; never reached here
+  // because every case below renders with an authenticated session.
+  getSession: jest.fn(),
 }));
 
 import {
   withAuth,
   hasReadAccess,
   hasPermission,
+  hasGrantOnAccount,
+  canOnAccount,
   canManage,
   hasAdminSurfaceAccess,
   hasAnyCustomGrant,
   isCustomRolesEnabled,
   isGrantsOnlyUser,
+  canOpenGatewayConfig,
 } from '@lib/auth';
 
 // Render withAuth(...) once to push `session` into the module-global userData.
@@ -149,5 +155,60 @@ describe('dynamic-RBAC switch (customRolesEnabled)', () => {
   it('never gates the demo account', () => {
     applySession({ roles: [], customRolesEnabled: true, ...GRANTS });
     expect(isGrantsOnlyUser('demo')).toBe(false);
+  });
+});
+
+describe('per-account grants (session.boundGrants)', () => {
+  const BOUND = { permissions: ['scoped:slo:Write', 'scoped:logs:Read'], boundGrants: { 'acct-a': ['logs:Read', 'slo:Write'] } };
+
+  it('holds a bound grant on its account only, Write implying Read', () => {
+    applySession({ roles: [], customRolesEnabled: true, ...BOUND });
+    expect(hasGrantOnAccount('slo', 'Write', 'acct-a')).toBe(true);
+    expect(hasGrantOnAccount('slo', 'Read', 'acct-a')).toBe(true);
+    expect(hasGrantOnAccount('slo', 'Write', 'acct-b')).toBe(false);
+    expect(hasGrantOnAccount('slo', 'Write')).toBe(false);
+    expect(canOnAccount('slo', 'Write', 'acct-a')).toBe(true);
+    expect(canOnAccount('slo', 'Write', 'acct-b')).toBe(false);
+    // The bound key is not a tenant-wide grant.
+    expect(hasPermission('slo', 'Write')).toBe(false);
+  });
+
+  it('ignores a bound grant on a module whose custom handlers are not verified', () => {
+    applySession({ roles: [], customRolesEnabled: true, ...BOUND });
+    expect(hasGrantOnAccount('logs', 'Read', 'acct-a')).toBe(false);
+  });
+
+  it('counts a tenant-wide grant on every account, and nothing with the feature off', () => {
+    applySession({ roles: [], customRolesEnabled: true, permissions: ['metrics:Read'] });
+    expect(hasGrantOnAccount('metrics', 'Read', 'acct-b')).toBe(true);
+    applySession({ roles: [], customRolesEnabled: false, ...BOUND });
+    expect(hasGrantOnAccount('slo', 'Write', 'acct-a')).toBe(false);
+  });
+
+  it('keeps the built-in role path of canOnAccount', () => {
+    applySession({ roles: ['account_admin'], accountIds: ['acct-b'], customRolesEnabled: true, permissions: [] });
+    expect(canOnAccount('slo', 'Write', 'acct-b')).toBe(true);
+    expect(canOnAccount('slo', 'Write', 'acct-a')).toBe(false);
+  });
+});
+
+describe("canOpenGatewayConfig — the AI Gateway page's Configure link", () => {
+  const GATEWAY_ON = { uiFeatures: { llmGateway: true } };
+
+  it('opens for the roles the adminOnly Admin › Gateway tab admits', () => {
+    applySession({ roles: ['tenant_admin'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(true);
+    applySession({ roles: ['tenant_admin_readonly'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(true);
+  });
+
+  it('stays closed for an llm:Read grant, which opens the page but not that tab', () => {
+    applySession({ roles: [], customRolesEnabled: true, permissions: ['llm:Read'], ...GATEWAY_ON });
+    expect(canOpenGatewayConfig()).toBe(false);
+  });
+
+  it('stays closed when the gateway is not deployed', () => {
+    applySession({ roles: ['tenant_admin'], uiFeatures: {} });
+    expect(canOpenGatewayConfig()).toBe(false);
   });
 });

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // GetConversationAccountAndSession resolves the owning cloud account and the
@@ -52,8 +52,13 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	// so it's gated on Read access (the same level required to view the
 	// conversation) rather than Create — otherwise read-only roles could see
 	// the conversation but not react to it.
-	if !context.GetSecurityContext().HasAccountAccess(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
 		return data, fmt.Errorf("unauthorized")
+	}
+
+	cloudAccountID := feedbackRequest.CloudAccountId
+	if cloudAccountID == "" {
+		return data, fmt.Errorf("cloud_account_id cannot be empty")
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -65,17 +70,16 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	userId := context.GetSecurityContext().GetUserId()
 
 	// Feedback is singular per (response, user): a user's thumbs-up/down on a
-	// given response (session_id) for a module replaces any prior feedback
-	// rather than appending. The table started out append-only (plain INSERT),
-	// which let a single response accumulate conflicting rows (e.g. a Yes and a
-	// No). The conversation widget reads only the latest row while the admin
-	// feedback tab lists all of them, so the two surfaces disagreed and the
-	// icon could show the opposite of the recorded feedback (issue #32906).
-	// Deleting prior rows for the key before inserting also collapses any
-	// pre-existing duplicates the moment the user re-submits.
-	deleteQuery := `DELETE FROM llm_conversation_feedback
-		WHERE session_id = $1 AND module = $2 AND user_id = $3 AND cloud_account_id = $4 AND tenant_id = $5`
-	insertQuery := `INSERT INTO llm_conversation_feedback (session_id,
+	// given response replaces any prior feedback rather than appending. The
+	// table started out append-only (plain INSERT), which let a single
+	// response accumulate conflicting rows (e.g. a Yes and a No), so the chat
+	// widget (latest row) and the admin feedback tab (all rows) could disagree
+	// on which vote was current (issue #32906). The unique constraint added in
+	// V767 on (session_id, conversation_id, user_id, cloud_account_id) makes
+	// this upsert atomic and race-proof — an earlier DELETE-then-INSERT here
+	// raced with that same constraint and could throw unique_violation on a
+	// genuine concurrent double-submit instead of replacing the row.
+	upsertQuery := `INSERT INTO llm_conversation_feedback (session_id,
 		module,
 		question,
 		llm_response,
@@ -86,26 +90,69 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 		tenant_id,
 		cloud_account_id,
 		user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (session_id, conversation_id, user_id, cloud_account_id)
+		DO UPDATE SET module = EXCLUDED.module,
+			question = EXCLUDED.question,
+			llm_response = EXCLUDED.llm_response,
+			user_corrected_response = EXCLUDED.user_corrected_response,
+			useful = EXCLUDED.useful,
+			additional_notes = EXCLUDED.additional_notes,
+			tenant_id = EXCLUDED.tenant_id,
+			updated_at = now()`
 
-	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		if _, err := tx.Exec(deleteQuery, feedbackRequest.SessionId, feedbackRequest.Module, userId,
-			feedbackRequest.CloudAccountId, tenantId); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(insertQuery, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
-			feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
-			feedbackRequest.ConversationId, tenantId, feedbackRequest.CloudAccountId, userId); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	})
+	_, err = dbms.ExecContext(context.GetContext(), upsertQuery, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
+		feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
+		feedbackRequest.ConversationId, tenantId, feedbackRequest.CloudAccountId, userId)
 	if err != nil {
 		return data, err
 	}
 
 	data["success"] = true
 	return data, nil
+}
+
+// ListOwnConversationFeedback returns the authenticated caller's own feedback
+// rows for the given responses. This is what the chat widget uses to decide
+// which icon to highlight — unlike ai_list_conversation_feedback (the
+// admin-facing table query, which intentionally returns every user's rows),
+// this is hard-scoped server-side to the caller's user_id so a teammate's
+// vote on a shared conversation can never show up as "your" vote.
+func ListOwnConversationFeedback(context *security.RequestContext, req ListOwnConversationFeedbackRequest) ([]OwnFeedbackRow, error) {
+	rows := []OwnFeedbackRow{}
+	if context == nil || context.GetSecurityContext() == nil || context.GetSecurityContext().GetUserId() == "" || context.GetSecurityContext().GetTenantId() == "" {
+		return rows, fmt.Errorf("unauthorized")
+	}
+	if req.CloudAccountId == "" {
+		return rows, fmt.Errorf("cloud_account_id cannot be empty")
+	}
+	if !context.GetSecurityContext().CanAccessAccount(req.CloudAccountId, security.SecurityAccessTypeRead) {
+		return rows, fmt.Errorf("unauthorized")
+	}
+	if len(req.SessionId) == 0 {
+		return rows, nil
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return rows, err
+	}
+
+	// DISTINCT ON picks one row per session_id (the edge case where the same
+	// session_id has rows under two different conversation_id values — see
+	// the one pre-existing duplicate found while investigating #32948 — would
+	// otherwise return 2 rows for that response and break the "one row per
+	// session_id" contract callers rely on).
+	query := `SELECT DISTINCT ON (session_id) session_id, useful, additional_notes
+		FROM llm_conversation_feedback
+		WHERE cloud_account_id = $1 AND tenant_id = $2 AND user_id = $3 AND session_id = ANY($4)
+		ORDER BY session_id, updated_at DESC`
+	err = dbms.Db.SelectContext(context.GetContext(), &rows, query,
+		req.CloudAccountId, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(), pq.Array(req.SessionId))
+	if err != nil {
+		return rows, err
+	}
+	return rows, nil
 }
 
 func SaveConversation(context *security.RequestContext, saveConversationRequest SaveOrDeleteConversationRequest) (map[string]bool, error) {
@@ -195,12 +242,45 @@ func DeleteConversationByConversationId(context *security.RequestContext, delete
 		}
 	}
 
+	// LLM spend outlives the conversation: its token usage rows have no foreign
+	// key to it (V986), so they keep counting toward budgets. Stamp who the
+	// spend belongs to, clear the prompt, response and error text, which must
+	// go with the conversation, and unlink the rows. Runs just before the
+	// conversation row goes, while the rows are still linked to it. Mirrors
+	// llm-server's RetainConversationTokenUsage.
+	retainQuery := `UPDATE llm_conversation_token_usage t
+		SET tenant_id = COALESCE(t.tenant_id, c.tenant_id),
+			session_id = COALESCE(t.session_id, c.session_id),
+			conversation_account_id = COALESCE(t.conversation_account_id, c.account_id),
+			prompt_messages = NULL,
+			response_content = NULL,
+			error_message = NULL,
+			conversation_id = NULL,
+			message_id = NULL
+		FROM llm_conversations c
+		WHERE c.id = t.conversation_id AND t.conversation_id = $1`
+	if _, err = dbms.Db.Exec(retainQuery, deleteConversationRequest.ConversationId); err != nil {
+		context.GetLogger().Error("Error retaining llm token usage", "error", err)
+		return data, err
+	}
+
 	// Finally delete the conversation itself
 	query := `DELETE FROM llm_conversations WHERE id = $1`
 	result, err := dbms.Db.Exec(query, deleteConversationRequest.ConversationId)
 	if err != nil {
 		context.GetLogger().Error("Error deleting llm_conversation", "error", err)
 		return data, err
+	}
+
+	// A call still finishing may have written a usage row after the retain step
+	// above. Clear and unlink it too; the conversation is already gone, so a
+	// failure here is logged, not returned.
+	lateQuery := `UPDATE llm_conversation_token_usage
+		SET prompt_messages = NULL, response_content = NULL, error_message = NULL,
+			conversation_id = NULL, message_id = NULL
+		WHERE conversation_id = $1`
+	if _, lateErr := dbms.Db.Exec(lateQuery, deleteConversationRequest.ConversationId); lateErr != nil {
+		context.GetLogger().Error("Error unlinking late llm token usage", "error", lateErr)
 	}
 
 	// Check if any rows were affected by the delete

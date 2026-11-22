@@ -1,6 +1,7 @@
 package aws
 
 import (
+	"errors"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
 	"time"
@@ -39,6 +40,9 @@ func (a *auditedAwsService) GetResources(ctx providers.CloudProviderContext, acc
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.GetResources(enrichedCtx, account, region)
 	a.checkAndRecord(ctx, account, region, "GetResources", err)
+	for i := range resp {
+		providers.RedactMetaSecrets(resp[i].Meta)
+	}
 	return resp, err
 }
 
@@ -60,6 +64,22 @@ func (a *auditedAwsService) ApplyCommand(ctx providers.CloudProviderContext, acc
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.ApplyCommand(enrichedCtx, account, command)
 	a.checkAndRecord(ctx, account, command.Region, "ApplyCommand", err)
+	return resp, err
+}
+
+// GetApplyStatus forwards the optional providers.ApplyStatusChecker interface.
+// The service map hands out this wrapper, so without it a type assertion never
+// saw the inner service's method and every status check came back unsupported.
+func (a *auditedAwsService) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	checker, ok := a.inner.(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	enrichedCtx := a.enrichContext(ctx, account)
+	resp, err := checker.GetApplyStatus(enrichedCtx, account, recommendation)
+	if !errors.Is(err, errors.ErrUnsupported) {
+		a.checkAndRecord(ctx, account, recommendation.ResourceRegion, "GetApplyStatus", err)
+	}
 	return resp, err
 }
 
@@ -85,11 +105,23 @@ func (a *auditedAwsService) GetResourcesByIds(ctx providers.CloudProviderContext
 	enrichedCtx := a.enrichContext(ctx, account)
 	resp, err := a.inner.GetResourcesByIds(enrichedCtx, account, region, resourceIds)
 	a.checkAndRecord(ctx, account, region, "GetResourcesByIds", err)
+	for i := range resp {
+		providers.RedactMetaSecrets(resp[i].Meta)
+	}
 	return resp, err
 }
 
 func (a *auditedAwsService) IsGlobal() bool {
 	return a.inner.IsGlobal()
+}
+
+// LogStreamPrefix forwards the optional logStreamScoper interface; without it a
+// type assertion on the wrapper would never see the inner service's method.
+func (a *auditedAwsService) LogStreamPrefix(resourceId string) string {
+	if scoper, ok := a.inner.(logStreamScoper); ok {
+		return scoper.LogStreamPrefix(resourceId)
+	}
+	return ""
 }
 
 func (a *auditedAwsService) DescribeResource(ctx providers.CloudProviderContext, account providers.Account, region, resourceId string) (*ResourceMetadata, error) {

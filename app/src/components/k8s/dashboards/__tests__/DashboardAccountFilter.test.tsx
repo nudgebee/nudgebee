@@ -39,9 +39,11 @@ jest.mock('@ui/Chart', () => ({
 
 /*
  * A test double for the dropdown: one button per option, toggling the value
- * the way the real one does (an array of options for multi-select, one option
- * for single). The dropdown's own behaviour is its own tests' business; these
- * tests are about what the dashboard does with a selection.
+ * the way the real one does. Multi-select hands back what was already picked
+ * exactly as it was given (ids, when the caller passes ids) with the option
+ * just ticked appended; single-select hands back one option. The dropdown's
+ * own behaviour is its own tests' business; these tests are about what the
+ * dashboard does with a selection.
  */
 jest.mock('@ui/FilterDropdown', () => ({
   __esModule: true,
@@ -60,10 +62,9 @@ jest.mock('@ui/FilterDropdown', () => ({
           data-testid={`${props.id}-opt-${o.value}`}
           onClick={() => {
             if (!props.multiple) return props.onSelect({ target: { value: o.value } }, o);
-            const current: { value: string }[] = Array.isArray(props.value)
-              ? props.value.map((v: any) => (typeof v === 'string' ? { value: v } : v))
-              : [];
-            const next = current.some((v) => v.value === o.value) ? current.filter((v) => v.value !== o.value) : [...current, o];
+            const current: (string | { value: string })[] = Array.isArray(props.value) ? props.value : [];
+            const valueOf = (v: string | { value: string }) => (typeof v === 'string' ? v : v.value);
+            const next = current.some((v) => valueOf(v) === o.value) ? current.filter((v) => valueOf(v) !== o.value) : [...current, o];
             props.onSelect({ target: { value: next } }, next);
           }}
         >

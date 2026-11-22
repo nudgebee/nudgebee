@@ -11,6 +11,7 @@ func InitializeRoutes(router *gin.Engine) {
 	{
 		ticketsGroup.POST("/add-configuration", controllers.AddTicketConfiguration)
 		ticketsGroup.POST("/create-meta", controllers.GetIssueCreationTemplate)
+		ticketsGroup.POST("/transition-meta", controllers.GetTransitionMetadata)
 		ticketsGroup.POST("/query", controllers.QueryIssueFieldDetails)
 		ticketsGroup.POST("/rpc/list-configs", controllers.ListTicketConfigs)
 		ticketsGroup.POST("/rpc/create-ticket", controllers.CreateTicketAction)
@@ -21,6 +22,7 @@ func InitializeRoutes(router *gin.Engine) {
 		ticketsGroup.POST("/sync-tickets", controllers.SyncTickets)
 		ticketsGroup.POST("/sync-configurations", controllers.SyncConfigurations)
 		ticketsGroup.POST("/rpc/get-comments", controllers.GetTicketComments)
+		ticketsGroup.POST("/rpc/get-attachment", controllers.GetTicketAttachment)
 		ticketsGroup.POST("/rpc/add-comment", controllers.AddTicketComment)
 		ticketsGroup.POST("/rpc/get-ticket", controllers.GetTicketByID)
 		ticketsGroup.POST("/rpc/acknowledge", controllers.AcknowledgeTicket)

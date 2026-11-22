@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
-import { getSmoothStepPath, useReactFlow, type Position } from 'reactflow';
+import { getSmoothStepPath, useReactFlow, useStore, type Position } from 'reactflow';
 
 interface UseEdgeInteractionParams {
   id: string;
+  source: string;
   sourceX: number;
   sourceY: number;
   targetX: number;
@@ -11,10 +12,13 @@ interface UseEdgeInteractionParams {
   targetPosition: Position;
 }
 
-export function useEdgeInteraction({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }: UseEdgeInteractionParams) {
+export function useEdgeInteraction({ id, source, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition }: UseEdgeInteractionParams) {
   const { setEdges } = useReactFlow();
   const [isHovered, setIsHovered] = useState(false);
   const [isEditorMode, setIsEditorMode] = useState(true);
+  // A line out of a trigger only shows that the step starts with the automation;
+  // the canvas redraws it while that is true, so deleting it would do nothing.
+  const canDelete = useStore((state) => state.nodeInternals.get(source)?.type !== 'trigger');
 
   useEffect(() => {
     const hasEditorMode = document.querySelector('.editor-mode') !== null;
@@ -50,6 +54,7 @@ export function useEdgeInteraction({ id, sourceX, sourceY, targetX, targetY, sou
     labelY,
     isHovered,
     isEditorMode,
+    canDelete,
     onEdgeClick,
     hoverHandlers,
   };

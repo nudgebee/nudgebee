@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 	"nudgebee/services/bootstrap"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
 
 	"github.com/Cyprinus12138/otelgin"
@@ -47,6 +50,8 @@ var logger = slog.New(
 		slogformatter.NewFormatterHandler(errorFormatter)(
 			slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 				Level: slog.LevelInfo,
+				// Webhooks authenticate with ?token=; keep it out of the access log.
+				ReplaceAttr: common.RedactRequestLogAttr,
 			}),
 		),
 	),
@@ -55,27 +60,28 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if strings.HasPrefix(c.Request.URL.Path, "/health") || strings.HasPrefix(c.Request.URL.Path, "/api/webhooks") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
+		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/api/webhooks") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
 		}
 
-		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		if config.Config.ServiceApiServerToken == "" {
+			logger.Error("ACTION_API_SERVER_TOKEN is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"message": "service authentication is not configured"})
+			return
+		}
 
-		if authHeader == config.Config.ServiceApiServerToken {
+		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
+		authHeaderHash := sha256.Sum256([]byte(authHeader))
+		tokenHash := sha256.Sum256([]byte(config.Config.ServiceApiServerToken))
+		if subtle.ConstantTimeCompare(authHeaderHash[:], tokenHash[:]) == 1 {
 			c.Set(CTX_IS_PUBLIC, false)
 			c.Next()
 			return
-		} else {
-			maskedAuth := "***"
-			if len(authHeader) > 4 {
-				maskedAuth = authHeader[:4] + "***"
-			}
-			logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method, "authHeader", maskedAuth)
-			c.AbortWithStatus(401)
-			return
 		}
+		logger.Error("Unauthorized request", "path", c.Request.URL.Path, "method", c.Request.Method)
+		c.AbortWithStatus(http.StatusUnauthorized)
 	}
 }
 
@@ -101,20 +107,40 @@ func cleanup() {
 // @in              header
 // @name            X-ACTION-TOKEN
 // @description     Internal service-to-service auth token. Default header name (configurable via `action_api_server_token_header`); value is the `action_api_server_token` config value.
+
+// newEngine returns the router with its middleware chain and the pprof routes.
+// API routes, and middleware that must not wrap pprof, are added by the caller.
+func newEngine() *gin.Engine {
+	r := gin.New()
+	r.Use(gin.Recovery())
+	// otelgin must run before sloggin so the server span is on the request
+	// context when the access log line is emitted with trace_id/span_id.
+	r.Use(otelgin.Middleware(config.SERVICE_NAME))
+	slogginConfig := sloggin.DefaultConfig()
+	slogginConfig.WithTraceID = true
+	slogginConfig.WithSpanID = true
+	// 499 is a request the caller abandoned (api.StatusClientClosedRequest). sloggin
+	// would log it at Warn like any 4xx; the handler already logs it at Info.
+	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health"), sloggin.IgnoreStatus(api.StatusClientClosedRequest)}
+	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
+	r.Use(traceResponseHeaderMiddleware())
+	r.Use(authHandlerMiddleware())
+	// Registered after the auth middleware: gin applies middleware only to routes
+	// added after Use, and heap dumps can contain decrypted credentials.
+	pprof.Register(r)
+	return r
+}
+
 func main() {
 	slog.SetDefault(logger)
 
-	// Heads-up when the action token isn't configured. The auth middleware
-	// gates on `headerValue == ServiceApiServerToken`, so an empty config
-	// matches any request without the header — every endpoint is effectively
-	// unauthenticated. Not blocked here for backward-compat; operators
-	// should set the token in any non-throwaway deployment. Generate with:
+	// Private endpoints return 503 until the action token is configured.
+	// Generate with:
 	//   openssl rand -hex 32
-	// Set the same value as ACTION_API_SERVER_TOKEN in app/.env and the
-	// chart's nudgebee_secret.
+	// Set the same value as ACTION_API_SERVER_TOKEN for every caller.
 	if config.Config.ServiceApiServerToken == "" {
-		slog.Warn("ACTION_API_SERVER_TOKEN is empty — auth middleware will accept any request. " +
-			"Set ACTION_API_SERVER_TOKEN (and the matching value in app/.env / chart nudgebee_secret) for any non-throwaway deployment. " +
+		slog.Error("ACTION_API_SERVER_TOKEN is empty — private endpoints will return 503. " +
+			"Set the same ACTION_API_SERVER_TOKEN for services-server and its callers. " +
 			"Generate with: openssl rand -hex 32.")
 	}
 
@@ -130,6 +156,8 @@ func main() {
 		return
 	}
 	common.InitMetrics()
+	// Every role holds per-pod caches, so every replica must hear about changes.
+	_ = common.StartReplicaBroadcastSubscriber()
 	common.RegisterDependencyMetrics(func(ctx context.Context) common.DependencyStats {
 		var s common.DependencyStats
 
@@ -199,21 +227,8 @@ func main() {
 	api.RunEEStartupHooks()
 
 	gin.SetMode(gin.ReleaseMode)
-	r := gin.New()
-	pprof.Register(r)
-	r.Use(gin.Recovery())
-	// otelgin must run before sloggin so the server span is on the request
-	// context when the access log line is emitted with trace_id/span_id.
-	r.Use(otelgin.Middleware(config.SERVICE_NAME))
-	slogginConfig := sloggin.DefaultConfig()
-	slogginConfig.WithTraceID = true
-	slogginConfig.WithSpanID = true
-	// 499 is a request the caller abandoned (api.StatusClientClosedRequest). sloggin
-	// would log it at Warn like any 4xx; the handler already logs it at Info.
-	slogginConfig.Filters = []sloggin.Filter{sloggin.IgnorePath("/health"), sloggin.IgnoreStatus(api.StatusClientClosedRequest)}
-	r.Use(sloggin.NewWithConfig(logger, slogginConfig))
-	r.Use(traceResponseHeaderMiddleware())
-	r.Use(authHandlerMiddleware())
+	r := newEngine()
+	r.Use(api.AccountTenantFloor())
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
@@ -232,6 +247,22 @@ func main() {
 	firstRunCtx, stopFirstRun := context.WithCancel(context.Background())
 	bootstrap.RunFirstRun(firstRunCtx, logger)
 
+	// Encrypt secret config values still stored in plaintext, or flagged wrong.
+	// Background-jobs pods only. Idempotent, so it simply runs on every boot; a
+	// failure (e.g. the schema is not migrated yet) is retried on the next.
+	backfillCtx, stopBackfill := context.WithCancel(context.Background())
+	if config.RunsBackgroundJobs() {
+		go func() {
+			if _, err := core.BackfillSecretEncryption(backfillCtx, logger); err != nil && backfillCtx.Err() != nil {
+				// Shutdown before it finished (the driver's error varies); the next
+				// boot picks it up.
+				slog.Warn("secret backfill stopped by shutdown", "error", err)
+			} else if err != nil {
+				slog.Error("secret backfill failed", "error", err)
+			}
+		}()
+	}
+
 	api.ConfigureRoutes(r, &tracer, &meter, logger)
 
 	port := os.Getenv("PORT")
@@ -247,6 +278,7 @@ func main() {
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	if err := serve(srv, c, shutdownTimeout, func() {
 		stopFirstRun()
+		stopBackfill()
 		cleanup()
 	}); err != nil {
 		slog.Error("Server listen failed:", "error", err)

@@ -161,14 +161,43 @@ const LINE_OPERATOR_MAP: Record<string, string> = {
   _nregex: '_nregex',
 };
 
+/** The canonical name for the log line's text — what every provider now resolves (#39573). */
+export const CANONICAL_LOG_TEXT_FIELD = 'message';
+
+/**
+ * The spelling this screen sent before #39573. Kept as the fallback for exactly one
+ * case: an api-server that does not yet advertise `canonical_fields`. Only Loki maps
+ * it, so on every other provider it reaches the backend as a field that does not
+ * exist and matches nothing — which is the bug being fixed, not a safe default.
+ */
+export const LEGACY_LOG_TEXT_FIELD = 'content';
+
+/**
+ * Picks the log-text field from the vocabulary the backend advertises.
+ *
+ * `canonical_fields` is absent when api-server predates #39573, when the GraphQL
+ * response is mocked (several tests return `{data:{data:null}}`), or when the provider
+ * lookup fell back to a bare default — so the absence case is normal, not an error.
+ */
+export const resolveLogTextField = (canonicalFields?: string[] | null): string =>
+  Array.isArray(canonicalFields) && canonicalFields.includes(CANONICAL_LOG_TEXT_FIELD) ? CANONICAL_LOG_TEXT_FIELD : LEGACY_LOG_TEXT_FIELD;
+
 /**
  * Converts Builder-mode "Operations" (line filters) into `query_request.where._and`
  * clauses. They target the log message rather than a stream label, so each becomes a
- * `content` pseudo-field clause — the key every log source maps to a line filter
- * (LokiSource maps `content` → LogQL `|=` / `|~`). Empty-value and unmapped-operator
- * rows are skipped, matching the Code-mode preview path.
+ * log-text pseudo-field clause that the provider maps to a line filter (Loki maps it to
+ * LogQL `|=` / `|~`).
+ *
+ * `logTextField` is resolved per provider from the advertised vocabulary — see
+ * resolveLogTextField. It is NOT a fixed name: the earlier comment here claimed
+ * `content` was "the key every log source maps to a line filter", which was false.
+ * `content` is a key on Loki and nowhere else, so these filters silently matched
+ * nothing on New Relic, Dynatrace and Loggly — the other three providers whose
+ * Operations panel renders.
+ *
+ * Empty-value and unmapped-operator rows are skipped, matching the Code-mode preview.
  */
-export const buildStructuredQueryFromOperations = (operations: any[]): any[] =>
+export const buildStructuredQueryFromOperations = (operations: any[], logTextField: string = LEGACY_LOG_TEXT_FIELD): any[] =>
   (operations || [])
     .filter((op) => op.value != null && String(op.value).trim() !== '')
     .map((op) => {
@@ -179,7 +208,7 @@ export const buildStructuredQueryFromOperations = (operations: any[]): any[] =>
       }
       return {
         _binary: {
-          content: {
+          [logTextField]: {
             [backendOp]: op.value,
           },
         },
@@ -237,6 +266,9 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
   // dropdown appears only when there is more than one to choose from.
   const [defaultProvider, setDefaultProvider] = useState('');
   const [defaultIndex, setDefaultIndex] = useState('');
+  // Which field name line filters target, resolved from the provider's advertised
+  // vocabulary (#39573). Defaults to the legacy spelling until initProvider answers.
+  const [logTextField, setLogTextField] = useState(LEGACY_LOG_TEXT_FIELD);
   const [availableProviders, setAvailableProviders] = useState<any[]>([]);
   const [runInitialQuery, setRunInitialQuery] = useState(false);
   // Distinguishes "still checking which provider is configured" (logProvider
@@ -677,7 +709,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           delete requestBody.query;
           requestBody.query_request = {
             where: {
-              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations)],
+              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations, logTextField)],
             },
           };
           requestBody.query = '';
@@ -696,7 +728,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
           delete requestBody.query;
           requestBody.query_request = {
             where: {
-              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations)],
+              _and: [...buildStructuredQueryFromItems(logQueryItems), ...buildStructuredQueryFromOperations(logOperations, logTextField)],
             },
           };
           requestBody.query = '';
@@ -825,7 +857,10 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
 
       // v4: cache payload widened to carry available_providers + default_index
       // so the switcher can render from cache without a refetch.
-      const cacheKey = `${accountId}-log-v4`;
+      // v5: + log_text_field (#39573). The bump matters — a v4 entry predates the
+      // field, and silently reading it as undefined would pin this account to the
+      // legacy spelling for the rest of the hour.
+      const cacheKey = `${accountId}-log-v5`;
       const cached = cache.get(cacheKey);
 
       if (cached && typeof cached === 'object' && cached.provider) {
@@ -835,6 +870,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         setAvailableProviders(cached.available_providers || []);
         setDefaultIndex(cached.default_index || '');
         setEsIndex(cached.default_index || '');
+        setLogTextField(cached.log_text_field || LEGACY_LOG_TEXT_FIELD);
         setProviderCheckDone(true);
         return;
       }
@@ -869,9 +905,17 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
         setAvailableProviders(providers);
         setDefaultIndex(resolvedDefaultIndex);
         setEsIndex(resolvedDefaultIndex);
+        const resolvedLogTextField = resolveLogTextField(obs?.capabilities?.canonical_fields);
+        setLogTextField(resolvedLogTextField);
         cache.set(
           cacheKey,
-          { provider, operator_descriptors: descriptors, available_providers: providers, default_index: resolvedDefaultIndex },
+          {
+            provider,
+            operator_descriptors: descriptors,
+            available_providers: providers,
+            default_index: resolvedDefaultIndex,
+            log_text_field: resolvedLogTextField,
+          },
           60 * 60
         );
       } catch (error: any) {
@@ -1277,6 +1321,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
               <QueryModeSwitcher
                 key={logProvider}
                 accountId={accountId}
+                logTextField={logTextField}
                 initialQuery={logQuery}
                 onQueryChange={(e: any) => {
                   setLogQuery(e.query);

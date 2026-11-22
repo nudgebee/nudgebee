@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, useEffect, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import PropTypes from 'prop-types';
 import { Box, IconButton, CircularProgress } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
@@ -6,11 +6,13 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import { Button } from '@ui/Button';
 import { Card } from '@ui/Card';
 import { Label } from '@ui/Label';
+import { Link } from '@ui/Link';
+import { Modal } from '@ui/Modal';
+import { Input } from '@ui/Input';
 import { CodeBlock } from '@ui/CodeBlock';
 import { ds } from '@utils/colors';
 import { hasWriteAccess } from '@lib/auth';
 import apiKubernetes from '@api1/kubernetes';
-import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { getBrandTitle } from '@hooks/useTenantBranding';
@@ -18,6 +20,9 @@ import { reportContainsInvestigation } from '@utils/investigationReport';
 import AlertRuleChangeAction from './AlertRuleChangeAction';
 import { buildAlertRuleContext, isAlertRuleChangeApplied } from './remediationAlertRule';
 import { formatClockCompact } from '@shared/format/Datetime';
+import { truncateText } from '@utils/common';
+import { appliedCommands, decisionsByStep, describeResolution, latestFollowup, readData, verifiedSuccess } from '../resolutionStatus';
+import FollowupCheck from './FollowupCheck';
 
 const STATUS_META = {
   SUCCESS: { text: 'Success', tone: 'success' },
@@ -28,6 +33,10 @@ const STATUS_META = {
   // rows, a log tail with no lines all exit 0. Reporting that as Success tells the operator the fix
   // held when nothing was actually checked, so it gets its own state rather than a green tick.
   INCONCLUSIVE: { text: 'Inconclusive — no output', tone: 'warning' },
+  // No exit code came back: the command may have run, and nothing says how it ended.
+  UNKNOWN: { text: 'Outcome unknown', tone: 'warning' },
+  // The server refused the request before sending anything: nothing ran.
+  REFUSED: { text: 'Not run', tone: 'warning' },
 };
 
 // A fix removes the root cause; a mitigation only restores service while the cause survives, so the
@@ -118,11 +127,17 @@ function formatThresholdContext(res) {
   lines.push('Propose it only if your hypotheses conclude the alert is miscalibrated. It is applied through the threshold panel, not a command.');
   if (trimmedString(def.alarm_name)) lines.push(`Alert: ${def.alarm_name}`);
   if (trimmedString(def.metric_name)) lines.push(`Metric: ${def.metric_name}`);
-  lines.push(`Current threshold: ${def.current_threshold ?? 'unknown'} -> suggested: ${suggestion.suggested_threshold}`);
+  // Only a tuning carries a new value; the other verdicts (a longer wait, disable) keep the current
+  // threshold, and "10 -> 10" would read as a suggestion that changes nothing.
+  if (suggestion.suggested_threshold === def.current_threshold) {
+    lines.push(`Current threshold: ${def.current_threshold} (no new value suggested)`);
+  } else {
+    lines.push(`Current threshold: ${def.current_threshold ?? 'unknown'} -> suggested: ${suggestion.suggested_threshold}`);
+  }
   if (recommendationType) lines.push(`Recommendation: ${recommendationType}`);
   if (trimmedString(suggestion.reason)) lines.push(`Reason: ${suggestion.reason}`);
   if (trimmedString(suggestion.confidence)) lines.push(`Confidence: ${suggestion.confidence}`);
-  if (typeof suggestion.estimated_reduction === 'number') {
+  if (typeof suggestion.estimated_reduction === 'number' && suggestion.estimated_reduction > 0) {
     lines.push(`Estimated noise reduction: ${suggestion.estimated_reduction}`);
   }
   if (trimmedString(res.alert_quality?.classification)) lines.push(`Alert quality: ${res.alert_quality.classification}`);
@@ -196,7 +211,22 @@ HypothesisBlock.propTypes = {
 // and enforces write RBAC + the safety blocklist, so the click here is the human approval. Exposes an
 // imperative run() (returning success) so the action block can sequence execute → verify.
 const CommandRow = forwardRef(function CommandRow(
-  { label, tone, command, accountId, eventId, canRun, disabled, onExecuted, slot, executeCommand },
+  {
+    label,
+    tone,
+    command,
+    accountId,
+    eventId,
+    canRun,
+    disabled,
+    onExecuted,
+    slot,
+    executeCommand,
+    runnable = true,
+    planVersion,
+    onRequestRun,
+    onRefused,
+  },
   ref
 ) {
   const [status, setStatus] = useState('IDLE');
@@ -209,24 +239,37 @@ const CommandRow = forwardRef(function CommandRow(
     setResult(null);
   }, [command]);
 
-  const run = async () => {
+  // acknowledgeUnknown: the person confirmed that the last run of this command may have run.
+  const run = async ({ acknowledgeUnknown = false } = {}) => {
     setStatus('RUNNING');
     setResult(null);
     try {
-      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId, undefined, slot, executeCommand);
+      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId, undefined, slot, executeCommand, undefined, {
+        acknowledgeUnknown,
+        planVersion,
+      });
       if (res && typeof res === 'object') {
         setResult(res);
         const observedNothing = slot === 'verify' && !trimmedString(res.stdout);
-        setStatus(res.success ? (observedNothing ? 'INCONCLUSIVE' : 'SUCCESS') : 'FAILED');
-        if (res.success && typeof onExecuted === 'function') onExecuted();
+        // Only a verified success is a success; a run with no exit code is not chained to its verify.
+        setStatus(res.status === 'Unknown' ? 'UNKNOWN' : res.success ? (observedNothing ? 'INCONCLUSIVE' : 'SUCCESS') : 'FAILED');
+        if (typeof onExecuted === 'function') onExecuted();
         return !!res.success;
       }
       setResult({ stderr: 'No response from server.' });
       setStatus('FAILED');
       return false;
     } catch (e) {
-      setResult({ stderr: e?.message || 'Execution failed.' });
-      setStatus('FAILED');
+      const message = e?.message || 'Execution failed.';
+      // A server refusal ("remediation: …") comes before anything is sent. Any other error (the network,
+      // the gateway) leaves it unknown whether the command went out, so it stays a failure.
+      const refused = message.startsWith('remediation: ');
+      setResult({ error: refused ? message.replace(/^remediation: /, '') : message });
+      setStatus(refused ? 'REFUSED' : 'FAILED');
+      // A refused run (already decided, already running, the plan changed) changes nothing, but the recorded
+      // state or the plan may have.
+      if (typeof onExecuted === 'function') onExecuted();
+      if (refused && typeof onRefused === 'function') onRefused(message);
       return false;
     }
   };
@@ -246,23 +289,25 @@ const CommandRow = forwardRef(function CommandRow(
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <CodeBlock code={command} language='bash' tone='dark' wrap copyToast='Command copied' />
         </Box>
-        <Tooltip
-          title={!canRun ? 'Requires write access' : status === 'RUNNING' ? 'Running…' : `Run ${label.toLowerCase()} command`}
-          placement='bottom'
-        >
-          <span>
-            <IconButton
-              size='small'
-              onClick={run}
-              disabled={isDisabled}
-              aria-label={`run-${label.toLowerCase()}-command`}
-              data-testid={`remediation-run-${label.toLowerCase()}`}
-              sx={{ color: 'var(--ds-green-600)', mt: 'var(--ds-space-1)' }}
-            >
-              {status === 'RUNNING' ? <CircularProgress size={16} thickness={5} /> : <PlayArrowRoundedIcon fontSize='small' />}
-            </IconButton>
-          </span>
-        </Tooltip>
+        {runnable ? (
+          <Tooltip
+            title={!canRun ? 'Requires write access' : status === 'RUNNING' ? 'Running…' : `Run ${label.toLowerCase()} command`}
+            placement='bottom'
+          >
+            <span>
+              <IconButton
+                size='small'
+                onClick={onRequestRun || (() => run())}
+                disabled={isDisabled}
+                aria-label={`run-${label.toLowerCase()}-command`}
+                data-testid={`remediation-run-${label.toLowerCase()}`}
+                sx={{ color: 'var(--ds-green-600)', mt: 'var(--ds-space-1)' }}
+              >
+                {status === 'RUNNING' ? <CircularProgress size={16} thickness={5} /> : <PlayArrowRoundedIcon fontSize='small' />}
+              </IconButton>
+            </span>
+          </Tooltip>
+        ) : null}
       </Box>
       {result && (typeof result.exit_code === 'number' || result.duration) ? (
         <Box sx={{ display: 'flex', gap: 'var(--ds-space-3)', fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>
@@ -297,8 +342,11 @@ const CommandRow = forwardRef(function CommandRow(
         </Card>
       ) : null}
       {result?.stderr || result?.error ? (
-        <Card variant='tinted' tone='danger' size='sm' elevation='flat'>
-          <Box sx={{ mb: 'var(--ds-space-1)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>stderr</Box>
+        <Card variant='tinted' tone={status === 'REFUSED' ? 'warning' : 'danger'} size='sm' elevation='flat'>
+          {/* "stderr" only for the command's own output; the server's words get their own label. */}
+          <Box sx={{ mb: 'var(--ds-space-1)', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)' }}>
+            {result?.stderr ? 'stderr' : status === 'REFUSED' ? 'Why it did not run' : 'Details'}
+          </Box>
           <Box
             sx={{
               maxHeight: ds.space.mul(2, 50),
@@ -327,8 +375,16 @@ CommandRow.propTypes = {
   disabled: PropTypes.bool,
   onExecuted: PropTypes.func,
   slot: PropTypes.oneOf(['execute', 'verify', 'rollback']).isRequired,
+  // False when NudgeBee cannot run this command (the action is the operator's to run): no ▶ button.
+  runnable: PropTypes.bool,
   // Only sent for the verify slot; identifies the attempt whose result this checks.
   executeCommand: PropTypes.string,
+  // The plan version the person reviewed, sent with every run.
+  planVersion: PropTypes.string,
+  // When set, ▶ asks for a confirmation instead of running: the caller runs the row once confirmed.
+  onRequestRun: PropTypes.func,
+  // Called when the server refuses the run, so the caller can refresh the plan.
+  onRefused: PropTypes.func,
 };
 
 // CodeFixDetails shows the actual change behind a code-fix action: the files touched and the diff
@@ -396,15 +452,166 @@ RequiredChangeDetails.propTypes = {
   change: PropTypes.shape({ where: PropTypes.string, target: PropTypes.string, change: PropTypes.string }).isRequired,
 };
 
+// Names what was checked, not "Resolved": ready pods or an OK alarm do not prove the incident is over.
+const outcomeMeta = (passed, isAlarm) =>
+  passed === true
+    ? { tone: 'success', text: isAlarm ? 'Alarm OK' : 'Pods ready' }
+    : passed === false
+    ? { tone: 'critical', text: isAlarm ? 'Alarm firing' : 'Pods not ready' }
+    : { tone: 'neutral', text: 'Could not tell' };
+
+// OutcomeCheck reads the incident's own signal (rollout, alarm state) after the fix. The parent owns the
+// outcome: a run hands its result up through onChecked.
+export function OutcomeCheck({ check, accountId, eventId, canRun, lastOutcome, onChecked }) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const command = trimmedString(check?.command);
+  if (!command) return null;
+  // A verdict from a check the plan no longer carries (regenerated since) says nothing about this one.
+  const outcome = lastOutcome && trimmedString(lastOutcome.command) === command ? lastOutcome : null;
+  // Set by the server when NudgeBee will not run this check (not a strict kubectl read): the person checks it.
+  const checkYourself = trimmedString(check?.reason);
+
+  const run = async () => {
+    setRunning(true);
+    setError('');
+    try {
+      const res = await apiKubernetes.executeRemediationCommand(accountId, command, eventId, undefined, 'outcome');
+      if (res && typeof res === 'object') onChecked(res);
+      else setError('No response from server.');
+    } catch (e) {
+      setError(e?.message || 'The check failed to run.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const meta = outcome ? outcomeMeta(outcome.passed, Boolean(trimmedString(check?.expect))) : null;
+  return (
+    <Card
+      variant='outlined'
+      tone='neutral'
+      size='sm'
+      elevation='flat'
+      data-testid='remediation-outcome-check'
+      header={
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
+          <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-small)' }}>
+            Did it work?
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+            {meta ? <Label tone={meta.tone} size='sm' text={meta.text} /> : null}
+            {checkYourself ? null : (
+              <Tooltip title={!canRun ? 'Requires write access' : 'Check the incident now'} placement='bottom'>
+                <span>
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    onClick={run}
+                    loading={running}
+                    disabled={!canRun || running}
+                    data-testid='remediation-outcome-run'
+                  >
+                    {outcome ? 'Check again' : 'Check now'}
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+          </Box>
+        </Box>
+      }
+    >
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+        <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{`Checks that ${
+          trimmedString(check?.describes) || 'the incident has ended'
+        }.`}</Box>
+        <CodeBlock code={command} language='bash' tone='dark' wrap copyToast='Command copied' />
+        {checkYourself ? (
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }} data-testid='remediation-outcome-check-yourself'>
+            {checkYourself}
+          </Box>
+        ) : null}
+        {outcome?.at ? (
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>{`Last checked ${formatAppliedAt(outcome.at)}${
+            trimmedString(outcome.output) ? `: ${truncateText(trimmedString(outcome.output), 200)}` : ''
+          }`}</Box>
+        ) : null}
+        {error ? (
+          <Card variant='tinted' tone='danger' size='sm' elevation='flat'>
+            <Box sx={{ fontSize: 'var(--ds-text-small)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{error}</Box>
+          </Card>
+        ) : null}
+      </Box>
+    </Card>
+  );
+}
+
+OutcomeCheck.propTypes = {
+  check: PropTypes.shape({ command: PropTypes.string, expect: PropTypes.string, describes: PropTypes.string, reason: PropTypes.string }),
+  accountId: PropTypes.string.isRequired,
+  eventId: PropTypes.string,
+  canRun: PropTypes.bool.isRequired,
+  lastOutcome: PropTypes.object,
+  onChecked: PropTypes.func.isRequired,
+};
+
+// latestOutcome is the most recent outcome recorded on any attempt.
+export function latestOutcome(rows) {
+  let best = null;
+  (rows || []).forEach((r) => {
+    const o = r?.type === 'CommandExecution' ? r?.data?.outcome : null;
+    if (o && o.at && (!best || o.at > best.at)) best = o;
+  });
+  return best;
+}
+
+// isUnknownOutcomeRefusal: the server refused a run because the command's last run has an unknown outcome
+// (decisionConflictMessage, llm-server api/remediation_run.go); not during its "run again in N min" wait.
+// ponytail: matches the server's sentence; give the 409 a reason code if a second refusal needs telling apart.
+function isUnknownOutcomeRefusal(message) {
+  return /has an unknown outcome.*then confirm that you checked/s.test(message || '');
+}
+
 // Improvements the incident does not need. Kept apart from the actions so they never read as its fix.
-export function OptionalHardening({ items }) {
+// StepSource names the runbook line a step follows. The server checked the line against the document, and the
+// text is the document's own, so it reads as a citation rather than as NudgeBee's words.
+export function StepSource({ source, testId }) {
+  const document = trimmedString(source?.document);
+  const step = trimmedString(source?.step);
+  if (!document || !step) return null;
+  const url = trimmedString(source?.url);
+  return (
+    <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', overflowWrap: 'anywhere' }} data-testid={testId}>
+      {'From runbook '}
+      {url ? (
+        <Link href={url} openInNew secondaryText>
+          {document}
+        </Link>
+      ) : (
+        document
+      )}
+      {`: ${step}`}
+    </Box>
+  );
+}
+
+StepSource.propTypes = {
+  source: PropTypes.shape({
+    document: PropTypes.string,
+    step: PropTypes.string,
+    url: PropTypes.string,
+  }),
+  testId: PropTypes.string,
+};
+
+export function OptionalHardening({ items, title = 'Optional hardening — not required to resolve this incident' }) {
   return (
     <Card variant='tinted' tone='neutral' size='sm' elevation='flat'>
       <Box
         sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', fontSize: 'var(--ds-text-small)' }}
         data-testid='remediation-optional-hardening'
       >
-        <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>Optional hardening — not required to resolve this incident</Box>
+        <Box sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{title}</Box>
         {items.map((h, i) => (
           <Box key={i}>
             {trimmedString(h?.target) ? <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>{`${h.target}: `}</Box> : null}
@@ -419,13 +626,15 @@ export function OptionalHardening({ items }) {
 
 OptionalHardening.propTypes = {
   items: PropTypes.arrayOf(PropTypes.shape({ target: PropTypes.string, change: PropTypes.string, reason: PropTypes.string })).isRequired,
+  // The heading; the default keeps the items apart from the fix.
+  title: PropTypes.string,
 };
 
 // One remediation action: header (label + confidence), the hypothesis it addresses (with reasoning +
 // confidence, shown inline — there is no separate hypotheses box), and its command rows. A per-block
 // "Run" button runs this action's execute → verify one-by-one, stopping on the first failure.
 // A code-fix action carries no command, so it renders the diff instead of command rows.
-function ActionCard({
+export function ActionCard({
   index,
   action,
   hypothesis,
@@ -438,17 +647,56 @@ function ActionCard({
   alertControls,
   onAlertRuleApplied,
   after,
+  decision,
+  rollbackDecision,
+  planVersion,
+  target,
+  onPlanStale,
 }) {
   const [running, setRunning] = useState(false);
+  // Every cluster-changing command runs only after a dialog confirms exactly what runs and where. `confirm`
+  // (step, unknown re-run, whole action) is kept while the dialog closes, so it never shows another command.
+  const [confirm, setConfirm] = useState({ step: 'apply', unknown: false, block: true });
+  // The server refused this step's run because the same command's last run on this account, maybe from
+  // another alert's plan, has an unknown outcome. The step then runs only after "I checked, run it again".
+  const [unknownRefused, setUnknownRefused] = useState(false);
+  useEffect(() => setUnknownRefused(false), [decision?.id]);
+  const [confirming, setConfirming] = useState(false);
+  const [rollbackRunning, setRollbackRunning] = useState(false);
+  const askRun = (step, { unknown = false, block = false } = {}) => {
+    setConfirm({ step, unknown, block });
+    setConfirming(true);
+  };
+  const runRollback = async (opts) => {
+    if (rollbackRunning || !rollbackRef.current) return;
+    setRollbackRunning(true);
+    try {
+      await rollbackRef.current.run(opts);
+    } finally {
+      setRollbackRunning(false);
+    }
+  };
+  const [declining, setDeclining] = useState(false);
+  const [declineReason, setDeclineReason] = useState('');
+  const [marking, setMarking] = useState(false);
+  const [markError, setMarkError] = useState('');
   const execRef = useRef(null);
   const verifyRef = useRef(null);
+  const rollbackRef = useRef(null);
   const appliedLabel = appliedAt ? formatAppliedAt(appliedAt) : '';
 
-  const confidence = formatConfidence(action?.confidence);
-  const kindMeta = KIND_META[trimmedString(action?.kind).toLowerCase()] || null;
+  // A mitigation that gives something up (stops, deletes, reverses a person's change) does not resolve
+  // the incident, so it states its cost instead of a likely-to-resolve score. A fix keeps its score.
+  const tradeOff = trimmedString(action?.trade_off);
+  const kind = trimmedString(action?.kind).toLowerCase();
+  const confidence = tradeOff && kind !== 'fix' ? null : formatConfidence(action?.confidence);
+  const kindMeta = KIND_META[kind] || null;
   const execCmd = trimmedString(action?.execute_command);
   const verifyCmd = trimmedString(action?.verify_command);
   const rollbackCmd = trimmedString(action?.rollback_command);
+  // Set by the server when NudgeBee will not run the verify without a confirmation (not a strict
+  // kubectl read): the person checks it themselves, and Run does not chain it.
+  const verifyReason = trimmedString(action?.verify_reason);
 
   const hypText = trimmedString(hypothesis?.hypothesis) || trimmedString(action?.hypothesis);
   const hypConfidence = formatConfidence(hypothesis?.confidence);
@@ -461,24 +709,92 @@ function ActionCard({
   // is not the code fix either: attaching the event's diff to it showed an unrelated change.
   const requiredChange = action?.required_change && trimmedString(action.required_change.change) ? action.required_change : null;
   const showCodeFix = !execCmd && !ruleChange && !requiredChange && trimmedString(action?.kind).toLowerCase() === 'fix' && !!codeFix;
+  // How the step reaches the system, decided by the server from the account's executor. Plans saved
+  // before delivery existed carry none and keep today's behaviour.
+  const delivery = trimmedString(action?.delivery) || 'run';
+  const operatorStep = delivery === 'operator';
+  // A refused step stays runnable: write permission may have been granted since, and a successful run
+  // clears the refusal. The executor enforces permissions either way.
+  const runnableHere = !operatorStep || action?.delivery_retry === true;
+  const sourceStep = delivery === 'source' && (requiredChange || showCodeFix);
+  const deliveryReason = trimmedString(action?.delivery_reason);
+  // The decision recorded on this step in this plan version. A step is decided once (Run, Decline or
+  // "I ran this", from any surface); a run with an unknown outcome may be run again after acknowledging
+  // it, and a run that provably never ran leaves the step open.
+  const stepOpen = (row) => !row || (row.status === 'Failed' && readData(row).not_sent === true);
+  const inFlight = decision?.status === 'InProgress';
+  const outcomeUnknown = decision?.status === 'Unknown' || unknownRefused;
+  // Decided for good: nothing more can be done on this step in this plan version. A run in flight shows
+  // a disabled Run; an unknown outcome offers "Run again…".
+  const decided = !stepOpen(decision) && !outcomeUnknown && !inFlight;
+  // A verified or "I ran this" success shows as the Applied chip (appliedCommands); any other success, e.g.
+  // a helm step with no exit code, keeps its status here.
+  const shownAsApplied = decision?.status === 'Success' && (verifiedSuccess(decision) || readData(decision).manual === true);
+  const decisionMeta = decision && !stepOpen(decision) && !shownAsApplied ? describeResolution(decision) : null;
+  // The rollback is its own step, with the same rules.
+  const rollbackUnknown = rollbackDecision?.status === 'Unknown';
+  const rollbackMeta = rollbackDecision && !stepOpen(rollbackDecision) ? describeResolution(rollbackDecision) : null;
+
+  // Record a decision that runs nothing: the operator carried the step out themselves ('manual'), or
+  // declined it ('decline', with an optional reason). Either is the step's one decision in this plan.
+  const recordDecision = async (slot, reason) => {
+    setMarking(true);
+    setMarkError('');
+    try {
+      const res = await apiKubernetes.executeRemediationCommand(
+        accountId,
+        execCmd,
+        eventId,
+        undefined,
+        slot,
+        undefined,
+        trimmedString(action?.action),
+        {
+          planVersion,
+          reason,
+        }
+      );
+      if (!res) throw new Error('No response from server.');
+      if (onExecuted) await onExecuted();
+    } catch (err) {
+      // The server's reason, without its package prefix ("remediation: …").
+      const reason = (err?.message || '').replace(/^remediation: /, '');
+      setMarkError(reason || (slot === 'decline' ? 'Could not record the decline.' : 'Could not record the step as done.'));
+      if (onPlanStale) onPlanStale();
+    } finally {
+      setMarking(false);
+    }
+  };
+  const markDone = () => recordDecision('manual');
 
   // Run the action's execute command, then (only if it succeeded) its verify command. Rollback is
   // never auto-run. Each row shows its own output live as it runs.
-  const runBlock = async () => {
+  const runBlock = async ({ acknowledgeUnknown = false, verify = true } = {}) => {
     if (running || !canRun) return;
     setRunning(true);
     try {
       if (execRef.current) {
-        const ok = await execRef.current.run();
+        const ok = await execRef.current.run({ acknowledgeUnknown });
         if (!ok) return;
+        setUnknownRefused(false);
       }
-      if (verifyRef.current) {
+      if (verify && verifyRef.current && !verifyReason) {
         await verifyRef.current.run();
       }
     } finally {
       setRunning(false);
     }
   };
+  const confirmRun = () => {
+    setConfirming(false);
+    if (confirm.step === 'rollback') runRollback({ acknowledgeUnknown: confirm.unknown });
+    else runBlock({ acknowledgeUnknown: confirm.unknown, verify: confirm.block });
+  };
+  // Declinable while nobody has acted: not decided, in flight, or after its own Unknown run (server refuses too);
+  // another alert's Unknown run of the same command does not block it.
+  // `waiting`: an earlier step on this plan has not succeeded, so the server refuses this run.
+  const waiting = Boolean(after && !after.applied);
+  const declinable = (execCmd || operatorStep || sourceStep) && !appliedAt && !decided && !inFlight && decision?.status !== 'Unknown';
 
   return (
     <Card
@@ -497,6 +813,11 @@ function ActionCard({
             {after ? <Label tone={after.applied ? 'neutral' : 'warning'} size='sm' textTransform='none' text={`After “${after.name}”`} /> : null}
             {kindMeta ? <Label tone={kindMeta.tone} size='sm' text={kindMeta.text} /> : null}
             {appliedAt ? <Label tone='success' size='sm' text={appliedLabel ? `Applied · ${appliedLabel}` : 'Applied'} /> : null}
+            {decisionMeta ? (
+              <Box component='span' data-testid={`remediation-decision-${index + 1}`}>
+                <Label tone={decisionMeta.tone} size='sm' text={decisionMeta.label} />
+              </Box>
+            ) : null}
             {ruleChangeApplied ? <Label tone='success' size='sm' text='Applied' /> : null}
             {confidence !== null ? (
               // Says what the number measures. The hypothesis below carries its own percentage
@@ -506,11 +827,46 @@ function ActionCard({
                 sx={{ color: 'var(--ds-gray-500)', fontSize: 'var(--ds-text-small)', whiteSpace: 'nowrap' }}
               >{`${confidence}% likely to resolve`}</Box>
             ) : null}
-            {execCmd ? (
+            {declinable ? (
+              <Tooltip title={!canRun ? 'Requires write access' : 'Decline this step; it is recorded with your reason'} placement='bottom'>
+                <span>
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    onClick={() => setDeclining(true)}
+                    disabled={!canRun || marking || running}
+                    data-testid={`remediation-decline-${index + 1}`}
+                  >
+                    Decline
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : null}
+            {(operatorStep || sourceStep) && !appliedAt && !decided && !inFlight ? (
+              <Tooltip title={!canRun ? 'Requires write access' : 'Record that you made this change outside NudgeBee'} placement='bottom'>
+                <span>
+                  <Button
+                    tone='secondary'
+                    size='xs'
+                    onClick={markDone}
+                    loading={marking}
+                    disabled={!canRun || marking}
+                    data-testid={`remediation-mark-done-${index + 1}`}
+                  >
+                    {operatorStep ? 'I ran this' : 'I made this change'}
+                  </Button>
+                </span>
+              </Tooltip>
+            ) : null}
+            {execCmd && runnableHere && !decided ? (
               <Tooltip
                 title={
                   !canRun
                     ? 'Requires write access'
+                    : inFlight
+                    ? 'Running. The result is recorded even if you leave this page.'
+                    : outcomeUnknown
+                    ? 'The last run may have run. Check the cluster before running it again.'
                     : after && !after.applied
                     ? `Apply “${after.name}” first: this change has no effect without it`
                     : 'Run this action (execute, then verify), stopping on failure'
@@ -519,14 +875,14 @@ function ActionCard({
               >
                 <span>
                   <Button
-                    tone={appliedAt ? 'secondary' : 'primary'}
+                    tone={appliedAt || outcomeUnknown ? 'secondary' : 'primary'}
                     size='xs'
-                    onClick={runBlock}
+                    onClick={() => askRun('apply', { unknown: outcomeUnknown, block: true })}
                     loading={running}
-                    disabled={!canRun || running}
+                    disabled={!canRun || running || inFlight || waiting}
                     data-testid={`remediation-run-action-${index + 1}`}
                   >
-                    {appliedAt ? 'Re-run' : 'Run'}
+                    {outcomeUnknown ? 'Run again…' : appliedAt ? 'Re-run' : 'Run'}
                   </Button>
                 </span>
               </Tooltip>
@@ -537,6 +893,40 @@ function ActionCard({
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)' }}>
         {action?.title ? <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }}>{action.title}</Box> : null}
+        <StepSource source={action?.source} testId={`remediation-source-${index + 1}`} />
+        {tradeOff ? (
+          <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-trade-off-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Before you run:{' '}
+              </Box>
+              {tradeOff}
+            </Box>
+          </Card>
+        ) : null}
+        {operatorStep ? (
+          <Card variant='tinted' tone='warning' size='sm' elevation='flat' data-testid={`remediation-operator-step-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>
+              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Run this in your terminal.{' '}
+              </Box>
+              {deliveryReason || 'NudgeBee cannot run this command on this account.'}
+              {action?.delivery_retry === true && !decided ? (
+                <Box sx={{ marginTop: 'var(--ds-space-1)' }}>If NudgeBee has been granted that permission since, run it here.</Box>
+              ) : null}
+            </Box>
+          </Card>
+        ) : null}
+        {decided && decision?.status === 'Failed' ? (
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }} data-testid={`remediation-step-failed-${index + 1}`}>
+            This step ran and failed. Each step is decided once: regenerate the plan for a new proposal before trying again.
+          </Box>
+        ) : null}
+        {markError ? (
+          <Card variant='tinted' tone='danger' size='sm' elevation='flat' data-testid={`remediation-mark-done-error-${index + 1}`}>
+            <Box sx={{ fontSize: 'var(--ds-text-small)' }}>{markError}</Box>
+          </Card>
+        ) : null}
         {hypText ? (
           // A reference, not a restatement — the cause and its evidence are listed once above, so the
           // card only needs to say which one it addresses.
@@ -570,8 +960,17 @@ function ActionCard({
             accountId={accountId}
             eventId={eventId}
             canRun={canRun}
-            disabled={running}
+            disabled={running || inFlight}
             onExecuted={onExecuted}
+            // The step's own ▶ follows its decision: none once decided, and an unknown outcome is run again
+            // only through "Run again…", which asks first.
+            runnable={runnableHere && !decided && !outcomeUnknown && !waiting}
+            planVersion={planVersion}
+            onRequestRun={() => askRun('apply', { block: false })}
+            onRefused={(message) => {
+              setUnknownRefused(isUnknownOutcomeRefusal(message));
+              onPlanStale?.();
+            }}
           />
         ) : null}
         {verifyCmd ? (
@@ -588,7 +987,13 @@ function ActionCard({
             canRun={canRun}
             disabled={running}
             onExecuted={onExecuted}
+            runnable={runnableHere && !verifyReason && decision?.status !== 'Declined'}
           />
+        ) : null}
+        {verifyCmd && verifyReason ? (
+          <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)' }} data-testid={`remediation-verify-check-yourself-${index + 1}`}>
+            {verifyReason}
+          </Box>
         ) : null}
         {rollbackCmd ? (
           // Rollback is nested in its own box so it reads as separate from the block: "Run" never
@@ -598,9 +1003,39 @@ function ActionCard({
             tone='neutral'
             size='sm'
             elevation='flat'
-            header={<Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>Rollback — manual undo, not run by “Run”</Box>}
+            header={
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--ds-space-2)' }}>
+                <Box sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>Rollback — manual undo, not run by “Run”</Box>
+                {rollbackMeta ? (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+                    <Box component='span' data-testid={`remediation-rollback-decision-${index + 1}`}>
+                      <Label tone={rollbackMeta.tone} size='sm' text={rollbackMeta.label} />
+                    </Box>
+                    {rollbackUnknown && runnableHere ? (
+                      <Tooltip
+                        title={!canRun ? 'Requires write access' : 'The last rollback may have run. Check the cluster before running it again.'}
+                      >
+                        <span>
+                          <Button
+                            tone='secondary'
+                            size='xs'
+                            onClick={() => askRun('rollback', { unknown: true })}
+                            disabled={!canRun || running || rollbackRunning}
+                            loading={rollbackRunning}
+                            data-testid={`remediation-rollback-run-again-${index + 1}`}
+                          >
+                            Run again…
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    ) : null}
+                  </Box>
+                ) : null}
+              </Box>
+            }
           >
             <CommandRow
+              ref={rollbackRef}
               label='Rollback'
               slot='rollback'
               tone='warning'
@@ -608,12 +1043,86 @@ function ActionCard({
               accountId={accountId}
               eventId={eventId}
               canRun={canRun}
-              disabled={running}
+              disabled={running || rollbackDecision?.status === 'InProgress'}
               onExecuted={onExecuted}
+              // A rollback is its own step, decided once like the action's. An unknown one is run again only
+              // through "Run again…", which asks first; the server applies the same wait as for any step.
+              runnable={runnableHere && (stepOpen(rollbackDecision) || rollbackDecision?.status === 'InProgress')}
+              planVersion={planVersion}
+              onRequestRun={() => askRun('rollback')}
+              onRefused={onPlanStale}
             />
           </Card>
         ) : null}
       </Box>
+      <Modal
+        open={confirming}
+        handleClose={() => setConfirming(false)}
+        width='sm'
+        title={confirm.unknown ? 'Run this command again?' : 'Run this command?'}
+        confirmText={confirm.unknown ? 'I checked, run it again' : 'Run'}
+        onConfirm={confirmRun}
+      >
+        <Box
+          sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', fontSize: 'var(--ds-text-small)' }}
+          data-testid={`remediation-confirm-${index + 1}`}
+        >
+          {target ? (
+            <Box data-testid={`remediation-confirm-target-${index + 1}`}>
+              <Box component='span' sx={{ fontWeight: 'var(--ds-font-weight-semibold)' }}>
+                Runs on:{' '}
+              </Box>
+              {trimmedString(target.account_name) || target.account_id}
+            </Box>
+          ) : null}
+          {confirm.step === 'apply' && kindMeta ? (
+            <Box>
+              <Label tone={kindMeta.tone} size='sm' text={kindMeta.text} />
+            </Box>
+          ) : null}
+          {confirm.step === 'apply' && tradeOff ? <Box>{`Before you run: ${tradeOff}`}</Box> : null}
+          {confirm.unknown ? (
+            <Box data-testid={`remediation-rerun-warning-${index + 1}`}>
+              No result came back from the last run of this command. It may have run, and its effects may still be in progress. Check the cluster
+              before running it again.
+            </Box>
+          ) : null}
+          <CodeBlock code={confirm.step === 'rollback' ? rollbackCmd : execCmd} language='bash' tone='dark' wrap copyToast='Command copied' />
+          {confirm.step === 'apply' && rollbackCmd ? (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+              <Box sx={{ color: 'var(--ds-gray-600)' }}>To undo it:</Box>
+              <CodeBlock code={rollbackCmd} language='bash' tone='dark' wrap copyToast='Command copied' />
+            </Box>
+          ) : null}
+        </Box>
+      </Modal>
+      <Modal
+        open={declining}
+        handleClose={() => setDeclining(false)}
+        width='sm'
+        title='Decline this step?'
+        confirmText='Decline'
+        onConfirm={() => {
+          setDeclining(false);
+          recordDecision('decline', declineReason.trim());
+          setDeclineReason('');
+        }}
+      >
+        <Box
+          sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)', fontSize: 'var(--ds-text-small)' }}
+          data-testid={`remediation-decline-dialog-${index + 1}`}
+        >
+          <Box>Nothing runs. The step is recorded as declined, and a new proposal is needed to act on it.</Box>
+          {execCmd ? <CodeBlock code={execCmd} language='bash' tone='dark' wrap copyToast='Command copied' /> : null}
+          <Input
+            label='Reason (optional)'
+            value={declineReason}
+            onChange={setDeclineReason}
+            placeholder='Why not this step?'
+            id={`remediation-decline-reason-${index + 1}`}
+          />
+        </Box>
+      </Modal>
     </Card>
   );
 }
@@ -632,17 +1141,31 @@ ActionCard.propTypes = {
   onAlertRuleApplied: PropTypes.func,
   // The action this one must follow; applied is false until that action has run here.
   after: PropTypes.shape({ name: PropTypes.string.isRequired, applied: PropTypes.bool.isRequired }),
+  // The run row recorded on this action's step (and its rollback's) in the plan version shown.
+  decision: PropTypes.object,
+  rollbackDecision: PropTypes.object,
+  // The plan version shown, sent with every decision so the server refuses one on a changed plan.
+  planVersion: PropTypes.string,
+  // Where the plan's commands run (the event's account), shown in the confirmation.
+  target: PropTypes.shape({ account_id: PropTypes.string, account_name: PropTypes.string }),
+  // Called when a decision is refused, so the panel can fetch the plan again.
+  onPlanStale: PropTypes.func,
 };
 
 // afterOf resolves an action's "after" to the action it names, and whether that one has been applied.
-// A command-less prerequisite (a required change) is made outside the panel, so it cannot be known.
-export function afterOf(action, actions, executedCommands) {
+// With the plan's decisions (decisionsByStep) it is the server's rule: that step succeeded on this plan
+// version (run, or "I ran this"), so Run is offered only when the server would run it.
+export function afterOf(action, actions, executedCommands, decisions, planVersion) {
   const name = trimmedString(action?.after);
   if (!name) return null;
-  const prior = (actions || []).find((a) => trimmedString(a?.action) === name);
-  if (!prior) return null;
-  const cmd = trimmedString(prior.execute_command);
-  return { name, applied: cmd ? !!executedCommands?.[cmd] : false };
+  const priorIndex = (actions || []).findIndex((a) => trimmedString(a?.action) === name);
+  if (priorIndex < 0) return null;
+  const prior = actions[priorIndex];
+  if (decisions && planVersion) return { name, applied: decisions[`${planVersion}|${priorIndex}:apply`]?.status === 'Success' };
+  // A step done outside NudgeBee is recorded under its command, or under "change:<action>" when it is
+  // a source change with no command (see "I made this change").
+  const cmd = trimmedString(prior.execute_command) || `change:${name}`;
+  return { name, applied: !!executedCommands?.[cmd] };
 }
 
 // noActionsText is the sentence shown in place of the action list when the plan has none. The
@@ -659,11 +1182,12 @@ export function isRemediationPlan(value) {
 }
 
 // runnableActionCount is how many of the plan's actions the operator can carry out from the panel:
-// those with a command to run, or a change to the alert rule to apply. A fix stated as a change to
-// make elsewhere (chart values, application code) is listed but is not something to run here.
+// those with a command NudgeBee can run, or a change to the alert rule to apply. A fix stated as a
+// change to make elsewhere, or a command only the operator can run, is listed but not counted.
 export function runnableActionCount(plan) {
   if (!isRemediationPlan(plan)) return 0;
-  return plan.actions.filter((a) => trimmedString(a?.execute_command) || a?.alert_rule_change).length;
+  const runnable = (a) => trimmedString(a?.execute_command) && (a?.delivery !== 'operator' || a?.delivery_retry === true);
+  return plan.actions.filter((a) => runnable(a) || a?.alert_rule_change).length;
 }
 
 // RemediationPanel renders below the investigation analysis. "Generate Remediation" reuses the
@@ -681,7 +1205,7 @@ const RESOLVED_STATUSES = ['RESOLVED', 'CLOSED'];
 // The page owns the saved plan: it reads it once (savedPlan, with savedPlanReady false until that
 // read settles) so the tab can count the plan's actions before the tab is opened, and it is told
 // about a plan generated here through onPlanChange. The panel never reads the saved plan itself.
-const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanReady, onPlanChange }) => {
+const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanReady, onPlanChange, resolutions }) => {
   const [plan, setPlan] = useState(savedPlanReady && isRemediationPlan(savedPlan) ? savedPlan : null);
   // The event's alert rule and what can be changed on it: sent with generate so the
   // plan can propose a rule fix, and read back to show when that fix is applied.
@@ -691,9 +1215,15 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
   // Whether pressing the button again could plausibly succeed. A failed fetch is worth retrying; an
   // investigation that completed with no text is not, and offering a retry there only wastes a click.
   const [errorRetryable, setErrorRetryable] = useState(true);
-  // Successfully-executed commands for this event, keyed by command → applied timestamp. Lets the panel
-  // show "already applied" and turn Run into Re-run on reload.
-  const [executedCommands, setExecutedCommands] = useState({});
+  // Derived from the page's resolution rows: successfully-executed commands (command → applied timestamp,
+  // so Run turns into Re-run on reload), the run rows keyed by plan version and step, and the latest follow-up.
+  const executedCommands = useMemo(() => appliedCommands(resolutions), [resolutions]);
+  const decisions = useMemo(() => decisionsByStep(resolutions), [resolutions]);
+  const followup = useMemo(() => latestFollowup(resolutions), [resolutions]);
+  // State, not derived: a "Check now" here sets it before the rows catch up.
+  const [lastOutcome, setLastOutcome] = useState(null);
+  // The follow-up proposal whose plan was last fetched, so each new plan is fetched once.
+  const proposalSeenRef = useRef('');
   const [initializing, setInitializing] = useState(true);
   // The code fix behind a command-less fix action ({files, diff, prUrl}), taken from the log-analysis
   // record rather than the plan, so the diff shown is always the real one.
@@ -725,22 +1255,38 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
     }
   };
 
-  const loadExecutions = async () => {
-    if (!eventId) return;
+  // A decision the server refused may have been made on a plan regenerated since: fetch the stored plan
+  // again and show it when it is a different version, so the person reviews what would actually run.
+  // No stored plan (it went stale when the investigation re-ran): build one, as the page load does.
+  const refreshPlan = async () => {
     try {
-      const rows = await apiRecommendations.listEventResolutions(eventId);
+      const res = await apiKubernetes.getRemediation(accountId, eventId);
       if (!mountedRef.current) return;
-      const map = {};
-      (rows || []).forEach((r) => {
-        if (r?.type === 'CommandExecution' && r?.status === 'Success') {
-          const cmd = trimmedString(r.type_reference_id) || trimmedString(r?.data?.command);
-          if (cmd && !map[cmd]) map[cmd] = r.updated_at || r.created_at || '';
-        }
-      });
-      setExecutedCommands(map);
+      if (!isRemediationPlan(res)) {
+        generate();
+        return;
+      }
+      if (res.plan_version === plan?.plan_version) return;
+      setPlan(res);
+      onPlanChange?.(res);
     } catch (err) {
-      console.error('RemediationPanel: failed to load executions', err);
+      console.error('RemediationPanel: failed to refresh the plan', err);
     }
+  };
+
+  // The page reads the event's resolution rows and polls them while a run or its follow-up is live, so the
+  // panel shows what it is given and asks the page to look again after a decision.
+  useEffect(() => setLastOutcome(latestOutcome(resolutions)), [resolutions]);
+  // A follow-up proposed a new plan: fetch it once, unless it is already the plan shown.
+  const proposedVersion = followup?.outcome === 'proposed' ? followup.proposed_plan_version : '';
+  useEffect(() => {
+    if (!proposedVersion || proposedVersion === plan?.plan_version || proposalSeenRef.current === proposedVersion) return;
+    proposalSeenRef.current = proposedVersion;
+    refreshPlan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [proposedVersion]);
+  const loadExecutions = () => {
+    if (eventId) window.dispatchEvent(new CustomEvent('nb:event-resolution-changed'));
   };
 
   const generate = async () => {
@@ -875,7 +1421,6 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
           console.error('RemediationPanel: failed to load the code fix for the saved plan', err);
         }
       }
-      await loadExecutions();
       if (cancelled) return;
       setInitializing(false);
       if (!loaded && !autoTriggered.current) {
@@ -1000,17 +1545,37 @@ const RemediationPanel = ({ accountId, eventId, nbStatus, savedPlan, savedPlanRe
               accountId={accountId}
               eventId={eventId}
               canRun={canRun}
-              appliedAt={executedCommands[trimmedString(action?.execute_command)] || ''}
+              appliedAt={executedCommands[trimmedString(action?.execute_command) || `change:${trimmedString(action?.action)}`] || ''}
               onExecuted={loadExecutions}
               codeFix={codeFix}
               alertControls={alertControls}
               onAlertRuleApplied={loadAlertControls}
-              after={afterOf(action, actions, executedCommands)}
+              after={afterOf(action, actions, executedCommands, decisions, plan?.plan_version)}
+              decision={decisions[`${plan?.plan_version}|${idx}:apply`] || null}
+              rollbackDecision={decisions[`${plan?.plan_version}|${idx}:rollback`] || null}
+              planVersion={plan?.plan_version}
+              target={plan?.target}
+              onPlanStale={() => {
+                // A refused decision: the plan or the step's decision changed elsewhere; show both as they are now.
+                refreshPlan();
+                loadExecutions();
+              }}
             />
           ))}
         </>
       )}
 
+      {followup && followup.outcome !== 'superseded' ? <FollowupCheck followup={followup} accountId={accountId} /> : null}
+      {plan.outcome_check ? (
+        <OutcomeCheck
+          check={plan.outcome_check}
+          accountId={accountId}
+          eventId={eventId}
+          canRun={canRun}
+          lastOutcome={lastOutcome}
+          onChecked={setLastOutcome}
+        />
+      ) : null}
       {hardening.length ? <OptionalHardening items={hardening} /> : null}
     </Box>
   );
@@ -1023,6 +1588,8 @@ RemediationPanel.propTypes = {
   savedPlan: PropTypes.object,
   savedPlanReady: PropTypes.bool,
   onPlanChange: PropTypes.func,
+  // The event's resolution rows, which the page reads and polls.
+  resolutions: PropTypes.array.isRequired,
 };
 
 export default RemediationPanel;

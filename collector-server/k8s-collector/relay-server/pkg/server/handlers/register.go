@@ -246,7 +246,14 @@ func RegisterHandler(
 		}
 
 		// —— update relay connection status when agent connects successfully ——
-		connTransitioned, connTenant, cerr := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart)
+		connTransitioned, connTenant, connectedAt, cerr := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart)
+		// The disconnect guard compares against the last_connected_at our own connect
+		// write stored, not sessionStart, which that write always postdates. If the
+		// connect write failed, sessionStart is the fallback: the row is older than it.
+		sessionMark := sessionStart
+		if cerr == nil && !connectedAt.IsZero() {
+			sessionMark = connectedAt
+		}
 		if cerr != nil {
 			logger.Error("failed to update relay connection status", "err", cerr, "account", accountID, "agent_type", agentType)
 			// Continue processing even if status update fails
@@ -279,11 +286,9 @@ func RegisterHandler(
 
 		// —— shared state for dispatching replies ——
 		wsWriteCh := make(chan []byte)
-		var respMap struct {
-			sync.Mutex
-			m map[string]chan []byte
-		}
-		respMap.m = make(map[string]chan []byte)
+		replies := newReplyRouter()
+		// Replies go out on their own channel; see sessionReplyChannel.
+		replyCh := newSessionReplyChannel(connMgr.GetChannel)
 
 		eg, egCtx := errgroup.WithContext(ctx)
 
@@ -376,6 +381,7 @@ func RegisterHandler(
 
 		// —— reader: demultiplex replies from client, handle unsolicited agent messages ——
 		eg.Go(func() error {
+			var dispatch datasourceDispatch
 			for {
 				ws.SetReadDeadline(time.Now().Add(pongWait)) // nolint:errcheck
 				_, raw, err := ws.ReadMessage()
@@ -401,24 +407,24 @@ func RegisterHandler(
 					continue
 				}
 				if msg.Action == "datasource_inventory" {
-					go handleDatasourceInventory(egCtx, store, cacheInvalidator, accountID, agentType, agentID, raw, logger)
+					dispatch.inventory(egCtx, func() {
+						handleDatasourceInventory(egCtx, store, cacheInvalidator, accountID, agentType, agentID, raw, logger)
+					})
 					continue
 				}
 				if msg.Action == "datasource_metadata" {
-					go handleDatasourceMetadata(egCtx, store, cacheInvalidator, accountID, agentType, raw, logger)
+					dispatch.metadata(egCtx, func() {
+						handleDatasourceMetadata(egCtx, store, cacheInvalidator, accountID, agentType, raw, logger)
+					})
 					continue
 				}
 
-				respMap.Lock()
-				if ch, ok := respMap.m[msg.RequestID]; ok {
-					select {
-					case ch <- raw:
-					case <-egCtx.Done():
-					}
-				} else {
+				switch found, delivered := replies.route(msg.RequestID, raw); {
+				case !found:
 					logger.Warn("no handler for reply", "request_id", msg.RequestID)
+				case !delivered:
+					logger.Warn("dropping duplicate reply", "request_id", msg.RequestID)
 				}
-				respMap.Unlock()
 			}
 		})
 
@@ -437,7 +443,7 @@ func RegisterHandler(
 			consumerTag := fmt.Sprintf("reg-%s-%d-%d", accountID, time.Now().UnixNano(), qi)
 			eg.Go(func() error {
 				return consumeSessionQueue(egCtx, connMgr, topo, healthTracker, ensureQueue, queue, consumerTag, cfg.RabbitMQ.PrefetchCount, logger,
-					func(sessCh *amqp.Channel, d amqp.Delivery) {
+					func(_ *amqp.Channel, d amqp.Delivery) {
 						// dispatch each delivery in its own goroutine
 						eg.Go(func() error {
 							start := time.Now()
@@ -503,17 +509,8 @@ func RegisterHandler(
 							// and drops any reply whose request ID has no entry
 							// here, so an agent fast enough to answer before
 							// this goroutine is rescheduled had its reply lost.
-							ch := make(chan []byte, 1)
-							respMap.Lock()
-							respMap.m[d.CorrelationId] = ch
-							respMap.Unlock()
-
-							// Defer cleanup of response map
-							defer func() {
-								respMap.Lock()
-								delete(respMap.m, d.CorrelationId)
-								respMap.Unlock()
-							}()
+							ch, release := replies.register(d.CorrelationId)
+							defer release()
 
 							// forward to WebSocket
 							safeSend(d.Body)
@@ -562,15 +559,18 @@ func RegisterHandler(
 									return nil
 								}
 
-								err := sessCh.Publish(
-									"", d.ReplyTo, false, false,
-									amqp.Publishing{
-										ContentType:   "application/json",
-										Body:          reply,
-										CorrelationId: d.CorrelationId,
-										Timestamp:     time.Now(),
-									},
-								)
+								replySize := len(reply)
+								reply, fitted := fitReplyToBroker(reply, requestID, cfg.RabbitMQ.MaxMessageBytes)
+								if fitted {
+									deliveryLogger.Warn("agent reply over the broker's message limit, replying 413 instead",
+										"bytes", replySize, "limit", cfg.RabbitMQ.MaxMessageBytes)
+								}
+								err := replyCh.publish(d.ReplyTo, amqp.Publishing{
+									ContentType:   "application/json",
+									Body:          reply,
+									CorrelationId: d.CorrelationId,
+									Timestamp:     time.Now(),
+								})
 								if err != nil {
 									deliveryLogger.Error("publish failed in register", "err", err)
 									d.Nack(false, false) // nolint
@@ -606,15 +606,12 @@ func RegisterHandler(
 								// Send an error reply matching AgentResponse format so the
 								// RPC caller fails fast instead of waiting for the full timeout.
 								errReply := []byte(`{"status_code":502,"action":"error","data":"agent connection lost"}`)
-								if err := sessCh.Publish(
-									"", d.ReplyTo, false, false,
-									amqp.Publishing{
-										ContentType:   "application/json",
-										Body:          errReply,
-										CorrelationId: d.CorrelationId,
-										Timestamp:     time.Now(),
-									},
-								); err != nil {
+								if err := replyCh.publish(d.ReplyTo, amqp.Publishing{
+									ContentType:   "application/json",
+									Body:          errReply,
+									CorrelationId: d.CorrelationId,
+									Timestamp:     time.Now(),
+								}); err != nil {
 									deliveryLogger.Warn("failed to publish error reply", "err", err)
 									d.Nack(false, false) // nolint
 								} else {
@@ -661,16 +658,9 @@ func RegisterHandler(
 					return nil
 				}
 
-				// Register in respMap to wait for ack
-				ch := make(chan []byte, 1)
-				respMap.Lock()
-				respMap.m[reqID] = ch
-				respMap.Unlock()
-				defer func() {
-					respMap.Lock()
-					delete(respMap.m, reqID)
-					respMap.Unlock()
-				}()
+				// Register to wait for ack
+				ch, release := replies.register(reqID)
+				defer release()
 
 				payload = signPayload(payload, signer, logger)
 				safeSend(payload)
@@ -695,14 +685,17 @@ func RegisterHandler(
 		// errors.Is, not !=: several goroutines in this group wrap their cause
 		// (the consumer's "get channel: %w" among them), so a plain comparison
 		// reported every clean shutdown as a session failure.
-		if err := eg.Wait(); err != nil && !errors.Is(err, context.Canceled) {
+		waitErr := eg.Wait()
+		// Every delivery goroutine is in eg, so nothing publishes any more.
+		replyCh.close()
+		if err := waitErr; err != nil && !errors.Is(err, context.Canceled) {
 			logger.Error("register session ended with error", "err", err, "account", accountID)
 		} else {
 			logger.Info("register session ended cleanly", "account", accountID)
 		}
 
 		// —— mark agent as disconnected (only if no newer session has connected) ——
-		discTransitioned, discTenant, derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionStart)
+		discTransitioned, discTenant, _, derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionMark)
 		if derr != nil {
 			logger.Error("failed to update relay disconnect status", "err", derr, "account", accountID, "agent_type", agentType)
 		} else {
@@ -724,6 +717,44 @@ func RegisterHandler(
 			}
 		}
 	}
+}
+
+// datasourceDispatch orders each kind of message and makes metadata wait for
+// earlier inventory, without blocking socket reads or inventory behind retries.
+type datasourceDispatch struct {
+	inventoryDone <-chan struct{}
+	metadataDone  <-chan struct{}
+}
+
+func (d *datasourceDispatch) inventory(ctx context.Context, handle func()) <-chan struct{} {
+	d.inventoryDone = runAfterDatasourceMessages(ctx, handle, d.inventoryDone)
+	return d.inventoryDone
+}
+
+func (d *datasourceDispatch) metadata(ctx context.Context, handle func()) <-chan struct{} {
+	d.metadataDone = runAfterDatasourceMessages(ctx, handle, d.inventoryDone, d.metadataDone)
+	return d.metadataDone
+}
+
+func runAfterDatasourceMessages(ctx context.Context, handle func(), previous ...<-chan struct{}) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, pending := range previous {
+			if pending == nil {
+				continue
+			}
+			select {
+			case <-pending:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if ctx.Err() == nil {
+			handle()
+		}
+	}()
+	return done
 }
 
 // handleDatasourceHealthUpdate processes health status messages from proxy agents
@@ -792,26 +823,18 @@ func handleDatasourceInventory(ctx context.Context, store db.AgentStore, invalid
 }
 
 // metadataRetryDelays are the backoffs between retries of a metadata update
-// that raced its datasource_inventory counterpart (see
-// datasourceMetadataRetryLimit's doc comment). Sums to ~7.5s; the dispatch
-// in handleAgentMessage runs datasource_inventory and datasource_metadata
-// as independent goroutines with no ordering guarantee, so inventory's
-// INSERT usually lands within a few hundred ms of metadata's UPDATE losing
-// the race.
+// that arrives before its datasource_inventory counterpart. Sums to ~7.5s.
 var metadataRetryDelays = []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 4 * time.Second}
 
 // handleDatasourceMetadata processes metadata messages from proxy agents
 // and persists version/connection info to the integrations table.
 //
-// datasource_inventory and datasource_metadata are two independent
-// unsolicited messages with no ordering guarantee (see handleAgentMessage's
-// dispatch below): if metadata arrives before inventory's INSERT has
+// If metadata arrives before inventory's INSERT has
 // created the integrations row, the UPDATE here matches zero rows and the
 // labels are lost — the row that inventory then INSERTs keeps its default
 // '{}' labels until the agent happens to send metadata again on a future
 // reconnect (see #38718). This retries only the keys that raced, narrowing
-// that window; it does not eliminate it; a metadata message that fully
-// stops racing would need the two paths to synchronize by contract.
+// that window. Messages received after inventory wait for it to complete.
 //
 // When any integration's labels actually changed, llm-server's caches for the
 // account are invalidated: labels carry what Nubi reads to resolve a target

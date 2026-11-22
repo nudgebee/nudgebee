@@ -16,6 +16,25 @@ class Document:
     metadata: Dict[str, Any] = field(default_factory=dict)
     id: Optional[str] = None
 
+    def retrieval_text(self, max_chars: Optional[int] = None) -> str:
+        """The text embedded and reranked: the chunk's context (title, heading
+        path, table header) before the chunk itself, when chunking set one.
+
+        With ``max_chars`` (the reranker's window) the chunk keeps its full text
+        and the context only fills the room left: its later lines go first, so
+        the table header is dropped before the page path, then the context."""
+        context = (self.metadata or {}).get("chunk_context") or ""
+        content = self.page_content or ""
+        if max_chars is None:
+            return f"{context}\n\n{content}" if context else content
+        lines = context.split("\n") if context else []
+        while lines:
+            text = "\n".join(lines) + "\n\n" + content
+            if len(text) <= max_chars:
+                return text
+            lines.pop()
+        return content[:max_chars]
+
 
 class Embeddings(ABC):
     """Abstract base class for embedding providers."""

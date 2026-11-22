@@ -1,4 +1,4 @@
-import { Page, Locator } from "@playwright/test";
+import { Page, Locator, expect } from "@playwright/test";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { AUTH_STATE_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
@@ -34,6 +34,7 @@ export class LoginPage {
   readonly tenantInput: Locator;
   readonly switchTenantSubmitButton: Locator;
   readonly homeButton: Locator;
+  readonly headerCluster: Locator;
   readonly clusterInput: Locator;
   readonly accessBanner: Locator;
 
@@ -48,7 +49,9 @@ export class LoginPage {
     this.tenantInput = page.locator("#auto-complete-tenant");
     this.switchTenantSubmitButton = page.getByRole("button", { name: "Switch Tenant" });
     this.homeButton = page.getByText("Home", { exact: true }).first();
-    this.clusterInput = page.locator("#auto-complete-global-cluster");
+    // Scoped to the header: the Nubi chat box renders its own ClusterDropDown with the same input id.
+    this.headerCluster = page.locator("#global-cluster-filter");
+    this.clusterInput = this.headerCluster.locator("#auto-complete-global-cluster");
     this.accessBanner = page.locator("#account-access-banner");
   }
 
@@ -569,6 +572,24 @@ export class LoginPage {
     return selection;
   }
 
+  // Sign-in lands on /ask-nudgebee, which has no header cluster picker, so the cluster is switched from the Home tab.
+  private async ensureHeaderClusterPicker(): Promise<void> {
+    // Already being on a page with the header picker is the normal case, so absence is a branch, not a failure.
+    if (await this.clusterInput.isVisible().catch(() => false)) return;
+    // Rail and flyout items render ids but no testid, and "Home" text also matches the page heading.
+    const homeRail = this.page.locator("#home-sidenavbutton");
+    const homeItem = this.page.locator("#sidenav-home-home");
+    await expect(async () => {
+      await homeRail.hover();
+      await homeItem.waitFor({ state: "visible", timeout: 3000 });
+      await homeItem.click();
+      await this.page.waitForURL(/\/home/, { timeout: 5000 });
+    }).toPass({ timeout: 30000, intervals: [500, 1000, 2000] });
+    await this.page.mouse.move(0, 0);
+    await this.clusterInput.waitFor({ state: "visible", timeout: 30000 });
+    await this.waitForLoaderToDisappear();
+  }
+
   // Selects the cluster named by CLUSTER_NAME/CLUSTER, or the highest iteration-N
   // cluster when neither is set, and returns the name it settled on.
   //
@@ -579,6 +600,8 @@ export class LoginPage {
   // driving again. Only an explicitly named cluster can be checked this way;
   // without one, the target is not known until the options are read.
   private async selectConfiguredCluster(): Promise<string> {
+    await this.ensureHeaderClusterPicker();
+
     const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
 
     if (!explicitCluster) {
@@ -603,7 +626,7 @@ export class LoginPage {
     // Read back rather than trusting the click. A dropdown that committed a
     // different account would otherwise let the whole suite run green against
     // the wrong cluster's data — the failure this check exists to prevent.
-    const committed = await readGlobalClusterValue(this.page, 30000, explicitCluster);
+    const committed = await readGlobalClusterValue(this.page, 30000, explicitCluster, this.headerCluster);
     if (committed !== explicitCluster) {
       throw new Error(`Cluster selection did not commit: expected "${explicitCluster}", dropdown shows "${committed}"`);
     }
@@ -616,7 +639,7 @@ export class LoginPage {
     while (Date.now() < deadline) {
       if (await this.accessBanner.isVisible().catch(() => false)) return null;
       const value = (await this.clusterInput.inputValue().catch(() => "")).trim();
-      if (value) return value === expected ? value : readGlobalClusterValue(this.page, settleMs, expected);
+      if (value) return value === expected ? value : readGlobalClusterValue(this.page, settleMs, expected, this.headerCluster);
       await this.page.waitForTimeout(250);
     }
     return "";
@@ -671,7 +694,8 @@ export class LoginPage {
     }
 
     if (selection.cluster) {
-      const active = await readGlobalClusterValue(this.page, 30000, selection.cluster);
+      await this.ensureHeaderClusterPicker();
+      const active = await readGlobalClusterValue(this.page, 30000, selection.cluster, this.headerCluster);
       if (active !== selection.cluster) {
         throw new Error(
           `Cluster did not persist: dropdown shows "${active || "(empty)"}", expected "${selection.cluster}"`,

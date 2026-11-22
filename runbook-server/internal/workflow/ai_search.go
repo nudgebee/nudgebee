@@ -85,11 +85,77 @@ func (s *Service) SearchAIInvocableWorkflows(ctx *security.RequestContext, accou
 	// automation that cannot actually be run.
 	eligible := make([]model.AIInvocableWorkflow, 0, len(candidates))
 	for _, c := range candidates {
-		if c.Definition.HasManualTrigger() && strings.TrimSpace(c.Definition.LLMDescription) != "" {
+		// The query already required opted in, ACTIVE and published.
+		if aiOfferReason(true, true, model.WorkflowStatusActive, &c.Definition) == "" {
+			c.AccountID = accountID
 			eligible = append(eligible, c)
 		}
 	}
 
+	return aiSearchResponse(eligible, query, limit), nil
+}
+
+// SearchAIInvocableWorkflowsInOtherAccounts is SearchAIInvocableWorkflows over
+// every account the caller can read except excludeAccountID — the
+// conversation's own, which the assistant searches on its own so these results
+// cannot crowd it out. Each automation is offered by the same rule (feature
+// flag, opted in, ACTIVE, published) as on its own account, and carries the
+// account it runs on. The set of readable accounts is decided here, where the
+// workflows grants live, not by the caller.
+func (s *Service) SearchAIInvocableWorkflowsInOtherAccounts(ctx *security.RequestContext, excludeAccountID, query string, limit int) (model.AIWorkflowSearchResponse, error) {
+	readable, err := ResolveReadableAccounts(ctx, nil)
+	if err != nil {
+		return model.AIWorkflowSearchResponse{}, err
+	}
+	others := make([]string, 0, len(readable))
+	for _, id := range readable {
+		if id != excludeAccountID {
+			others = append(others, id)
+		}
+	}
+	if len(others) == 0 {
+		return model.AIWorkflowSearchResponse{Workflows: []model.AIWorkflowCandidate{}}, nil
+	}
+
+	tenantID := ctx.GetSecurityContext().GetTenantId()
+	candidates, err := s.store.ListAIToolCandidates(ctx.GetContext(), tenantID, others)
+	if err != nil {
+		return model.AIWorkflowSearchResponse{}, err
+	}
+
+	enabled := map[string]bool{}
+	eligible := make([]model.AIInvocableWorkflow, 0, len(candidates))
+	for _, c := range candidates {
+		on, seen := enabled[c.AccountID]
+		if !seen {
+			var flagErr error
+			on, flagErr = featureEnabledForAccount(common.FeatureAIWorkflowTools, tenantID, c.AccountID)
+			if flagErr != nil {
+				ctx.GetLogger().Warn("ai search: feature flag lookup failed, skipping account",
+					"account_id", c.AccountID, "error", flagErr)
+				on = false
+			}
+			enabled[c.AccountID] = on
+		}
+		if c.Live == nil || aiOfferReason(on, c.AIInvocable, c.Status, c.Live) != "" {
+			continue
+		}
+		eligible = append(eligible, model.AIInvocableWorkflow{
+			ID:          c.ID,
+			AccountID:   c.AccountID,
+			Name:        c.Name,
+			Description: c.Description,
+			AutoApprove: c.AIAutoApprove,
+			Definition:  *c.Live,
+		})
+	}
+
+	return aiSearchResponse(eligible, query, limit), nil
+}
+
+// aiSearchResponse ranks eligible automations against query and shapes the
+// top `limit` for the assistant.
+func aiSearchResponse(eligible []model.AIInvocableWorkflow, query string, limit int) model.AIWorkflowSearchResponse {
 	if limit <= 0 {
 		limit = defaultAISearchLimit
 	}
@@ -102,19 +168,33 @@ func (s *Service) SearchAIInvocableWorkflows(ctx *security.RequestContext, accou
 	out := make([]model.AIWorkflowCandidate, 0, len(ranked))
 	for _, c := range ranked {
 		out = append(out, model.AIWorkflowCandidate{
-			ID:             c.ID,
-			Name:           c.Name,
-			Description:    c.Description,
-			LLMDescription: c.Definition.LLMDescription,
-			Inputs:         c.Definition.Inputs,
-			AutoApprove:    c.AutoApprove,
+			ID:              c.ID,
+			AccountID:       c.AccountID,
+			Name:            c.Name,
+			Description:     c.Description,
+			LLMDescription:  c.Definition.LLMDescription,
+			Inputs:          c.Definition.Inputs,
+			AutoApprove:     c.AutoApprove,
+			HasApprovalStep: hasApprovalStep(c.Definition.Tasks),
+			Version:         c.Version,
 		})
 	}
 
 	return model.AIWorkflowSearchResponse{
 		Workflows:      out,
 		TotalInvocable: len(eligible),
-	}, nil
+	}
+}
+
+// hasApprovalStep reports whether tasks, at any depth, include a core.approval
+// task: a run of it can stop and wait for a person partway.
+func hasApprovalStep(tasks []model.Task) bool {
+	for _, t := range tasks {
+		if t.Type == "core.approval" || hasApprovalStep(t.Tasks) {
+			return true
+		}
+	}
+	return false
 }
 
 // rankAIWorkflows orders candidates by how well they match query and returns the

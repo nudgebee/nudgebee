@@ -39,6 +39,15 @@ RUN apk add --no-cache git && \
         -o /out/atlas .
 
 FROM ghcr.io/nudgebee/alpine:3.23
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-migrations" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee database migrations" \
+      description="Runs Atlas-based database schema migrations for the Nudgebee platform."
 
 ENV TZ=Etc/UTC
 

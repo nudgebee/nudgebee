@@ -6,7 +6,14 @@ import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import { getSpecificTime } from '@lib/datetime';
 import { applyFiltersOnRouter } from '@lib/router';
-import { titleCaseForAggregationKey, toSeverityLevel } from 'src/utils/common';
+import {
+  titleCaseForAggregationKey,
+  toSeverityLevel,
+  ALERT_STATUS_OPTIONS,
+  getAlertStatusLabel,
+  getAlertStatusTone,
+  deriveGroupAlertStatus,
+} from 'src/utils/common';
 import Datetime from '@shared/format/Datetime';
 import CustomTable2 from '@shared/tables/CustomTable2';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
@@ -27,10 +34,7 @@ type Option = { label: string; value: string };
 
 const findOption = (options: Option[], value: string | null | undefined) => (value ? options.find((o) => o.value === value) ?? null : null);
 
-const STATUS_OPTIONS: Option[] = [
-  { value: 'FIRING', label: 'Firing' },
-  { value: 'CLOSED', label: 'Closed' },
-];
+const STATUS_OPTIONS: Option[] = ALERT_STATUS_OPTIONS.map(({ value, label }) => ({ value, label }));
 const PRIORITY_OPTIONS: Option[] = [
   { value: 'HIGH', label: 'High' },
   { value: 'MEDIUM', label: 'Medium' },
@@ -186,7 +190,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
     () =>
       eventGroupings.map((item: any) => {
         const severity = deriveSeverity(item.distinct_priority);
-        const status = item.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
+        const status = deriveGroupAlertStatus(item.distinct_status);
 
         return [
           {
@@ -204,7 +208,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
             component: <SeverityIcon level={toSeverityLevel(severity)} aria-label={`Severity: ${severity || 'unknown'}`} />,
             data: severity,
           },
-          { component: <Label margin='auto' text={status} /> },
+          { component: <Label margin='auto' text={getAlertStatusLabel(status)} variant={getAlertStatusTone(status)} /> },
           { component: <Text sx={{ textAlign: 'center' }} value={item.count_subject_name ?? '-'} /> },
           {},
         ];

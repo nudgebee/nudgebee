@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -18,85 +19,57 @@ func ctxWithRole(role string) *gin.Context {
 	return c
 }
 
-func TestIsTenantAdmin(t *testing.T) {
-	// Admin roles (incl. read-only) grant tenant-wide reads.
-	for _, r := range []string{"tenant_admin", "tenant_admin_readonly", "account_admin", "account_admin_readonly", "super_admin", "super_admin_readonly"} {
-		assert.True(t, IsTenantAdmin(ctxWithRole(r)), r)
-	}
-	// Non-admin / unknown / empty do not.
-	for _, r := range []string{"user", "viewer", "k8s_namespace_readonly", ""} {
-		assert.False(t, IsTenantAdmin(ctxWithRole(r)), r)
-	}
+func TestCallerRole(t *testing.T) {
 	assert.Equal(t, "tenant_admin", CallerRole(ctxWithRole("tenant_admin")))
 	assert.Equal(t, "", CallerRole(ctxWithRole("")))
 }
 
-func TestRequireWriteRole(t *testing.T) {
+func TestTenantRoleGates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-
-	run := func(role string) (int, bool) {
+	run := func(h gin.HandlerFunc, roles, label string, setRoles bool) int {
+		r := gin.New()
+		r.POST("/x", h, func(c *gin.Context) { c.Status(http.StatusOK) })
+		req := httptest.NewRequest(http.MethodPost, "/x", nil)
+		if setRoles {
+			req.Header.Set("x-user-roles", roles)
+		}
+		if label != "" {
+			req.Header.Set("x-user-role", label)
+		}
 		rec := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(rec)
-		c.Request = httptest.NewRequest("POST", "/", nil)
-		if role != "" {
-			c.Request.Header.Set("x-user-role", role)
-		}
-		reached := false
-		mw := RequireWriteRole()
-		mw(c)
-		if !c.IsAborted() {
-			reached = true
-		}
-		return rec.Code, reached
+		r.ServeHTTP(rec, req)
+		return rec.Code
 	}
-
-	// Read-only roles are refused: the config plane is otherwise guarded only by
-	// the shared service token, and the app grants llm_gateway_* to every built-in
-	// role — so this middleware is the only thing standing between a
-	// *_readonly caller and the tenant's routing rules / quotas / tier mappings.
-	for _, r := range []string{"tenant_admin_readonly", "account_admin_readonly", "k8s_namespace_admin_readonly", "super_admin_readonly"} {
-		code, reached := run(r)
-		assert.False(t, reached, r)
-		assert.Equal(t, 403, code, r)
+	for _, tc := range []struct {
+		name, roles, label string
+		setRoles           bool
+		manager, viewer    int
+	}{
+		{"tenant admin", "tenant_admin", "tenant_admin", true, 200, 200},
+		{"tenant admin with account role", "account_admin,tenant_admin", "tenant_admin", true, 200, 200},
+		{"read-only tenant admin", "tenant_admin_readonly", "tenant_admin_readonly", true, 403, 200},
+		{"case and spaces normalised", " Tenant_Admin_Readonly ", "", true, 403, 200},
+		{"account admin read-only", "account_admin_readonly", "account_admin_readonly", true, 403, 403},
+		{"k8s namespace admin read-only", "k8s_namespace_admin_readonly", "", true, 403, 403},
+		{"super admin, not a member", "tenant_admin_readonly,super_admin", "tenant_admin_readonly", true, 200, 200},
+		{"custom-role user (grants only)", "", "tenant_admin_readonly", true, 403, 403},
+		{"custom-role user, no-roles sentinel", "-", "tenant_admin_readonly", true, 403, 403},
+		{"account admin", "account_admin", "account_admin", true, 403, 403},
+		{"k8s namespace admin", "k8s_namespace_admin", "k8s_namespace_admin", true, 403, 403},
+		{"old app pod: label only", "", "tenant_admin", false, 200, 200},
+		{"old app pod: label only, account admin", "", "account_admin", false, 403, 403},
+		{"service call", "", "", false, 200, 200},
+	} {
+		assert.Equal(t, tc.manager, run(RequireTenantManager(), tc.roles, tc.label, tc.setRoles), "manager: "+tc.name)
+		assert.Equal(t, tc.viewer, run(RequireTenantViewer(), tc.roles, tc.label, tc.setRoles), "viewer: "+tc.name)
 	}
-
-	// Write-capable roles pass through.
-	for _, r := range []string{"tenant_admin", "account_admin", "k8s_namespace_admin", "super_admin"} {
-		_, reached := run(r)
-		assert.True(t, reached, r)
-	}
-
-	// No role header = direct service-to-service call (already service-token
-	// gated), so it is NOT treated as read-only.
-	_, reached := run("")
-	assert.True(t, reached)
 }
 
-func TestRequireWriteRoleNormalizesHeader(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	reached := func(role string) bool {
-		rec := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(rec)
-		c.Request = httptest.NewRequest("POST", "/", nil)
-		c.Request.Header.Set("x-user-role", role)
-		RequireWriteRole()(c)
-		return !c.IsAborted()
-	}
-
-	// Case and surrounding whitespace must not let a read-only role through:
-	// the header is attacker-visible in the sense that any deviation from the
-	// canonical spelling would otherwise miss the map and be read as write-capable.
-	for _, r := range []string{
-		"Tenant_Admin_Readonly",
-		"TENANT_ADMIN_READONLY",
-		"  account_admin_readonly  ",
-		"\tk8s_namespace_admin_readonly\n",
-	} {
-		assert.False(t, reached(r), r)
-	}
-
-	// Normalization must not start refusing write-capable roles.
-	assert.True(t, reached("Tenant_Admin"))
-	assert.True(t, reached(" account_admin "))
+func TestCallerRolesDropsSentinel(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/x", nil)
+	c.Request.Header.Set("x-user-roles", " - ")
+	roles, ok := callerRoles(c)
+	assert.True(t, ok)
+	assert.Empty(t, roles)
 }

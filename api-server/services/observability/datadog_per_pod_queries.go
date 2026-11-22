@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"sort"
 	"strings"
 )
 
@@ -276,7 +275,7 @@ func datadogCollapseOverTime(results []QueryResult, meta RequestMetadata) {
 				// count_over_time -- and to the floor the caller checks it against.
 				value = stepEquivalentCount(sumFinite(series.Values), samplePeriod, step)
 			} else {
-				v, ok := datadogReduceOverTime(series.Values, meta.Aggregate)
+				v, ok := reduceOverTime(series.Values, meta.Aggregate)
 				if !ok {
 					// Every sample was a gap — normal for a pod that lived through part of
 					// the window. Still exactly one point, because that is what Aggregate
@@ -290,90 +289,6 @@ func datadogCollapseOverTime(results []QueryResult, meta RequestMetadata) {
 			series.Timestamps, series.Values = []int64{last}, []float64{value}
 		}
 	}
-}
-
-// datadogReduceOverTime applies the requested aggregate to one series' own values.
-//
-// Datadog can push a plain aggregate down as a rollup, and does so for the per-pod
-// keys where the response would otherwise be enormous. Every other key arrives as a
-// range whatever was asked for, so the collapse happens here — otherwise `aggregate`
-// silently means nothing on Datadog for those keys, and a consumer reading payload[0]
-// gets the oldest point in the window instead of the statistic it asked for.
-//
-// Reports false when the series holds no finite value, which the caller turns into a
-// single NaN rather than a zero.
-func datadogReduceOverTime(values []float64, aggregate ParsedAggregate) (float64, bool) {
-	if aggregate.IsQuantile() {
-		return percentileOverTime(values, aggregate.Quantile)
-	}
-
-	finite := make([]float64, 0, len(values))
-	for _, v := range values {
-		if !math.IsNaN(v) && !math.IsInf(v, 0) {
-			finite = append(finite, v)
-		}
-	}
-	if len(finite) == 0 {
-		return 0, false
-	}
-
-	switch aggregate.Name {
-	case AggregateMax:
-		out := finite[0]
-		for _, v := range finite[1:] {
-			if v > out {
-				out = v
-			}
-		}
-		return out, true
-	case AggregateMin:
-		out := finite[0]
-		for _, v := range finite[1:] {
-			if v < out {
-				out = v
-			}
-		}
-		return out, true
-	case AggregateSum, AggregateAvg:
-		total := 0.0
-		for _, v := range finite {
-			total += v
-		}
-		if aggregate.Name == AggregateSum {
-			return total, true
-		}
-		return total / float64(len(finite)), true
-	case AggregateCount:
-		return float64(len(finite)), true
-	}
-	return 0, false
-}
-
-// percentileOverTime is linear interpolation over one series' own values, matching
-// the quantile_over_time() the Prometheus path asks the engine for and the
-// np.percentile() the Python Datadog service used before this moved server-side.
-func percentileOverTime(values []float64, quantile float64) (float64, bool) {
-	finite := make([]float64, 0, len(values))
-	for _, v := range values {
-		// A gap arrives as NaN and is not a measurement; counting it as one is the
-		// bug that made every Datadog percentile read low.
-		if !math.IsNaN(v) && !math.IsInf(v, 0) {
-			finite = append(finite, v)
-		}
-	}
-	if len(finite) == 0 {
-		return 0, false
-	}
-	sort.Float64s(finite)
-	if len(finite) == 1 {
-		return finite[0], true
-	}
-	pos := quantile * float64(len(finite)-1)
-	lo, hi := int(math.Floor(pos)), int(math.Ceil(pos))
-	if hi >= len(finite) {
-		return finite[len(finite)-1], true
-	}
-	return finite[lo] + (finite[hi]-finite[lo])*(pos-float64(lo)), true
 }
 
 // datadogNoteUnanswerableKeys gives each requested key Datadog cannot answer an

@@ -274,6 +274,161 @@ func abandonedScaleParams(resource models.Resource) (map[string]any, error) {
 	}, nil
 }
 
+// podRightSizingPlan is a pod_right_sizing apply reduced to what the agent will
+// be asked to patch, once every refusal that can be decided up front has passed.
+type podRightSizingPlan struct {
+	resourceMeta         map[string]any
+	containers           []any
+	containerAnnotations []map[string]string
+	// submitted holds one line per container with the values as they arrived,
+	// logged when the apply goes ahead.
+	submitted []string
+}
+
+// buildPodRightSizingPlan turns the request into that plan, or returns the
+// reason it is refused. It writes nothing and queues nothing, so it serves both
+// the apply itself and PrecheckApply, which callers run before they record an
+// attempt.
+func buildPodRightSizingPlan(ctx AccountAdapterContext, request ApplyRecommendationRequest) (podRightSizingPlan, error) {
+	if request.Resource.Id == "" {
+		return podRightSizingPlan{}, fmt.Errorf("rule is not supported for empty respurce id")
+	}
+	containers := []any{}
+	resourceMeta := request.Resource.Meta.Object().(map[string]any)
+	resourceMeta["controller"] = lo.FromPtr(request.Resource.Name)
+	containerAnnotations := []map[string]string{}
+	submitted := []string{}
+	for key, value := range request.Data {
+		resourceData, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Skip non-container keys (e.g. cloud_resourse, card_id, id, accountId, container_name)
+		if resourceData["cpu"] == nil && resourceData["memory"] == nil {
+			continue
+		}
+		// Resolve the cpu/memory sub-maps once with comma-ok. Reads from a nil
+		// map are safe in Go, so the per-field accesses below can't panic even
+		// when a sub-map is absent or the wrong shape (previously each access
+		// was an unchecked resourceData["cpu"].(map[string]any) assertion).
+		cpuData, _ := resourceData["cpu"].(map[string]any)
+		memData, _ := resourceData["memory"].(map[string]any)
+		submitted = append(submitted, fmt.Sprintf("applying recommendation: %s, %s, %s, %s, %v, %v, %v, %v",
+			resourceMeta["namespace"], resourceMeta["controller"], resourceMeta["controllerKind"],
+			key,
+			cpuData["request"],
+			cpuData["limit"],
+			memData["request"],
+			memData["limit"]))
+		recObj, isRecMap := request.Recommendation.Recommendation.Object().(map[string]any)
+		if !isRecMap {
+			continue
+		}
+		recommendationList, _ := recObj[key].([]any)
+		var cpuAllocated map[string]any
+		var memAllocated map[string]any
+		for i := range recommendationList {
+			item, ok := recommendationList[i].(map[string]any)
+			if !ok {
+				continue
+			}
+			resource, ok := item["resource"].(string)
+			if !ok {
+				continue
+			}
+			switch resource {
+			case "cpu":
+				if allocated, ok := item["allocated"].(map[string]any); ok {
+					cpuAllocated = allocated
+				}
+			case "memory":
+				if allocated, ok := item["allocated"].(map[string]any); ok {
+					memAllocated = allocated
+				}
+			}
+		}
+		// Normalize the requested memory to a compact Kubernetes quantity
+		// (e.g. "161Mi") before it reaches the agent. The UI sends memory as a
+		// unit-suffixed string ("160.79Mi") and the server-side pipeline sends a
+		// raw byte count; applyMemoryUnit renders both to a valid quantity. Sent
+		// verbatim, a bare number is read by Kubernetes as *bytes* — 160.79 lands
+		// as "160790m" (~160 bytes) and OOM-kills the pod. CPU is a valid quantity
+		// as bare cores, so it passes through untouched.
+		memRequest := applyMemoryUnit(memData["request"])
+		memLimit := applyMemoryUnit(memData["limit"])
+		allocatedMemRequest := applyMemoryUnit(memAllocated["request"])
+		allocatedMemLimit := applyMemoryUnit(memAllocated["limit"])
+		allocatedCpuRequest := applyMemoryUnit(cpuAllocated["request"])
+		allocatedCpuLimit := applyMemoryUnit(cpuAllocated["limit"])
+		annotation := map[string]any{
+			"cpu_request":         cpuData["request"],
+			"cpu_limit":           cpuData["limit"],
+			"prev_cpu_request":    allocatedCpuRequest,
+			"prev_cpu_limit":      allocatedCpuLimit,
+			"memory_request":      memRequest,
+			"memory_limit":        memLimit,
+			"prev_memory_request": allocatedMemRequest,
+			"prev_memory_limit":   allocatedMemLimit,
+		}
+		contianerAnnotation := getAnnotationDict(key, annotation)
+		containerAnnotations = append(containerAnnotations, contianerAnnotation)
+		containers = append(containers, map[string]any{
+			"cpu_limit":      cpuData["limit"],
+			"cpu_request":    cpuData["request"],
+			"memory_limit":   memLimit,
+			"container_name": key,
+			"memory_request": memRequest,
+		})
+	}
+	// An empty or junk-only payload (e.g. the {} the @finops apply tool
+	// substitutes when the model omits data) yields zero containers; letting
+	// it continue would create a no-op agent task while the recommendation
+	// goes InProgress and looks resolved. Reject it instead.
+	if len(containers) == 0 {
+		return podRightSizingPlan{}, fmt.Errorf("recommendation apply rejected: payload contains no container resource changes")
+	}
+	// Reject a physically implausible apply (e.g. a value mangled by a unit
+	// bug) before it reaches the agent, instead of silently bricking the
+	// workload. Runs on the normalized quantities the agent will actually patch,
+	// so it guards both the in-place and legacy rollout paths below.
+	if err := validateContainerResources(containers); err != nil {
+		return podRightSizingPlan{}, fmt.Errorf("recommendation apply rejected: %w", err)
+	}
+	// Then the same question against this cluster: is there a node that could
+	// take the new pod at all? A request nothing can schedule leaves the
+	// workload Pending with the old pod already gone, so it is refused here —
+	// the one place every pod_right_sizing apply passes through, whoever
+	// produced the number (the stored krr recommendation, the event card's own
+	// calculation, or a value typed into the form).
+	//
+	// The workload name comes from the typed field rather than back out of
+	// resourceMeta: asString would render a *string there as its address, a
+	// name that matches no pod and so switches this check off without a trace.
+	if err := validateSchedulableMemory(ctx, request.Recommendation.CloudAccountId,
+		strings.TrimSpace(asString(resourceMeta["namespace"])),
+		strings.TrimSpace(lo.FromPtr(request.Resource.Name)),
+		containers); err != nil {
+		return podRightSizingPlan{}, fmt.Errorf("recommendation apply rejected: %w", err)
+	}
+	return podRightSizingPlan{
+		resourceMeta:         resourceMeta,
+		containers:           containers,
+		containerAnnotations: containerAnnotations,
+		submitted:            submitted,
+	}, nil
+}
+
+// PrecheckApply reports a refusal the adapter can see before anything is
+// recorded or queued. Only a pod_right_sizing apply has such refusals today;
+// every other rule passes straight through.
+func (k *kuberntesAdapter) PrecheckApply(ctx AccountAdapterContext, request ApplyRecommendationRequest) error {
+	if request.Recommendation.RuleName != "pod_right_sizing" {
+		return nil
+	}
+	_, err := buildPodRightSizingPlan(ctx, request)
+	return err
+}
+
 func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, request ApplyRecommendationRequest, existingRecommendations []models.RecommendationResolution, recommendResolutionId string) (ApplyRecommendationResponse, error) {
 	recommendationSource := "recommendation"
 	if request.ProviderConfig["recommendation_source"] != nil {
@@ -302,125 +457,14 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 			ResolutionTypeRefrenceId: taskId,
 		}, nil
 	case request.Recommendation.RuleName == "pod_right_sizing":
-		if request.Resource.Id == "" {
-			return ApplyRecommendationResponse{}, fmt.Errorf("rule is not supported for empty respurce id")
+		plan, err := buildPodRightSizingPlan(ctx, request)
+		if err != nil {
+			return ApplyRecommendationResponse{}, err
 		}
-		containers := []any{}
-		resourceMeta := request.Resource.Meta.Object().(map[string]any)
-		resourceMeta["controller"] = request.Resource.Name
-		containerAnnotations := []map[string]string{}
-		for key, value := range request.Data {
-			resourceData, ok := value.(map[string]any)
-			if !ok {
-				continue
-			}
-			// Skip non-container keys (e.g. cloud_resourse, card_id, id, accountId, container_name)
-			if resourceData["cpu"] == nil && resourceData["memory"] == nil {
-				continue
-			}
-			// Resolve the cpu/memory sub-maps once with comma-ok. Reads from a nil
-			// map are safe in Go, so the per-field accesses below can't panic even
-			// when a sub-map is absent or the wrong shape (previously each access
-			// was an unchecked resourceData["cpu"].(map[string]any) assertion).
-			cpuData, _ := resourceData["cpu"].(map[string]any)
-			memData, _ := resourceData["memory"].(map[string]any)
-			ctx.GetLogger().Info(fmt.Sprintf("applying recommendation: %s, %s, %s, %s, %v, %v, %v, %v",
-				resourceMeta["namespace"], resourceMeta["controller"], resourceMeta["controllerKind"],
-				key,
-				cpuData["request"],
-				cpuData["limit"],
-				memData["request"],
-				memData["limit"]))
-			recObj, isRecMap := request.Recommendation.Recommendation.Object().(map[string]any)
-			if !isRecMap {
-				continue
-			}
-			recommendationList, _ := recObj[key].([]any)
-			var cpuAllocated map[string]any
-			var memAllocated map[string]any
-			for i := range recommendationList {
-				item, ok := recommendationList[i].(map[string]any)
-				if !ok {
-					continue
-				}
-				resource, ok := item["resource"].(string)
-				if !ok {
-					continue
-				}
-				switch resource {
-				case "cpu":
-					if allocated, ok := item["allocated"].(map[string]any); ok {
-						cpuAllocated = allocated
-					}
-				case "memory":
-					if allocated, ok := item["allocated"].(map[string]any); ok {
-						memAllocated = allocated
-					}
-				}
-			}
-			// Normalize the requested memory to a compact Kubernetes quantity
-			// (e.g. "161Mi") before it reaches the agent. The UI sends memory as a
-			// unit-suffixed string ("160.79Mi") and the server-side pipeline sends a
-			// raw byte count; applyMemoryUnit renders both to a valid quantity. Sent
-			// verbatim, a bare number is read by Kubernetes as *bytes* — 160.79 lands
-			// as "160790m" (~160 bytes) and OOM-kills the pod. CPU is a valid quantity
-			// as bare cores, so it passes through untouched.
-			memRequest := applyMemoryUnit(memData["request"])
-			memLimit := applyMemoryUnit(memData["limit"])
-			allocatedMemRequest := applyMemoryUnit(memAllocated["request"])
-			allocatedMemLimit := applyMemoryUnit(memAllocated["limit"])
-			allocatedCpuRequest := applyMemoryUnit(cpuAllocated["request"])
-			allocatedCpuLimit := applyMemoryUnit(cpuAllocated["limit"])
-			annotation := map[string]any{
-				"cpu_request":         cpuData["request"],
-				"cpu_limit":           cpuData["limit"],
-				"prev_cpu_request":    allocatedCpuRequest,
-				"prev_cpu_limit":      allocatedCpuLimit,
-				"memory_request":      memRequest,
-				"memory_limit":        memLimit,
-				"prev_memory_request": allocatedMemRequest,
-				"prev_memory_limit":   allocatedMemLimit,
-			}
-			contianerAnnotation := getAnnotationDict(key, annotation)
-			containerAnnotations = append(containerAnnotations, contianerAnnotation)
-			containers = append(containers, map[string]any{
-				"cpu_limit":      cpuData["limit"],
-				"cpu_request":    cpuData["request"],
-				"memory_limit":   memLimit,
-				"container_name": key,
-				"memory_request": memRequest,
-			})
+		for _, line := range plan.submitted {
+			ctx.GetLogger().Info(line)
 		}
-		// An empty or junk-only payload (e.g. the {} the @finops apply tool
-		// substitutes when the model omits data) yields zero containers; letting
-		// it continue would create a no-op agent task while the recommendation
-		// goes InProgress and looks resolved. Reject it instead.
-		if len(containers) == 0 {
-			return ApplyRecommendationResponse{}, fmt.Errorf("recommendation apply rejected: payload contains no container resource changes")
-		}
-		// Reject a physically implausible apply (e.g. a value mangled by a unit
-		// bug) before it reaches the agent, instead of silently bricking the
-		// workload. Runs on the normalized quantities the agent will actually patch,
-		// so it guards both the in-place and legacy rollout paths below.
-		if err := validateContainerResources(containers); err != nil {
-			return ApplyRecommendationResponse{}, fmt.Errorf("recommendation apply rejected: %w", err)
-		}
-		// Then the same question against this cluster: is there a node that could
-		// take the new pod at all? A request nothing can schedule leaves the
-		// workload Pending with the old pod already gone, so it is refused here —
-		// the one place every pod_right_sizing apply passes through, whoever
-		// produced the number (the stored krr recommendation, the event card's own
-		// calculation, or a value typed into the form).
-		//
-		// The workload name comes from the typed field rather than back out of
-		// resourceMeta: asString would render a *string there as its address, a
-		// name that matches no pod and so switches this check off without a trace.
-		if err := validateSchedulableMemory(ctx, request.Recommendation.CloudAccountId,
-			strings.TrimSpace(asString(resourceMeta["namespace"])),
-			strings.TrimSpace(lo.FromPtr(request.Resource.Name)),
-			containers); err != nil {
-			return ApplyRecommendationResponse{}, fmt.Errorf("recommendation apply rejected: %w", err)
-		}
+		resourceMeta, containers, containerAnnotations := plan.resourceMeta, plan.containers, plan.containerAnnotations
 		containerChanges := map[string]any{
 			"container_changes": containerAnnotations,
 		}

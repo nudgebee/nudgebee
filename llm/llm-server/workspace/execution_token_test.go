@@ -95,3 +95,16 @@ func TestCommandEnvMintsPerAttemptWithoutMutatingCaller(t *testing.T) {
 	assert.Equal(t, "other-cluster", claims.TargetAccountId, "caller-supplied tokens are replaced")
 	assert.WithinDuration(t, time.Now().Add(90*time.Second), claims.ExpiresAt.Time, 5*time.Second)
 }
+
+// A pod's token is random and not a JWT, so llm-server can never accept a
+// copy read inside the pod as a credential.
+func TestNewPodTokenIsRandomAndNotAJWT(t *testing.T) {
+	a, err := newPodToken()
+	require.NoError(t, err)
+	b, err := newPodToken()
+	require.NoError(t, err)
+	assert.Len(t, a, 64)
+	assert.NotEqual(t, a, b)
+	_, _, err = jwt.NewParser().ParseUnverified(a, &WorkspaceTokenClaims{})
+	assert.Error(t, err)
+}

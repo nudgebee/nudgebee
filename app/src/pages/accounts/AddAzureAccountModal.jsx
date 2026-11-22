@@ -17,6 +17,7 @@ import MarkDowns from '@shared/viewers/MarkDowns';
 import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import { ds } from 'src/utils/colors';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
+import { CloudFirstSyncStatus, useCloudFirstSync } from '@components/integrations/CloudFirstSync';
 
 const SETUP_GUIDE_CONTENT = `### Prerequisites
 
@@ -55,7 +56,7 @@ Repeat Step 2 for each subscription you want to monitor.
 
 const STEP_LABELS = ['Credentials', 'Select Subscriptions', 'Review & Onboard'];
 
-const AddAzureAccountModal = ({ open, onClose }) => {
+const AddAzureAccountModal = ({ open, onClose, onAccountCreated }) => {
   // Step 0: Credentials
   const [accountNameValue, setAccountNameValue] = useState('');
   const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
@@ -76,6 +77,12 @@ const AddAzureAccountModal = ({ open, onClose }) => {
   // Step 2: Onboard results
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [onboardResults, setOnboardResults] = useState(null);
+  // Subscriptions created by the onboard, held while their first data sync runs.
+  const [syncAccounts, setSyncAccounts] = useState([]);
+  const firstSync = useCloudFirstSync(
+    syncAccounts.map((a) => a.id),
+    'Azure'
+  );
 
   const clearForm = () => {
     setAccountNameValue('');
@@ -93,12 +100,29 @@ const AddAzureAccountModal = ({ open, onClose }) => {
     setDiscoveryError('');
     setIsSubmitting(false);
     setOnboardResults(null);
+    setSyncAccounts([]);
   };
 
   const handleCloseModal = (wasSuccessful = false) => {
     clearForm();
     onClose(wasSuccessful);
   };
+
+  // Close on its own only when every subscription onboarded and synced cleanly;
+  // a failed row or a cost-data warning in the results is something the user
+  // still needs to read.
+  useEffect(() => {
+    if (firstSync.phase !== 'done') {
+      return;
+    }
+    if (onboardResults?.accounts?.some((a) => a.status !== 'created' || a.warning)) {
+      return;
+    }
+    snackbar.success('First data sync from Azure finished.');
+    handleCloseModal(true);
+    // handleCloseModal is stable enough for this one-shot close.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firstSync.phase]);
 
   // The connect-azure guided tour drives this modal to preview the Subscriptions
   // and Review steps without real data (see the Next handlers + banner below).
@@ -287,6 +311,17 @@ const AddAzureAccountModal = ({ open, onClose }) => {
         const successCount = result.accounts?.filter((a) => a.status === 'created').length || 0;
         const errorCount = result.accounts?.filter((a) => a.status === 'error').length || 0;
         const warningCount = result.accounts?.filter((a) => a.status === 'created' && a.warning).length || 0;
+        const created = (result.accounts || []).filter((a) => a.status === 'created' && a.account_id);
+        if (created.length > 0) {
+          // The accounts exist now, so the list refreshes without waiting for close.
+          onAccountCreated?.();
+          setSyncAccounts(
+            created.map((a) => ({
+              id: a.account_id,
+              name: discoveredSubscriptions.find((s) => s.subscription_id === a.subscription_id)?.display_name || a.subscription_id,
+            }))
+          );
+        }
         if (errorCount === 0 && warningCount > 0) {
           snackbar.warning(
             `Onboarded ${successCount} subscription${successCount > 1 ? 's' : ''}; ${warningCount} can't read cost data yet. See the details below.`
@@ -319,6 +354,8 @@ const AddAzureAccountModal = ({ open, onClose }) => {
       width='md'
       open={open}
       handleClose={isLoading ? () => {} : () => handleCloseModal(onboardResults !== null)}
+      // While the first sync is pending, only the explicit close gets out.
+      backdropClickClose={firstSync.phase !== 'waiting'}
       title='Add Azure Account'
       subtitle={getIntegrationDescription('AZURE')}
       loader={isLoading}
@@ -670,6 +707,15 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 </Box>
               ))}
             </Box>
+          )}
+
+          {onboardResults && (
+            <CloudFirstSyncStatus
+              phase={firstSync.phase}
+              issues={firstSync.issues}
+              providerLabel='Azure'
+              accountNames={Object.fromEntries(syncAccounts.map((a) => [a.id, a.name]))}
+            />
           )}
 
           <Box

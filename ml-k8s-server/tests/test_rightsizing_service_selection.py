@@ -39,7 +39,6 @@ def _service(via_utilisation, **kwargs):
         return_value=None,
     ):
         configs.rightsizing_via_utilisation = via_utilisation
-        configs.via_api_server = True
         service = RecommendationService("acct-1", _config(), tenant_id="tenant-1", **kwargs)
     try:
         yield_service = service._metrics_service_loaders
@@ -58,13 +57,13 @@ def _service(via_utilisation, **kwargs):
     ],
 )
 def test_the_flag_off_is_exactly_todays_behaviour(metrics_provider, expected):
-    loaders = _service(False, metrics_provider=metrics_provider, elasticsearch={"url": "https://es:9200"})
+    loaders = _service(False, metrics_provider=metrics_provider)
     assert isinstance(loaders, expected)
 
 
 @pytest.mark.parametrize("metrics_provider", [None, "prometheus", "ES", "newrelic", "dynatrace"])
 def test_the_flag_on_is_one_service_for_every_provider_but_datadog(metrics_provider):
-    loaders = _service(True, metrics_provider=metrics_provider, elasticsearch={"url": "https://es:9200"})
+    loaders = _service(True, metrics_provider=metrics_provider)
     assert isinstance(loaders, UtilisationMetricsService)
 
 
@@ -88,7 +87,7 @@ def test_datadog_uses_the_shared_service_like_every_other_provider():
 def test_the_flag_alone_decides_for_every_provider():
     """No provider is named on this path any more."""
     for provider in ("prometheus", "datadog", "ES", "newrelic", "dynatrace", None):
-        loaders = _service(True, metrics_provider=provider, elasticsearch={"url": "https://es:9200"})
+        loaders = _service(True, metrics_provider=provider)
         assert isinstance(loaders, UtilisationMetricsService), f"{provider} should use the shared service"
 
 
@@ -107,7 +106,7 @@ def test_a_prometheus_family_account_keeps_its_pod_inventory_walk():
     default = _service(True, metrics_provider=None)
     assert isinstance(default._inventory, PrometheusMetricsService)
 
-    es = _service(True, metrics_provider="ES", elasticsearch={"url": "https://es:9200"})
+    es = _service(True, metrics_provider="ES")
     assert es._inventory is None, "Elasticsearch has no owner-chain walk to keep"
 
 

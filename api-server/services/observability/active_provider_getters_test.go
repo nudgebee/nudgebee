@@ -20,7 +20,7 @@ func TestProviderGettersUseActiveIntegrationConfigs(t *testing.T) {
 	}{
 		{"Loki", "loki", func(ctx *security.RequestContext) error { _, err := GetLokiConfig(ctx, "account"); return err }},
 		{"Signoz", "signoz", func(ctx *security.RequestContext) error {
-			_, err := (&SignozSaasSource{}).GetSignozAuth(ctx, "account")
+			_, _, err := (&SignozSaasSource{}).signozConnection(ctx, "account")
 			return err
 		}},
 		{"Elasticsearch", "ES", func(ctx *security.RequestContext) error { _, err := GetElasticsearchConfig(ctx, "account"); return err }},

@@ -32,3 +32,26 @@ describe('WorkflowStateStrip publish button', () => {
     expect(screen.getByTestId('workflow-publish-btn')).toBeEnabled();
   });
 });
+
+describe('WorkflowStateStrip account chip', () => {
+  it('shows the account the automation is saved under, between the draft chip and the live version', () => {
+    render(<WorkflowStateStrip {...baseProps} draftAheadOfLive accountName='k8s-prod' accountProvider='K8s' />);
+    const account = screen.getByTestId('workflow-account-indicator');
+    expect(account).toHaveTextContent('k8s-prod');
+    const draft = screen.getByTestId('workflow-draft-indicator');
+    const live = screen.getByTestId('workflow-live-indicator');
+    expect(draft.compareDocumentPosition(account) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(account.compareDocumentPosition(live) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows the account on a new automation, where the version chips are hidden', () => {
+    render(<WorkflowStateStrip {...baseProps} isNewWorkflow accountName='k8s-prod' />);
+    expect(screen.getByTestId('workflow-account-indicator')).toHaveTextContent('k8s-prod');
+    expect(screen.queryByTestId('workflow-live-indicator')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing for the account until its name is known', () => {
+    render(<WorkflowStateStrip {...baseProps} />);
+    expect(screen.queryByTestId('workflow-account-indicator')).not.toBeInTheDocument();
+  });
+});

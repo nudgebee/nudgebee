@@ -96,3 +96,8 @@ const (
 	MemoKeyCallWorkflowDepth = "call_workflow_depth"
 	MaxCallWorkflowDepth     = 10
 )
+
+// ErrTypeNotificationNotDelivered is the Temporal error type of a message
+// notifications-server did not post. A step fails on it; a hook only logs it,
+// so a message about a task never changes how the task ended.
+const ErrTypeNotificationNotDelivered = "NotificationNotDelivered"

@@ -3,6 +3,7 @@ package core
 import (
 	"testing"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
@@ -93,14 +94,14 @@ func TestTierOverrides_EmptyInputYieldsNoPicks(t *testing.T) {
 // a source-only pick was neither persisted nor returned to the resolver. Both
 // had to change for run 549be3006f6c's filters to take effect.
 func TestTierOverrides_HasAnyAcceptsSourceOnly(t *testing.T) {
-	o := ConversationTierOverrides{Picks: map[string]TierModelPick{
+	o := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
 		"summary": {ConfigSource: "db:126f7502-0514-4c26-97c2-3843c49e126f"},
 	}}
 	assert.True(t, o.HasAny(), "a source-only pick must count as present, or it is never saved")
 }
 
 func TestTierOverrides_GetReturnsSourceOnly(t *testing.T) {
-	o := ConversationTierOverrides{Picks: map[string]TierModelPick{
+	o := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
 		"summary": {ConfigSource: "db:126f7502-0514-4c26-97c2-3843c49e126f"},
 	}}
 	got, ok := o.Get("summary")
@@ -110,7 +111,7 @@ func TestTierOverrides_GetReturnsSourceOnly(t *testing.T) {
 }
 
 func TestTierOverrides_HalfSetStillRejectedByHasAnyAndGet(t *testing.T) {
-	o := ConversationTierOverrides{Picks: map[string]TierModelPick{
+	o := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
 		"summary":   {Provider: "googleai"},
 		"retrieval": {Model: "gemini-3.6-flash"},
 	}}

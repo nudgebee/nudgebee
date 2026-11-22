@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
 	"nudgebee/llm-gateway/auth"
@@ -39,7 +40,7 @@ func (s routeStage) Handle(rc *RequestContext) (bool, error) {
 			msg = fmt.Sprintf("%s Use %q instead.", msg, alt)
 		}
 		rc.RejectReason = "blocked"
-		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "model_not_allowed", msg)
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, "model_not_allowed", msg)
 		return true, nil
 	}
 	// Cross-provider substitution: the translate path (in the handler) parses the
@@ -67,30 +68,49 @@ func (s ratelimitStage) Handle(rc *RequestContext) (bool, error) {
 	if !s.limiter.Enabled() {
 		return false, nil
 	}
-	// Quotas match the model the CLIENT asked for, as Reconcile does: routeStage has
-	// already rewritten rc.Model to the resolved one when a rule or alias matched.
-	model := rc.Decision.RequestedModel
-	if model == "" {
-		model = rc.Model
+	// Quotas match the routed target, as policyStage judges it, or the name the client asked
+	// for: an alias to a capped model counts against that model (invariant 1).
+	provider, model := routedTarget(rc)
+	scope := quotaScope(rc.Identity, rc.Decision, provider, model)
+	// Slots first: a request refused for being one too many in flight must not also use
+	// up a requests-per-window unit, which can't be given back.
+	release, ex := s.limiter.Acquire(rc.Ctx, scope, uuid.NewString())
+	if ex != nil {
+		rc.RejectReason = "rate_limited"
+		rc.Gin.Header("Retry-After", "1")
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusTooManyRequests, "rate_limit_exceeded",
+			fmt.Sprintf("too many requests in flight for %s (limit %d at once); retry when one finishes", ex.Scope, int64(ex.Limit)))
+		return true, nil
 	}
-	ex := s.limiter.Check(rc.Ctx, ratelimit.Scope{
-		TenantID: rc.Identity.TenantID,
-		UserID:   rc.Identity.UserID,
-		APIKeyID: rc.Identity.APIKeyID,
-		Model:    model,
-	})
+	rc.releaseSlots = release
+	ex = s.limiter.Check(rc.Ctx, scope)
 	if ex == nil {
 		return false, nil
 	}
+	rc.ReleaseSlots()
 	reset := ratelimit.ResetAt(ex.Period, time.Now())
 	if secs := int(time.Until(reset).Seconds()) + 1; secs > 0 {
 		rc.Gin.Header("Retry-After", strconv.Itoa(secs))
 	}
 	rc.RejectReason = "rate_limited"
-	edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusTooManyRequests, "rate_limit_exceeded",
+	edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusTooManyRequests, "rate_limit_exceeded",
 		fmt.Sprintf("%s limit exceeded for %s (%s window); resets at %s UTC",
 			ex.Metric, ex.Scope, ex.Period, reset.Format("2006-01-02 15:04")))
 	return true, nil
+}
+
+// quotaScope is the scope a request's quotas are checked (pre-call) and reconciled
+// (post-call) against: the served provider/model plus what the client asked for.
+func quotaScope(id auth.Identity, d routing.Decision, provider, model string) ratelimit.Scope {
+	return ratelimit.Scope{
+		TenantID:          id.TenantID,
+		UserID:            id.UserID,
+		APIKeyID:          id.APIKeyID,
+		Provider:          provider,
+		Model:             model,
+		RequestedProvider: d.RequestedProvider,
+		RequestedModel:    d.RequestedModel,
+	}
 }
 
 // CredResolver resolves the provider credential for a specific request. ok=false
@@ -271,7 +291,7 @@ func (s filterStage) Handle(rc *RequestContext) (bool, error) {
 	switch mode {
 	case egressfilter.ModeEnforce:
 		rc.RejectReason = "secret_blocked"
-		edgeerr.Write(rc.Gin, string(rc.Provider), http.StatusForbidden, "secret_detected",
+		edgeerr.Write(rc.Gin, rc.errorShape(), http.StatusForbidden, "secret_detected",
 			"request blocked: it contains a credential/secret ("+strings.Join(rules, ", ")+"). Remove it or ask an administrator about the egress policy.")
 		return true, nil
 	case egressfilter.ModeRedact:

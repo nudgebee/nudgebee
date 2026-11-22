@@ -1,0 +1,43 @@
+name: vm_service_oom
+type: vm_event
+tags: [vm, oom, memory, service]
+
+# The systemd counterpart of the Kubernetes OOM scenarios: a service with a
+# MemoryMax is killed by the kernel when it outgrows it. Like 001/002 the symptom
+# does not say why. Here the trap is blaming the host, which has plenty of free
+# memory; the cause is the unit's own cgroup limit.
+alert:
+  alertname: ServiceOOMKilled
+  labels:
+    instance_id: ${VM_A_INSTANCE_ID}
+    container_id: /system.slice/nb-bench-oom.service
+    severity: high
+  summary: "nb-bench-oom.service was OOM-killed on ${VM_A_HOST}"
+  log_lines: |
+    The systemd service nb-bench-oom.service on ${VM_A_HOST} was terminated by the OOM killer.
+  fingerprint: bench-vm-service-oom-013
+
+# The service grows ~2 MB/s, so its memory series rises for about 30s before the
+# kill and the unit stays failed (Result=oom-kill) until restore. MemoryMax=64M
+# needs cgroup v2 (see vm/README.md).
+vm:
+  settle_seconds: 120
+  inject:
+    - vm/fault.sh memory_oom inject ${VM_A_SSH} 64
+  restore:
+    - vm/fault.sh memory_oom restore ${VM_A_SSH}
+
+expected_telemetry:
+  signals: [metrics]
+  target_markers:
+    - ${VM_A_INSTANCE}
+    - ${VM_A_HOST}
+  service_markers:
+    - nb-bench-oom
+  forbidden_markers:
+    - ${VM_B_INSTANCE}
+    - ${VM_B_HOST}
+
+expected_diagnosis:
+  - "The response must identify that nb-bench-oom.service was killed by the kernel OOM killer because it exceeded its own cgroup memory limit (MemoryMax=64M), and that its memory grew steadily until it hit that limit."
+  - "The response must NOT attribute this to host-wide memory exhaustion: ${VM_A_HOST} still has ample free memory, and the kill was scoped to the unit's cgroup. It must not blame ${VM_B_HOST}."

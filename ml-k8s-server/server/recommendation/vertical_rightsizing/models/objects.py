@@ -52,6 +52,7 @@ class K8sObjectData(pd.BaseModel):
     replica_stats: Optional[ReplicaStats] = None
 
     _api_resource = pd.PrivateAttr(None)
+    _live_pods_count: Optional[int] = pd.PrivateAttr(None)
 
     def __str__(self) -> str:
         return f"{self.kind} {self.namespace}/{self.name}/{self.container}"
@@ -64,7 +65,18 @@ class K8sObjectData(pd.BaseModel):
 
     @property
     def current_pods_count(self) -> int:
+        if self._live_pods_count is not None:
+            return self._live_pods_count
         return len([pod for pod in self.pods if not pod.deleted])
+
+    def release_pods(self) -> None:
+        """Drop the pod list once the strategy has run, keeping only the live count.
+
+        The list holds every pod the workload had over the history window, and a scan
+        keeps every workload until it ends, so it is most of what a scan retains.
+        """
+        self._live_pods_count = self.current_pods_count
+        self.pods = []
 
     @property
     def deleted_pods_count(self) -> int:

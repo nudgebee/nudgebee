@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 )
@@ -232,9 +233,11 @@ func (a *awsSystemsManager) GetResources(ctx providers.CloudProviderContext, acc
 	}
 	cfg.Region = region
 	svc := ssm.NewFromConfig(cfg)
+	ec2Svc := ec2.NewFromConfig(cfg)
 	resources := []providers.Resource{}
+	tagFailures := &ssmInstanceTagFailures{}
 
-	// Get Managed Instances (EC2 instances with SSM agent)
+	// Get Managed Instances (EC2 instances with SSM agent, and hybrid mi- nodes)
 	instancePaginator := ssm.NewDescribeInstanceInformationPaginator(svc, &ssm.DescribeInstanceInformationInput{})
 	for instancePaginator.HasMorePages() {
 		result, err := instancePaginator.NextPage(context.TODO())
@@ -243,27 +246,23 @@ func (a *awsSystemsManager) GetResources(ctx providers.CloudProviderContext, acc
 			break
 		}
 
+		pageIDs := make([]string, 0, len(result.InstanceInformationList))
+		for _, instance := range result.InstanceInformationList {
+			if instance.InstanceId != nil {
+				pageIDs = append(pageIDs, *instance.InstanceId)
+			}
+		}
+		tagsByID := fetchSSMManagedInstanceTags(ctx.GetContext(), svc, ec2Svc, pageIDs, tagFailures)
+
 		for _, instance := range result.InstanceInformationList {
 			if instance.InstanceId == nil {
 				ctx.GetLogger().Warn("Skipping SSM instance due to missing ID")
 				continue
 			}
 
-			tags := make(map[string][]string)
-
-			// Get tags for the instance
-			tagsResult, err := svc.ListTagsForResource(context.TODO(), &ssm.ListTagsForResourceInput{
-				ResourceType: types.ResourceTypeForTaggingManagedInstance,
-				ResourceId:   instance.InstanceId,
-			})
-			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch SSM instance tags", "error", err, "instanceId", *instance.InstanceId)
-			} else if tagsResult.TagList != nil {
-				for _, tag := range tagsResult.TagList {
-					if tag.Key != nil && tag.Value != nil {
-						tags[*tag.Key] = append(tags[*tag.Key], *tag.Value)
-					}
-				}
+			tags := tagsByID[*instance.InstanceId]
+			if tags == nil {
+				tags = make(map[string][]string)
 			}
 
 			metaMap := structToMap(instance)
@@ -343,6 +342,9 @@ func (a *awsSystemsManager) GetResources(ctx providers.CloudProviderContext, acc
 			}
 			resources = append(resources, resource)
 		}
+	}
+	if tagFailures.count > 0 {
+		ctx.GetLogger().Warn("failed to fetch tags for some SSM managed instances", "error", tagFailures.firstErr, "failedInstances", tagFailures.count, "accountNumber", account.AccountNumber, "region", region)
 	}
 
 	// Get SSM Documents (automation runbooks, command documents)

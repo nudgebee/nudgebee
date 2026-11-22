@@ -51,6 +51,13 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "nudgebee.secretName" . | quote }}
+          {{- with .Values.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

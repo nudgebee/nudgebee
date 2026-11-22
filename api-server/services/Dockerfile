@@ -29,6 +29,15 @@ EXPOSE 8000
 CMD ["/app/services"]
 
 FROM ghcr.io/nudgebee/alpine:3.23 AS release-stage
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-services" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee services API server" \
+      description="Nudgebee core services API server for the Nudgebee platform."
 # OS-package cache-bust: bumping OS_PKG_EPOCH (ISO week) changes this layer's
 # cache key so BuildKit re-runs the apk install and pulls current Alpine security
 # patches — its registry cache (mode=max) otherwise serves a stale package layer

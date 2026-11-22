@@ -195,7 +195,7 @@ const computeConfidence = (apiRec: any): number => {
  * defaults to non_prod — the column's own default — rather than labelling every
  * unmatched account 'prod'.
  */
-const deriveEnvironment = (accountEnv: string | undefined, accountName: string): Environment => {
+export const deriveEnvironment = (accountEnv: string | undefined, accountName: string): Environment => {
   if (accountEnv) return accountEnv === 'prod' ? 'prod' : 'non_prod';
   const lower = (accountName || '').toLowerCase();
   if (/non[-_\s]?prod/.test(lower)) return 'non_prod';

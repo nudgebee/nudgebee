@@ -1,6 +1,6 @@
 # Spec: replace the Bitnami PostgreSQL subchart with the official PostgreSQL image
 
-Part of #590 (image-hardening Phase 2). Follows the Redis and RabbitMQ approach (`redis-official-image-spec.md`, `rabbitmq-official-image-spec.md`). Status: **implemented and live-tested (2026-10-31). D1 trixie, D2 accept 90, D3 hook: decided.**
+Part of #590 (image-hardening Phase 2). Follows the Redis and RabbitMQ approach (`redis-official-image-spec.md`, `rabbitmq-official-image-spec.md`). Status: **implemented and live-tested (2026-10-31). D1 trixie, D2 accept 90, D3 refresh: decided (an init container since 2026-11-01, see 6b).**
 
 ## 1. Goal and acceptance
 
@@ -93,7 +93,7 @@ The umbrella chart deploys `ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
   - (a) A post-upgrade hook refreshes every database. That's justified by the identical sort results and `amcheck`.
   - (b) Leave the warning and document the manual command.
 
-  *Recommendation: (a)*, with the hook running `amcheck` on text btrees of the `postgres` and app databases before it refreshes, and skipping the refresh if a check fails.
+  *Recommendation: (a)*, with the hook running `amcheck` on text btrees of the `postgres` and app databases before it refreshes, and skipping the refresh if a check fails. *Superseded on 2026-11-01: the same checks now run in an init container, because the hook ran too late (see 6b).*
 
 ## 6. Test plan (docker-desktop)
 
@@ -116,6 +116,8 @@ The umbrella chart deploys `ghcr.io/nudgebee/postgresql:16.1.0-debian-11-r16-nb1
 **Bug found and fixed during testing:** an unconditional `include_dir = 'conf.d'` would stop PostgreSQL from starting when no extended configuration is set. That directory doesn't exist on a ConfigMap mount, whereas Bitnami's image always had one. The line is now written only when there is extended configuration.
 
 **Fixed after review:** the hook's time budget (above); database names with spaces or quotes; and `persistence.enabled=false`, which now mounts an `emptyDir` at the data path because the official image has no writable `/bitnami`.
+
+**Moved from the hook to an init container after a live GKE upgrade (1.12.2 → 1.13.0-rc.4).** A post-upgrade hook only runs after `--wait` returns, and Temporal's schema Job starts with the rollout. Until the hook ran, PostgreSQL refused that Job's `CREATE DATABASE` (`template database "template1" has a collation version mismatch`); the Job recovered only after 4 retries. The same checks now run in a `refresh-collation-version` init container, which starts PostgreSQL on the Unix socket only, so no client connects before the versions are refreshed. On the live install it verified 561 collatable btree indexes across four databases in 3 seconds, and Temporal's schema Job then succeeded on its first attempt. The live run also turned up two things the init container must do that the official entrypoint does for the main container: remove a `postmaster.pid` left by an unclean Bitnami stop (its PID matches the init shell's PID 1, so PostgreSQL treats it as live), and `chmod 700` the group-writable PGDATA Bitnami left.
 
 **Values audit:** 215 Bitnami paths honored, 186 rejected or replication-only, 9 ignored with a stated reason, 0 unclassified.
 

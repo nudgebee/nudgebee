@@ -41,6 +41,15 @@ RUN chmod +x /app/services
 
 # --- Final Stage ---
 FROM ${RUNTIME_BASE}
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-llm-server" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee LLM server" \
+      description="LLM-powered investigation and automation server for the Nudgebee platform."
 
 WORKDIR /app
 

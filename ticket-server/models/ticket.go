@@ -29,6 +29,10 @@ type Ticket struct {
 	CreatedAt        *time.Time  `json:"created_at,omitempty" db:"created_at"`
 	AdditionalFields interface{} `json:"additional_fields,omitempty" db:"-"`
 	Comment          string      `json:"comment,omitempty" db:"-"`
+	// AttachmentID identifies which comment attachment to fetch, for the
+	// get-attachment RPC only. It is the opaque CommentAttachment.ID a prior
+	// GetComments call returned, meaningless outside that round-trip.
+	AttachmentID string `json:"attachment_id,omitempty" db:"-"`
 	// Assignees, Labels, Milestone and UpdatedAt are normalized metadata
 	// populated only by per-platform Get from the live source record. They have
 	// no backing tickets column (db:"-") and are omitted when the connector does
@@ -65,10 +69,28 @@ type Attachment struct {
 }
 
 type Comments struct {
-	Author  string `json:"author"`
-	Comment string `json:"comment"`
-	Created string `json:"created_at"`
-	Updated string `json:"updated_at"`
+	Author      string              `json:"author"`
+	Comment     string              `json:"comment"`
+	Created     string              `json:"created_at"`
+	Updated     string              `json:"updated_at"`
+	Attachments []CommentAttachment `json:"attachments,omitempty"`
+}
+
+// CommentAttachment is a file/screenshot attached to a comment or, for platforms
+// like ServiceNow where an upload is its own activity-stream entry rather than
+// something a comment references, a standalone timeline entry with Comment == "".
+// Exactly one of ID or URL is set:
+//   - ID is an opaque token the owning platform's GetAttachment implementation can
+//     resolve back to the actual bytes, for platforms (ServiceNow, Jira) whose
+//     attachment requires the backend-held credentials to fetch and so must go
+//     through the authenticated proxy rather than a browser-fetchable URL.
+//   - URL is already a direct, pre-signed/public link (Freshdesk) the browser can
+//     fetch on its own - no proxy round-trip needed.
+type CommentAttachment struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name"`
+	ContentType string `json:"content_type,omitempty"`
+	URL         string `json:"url,omitempty"`
 }
 
 type CommentsResponse struct {

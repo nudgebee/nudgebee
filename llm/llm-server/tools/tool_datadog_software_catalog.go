@@ -24,6 +24,8 @@ func NewDatadogSoftwareCatalogTool() toolcore.NBTool {
 }
 
 type DatadogSoftwareCatalogTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	toolcore.ReadOnlyTool
 }
 
 func (m DatadogSoftwareCatalogTool) Name() string {

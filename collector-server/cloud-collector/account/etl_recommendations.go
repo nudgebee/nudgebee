@@ -7,10 +7,12 @@ import (
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/security"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 type storeRecommendationsDeps struct {
@@ -43,11 +45,11 @@ func StoreRecommendationsAll(ctx *security.RequestContext, accountId string) (St
 		ctx.GetLogger().Info("stored recommendations", "count", d.Count, "time", time.Since(t0).String())
 	}
 	// Collect native cloud provider recommendations (account-level services not in cloud_resourses)
-	// AWS: costoptimizationhub, costexplorer, computeoptimizer, trustedadvisor
+	// AWS: costoptimizationhub, costexplorer, commitments, computeoptimizer, trustedadvisor
 	// GCP: recommender
 	// Azure: advisor
 	// Services not found for a given cloud provider are silently skipped (return empty).
-	nativeServices := []string{"costoptimizationhub", "costexplorer", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
+	nativeServices := []string{"costoptimizationhub", "costexplorer", "commitments", "computeoptimizer", "trustedadvisor", "recommender", "advisor"}
 	for _, svc := range nativeServices {
 		d, err := StoreRecommendations(ctx, accountId, providers.ListRecommendationsRequest{
 			ServiceName: svc,
@@ -168,12 +170,18 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 		}, err
 	}
 
+	// A rule that could not be evaluated for a resource reports a placeholder
+	// instead of a recommendation. Take those out before anything is stored, and
+	// keep the rows they stand for out of this sync's archive step below.
+	var protectedKeys []string
+	recommendations.Items, protectedKeys = splitUnevaluatedRecommendations(account, recommendations.Items)
+	archiveQuery, archiveArgs := archiveOpenRecommendationsQuery(accountId, filter.ServiceName, protectedKeys)
+
 	if len(recommendations.Items) == 0 {
 		// Only Open recommendations are this sync's to archive. Anything a user
 		// or agent has touched (InProgress, Assigned, Closed, Dismissed — and any
 		// future status) is not reset by a provider run.
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2)`
-		r, err := dbms.Exec(query, accountId, strings.ToLower(filter.ServiceName))
+		r, err := dbms.Exec(archiveQuery, archiveArgs...)
 		if err != nil {
 			ctx.GetLogger().Error("unable to archive recommendations", "error", err)
 		}
@@ -295,9 +303,7 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 	// or agent has claimed or settled must survive the sync with its status
 	// intact, while its payload, savings and severity keep refreshing below.
 	_, err = dbms.DoInTransaction(func(dmt common.DatabaseManagerTx) (any, error) {
-		query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and (resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) or lower((recommendation ->> 'service_name')::varchar) = $2 )`
-
-		_, err := dmt.Exec(query, accountId, strings.ToLower(filter.ServiceName))
+		_, err := dmt.Exec(archiveQuery, archiveArgs...)
 		if err != nil {
 			ctx.GetLogger().Error("unable to archive recommendations", "error", err)
 			return nil, err
@@ -325,6 +331,52 @@ func storeRecommendations(ctx *security.RequestContext, accountId string, filter
 	}, err
 }
 
+// unevaluatedKeySeparator joins a rule name and an account object id into one key.
+// It is the ASCII unit separator, which appears in neither.
+const unevaluatedKeySeparator = "\x1f"
+
+// splitUnevaluatedRecommendations separates real recommendations from the
+// placeholders a rule reports for resources it could not evaluate in this run (see
+// providers.Recommendation.Unevaluated). It returns the recommendations to store, and
+// for each placeholder a key naming the row it stands for: the rule name joined to the
+// same account object id the row was stored under.
+func splitUnevaluatedRecommendations(account providers.Account, items []providers.Recommendation) (toStore []providers.Recommendation, protectedKeys []string) {
+	if !slices.ContainsFunc(items, func(r providers.Recommendation) bool { return r.Unevaluated }) {
+		return items, nil
+	}
+	toStore = make([]providers.Recommendation, 0, len(items))
+	for _, r := range items {
+		if !r.Unevaluated {
+			toStore = append(toStore, r)
+			continue
+		}
+		accountObjectId := buildExternalResourceId(account.CloudProvider, account.AccountNumber, r.ResourceRegion, r.ResourceServiceName, r.ResourceType, r.ResourceId, "")
+		protectedKeys = append(protectedKeys, r.RuleName+unevaluatedKeySeparator+accountObjectId)
+	}
+	return toStore, protectedKeys
+}
+
+// archiveOpenRecommendationsQuery builds the statement that archives a service's Open
+// recommendations at the start of a sync, before the ones still reported are stored
+// again as Open. Rows named by protectedKeys are left out: their rule could not be
+// evaluated this run, so their not being reported again says nothing about whether
+// they still apply. With no protected keys the statement is exactly what it has
+// always been.
+//
+// A row on one of the service's resources is only the service's to archive when the
+// service wrote it (its stored service_name matches, or is absent on legacy rows).
+// Cross-service sources such as Azure Advisor and Defender link rows to resources of
+// other services; archiving those here left them archived until their own next sync.
+func archiveOpenRecommendationsQuery(accountId, serviceName string, protectedKeys []string) (string, []any) {
+	query := `update recommendation set status = 'Archive' where cloud_account_id = $1 and status = 'Open' and ((resource_id in (select id from cloud_resourses where lower(service_name) = $2 and account = $1) and (recommendation ->> 'service_name') is null) or lower(recommendation ->> 'service_name') = $2)`
+	args := []any{accountId, strings.ToLower(serviceName)}
+	if len(protectedKeys) > 0 {
+		query += ` and not ((rule_name || chr(31) || coalesce(account_object_id, '')) = ANY($3::text[]))`
+		args = append(args, pq.Array(protectedKeys))
+	}
+	return query, args
+}
+
 func getRecommendationsInternal(ctx *security.RequestContext, accountId string, filter providers.ListRecommendationsRequest) (providers.ListRecommendationsResponse, providers.Account, error) {
 	ctx.GetLogger().Info("fetching recommendations", "accountId", accountId, "filter", slog.AnyValue(filter))
 	account, provider, err := getAccount(ctx, accountId)
@@ -342,30 +394,7 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 		ctx.GetLogger().Error("unable to get dbms", "error", err)
 		return providers.ListRecommendationsResponse{}, providers.Account{}, err
 	}
-	query := `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
-	from cloud_resourses
-	where account = $1`
-	args := []interface{}{accountId}
-	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
-	// own — it needs the account's full resource set to derive which
-	// regions/zones to query (see resolveRecommenderLocations in
-	// providers/gcloud) and to resolve each recommendation's target resource
-	// (buildRecommenderResourceIndex). Gate this on the GCP provider: the
-	// account-level StoreRecommendationsAll runs the "recommender"
-	// native-service sync for every provider, and dropping the filter for
-	// AWS/Azure would hand their dispatchers the full active fleet — Azure's
-	// ListRecommendations would then fall through to re-crawl every registered
-	// service. Every other case keeps the service_name and active-status
-	// filters, preserving the pre-change behavior exactly.
-	if !strings.EqualFold(filter.ServiceName, "recommender") || !strings.EqualFold(provider, "gcp") {
-		query += ` and lower(status) = 'active' and lower(service_name) = $2`
-		args = append(args, strings.ToLower(filter.ServiceName))
-	} else {
-		// Idle-resource recommendations point at exactly the rows the
-		// active-only filter drops — an unattached disk or stopped VM is
-		// stored Inactive — so the recommender keeps every non-deleted row.
-		query += ` and lower(status) != 'deleted'`
-	}
+	query, args := recommendationResourcesQuery(accountId, provider, filter.ServiceName)
 	rows, err := databaseManager.Query(query, args...)
 	if err != nil {
 		ctx.GetLogger().Error("unable to fetch existing resources", "error", err)
@@ -435,6 +464,42 @@ func getRecommendationsInternal(ctx *security.RequestContext, accountId string, 
 	recommendations, err := cloudProvider.ListRecommendations(ctx, account, filter, existingResources)
 	return recommendations, account, err
 
+}
+
+const azureDiskServiceName = "Microsoft.Compute/disks"
+
+// recommendationResourcesQuery selects the stored resources a service's
+// recommendation rules are evaluated against.
+func recommendationResourcesQuery(accountId, provider, serviceName string) (string, []any) {
+	query := `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
+	from cloud_resourses
+	where account = $1`
+	args := []any{accountId}
+	// The GCP "Recommender" pseudo-service owns no cloud_resourses rows of its
+	// own — it needs the account's full resource set to derive which
+	// regions/zones to query (see resolveRecommenderLocations in
+	// providers/gcloud) and to resolve each recommendation's target resource
+	// (buildRecommenderResourceIndex). Gate this on the GCP provider: the
+	// account-level StoreRecommendationsAll runs the "recommender"
+	// native-service sync for every provider, and dropping the filter for
+	// AWS/Azure would hand their dispatchers the full active fleet — Azure's
+	// ListRecommendations would then fall through to re-crawl every registered
+	// service.
+	if strings.EqualFold(serviceName, "recommender") && strings.EqualFold(provider, "gcp") {
+		// Idle-resource recommendations point at exactly the rows the
+		// active-only filter drops — an unattached disk or stopped VM is
+		// stored Inactive — so the recommender keeps every non-deleted row.
+		return query + ` and lower(status) != 'deleted'`, args
+	}
+	args = append(args, strings.ToLower(serviceName))
+	// An unattached Azure disk is stored Inactive, and the disk rules that
+	// recommend deleting it need to see it. Every other service keeps the
+	// active-only filter, since its rules were never checked against stopped
+	// or disabled resources.
+	if strings.EqualFold(provider, "azure") && strings.EqualFold(serviceName, azureDiskServiceName) {
+		return query + ` and lower(status) != 'deleted' and lower(service_name) = $2`, args
+	}
+	return query + ` and lower(status) = 'active' and lower(service_name) = $2`, args
 }
 
 // resourceCreatedAt is the time rules measure a resource's age from: when it

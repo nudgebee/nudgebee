@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/service"
+	"sort"
+	"strings"
 )
 
 // MetricsTask defines a task for querying logs provider.
@@ -165,8 +167,33 @@ func (t *MetricsTask) Execute(taskCtx types.TaskContext, params map[string]any) 
 	if err != nil {
 		return nil, err
 	}
+	if err := failedMetricQueries(resp.Results); err != nil {
+		return nil, err
+	}
 
 	return map[string]any{"metrics": resp.Results}, nil
+}
+
+// failedMetricQueries turns the per-query errors services-server returns inside an
+// HTTP 200 into a task failure. Without it a query that would not parse comes back
+// as an empty payload, which reads exactly like a query that matched no data.
+// One failed query fails the task: the results are incomplete, and the next steps
+// would otherwise act on an empty list for the key that failed.
+// An empty error string is not a failure, as services-server itself reads it
+// (noteFailedKeys and the query-history builder skip it too).
+func failedMetricQueries(results []service.ObservabilityMetricQueryResult) error {
+	var failures []string
+	for _, r := range results {
+		if r.Error == nil || strings.TrimSpace(*r.Error) == "" {
+			continue
+		}
+		failures = append(failures, r.QueryKey+": "+strings.TrimSpace(*r.Error))
+	}
+	if len(failures) == 0 {
+		return nil
+	}
+	sort.Strings(failures)
+	return fmt.Errorf("metrics query failed: %s", strings.Join(failures, "; "))
 }
 
 func (t *MetricsTask) InputSchema() *types.Schema {

@@ -2,9 +2,11 @@ package observability
 
 import (
 	"encoding/json"
+	"fmt"
 	"nudgebee/services/cloud"
 	"nudgebee/services/security"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/samber/lo"
@@ -292,6 +294,9 @@ func (c *cloudMetrics) GetQuery(_ *security.RequestContext, _ FetchMetricsReques
 	return "", nil
 }
 
+// cloudQueryMetrics is cloud.QueryMetrics, a variable so tests can stub the provider call.
+var cloudQueryMetrics = cloud.QueryMetrics
+
 // FetchMetricsQuery implements MetricSource.
 func (c *cloudMetrics) FetchMetricsQuery(ctx *security.RequestContext, fetchMetricsRequest FetchMetricsRequest) (OutputMetricQuery, error) {
 
@@ -405,78 +410,124 @@ func (c *cloudMetrics) FetchMetricsQuery(ctx *security.RequestContext, fetchMetr
 		}
 	}
 
-	// One query per request: CloudWatch runs at most one Metrics Insights
-	// statement per GetMetricData call. Which one is picked by REF ID order
-	// rather than by map iteration, which is randomised in Go — a two-target
-	// panel would otherwise chart a different target on every refresh.
-	query := ""
-	queryKey := ""
-	if len(fetchMetricsRequest.Queries) > 0 {
-		keys := make([]string, 0, len(fetchMetricsRequest.Queries))
-		for k := range fetchMetricsRequest.Queries {
-			keys = append(keys, k)
+	// One query per call: CloudWatch runs at most one Metrics Insights statement
+	// per GetMetricData call, so each target gets its own call. They run in REF ID
+	// order rather than map iteration order, which is randomised in Go, so a
+	// multi-target panel lists its series in the same order on every refresh.
+	keys := make([]string, 0, len(fetchMetricsRequest.Queries))
+	for k := range fetchMetricsRequest.Queries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	// Keys with a Metrics Insights statement each get their own call. Keys without
+	// one make a call on the metric names and dimensions above, and only when no
+	// key has a statement (a builder-mode request): next to statements, a blank
+	// target would otherwise turn into a broad call nobody asked for. Every key
+	// still gets a result.
+	run := keys[:0:0]
+	var empty []string
+	for _, k := range keys {
+		if strings.TrimSpace(fetchMetricsRequest.Queries[k]) != "" {
+			run = append(run, k)
+		} else {
+			empty = append(empty, k)
 		}
-		sort.Strings(keys)
-		queryKey = keys[0]
-		query = fetchMetricsRequest.Queries[queryKey]
 	}
-
-	resp, err := cloud.QueryMetrics(ctx, cloud.QueryMetricsRequest{
-		AccountId: fetchMetricsRequest.AccountId,
-		Query: cloud.MetricsQuery{
-			ServiceName:     serviceName,
-			Region:          region,
-			StartDate:       startTime,
-			EndDate:         endTime,
-			ResourceIds:     resourceIds,
-			ResourceType:    resourceType,
-			MetricNames:     metricsNames,
-			Step:            getStepDuration(fetchMetricsRequest.StepInterval, startTime, endTime),
-			Dimensions:      dimensions,
-			Statistics:      statistics,
-			Query:           query,
-			MetricNamespace: metricNamespace,
-		},
-	})
-	if err != nil {
-		return OutputMetricQuery{}, err
+	var skipped []QueryResult
+	switch {
+	case len(run) > 0:
+		for _, k := range empty {
+			skipped = append(skipped, QueryResult{QueryKey: k, Note: "Not run: this query has no Metrics Insights statement."})
+		}
+	case len(empty) > 0:
+		run = empty[:1]
+		for _, k := range empty[1:] {
+			skipped = append(skipped, QueryResult{QueryKey: k, Note: fmt.Sprintf("Same request as query %s; see its result.", empty[0])})
+		}
+	default:
+		run = []string{""} // no queries: one call on the metric names/dimensions above
 	}
+	keys = run
 
-	//convert cloud metrics to o/p
 	result := []QueryResult{}
-	for _, item := range resp.Items {
-		// Empty fields are left OUT rather than emitted blank: these labels name
-		// the series in a chart legend, and a Metrics Insights query carries
-		// neither a statistic nor a service — `statistics="", service_name=""` on
-		// every series is noise in the one place the label has to be readable.
-		metric := map[string]string{}
-		for k, v := range map[string]string{
-			"name":         item.Name,
-			"statistics":   item.Statistics,
-			"resource_id":  item.ResourceId,
-			"region":       item.Region,
-			"service_name": item.ServiceName,
-		} {
-			if v != "" {
-				metric[k] = v
+	// Calls run one after another; bound them so a panel with many targets
+	// cannot multiply latency and GetMetricData cost without limit.
+	var notRun []QueryResult
+	if len(keys) > cloudMaxQueriesPerRequest {
+		for _, k := range keys[cloudMaxQueriesPerRequest:] {
+			msg := fmt.Sprintf("not run: a request runs at most %d CloudWatch queries", cloudMaxQueriesPerRequest)
+			notRun = append(notRun, QueryResult{QueryKey: k, Query: fetchMetricsRequest.Queries[k], Error: &msg})
+		}
+		keys = keys[:cloudMaxQueriesPerRequest]
+	}
+	for _, queryKey := range keys {
+		resp, err := cloudQueryMetrics(ctx, cloud.QueryMetricsRequest{
+			AccountId: fetchMetricsRequest.AccountId,
+			Query: cloud.MetricsQuery{
+				ServiceName:     serviceName,
+				Region:          region,
+				StartDate:       startTime,
+				EndDate:         endTime,
+				ResourceIds:     resourceIds,
+				ResourceType:    resourceType,
+				MetricNames:     metricsNames,
+				Step:            getStepDuration(fetchMetricsRequest.StepInterval, startTime, endTime),
+				Dimensions:      dimensions,
+				Statistics:      statistics,
+				Query:           fetchMetricsRequest.Queries[queryKey],
+				MetricNamespace: metricNamespace,
+			},
+		})
+		if err != nil {
+			if len(keys) == 1 {
+				return OutputMetricQuery{}, err
 			}
+			// With several targets, one failing must not hide the others' series.
+			errMsg := err.Error()
+			result = append(result, QueryResult{QueryKey: queryKey, Query: fetchMetricsRequest.Queries[queryKey], Error: &errMsg})
+			continue
 		}
 
-		values := make([]Result, 0, 1)
-		values = append(values, Result{
-			Metric: metric,
-			Timestamps: lo.Map(item.Timestamps, func(t time.Time, _ int) int64 {
-				return t.UnixMilli()
-			}),
-			Values: item.Values,
-		})
-		result = append(result, QueryResult{
-			QueryKey: queryKey,
-			Payload:  values,
-		})
+		//convert cloud metrics to o/p
+		for _, item := range resp.Items {
+			// Empty fields are left OUT rather than emitted blank: these labels name
+			// the series in a chart legend, and a Metrics Insights query carries
+			// neither a statistic nor a service — `statistics="", service_name=""` on
+			// every series is noise in the one place the label has to be readable.
+			metric := map[string]string{}
+			for k, v := range map[string]string{
+				"name":         item.Name,
+				"statistics":   item.Statistics,
+				"resource_id":  item.ResourceId,
+				"region":       item.Region,
+				"service_name": item.ServiceName,
+			} {
+				if v != "" {
+					metric[k] = v
+				}
+			}
+
+			values := make([]Result, 0, 1)
+			values = append(values, Result{
+				Metric: metric,
+				Timestamps: lo.Map(item.Timestamps, func(t time.Time, _ int) int64 {
+					return t.UnixMilli()
+				}),
+				Values: item.Values,
+			})
+			result = append(result, QueryResult{
+				QueryKey: queryKey,
+				Payload:  values,
+			})
+		}
 	}
 
+	result = append(result, skipped...)
+	result = append(result, notRun...)
 	return OutputMetricQuery{
 		Results: result,
 	}, nil
 }
+
+// cloudMaxQueriesPerRequest bounds the CloudWatch calls one metrics request makes.
+const cloudMaxQueriesPerRequest = 10

@@ -43,6 +43,44 @@ func TestDiagnoseIntegrationConnectionRequiresLinkedAccountReadAccess(t *testing
 	assert.False(t, testCalled)
 }
 
+// A person whose access comes from custom roles diagnoses an integration with
+// the integrations:Read grant the gateway classifies the action as, on a linked
+// account the grant covers, and not with another module's grant.
+func TestDiagnoseIntegrationConnectionHonoursTheReadGrant(t *testing.T) {
+	previousList := listDiagnosisIntegrationAccountIDs
+	previousTest := testDiagnosisIntegrationConnection
+	t.Cleanup(func() {
+		listDiagnosisIntegrationAccountIDs = previousList
+		testDiagnosisIntegrationConnection = previousTest
+	})
+	listDiagnosisIntegrationAccountIDs = func(_ *security.RequestContext, _ string) ([]string, error) {
+		return []string{"account-A"}, nil
+	}
+	testDiagnosisIntegrationConnection = func(_ *security.RequestContext, _, _ string) error { return nil }
+
+	person := func(key string, grants map[string]bool) *security.RequestContext {
+		raw, err := json.Marshal(map[string]any{
+			"TenantId": "tenant-1", "UserId": "user-1", "AccountIds": []string{"account-A"}, "Roles": []string{},
+			"ScopedCustomPermissions": map[string]any{"account-A": grants},
+		})
+		require.NoError(t, err)
+		var sc security.SecurityContext
+		require.NoError(t, json.Unmarshal(raw, &sc))
+		ctx := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+		ctx.SetActionPermission(key)
+		return ctx
+	}
+
+	_, err := diagnoseIntegrationConnection(person("integrations:Read", map[string]bool{"integrations:Read": true}), "integration-1")
+	assert.NoError(t, err)
+
+	_, err = diagnoseIntegrationConnection(person("integrations:Read", map[string]bool{"k8s:Read": true}), "integration-1")
+	assert.ErrorIs(t, err, errIntegrationNotFound, "a grant for another module")
+
+	_, err = diagnoseIntegrationConnection(person("", map[string]bool{"integrations:Read": true}), "integration-1")
+	assert.ErrorIs(t, err, errIntegrationNotFound, "no key: built-in roles only")
+}
+
 func TestDiagnoseIntegrationConnectionHidesMissingIntegration(t *testing.T) {
 	previousList := listDiagnosisIntegrationAccountIDs
 	previousTest := testDiagnosisIntegrationConnection

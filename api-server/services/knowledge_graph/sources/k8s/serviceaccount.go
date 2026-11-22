@@ -21,7 +21,7 @@ var k8sServiceAccountSchema = core.SpecificTypeSchema{
 		{Name: "cluster", Indexed: true},
 		{Name: "role_arn", Indexed: true},
 		{Name: "gcp_service_account_email"},
-		{Name: "annotations"},
+		{Name: "annotations", Shape: core.PropertyShapeMap},
 		// Additional provider fields (not yet emitted by our extractor):
 		{Name: "automount_service_account_token"},
 		{Name: "aws_role_arn"},

@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -93,13 +94,28 @@ type metricsProviderCacheEntry struct {
 // metricsProviderCache memoizes nonAgentMetricsProvider per account.
 // ExecutePrometheus is invoked per node inside knowledge-graph / discovery
 // loops, so an uncached lookup would be one extra Metastore round-trip per
-// call. An entry is stale for up to metricsProviderCacheTTL after an account
-// changes its default metrics provider; that only delays the agent-vs-skip
-// decision, it never breaks a request.
+// call. An integration change drops the account's entry on every replica.
 var metricsProviderCache = struct {
 	sync.RWMutex
 	entries map[string]metricsProviderCacheEntry
 }{entries: make(map[string]metricsProviderCacheEntry)}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			metricsProviderCache.Lock()
+			defer metricsProviderCache.Unlock()
+			for _, accountId := range accountIds {
+				delete(metricsProviderCache.entries, accountId)
+			}
+		},
+		OnAll: func() {
+			metricsProviderCache.Lock()
+			defer metricsProviderCache.Unlock()
+			metricsProviderCache.entries = make(map[string]metricsProviderCacheEntry)
+		},
+	})
+}
 
 // nonAgentMetricsProvider returns the account's configured default metrics
 // provider when it is a user-integrated backend (Datadog, Dynatrace, Splunk,
@@ -320,9 +336,11 @@ func ExecutePrometheusWithStep(accountId string, startTime time.Time, endTime ti
 // UTC container (every flow-source resolver that calls ExecutePrometheus
 // silently degrades to no resolution).
 //
-// `steps`, not `step`: the agent's prometheus_queries_enricher reads that key
-// (its sibling prometheus_enricher reads `step`). Omitted at zero so the
-// agent's default applies rather than a literal "0".
+// Both `step` and `steps`: prometheus_queries_enricher historically reads
+// `steps`, but relay-server only recognises `step` — when it is missing the
+// relay fills in a window-derived default under `step`, and the agent reads
+// `step` before `steps`, so a caller's `steps` alone is silently overridden.
+// Omitted at zero so the relay/agent default applies rather than a literal "0".
 func prometheusActionParams(startTime, endTime time.Time, queriesMap map[string]string, instant bool, stepSeconds int) map[string]any {
 	promsqlQueries := make([]map[string]any, 0, len(queriesMap))
 	for key, query := range queriesMap {
@@ -341,7 +359,9 @@ func prometheusActionParams(startTime, endTime time.Time, queriesMap map[string]
 		"instant":        instant,
 	}
 	if stepSeconds > 0 {
-		params["steps"] = strconv.Itoa(stepSeconds)
+		step := strconv.Itoa(stepSeconds)
+		params["step"] = step
+		params["steps"] = step
 	}
 	return params
 }
@@ -448,7 +468,14 @@ func ExecuteAndExtractResponse(relayRequest RelayExecuteRequest) (map[string]any
 	return agentActionResponse, additionalInfo, nil
 }
 
+//go:noinline
 func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
+	return ExecuteContext(context.Background(), relayRequest)
+}
+
+// ExecuteContext is Execute that stops when ctx is done: the in-flight HTTP
+// call is canceled and no further retry is attempted.
+func ExecuteContext(ctx context.Context, relayRequest RelayExecuteRequest) (map[string]any, error) {
 	data := make(map[string]any)
 
 	maxRetries := 3
@@ -494,14 +521,19 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 		if relayRequest.AgentType != "" {
 			headers["X-NB-Agent-Type"] = relayRequest.AgentType
 		}
-		resp, err := common.HttpPost(fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), common.HttpWithClient(relayHttpClient), common.HttpWithHeaders(headers), reqBody, common.HttpWithTimeout(timeout))
+		resp, err := common.HttpPost(fmt.Sprintf("%s/request", config.Config.RelayServerEndpoint), common.HttpWithClient(relayHttpClient), common.HttpWithHeaders(headers), reqBody, common.HttpWithTimeout(timeout), common.HttpWithContext(ctx))
 
 		retryDelay := baseRetryInterval * time.Duration(1<<uint(attempt))
 
 		if err != nil {
+			if ctx.Err() != nil {
+				return data, ctx.Err()
+			}
 			if isRetryableError(err) && attempt < maxRetries-1 {
 				slog.Warn("relay: Transient error sending request, retrying..", "account_id", accountID, "attempt", attempt+1, "max_retries", maxRetries, "error", err)
-				time.Sleep(retryDelay)
+				if !sleepContext(ctx, retryDelay) {
+					return data, ctx.Err()
+				}
 				continue
 			}
 			slog.Error("relay: Failed to send request to relay server", "account_id", accountID, "error", err)
@@ -533,9 +565,14 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 				slog.Error("relay: response rejected", "account_id", accountID, "action", relayRequest.Body.ActionName, "error", readErr)
 				return data, readErr
 			}
+			if ctx.Err() != nil {
+				return data, ctx.Err()
+			}
 			if isRetryableError(readErr) && attempt < maxRetries-1 {
 				slog.Warn("relay: Transient error reading response body, retrying..", "account_id", accountID, "attempt", attempt+1, "max_retries", maxRetries, "error", readErr)
-				time.Sleep(retryDelay)
+				if !sleepContext(ctx, retryDelay) {
+					return data, ctx.Err()
+				}
 				continue
 			}
 			slog.Error("relay: Failed to read response body", "account_id", accountID, "error", readErr)
@@ -591,6 +628,18 @@ func Execute(relayRequest RelayExecuteRequest) (map[string]any, error) {
 
 	slog.Error("relay: Max retries reached, aborting", "account_id", accountID)
 	return data, errors.New("agent not found/connected after max retries")
+}
+
+// sleepContext waits d, returning false if ctx ends first.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func ExecuteRelayProxyApi(accountID string, params map[string]any, apiPath string) (map[string]any, error) {
@@ -982,6 +1031,12 @@ func ExecuteProxy(accountID string, action string, datasourceID string, params m
 // ExecuteProxyWithAgentType is ExecuteProxy routed to a specific relay agent
 // type (the integration's agent_type config value). Empty means "proxy".
 func ExecuteProxyWithAgentType(accountID string, action string, datasourceID string, params map[string]any, timeoutSeconds int, agentType string) (map[string]any, error) {
+	return ExecuteProxyWithAgentTypeContext(context.Background(), accountID, action, datasourceID, params, timeoutSeconds, agentType)
+}
+
+// ExecuteProxyWithAgentTypeContext is ExecuteProxyWithAgentType that stops when
+// ctx is done, so an abandoned query does not hold the relay call open.
+func ExecuteProxyWithAgentTypeContext(ctx context.Context, accountID string, action string, datasourceID string, params map[string]any, timeoutSeconds int, agentType string) (map[string]any, error) {
 	if agentType == "" {
 		agentType = "proxy"
 	}
@@ -1004,7 +1059,7 @@ func ExecuteProxyWithAgentType(accountID string, action string, datasourceID str
 		TimeoutSeconds: timeoutSeconds,
 	}
 
-	response, err := Execute(relayRequest)
+	response, err := ExecuteContext(ctx, relayRequest)
 	if err != nil {
 		return nil, err
 	}

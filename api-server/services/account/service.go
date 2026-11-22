@@ -14,21 +14,22 @@ import (
 	"net/http"
 	"net/url"
 	"nudgebee/services/audit"
-	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/internal/database/models"
 	"nudgebee/services/license"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	tenantpkg "nudgebee/services/tenant"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
@@ -409,7 +410,7 @@ var accountDataDeletePlan = []deleteGroup{
 	// insight tables
 	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "insight"}}},
 	// llm related tables
-	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "llm_retrieval_trace", accountColumnName: "cloud_account_id"}, {name: "llm_rags"}, {name: "llm_conversation_history"}, {name: "llm_conversation_saved", whereSubclause: "conversation_id in (select id from llm_conversations where account_id = $1)"}, {name: "llm_functions"}, {name: "llm_tools_installation"}, {name: "llm_agents_installation"}, {name: "llm_conversation_feedback", accountColumnName: "cloud_account_id"}, {name: "llm_conversation_tool_calls"}, {name: "llm_conversation_agent"}, {name: "llm_conversation_messages"}, {name: "llm_conversation_attachments"}, {name: "llm_conversation_references"}, {name: "llm_conversations"}}},
+	{defaultAccountIdColumn: "account_id", tables: []tableDetails{{name: "llm_retrieval_trace", accountColumnName: "cloud_account_id"}, {name: "llm_rags"}, {name: "llm_conversation_history"}, {name: "llm_conversation_saved", whereSubclause: "conversation_id in (select id from llm_conversations where account_id = $1)"}, {name: "llm_functions"}, {name: "llm_tools", whereSubclause: "visibility = 'account' AND id IN (select tool_id from llm_tools_installation where account_id = $1)"}, {name: "llm_agents", whereSubclause: "visibility = 'account' AND id::text IN (select agent_id from llm_agents_installation where account_id = $1)"}, {name: "llm_tools_installation"}, {name: "llm_agents_installation"}, {name: "llm_conversation_feedback", accountColumnName: "cloud_account_id"}, {name: "llm_conversation_tool_calls"}, {name: "llm_conversation_agent"}, {name: "llm_conversation_messages"}, {name: "llm_conversation_attachments"}, {name: "llm_conversation_references"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IN (SELECT id FROM llm_conversations WHERE account_id = $1)"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND account_id = $1"}, {name: "llm_conversation_token_usage", whereSubclause: "conversation_id IS NULL AND tenant_id IS NOT NULL AND conversation_account_id = $1"}, {name: "llm_usage_daily"}, {name: "llm_conversations"}}},
 	// anomaly/slo related tables
 	{defaultAccountIdColumn: "cloud_account_id", tables: []tableDetails{{name: "anomaly_config"}, {name: "anomaly", accountColumnName: "account_id"}, {name: "slo_report"}, {name: "slo_config"}}},
 	// knowledge graph; edges carry no foreign key to nodes, and a cross-account
@@ -641,11 +642,18 @@ func DeleteAccount(context *security.RequestContext, query AccountDeleteRequest)
 		}
 		plan = append(plan, accountRowDeletePlan...)
 	}
+	orphanedLLM, err := llmIntegrationsOnlyLinkedTo(tx, query.Id)
+	if err != nil {
+		return AccountDeleteResponse{}, err
+	}
 	for _, group := range plan {
 		err = deleteTables(context, tx, group.tables, query.Id, group.defaultAccountIdColumn)
 		if err != nil {
 			return AccountDeleteResponse{}, err
 		}
+	}
+	if err := disableLLMIntegrations(tx, orphanedLLM); err != nil {
+		return AccountDeleteResponse{}, err
 	}
 
 	err = tx.Commit()
@@ -734,6 +742,19 @@ func structToInsertMap(obj any) (map[string]any, error) {
 	return result, nil
 }
 
+// onboardingErrorConfig builds the copy of a create request that is stored with
+// a failed onboarding in cloud_account_onboarding_errors.config. The row exists
+// for diagnosis, and nothing reads credentials back from it, so they are
+// redacted before the copy is encrypted. That covers access_secret, password,
+// agent secrets, and a GCP service-account key passed in data.
+func onboardingErrorConfig(query AccountCreateRequest) (string, error) {
+	jsonQuery, err := common.MarshalJson(audit.RedactSecrets(query))
+	if err != nil {
+		return "", err
+	}
+	return common.Encrypt(string(jsonQuery))
+}
+
 func insertCloudAccountOnboardingError(tenantId string, createdBy string, cloudProvider string, config string, errorMessage any) (any, error) {
 	dbManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -751,6 +772,19 @@ func insertCloudAccountOnboardingError(tenantId string, createdBy string, cloudP
 	}
 
 	return nil, nil
+}
+
+// Wire-compatible with collector-server's own CloudAccountCostReportJob
+// (cloud-collector/account/etl_usage_report.go) — same exchange/queue, same
+// consumer (ConsumeCloudAccountCostReportJobs), two Go modules that can't
+// share the type directly.
+type cloudAccountCostReportJob struct {
+	JobId     string `json:"job_id"`
+	AccountId string `json:"account_id"`
+	TenantId  string `json:"tenant_id"`
+	Month     int    `json:"month"`
+	Year      int    `json:"year"`
+	Backfill  bool   `json:"backfill"`
 }
 
 func CreateAccount(context *security.RequestContext, query AccountCreateRequest) (AccountCreateResponse, error) {
@@ -828,12 +862,7 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 	query.UpdatedBy = context.GetSecurityContext().GetUserId()
 	query.Tenant = context.GetSecurityContext().GetTenantId()
 
-	jsonQuery, err := common.MarshalJson(query)
-	if err != nil {
-		return AccountCreateResponse{}, err
-	}
-
-	encrtptedAccountCreateRequestConfig, err := common.Encrypt(string(jsonQuery))
+	encrtptedAccountCreateRequestConfig, err := onboardingErrorConfig(query)
 	if err != nil {
 		return AccountCreateResponse{}, err
 	}
@@ -1168,10 +1197,6 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 		}
 	}
 
-	if err := llm.AttachTenantDefaultLLMProvider(context.GetContext(), dbms, query.Tenant, newAccountId); err != nil {
-		context.GetLogger().Error("account: created, but failed to attach the default LLM provider", "error", err, "account", newAccountId)
-	}
-
 	// invalidate tenant cache
 	err = security.InvalidateCacheForTenant(context.GetSecurityContext().GetTenantId())
 	if err != nil {
@@ -1180,30 +1205,44 @@ func CreateAccount(context *security.RequestContext, query AccountCreateRequest)
 
 	//load initial data
 	if query.CloudProvider == "AWS" || query.CloudProvider == "Azure" || query.CloudProvider == "GCP" || query.CloudProvider == "CloudFoundry" {
-		go func() {
-			context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
-			// Backfill: this is the account's first sync, so the current month on
-			// its own is whatever fraction of it has elapsed. An account connected
-			// on the 20th would otherwise show 20 days of spend and no history at
-			// all — no month-on-month comparison, an empty trend chart, and no
-			// baseline for spend-anomaly detection to work from. The organisation
-			// auto-registration path already asks for this; account creation from
-			// the UI never did.
-			// UTC, not local: billing periods are UTC, so a server west of it would
-			// ask for the previous month during the first hours of a new UTC month.
-			// That month is also what the backfill skips as already-processed, so a
-			// local-time answer would skip the wrong one.
-			now := time.Now().UTC()
-			_, err := cloud.StoreUsageReport(context, cloud.StoreUsageRequest{
-				AccountId: newAccountId,
-				Month:     now.Month(),
-				Year:      now.Year(),
-				Backfill:  true,
-			})
-			if err != nil {
-				context.GetLogger().Error("failed to hit store_usage", "error", err)
-			}
-		}()
+		context.GetLogger().Info("account: triggering intial load for account", "account", newAccountId)
+		// Backfill: this is the account's first sync, so the current month on
+		// its own is whatever fraction of it has elapsed. An account connected
+		// on the 20th would otherwise show 20 days of spend and no history at
+		// all — no month-on-month comparison, an empty trend chart, and no
+		// baseline for spend-anomaly detection to work from. The organisation
+		// auto-registration path already asks for this; account creation from
+		// the UI never did.
+		// UTC, not local: billing periods are UTC, so a server west of it would
+		// ask for the previous month during the first hours of a new UTC month.
+		// That month is also what the backfill skips as already-processed, so a
+		// local-time answer would skip the wrong one.
+		now := time.Now().UTC()
+		// #41116: this used to call cloud.StoreUsageReport synchronously in a
+		// goroutine — a plain HTTP POST with no explicit timeout, so it
+		// inherited common.HttpPost's 30s default. The collector runs the
+		// actual billing read bound to that same request's context, so a
+		// slow BigQuery export got its read cancelled at 30s: written up as
+		// a failed first sync, history backfill skipped, even though the
+		// account and every other sync were fine. The daily cron never hits
+		// this — it publishes a CloudAccountCostReportJob to this same
+		// queue instead of calling store_usage directly
+		// (etl_usage_report.go, StoreDailyUsageReportForAllAccounts), so a
+		// worker with no HTTP deadline does the read. Onboarding now does
+		// the same: publish and return, don't block the account-create
+		// response on it.
+		job := cloudAccountCostReportJob{
+			JobId:     uuid.New().String(),
+			AccountId: newAccountId,
+			TenantId:  context.GetSecurityContext().GetTenantId(),
+			Month:     int(now.Month()),
+			Year:      now.Year(),
+			Backfill:  true,
+		}
+		if err := common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, job,
+			common.MqPublishWithContext(context.GetContext())); err != nil {
+			context.GetLogger().Error("account: failed to publish cost report job for initial load", "account", newAccountId, "error", err)
+		}
 	}
 
 	audit.LogChange(context, audit.ChangeInput{
@@ -1491,7 +1530,7 @@ func CloudUpdateCloudformationPermissions(context *security.RequestContext, req 
 		return CloudUpdateCloudformationPermissionsResponse{}, err
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeUpdate) {
 		return CloudUpdateCloudformationPermissionsResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -1810,7 +1849,7 @@ func AwsEventBridgeOnboardUrl(context *security.RequestContext, req AwsEventBrid
 }
 
 func SetupGCPMonitoringWebhook(ctx *security.RequestContext, req GcpMonitoringWebhookSetupRequest) (GcpMonitoringWebhookSetupResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeUpdate) {
 		return GcpMonitoringWebhookSetupResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -1875,7 +1914,7 @@ func SetupGCPMonitoringWebhook(ctx *security.RequestContext, req GcpMonitoringWe
 }
 
 func CheckGCPMonitoringPermission(ctx *security.RequestContext, req GcpCheckMonitoringPermissionRequest) (GcpCheckMonitoringPermissionResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeRead) {
 		return GcpCheckMonitoringPermissionResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -2091,12 +2130,19 @@ func ListAccounts(ctx *security.RequestContext, tenantId string) ([]models.Accou
 	return rowsMap, nil
 }
 
-func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantId string) ([]models.Account, error) {
+// ListActiveAccountsWithConnectedAgents returns a tenant's active accounts.
+// When includeCloudAccounts is false (the original behavior), only K8s
+// accounts with a CONNECTED agent qualify. When true, every active account of
+// any cloud_provider qualifies, except a K8s account whose agent is not
+// CONNECTED — so stale recommendations from a disconnected cluster are still
+// excluded, but AWS/Azure/GCP accounts (which have no agent row at all) are
+// never gated on agent status.
+func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantId string, includeCloudAccounts bool) ([]models.Account, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return []models.Account{}, err
 	}
-	rows, err := databaseManager.Db.Queryx(`SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
+	query := `SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
 			ca.created_at, ca.created_by, ca.updated_at, ca.updated_by, ca.billing_source, ca.start_date,
 			ca.tenant, ca.assume_role, ca.region, ca.status, ca.account_url, ca.budget, ca.synced_at,
 			ca.sync_status, ca.account_access, ca.account_purpose, ca.data, ca.access_key,
@@ -2105,7 +2151,23 @@ func ListActiveAccountsWithConnectedAgents(ctx *security.RequestContext, tenantI
 			ca.parent_account_id, ca.access_secret_v2, ca.account_env
 		FROM cloud_accounts ca, agent ag
 		WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ca.id = ag.cloud_account_id
-			AND ag.status = 'CONNECTED' AND ca.tenant = $1`, tenantId)
+			AND ag.status = 'CONNECTED' AND ca.tenant = $1`
+	if includeCloudAccounts {
+		query = `SELECT DISTINCT ca.id, ca.cloud_provider, ca.account_number, ca.account_name,
+			ca.created_at, ca.created_by, ca.updated_at, ca.updated_by, ca.billing_source, ca.start_date,
+			ca.tenant, ca.assume_role, ca.region, ca.status, ca.account_url, ca.budget, ca.synced_at,
+			ca.sync_status, ca.account_access, ca.account_purpose, ca.data, ca.access_key,
+			ca.access_secret, ca.account_type, ca.agent_access_key, ca.agent_access_secret,
+			ca.agent_synced_at, ca.sync_status_message, ca.external_id, ca.etl_attempt,
+			ca.parent_account_id, ca.access_secret_v2, ca.account_env
+		FROM cloud_accounts ca
+		WHERE ca.status = 'active' AND ca.tenant = $1
+			AND (
+				ca.cloud_provider <> 'K8s'
+				OR EXISTS (SELECT 1 FROM agent ag WHERE ag.cloud_account_id = ca.id AND ag.status = 'CONNECTED')
+			)`
+	}
+	rows, err := databaseManager.Db.Queryx(query, tenantId)
 	if err != nil {
 		return []models.Account{}, err
 	}
@@ -2192,7 +2254,7 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		// has two credential shapes: assume_role is stored in plaintext, while
 		// access_secret is encrypted at rest.
 		if query.AccountID != "" {
-			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+			if !context.GetSecurityContext().CanAccessAccount(query.AccountID, security.SecurityAccessTypeRead) {
 				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
 			}
 			acct, err := GetAccount(context, query.AccountID)
@@ -2264,6 +2326,32 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		return result, nil
 
 	case "Azure":
+		// AccountID resolves an already-onboarded account's stored identity
+		// server-side, for callers (the Rotate Client Secret flow) that hold only
+		// the account id and the new secret. Mirrors the AWS/GCP branches above.
+		// The tenant/client ID and a representative subscription come from the row;
+		// only the secret is supplied fresh by the caller.
+		if query.AccountID != "" {
+			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
+			}
+			acct, err := GetAccount(context, query.AccountID)
+			if err != nil {
+				return ValidateCloudCredentialsResponse{}, fmt.Errorf("failed to load account %s: %w", query.AccountID, err)
+			}
+			if query.TenantID == "" && acct.AccountNumber != nil {
+				query.TenantID = *acct.AccountNumber
+			}
+			if query.ClientID == "" && acct.AccessKey != nil {
+				query.ClientID = *acct.AccessKey
+			}
+			// assume_role holds comma-joined subscription IDs; validate against the
+			// first as a representative sample (same strategy as AzureBulkOnboard).
+			if query.SubscriptionID == "" && acct.AssumeRole != nil {
+				query.SubscriptionID = firstSubscription(*acct.AssumeRole)
+			}
+		}
+
 		// Validate required Azure fields
 		if query.TenantID == "" || query.ClientID == "" || query.ClientSecret == "" || query.SubscriptionID == "" {
 			return ValidateCloudCredentialsResponse{
@@ -2293,7 +2381,7 @@ func ValidateCloudCredentials(context *security.RequestContext, query ValidateCl
 		// server-side, for callers (e.g. Edit Billing Config) that only have
 		// billing fields and no raw service account key.
 		if query.AccountID != "" {
-			if !context.GetSecurityContext().HasAccountAccess(query.AccountID, security.SecurityAccessTypeRead) {
+			if !context.GetSecurityContext().CanAccessAccount(query.AccountID, security.SecurityAccessTypeRead) {
 				return ValidateCloudCredentialsResponse{}, common.ErrorUnauthorized("unauthorized")
 			}
 			acct, err := GetAccount(context, query.AccountID)
@@ -2483,7 +2571,7 @@ func RegenerateAgentKeys(ctx *security.RequestContext, accountId string, agentTy
 	if agentType == "" {
 		agentType = "k8s"
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountId, security.SecurityAccessTypeUpdate) {
 		return AgentRegenerateKeyResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
@@ -2594,6 +2682,25 @@ func CleanUpAgentTask(ctx *security.RequestContext) error {
 	return nil
 }
 
+func canWriteAccountAttrs(sc *security.SecurityContext, accountId string) bool {
+	if accountId == "" {
+		return false
+	}
+	// HasAccountAccess also accepts namespace roles; this action is account-admin/tenant-admin only.
+	return sc.HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) &&
+		(sc.IsSuperAdmin() || sc.IsTenantAdmin() || sc.HasScopedRole(security.AUTH_ACCOUNT_ADMIN_ROLE, accountId))
+}
+
+// eeAttrValidators check EE-only account attributes on write; OSS never names
+// them. EE code adds them via RegisterEEAttrValidator.
+var eeAttrValidators []func(sc *security.SecurityContext, attr AccountAttr) error
+
+// RegisterEEAttrValidator adds a check UpsertAccountAttrs runs on every
+// attribute written. It returns nil for attributes it does not own.
+func RegisterEEAttrValidator(validate func(sc *security.SecurityContext, attr AccountAttr) error) {
+	eeAttrValidators = append(eeAttrValidators, validate)
+}
+
 // UpsertAccountAttrs inserts or updates cloud account attributes, scoped to tenant
 func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUpsertRequest) (AccountAttrUpsertResponse, error) {
 	err := common.ValidateStruct(request)
@@ -2601,17 +2708,29 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 		return AccountAttrUpsertResponse{}, err
 	}
 
-	tenantId := context.GetSecurityContext().GetTenantId()
+	sc := context.GetSecurityContext()
+	tenantId := sc.GetTenantId()
 	if tenantId == "" {
 		return AccountAttrUpsertResponse{}, fmt.Errorf("unauthorized: missing tenant")
 	}
 
 	for _, attr := range request.Objects {
-		if err := validateKnowledgePolicyAttribute(context.GetSecurityContext(), attr); err != nil {
+		if !canWriteAccountAttrs(sc, attr.CloudAccountId) {
+			return AccountAttrUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
+		}
+		if err := validateKnowledgePolicyAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
 		}
-		if err := validateEventAnalysisAttribute(context.GetSecurityContext(), attr); err != nil {
+		if err := validateEventAnalysisAttribute(sc, attr); err != nil {
 			return AccountAttrUpsertResponse{}, err
+		}
+		if err := validateNudgebeeWorkloadsAttribute(context.GetSecurityContext(), attr); err != nil {
+			return AccountAttrUpsertResponse{}, err
+		}
+		for _, validate := range eeAttrValidators {
+			if err := validate(context.GetSecurityContext(), attr); err != nil {
+				return AccountAttrUpsertResponse{}, err
+			}
 		}
 	}
 
@@ -2627,6 +2746,9 @@ func UpsertAccountAttrs(context *security.RequestContext, request AccountAttrUps
 	}
 	uniqueAccountIds := make([]string, 0, len(accountIdSet))
 	for id := range accountIdSet {
+		if !context.GetSecurityContext().CanAccessAccount(id, security.SecurityAccessTypeUpdate) {
+			return AccountAttrUpsertResponse{}, common.ErrorUnauthorized("access denied for account")
+		}
 		uniqueAccountIds = append(uniqueAccountIds, id)
 	}
 
@@ -2693,7 +2815,7 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 	// account in the tenant; account_admin only for its assigned accounts.
 	// Required because callers now include per-account roles (actions.yaml)
 	// and the UPDATE below is scoped by tenant only.
-	if !context.GetSecurityContext().HasAccountAccess(request.Id, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(request.Id, security.SecurityAccessTypeUpdate) {
 		return AccountUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
 	}
 
@@ -2801,4 +2923,590 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		})
 	}
 	return AccountUpdateResponse{AffectedRows: int(affected)}, nil
+}
+
+// llmIntegrationsOnlyLinkedTo returns the enabled LLM integrations linked to
+// this account and no other, except the tenant default. Deleting the account
+// would leave them with no accounts, which makes an LLM integration
+// tenant-wide; nobody chose that, so they are disabled instead and an admin
+// decides their scope. The tenant default stays enabled: every account without
+// its own default already uses it, so nothing changes for anyone.
+func llmIntegrationsOnlyLinkedTo(tx *sql.Tx, accountId string) ([]string, error) {
+	rows, err := tx.Query(`
+		SELECT i.id::text FROM integrations i
+		JOIN integrations_cloud_accounts ia ON ia.integration_id = i.id
+		WHERE ia.cloud_account_id = $1 AND i.type = 'llm' AND i.status = 'enabled'
+		  AND NOT EXISTS (SELECT 1 FROM integrations_cloud_accounts o
+		                  WHERE o.integration_id = i.id AND o.cloud_account_id <> $1)
+		  AND NOT EXISTS (SELECT 1 FROM integration_config_values d
+		                  WHERE d.integration_id = i.id AND d.name = 'default_llm_provider' AND d.value = 'true')`, accountId)
+	if err != nil {
+		return nil, fmt.Errorf("account: failed to find LLM integrations linked only to %s: %w", accountId, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func disableLLMIntegrations(tx *sql.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
+	if _, err := tx.Exec(`UPDATE integrations SET status = 'disabled', updated_at = now() WHERE id = ANY($1::uuid[])`, pq.Array(ids)); err != nil {
+		return fmt.Errorf("account: failed to disable LLM integrations left with no accounts: %w", err)
+	}
+	return nil
+}
+
+// firstSubscription returns the first subscription ID from a comma-joined
+// assume_role value. Azure stores an account's subscription IDs comma-joined in
+// assume_role; validation only needs one representative subscription.
+func firstSubscription(assumeRole string) string {
+	return strings.TrimSpace(strings.Split(assumeRole, ",")[0])
+}
+
+// UpdateAccountCredentials rotates a connected account's stored credential in
+// place, keeping its history. Supported: an Azure client secret, a GCP
+// service-account key, and AWS access keys or role ARN. The new credential is
+// validated against the account's stored identity before it is written.
+//
+// A credential belongs to an identity, not to one account: an Azure secret to
+// an app registration, a GCP key to a service account, an AWS key to an IAM
+// user or a role ARN to a role. Bulk onboarding stores a
+// copy on every subscription's or project's row, so the write covers every
+// account in the tenant on the same identity that the caller may update —
+// otherwise the siblings keep the dead credential and stay dark. Collection
+// then restarts at once (resumeCollection) instead of waiting for the daily
+// cost sync and the events backoff.
+//
+// ValidateOnly runs every check — including the provider's live validation —
+// and reports how many accounts a save would update, without writing. The
+// modal's Validate button uses it, so it checks exactly what Save will.
+//
+// It deliberately does NOT extend the generic UpdateAccountByAction: rotation
+// is validate-before-write and security-sensitive, and does not belong in the
+// generic column setter.
+func UpdateAccountCredentials(context *security.RequestContext, request AccountUpdateCredentialsRequest) (AccountUpdateCredentialsResponse, error) {
+	if err := common.ValidateStruct(request); err != nil {
+		return AccountUpdateCredentialsResponse{}, err
+	}
+
+	sc := context.GetSecurityContext()
+	tenantId := sc.GetTenantId()
+	if tenantId == "" {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("unauthorized: missing tenant")
+	}
+
+	// Gate on the target account (same check as UpdateAccountByAction).
+	if !sc.HasAccountAccess(request.Id, security.SecurityAccessTypeUpdate) {
+		return AccountUpdateCredentialsResponse{}, common.ErrorUnauthorized("Not Allowed")
+	}
+
+	acct, err := GetAccount(context, request.Id)
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to load account %s: %w", request.Id, err)
+	}
+	if acct.Tenant != tenantId {
+		return AccountUpdateCredentialsResponse{}, common.ErrorUnauthorized("Not Allowed")
+	}
+	if !strings.EqualFold(strings.TrimSpace(request.CloudProvider), acct.CloudProvider) {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("account %s is not a %s account", request.Id, request.CloudProvider)
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to get database: %w", err)
+	}
+
+	var rotation credentialRotation
+	switch strings.ToLower(acct.CloudProvider) {
+	case "azure":
+		rotation, err = prepareAzureRotation(context, dbms, tenantId, acct, request)
+	case "gcp":
+		rotation, err = prepareGcpRotation(context, dbms, tenantId, acct, request)
+	case "aws":
+		rotation, err = prepareAwsRotation(context, dbms, tenantId, acct, request)
+	default:
+		err = fmt.Errorf("credential rotation is supported for Azure, GCP and AWS accounts only")
+	}
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, err
+	}
+
+	targets := credentialRotationTargets(request.Id, rotation.group, func(id string) bool {
+		return sc.HasAccountAccess(id, security.SecurityAccessTypeUpdate)
+	})
+	ids := make([]string, 0, len(targets))
+	for _, t := range targets {
+		ids = append(ids, t.Id)
+	}
+	if request.ValidateOnly {
+		return AccountUpdateCredentialsResponse{AffectedRows: len(ids)}, nil
+	}
+
+	// A NULL parameter leaves its column as it is, so one fixed statement
+	// serves every provider.
+	var updated []string
+	err = dbms.Db.Select(&updated, `UPDATE cloud_accounts SET
+			access_secret = COALESCE($1, access_secret),
+			access_key = COALESCE($2, access_key),
+			assume_role = COALESCE($3, assume_role),
+			updated_by = $4, updated_at = now()
+		WHERE id = ANY($5::uuid[]) AND tenant = $6 RETURNING id::text`,
+		rotation.accessSecret, rotation.accessKey, rotation.assumeRole, sc.GetUserId(), pq.Array(ids), tenantId)
+	if err != nil {
+		return AccountUpdateCredentialsResponse{}, fmt.Errorf("failed to update credentials: %w", err)
+	}
+	affected := len(updated)
+
+	// Never record the credential itself in the audit trail.
+	for _, id := range updated {
+		audit.LogChange(context, audit.ChangeInput{
+			EventCategory: audit.EventCategoryAccount,
+			EventType:     audit.EventTypeAccountUpdate,
+			EventAction:   audit.EventActionUpdate,
+			TargetID:      id,
+			AccountID:     id,
+			TableName:     "cloud_accounts",
+			NewData:       map[string]any{"id": id, "cloud_provider": acct.CloudProvider, "credential_rotated": true, "rotated_from_account": request.Id},
+		})
+	}
+
+	resumeCollection(context, dbms, tenantId, activeTargets(targets, updated))
+
+	context.GetLogger().Info("credential rotation succeeded", "provider", acct.CloudProvider,
+		"account_id", request.Id, "accounts_updated", affected, "accounts_sharing_identity", len(rotation.group))
+
+	return AccountUpdateCredentialsResponse{AffectedRows: affected}, nil
+}
+
+// credentialRotation is what a provider's preparation hands back: the
+// cloud_accounts credential columns to write (nil leaves a column unchanged;
+// accessSecret is already encrypted), and every account in the tenant on the
+// same identity (before the caller's per-account access check).
+type credentialRotation struct {
+	accessSecret *string
+	accessKey    *string
+	assumeRole   *string
+	group        []credentialGroupMember
+}
+
+// encryptSecret encrypts a credential for the access_secret column.
+func encryptSecret(secret string) (*string, error) {
+	encrypted, err := common.Encrypt(secret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt credential: %w", err)
+	}
+	return &encrypted, nil
+}
+
+// prepareAzureRotation validates a new client secret against the account's
+// stored tenant, client ID and first subscription, and finds every Azure
+// account on the same app registration.
+func prepareAzureRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	if acct.AccountNumber == nil || acct.AccessKey == nil || acct.AssumeRole == nil {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its Azure tenant, client ID or subscription", request.Id)
+	}
+	if strings.TrimSpace(request.ClientSecret) == "" {
+		return credentialRotation{}, fmt.Errorf("a new client secret is required")
+	}
+
+	// Validate the NEW secret against the account's stored identity before any
+	// write. assume_role holds comma-joined subscription IDs — validate against
+	// the first as a representative sample.
+	validation := validateAzureCredentialsInternal(context.GetContext(),
+		*acct.AccountNumber, *acct.AccessKey, request.ClientSecret, firstSubscription(*acct.AssumeRole))
+	if !validation.Success {
+		context.GetLogger().Warn("azure credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new secret could not be validated with Azure"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+
+	var group []credentialGroupMember
+	err := dbms.Db.Select(&group, `SELECT id::text AS id, status FROM cloud_accounts
+		WHERE tenant = $1 AND lower(cloud_provider) = 'azure' AND account_number = $2 AND access_key = $3`,
+		tenantId, *acct.AccountNumber, *acct.AccessKey)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing this app registration: %w", err)
+	}
+	secret, err := encryptSecret(request.ClientSecret)
+	if err != nil {
+		return credentialRotation{}, err
+	}
+	return credentialRotation{accessSecret: secret, group: group}, nil
+}
+
+// gcpServiceAccountKey is the part of a GCP service-account key JSON that
+// rotation checks. The rest of the key is stored as given.
+type gcpServiceAccountKey struct {
+	Type        string `json:"type"`
+	ProjectID   string `json:"project_id"`
+	ClientEmail string `json:"client_email"`
+	PrivateKey  string `json:"private_key"`
+}
+
+// parseGcpServiceAccountKey checks that keyJSON is a complete service-account
+// key — the same fields the onboarding modal requires.
+func parseGcpServiceAccountKey(keyJSON string) (gcpServiceAccountKey, error) {
+	var key gcpServiceAccountKey
+	if err := json.Unmarshal([]byte(keyJSON), &key); err != nil {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is not valid JSON")
+	}
+	if key.Type != "service_account" {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is not a service-account key (type is %q)", key.Type)
+	}
+	if key.ProjectID == "" || key.ClientEmail == "" || key.PrivateKey == "" {
+		return gcpServiceAccountKey{}, fmt.Errorf("the new key is missing project_id, client_email or private_key")
+	}
+	return key, nil
+}
+
+// gcpBillingConfig reads the BigQuery billing export an account was set up
+// with (cloud_accounts.data.billing_data), so the new key is checked against
+// the same table the cost sync reads. Empty strings when none is configured.
+func gcpBillingConfig(data *string) (projectID, datasetID, tableID string) {
+	if data == nil || *data == "" {
+		return "", "", ""
+	}
+	var parsed struct {
+		BillingData struct {
+			BillingProjectID string `json:"billing_project_id"`
+			DatasetName      string `json:"dataset_name"`
+			TableName        string `json:"table_name"`
+		} `json:"billing_data"`
+	}
+	if err := json.Unmarshal([]byte(*data), &parsed); err != nil {
+		return "", "", ""
+	}
+	b := parsed.BillingData
+	return b.BillingProjectID, b.DatasetName, b.TableName
+}
+
+// prepareGcpRotation validates a new service-account key for the account's
+// project (and its billing export, if set up) and finds every GCP account in the
+// tenant using the same service account. The new key must belong to the same
+// service account as the stored one: a different service account carries
+// different permissions, which is a re-onboarding, not a rotation.
+//
+// The service account's email lives only inside the encrypted key, so finding
+// the accounts that share it means decrypting each GCP account's key in the
+// tenant. An account whose key can't be read is left out of the group.
+func prepareGcpRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	if acct.AccountNumber == nil || *acct.AccountNumber == "" {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its GCP project ID", request.Id)
+	}
+	if strings.TrimSpace(request.CredentialsJSON) == "" {
+		return credentialRotation{}, fmt.Errorf("a new service-account key is required")
+	}
+	newKey, err := parseGcpServiceAccountKey(request.CredentialsJSON)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("account: %w", err)
+	}
+
+	storedEmail, err := storedGcpServiceAccountEmail(acct.AccessSecret)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("account: can't read the key stored on this account, so the new key can't be matched to it: %w", err)
+	}
+	if !strings.EqualFold(newKey.ClientEmail, storedEmail) {
+		return credentialRotation{}, fmt.Errorf("account: the new key belongs to %s, but this account uses %s. Upload a new key for %s", newKey.ClientEmail, storedEmail, storedEmail)
+	}
+
+	billingProject, billingDataset, billingTable := gcpBillingConfig(acct.Data)
+	validation := validateGCPCredentialsInternal(context.GetContext(), request.CredentialsJSON, *acct.AccountNumber, billingProject, billingDataset, billingTable)
+	if !validation.Success {
+		context.GetLogger().Warn("gcp credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new key could not be validated with GCP"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+
+	var rows []struct {
+		Id           string  `db:"id"`
+		Status       string  `db:"status"`
+		AccessSecret *string `db:"access_secret"`
+	}
+	err = dbms.Db.Select(&rows, `SELECT id::text AS id, status, access_secret FROM cloud_accounts
+		WHERE tenant = $1 AND lower(cloud_provider) = 'gcp'`, tenantId)
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing this service account: %w", err)
+	}
+	var group []credentialGroupMember
+	for _, r := range rows {
+		email, err := storedGcpServiceAccountEmail(r.AccessSecret)
+		if err != nil {
+			context.GetLogger().Warn("gcp credential rotation: skipping an account whose stored key can't be read", "account_id", r.Id, "error", err)
+			continue
+		}
+		if strings.EqualFold(email, storedEmail) {
+			group = append(group, credentialGroupMember{Id: r.Id, Status: r.Status})
+		}
+	}
+	secret, err := encryptSecret(request.CredentialsJSON)
+	if err != nil {
+		return credentialRotation{}, err
+	}
+	return credentialRotation{accessSecret: secret, group: group}, nil
+}
+
+// awsRoleArnPattern matches an IAM role ARN in the aws partition or a
+// hyphenated one (aws-cn, aws-us-gov, aws-iso-b, ...) and captures the 12-digit
+// AWS account ID it belongs to.
+var awsRoleArnPattern = regexp.MustCompile(`^arn:aws(?:-[a-z]+)*:iam::(\d{12}):role/.+$`)
+
+// awsRoleArnAccount returns the AWS account ID an IAM role ARN belongs to.
+func awsRoleArnAccount(roleArn string) (string, bool) {
+	m := awsRoleArnPattern.FindStringSubmatch(roleArn)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// awsCurConfig reads the Cost & Usage Report an AWS account was set up with
+// (cloud_accounts.data), so new credentials are checked against the same
+// report the cost sync reads. Empty strings when none is recorded.
+func awsCurConfig(data *string) (reportName, bucket string) {
+	if data == nil || *data == "" {
+		return "", ""
+	}
+	var parsed struct {
+		ReportName string `json:"cost_report_name"`
+		Bucket     string `json:"cost_report_s3_bucket"`
+	}
+	if err := json.Unmarshal([]byte(*data), &parsed); err != nil {
+		return "", ""
+	}
+	return parsed.ReportName, parsed.Bucket
+}
+
+func trimmedOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(*v)
+}
+
+// prepareAwsRotation replaces an AWS account's credentials in the mode it was
+// connected with: a new role ARN for a role account, a new key pair for an
+// access-key account. Switching modes is refused — the collector picks the mode
+// from which columns are set, and does so in a different order in its SDK and
+// CLI paths, so an account must never hold both. The external ID is kept:
+// CloudFormation accounts also use it to match their EventBridge events.
+//
+// The new credentials must belong to the account's AWS account ID. For a role
+// that is checked from the ARN before any AWS call, so the stored external ID is
+// never sent to a role in another AWS account; for keys, STS reports it.
+func prepareAwsRotation(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, acct models.Account, request AccountUpdateCredentialsRequest) (credentialRotation, error) {
+	awsAccountID := trimmedOrEmpty(acct.AccountNumber)
+	if awsAccountID == "" {
+		return credentialRotation{}, fmt.Errorf("account %s is missing its AWS account ID", request.Id)
+	}
+	storedRole := trimmedOrEmpty(acct.AssumeRole)
+	storedKey := trimmedOrEmpty(acct.AccessKey)
+	if storedRole != "" && storedKey != "" {
+		// Onboarding never stores both, but the org registrar can add a role to a
+		// key account. The collector's SDK path prefers the key and its CLI path
+		// the role, so rotating either one would leave the other in charge
+		// somewhere. Re-adding the account resolves it cleanly.
+		return credentialRotation{}, fmt.Errorf("account: this account has both an IAM role and access keys stored, so it isn't clear which one to replace. Re-add it with a single connection type")
+	}
+	newRole := strings.TrimSpace(request.AssumeRole)
+	newKey := strings.TrimSpace(request.AccessKey)
+	newSecret := strings.TrimSpace(request.AccessSecret)
+	curReport, curBucket := awsCurConfig(acct.Data)
+
+	validationRequest := AwsValidateInternalRequest{
+		Region:        trimmedOrEmpty(acct.Region),
+		CurReportName: curReport,
+		CurS3Bucket:   curBucket,
+	}
+	var rotation credentialRotation
+	switch {
+	case storedRole != "":
+		if newKey != "" || newSecret != "" {
+			return credentialRotation{}, fmt.Errorf("account: this account connects with an IAM role. Enter the new role ARN; switching to access keys isn't supported here")
+		}
+		if newRole == "" {
+			return credentialRotation{}, fmt.Errorf("account: a new role ARN is required")
+		}
+		roleAccount, ok := awsRoleArnAccount(newRole)
+		if !ok {
+			return credentialRotation{}, fmt.Errorf("account: %q is not an IAM role ARN (arn:aws:iam::<account-id>:role/<name>)", newRole)
+		}
+		if roleAccount != awsAccountID {
+			return credentialRotation{}, fmt.Errorf("account: the role belongs to AWS account %s, but this account is %s", roleAccount, awsAccountID)
+		}
+		validationRequest.AssumeRole = newRole
+		validationRequest.ExternalID = trimmedOrEmpty(acct.ExternalId)
+		rotation.assumeRole = &newRole
+	case storedKey != "":
+		if newRole != "" {
+			return credentialRotation{}, fmt.Errorf("account: this account connects with access keys. Enter a new access key pair; switching to a role isn't supported here")
+		}
+		if newKey == "" || newSecret == "" {
+			return credentialRotation{}, fmt.Errorf("account: a new access key ID and secret access key are required")
+		}
+		validationRequest.AccessKey = newKey
+		validationRequest.AccessSecret = newSecret
+		secret, err := encryptSecret(newSecret)
+		if err != nil {
+			return credentialRotation{}, err
+		}
+		rotation.accessKey = &newKey
+		rotation.accessSecret = secret
+	default:
+		return credentialRotation{}, fmt.Errorf("account %s has no stored AWS role or access key to replace", request.Id)
+	}
+
+	validation := validateAWSCredentialsInternal(context.GetContext(), validationRequest)
+	if !validation.Success {
+		context.GetLogger().Warn("aws credential rotation: validation failed",
+			"account_id", request.Id, "error", validation.ErrorMessage)
+		msg := validation.ErrorMessage
+		if msg == "" {
+			msg = "the new credentials could not be validated with AWS"
+		}
+		return credentialRotation{}, fmt.Errorf("account: %s", msg)
+	}
+	if validation.AccountNumber == "" {
+		return credentialRotation{}, fmt.Errorf("account: AWS didn't report which account these credentials belong to, so they can't be matched to %s", awsAccountID)
+	}
+	if validation.AccountNumber != awsAccountID {
+		return credentialRotation{}, fmt.Errorf("account: these credentials belong to AWS account %s, but this account is %s", validation.AccountNumber, awsAccountID)
+	}
+
+	// Match siblings on the column's stored value as-is, not the trimmed one, so
+	// stray whitespace in stored data doesn't drop the group.
+	var err error
+	if rotation.assumeRole != nil {
+		err = dbms.Db.Select(&rotation.group, `SELECT id::text AS id, status FROM cloud_accounts
+			WHERE tenant = $1 AND lower(cloud_provider) = 'aws' AND assume_role = $2`, tenantId, *acct.AssumeRole)
+	} else {
+		err = dbms.Db.Select(&rotation.group, `SELECT id::text AS id, status FROM cloud_accounts
+			WHERE tenant = $1 AND lower(cloud_provider) = 'aws' AND access_key = $2`, tenantId, *acct.AccessKey)
+	}
+	if err != nil {
+		return credentialRotation{}, fmt.Errorf("failed to find accounts sharing these AWS credentials: %w", err)
+	}
+	return rotation, nil
+}
+
+// storedGcpServiceAccountEmail decrypts a stored GCP key and returns the
+// service account it belongs to.
+func storedGcpServiceAccountEmail(accessSecret *string) (string, error) {
+	if accessSecret == nil || *accessSecret == "" {
+		return "", fmt.Errorf("no key stored")
+	}
+	decrypted, err := common.Decrypt(*accessSecret)
+	if err != nil {
+		return "", fmt.Errorf("decrypt: %w", err)
+	}
+	var key gcpServiceAccountKey
+	if err := json.Unmarshal([]byte(decrypted), &key); err != nil || key.ClientEmail == "" {
+		return "", fmt.Errorf("stored key has no client_email")
+	}
+	return key.ClientEmail, nil
+}
+
+// credentialGroupMember is one account on the same identity (Azure app
+// registration, GCP service account, AWS role or access key) as the account
+// being rotated.
+type credentialGroupMember struct {
+	Id     string `db:"id"`
+	Status string `db:"status"`
+}
+
+// credentialRotationTargets picks the accounts a rotation writes: every member
+// of the identity's group the caller may update. The account the rotation was
+// started from is always included (its access was checked before validation),
+// even if the group query somehow missed it.
+func credentialRotationTargets(requestedId string, group []credentialGroupMember, canUpdate func(id string) bool) []credentialGroupMember {
+	targets := make([]credentialGroupMember, 0, len(group)+1)
+	foundRequested := false
+	for _, m := range group {
+		if m.Id == requestedId {
+			foundRequested = true
+			targets = append(targets, m)
+			continue
+		}
+		if canUpdate(m.Id) {
+			targets = append(targets, m)
+		}
+	}
+	if !foundRequested {
+		targets = append(targets, credentialGroupMember{Id: requestedId, Status: "active"})
+	}
+	return targets
+}
+
+// activeTargets returns the ids among targets that were actually updated and are
+// active. Disabled accounts get the new credential but aren't collected, so
+// there is nothing to restart for them.
+func activeTargets(targets []credentialGroupMember, updated []string) []string {
+	wasUpdated := make(map[string]bool, len(updated))
+	for _, id := range updated {
+		wasUpdated[id] = true
+	}
+	var ids []string
+	for _, t := range targets {
+		if wasUpdated[t.Id] && t.Status == "active" {
+			ids = append(ids, t.Id)
+		}
+	}
+	return ids
+}
+
+// resumeCollection restarts collection for accounts whose credential was just
+// rotated, so the user doesn't wait for the schedules to notice:
+//   - Events: a rejected credential backs event polling off to once an hour
+//     (#40393). Dropping retry_after and auth_failures from
+//     agent.connection_status.events puts the account back on the next
+//     10-minute tick.
+//   - Cost: the cost sync is daily. One current-month job per account, the same
+//     job onboarding publishes. One per account only — the collector drops a
+//     second concurrent job for the same account.
+//
+// Best-effort: the credential is already saved, and the schedules recover on
+// their own if any of this fails, so errors are logged and not returned.
+func resumeCollection(context *security.RequestContext, dbms *database.DatabaseManager, tenantId string, accountIds []string) {
+	if len(accountIds) == 0 {
+		return
+	}
+	if _, err := dbms.Db.Exec(`UPDATE agent
+		SET connection_status = connection_status #- '{events,retry_after}' #- '{events,auth_failures}'
+		WHERE cloud_account_id = ANY($1::uuid[]) AND connection_status->'events' IS NOT NULL`,
+		pq.Array(accountIds)); err != nil {
+		context.GetLogger().Error("credential rotation: failed to clear events backoff", "error", err, "accounts", accountIds)
+	}
+
+	now := time.Now().UTC()
+	for _, id := range accountIds {
+		job := cloudAccountCostReportJob{
+			JobId:     uuid.New().String(),
+			AccountId: id,
+			TenantId:  tenantId,
+			Month:     int(now.Month()),
+			Year:      now.Year(),
+		}
+		if err := common.MqPublish(config.Config.RabbitMqCloudAccountCostReportExchange, config.Config.RabbitMqCloudAccountCostReportQueue, job,
+			common.MqPublishWithContext(context.GetContext())); err != nil {
+			context.GetLogger().Error("credential rotation: failed to publish cost sync job", "account", id, "error", err)
+		}
+	}
 }

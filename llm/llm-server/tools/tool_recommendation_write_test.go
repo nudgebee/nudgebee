@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -216,6 +217,39 @@ func TestRecommendationApplyTool(t *testing.T) {
 		_, hasData := object["data"].(map[string]any)
 		assert.True(t, hasData)
 		assert.Contains(t, resp.Data, "pr_action")
+	})
+
+	t.Run("a failed resolution inside a 200 is logged, then recorded failed once enforced", func(t *testing.T) {
+		cleanup := startRPCStub(t, "/rpc/recommendation", func(string, map[string]any) (int, string) {
+			return http.StatusOK, `{"data":[],"resolution":{"id":"r1","status":"Failed"},"status":"InProgress"}`
+		})
+		defer cleanup()
+		call := func() (core.NBToolResponse, string) {
+			stubSafetyRow(mock, "review")
+			nbCtx := newTriageToolContext(applyAccountID)
+			var logs bytes.Buffer
+			nbCtx.Ctx = security.NewRequestContext(context.Background(), nbCtx.Ctx.GetSecurityContext(), slog.New(slog.NewTextHandler(&logs, nil)), nil, nil)
+			resp, err := RecommendationApplyTool{}.Call(nbCtx, core.NBToolCallRequest{
+				Arguments: map[string]any{"recommendation_id": applyRecID, "safety_band": "review"},
+			})
+			assert.NoError(t, err)
+			return resp, logs.String()
+		}
+
+		setReportedFailureConfig(t, "log", "")
+		resp, logs := call()
+		assert.Equal(t, core.NBToolResponseStatusSuccess, resp.Status, "log mode must not change the recorded status")
+		assert.Contains(t, logs, "tool: reply says it failed")
+		assert.Contains(t, logs, "outcome=would_fail")
+		assert.Contains(t, logs, "reason=reported_failed")
+
+		setReportedFailureConfig(t, "log", ToolRecommendationApply)
+		resp, logs = call()
+		assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+		assert.Contains(t, logs, "outcome=enforced")
+		if assert.NotNil(t, resp.Metadata) {
+			assert.Equal(t, core.FailureReasonReportedFailed, resp.Metadata.FailureReason)
+		}
 	})
 
 	t.Run("data defaults to an object, never null", func(t *testing.T) {
@@ -487,6 +521,13 @@ func TestRecommendationWriteToolConfirmationQuestions(t *testing.T) {
 		assert.Contains(t, q, "a pull request")
 		assert.Contains(t, q, "rec-1")
 		assert.Contains(t, q, "Do you want to continue?")
+	})
+
+	t.Run("cloud apply names a cloud change, not an alarm", func(t *testing.T) {
+		q := RecommendationApplyTool{}.ConfirmationQuestion(
+			`{"recommendation_id":"rec-1","provider":"aws","summary":"Convert EBS volume vol-1 from gp2 to gp3"}`)
+		assert.Contains(t, q, "a change in your cloud account")
+		assert.NotContains(t, q, "alarm")
 	})
 
 	t.Run("apply without summary still names the action, not just raw JSON", func(t *testing.T) {

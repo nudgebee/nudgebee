@@ -10,8 +10,8 @@ chats or runs, and it is never silently swapped for a fresh one while the chat o
 run is still using it. The relay keeps sessions for direct-mode integrations;
 forager keeps them for agent-proxied ones.
 
-> **Status.** Sections 1–4 describe the code. Section 5 is the agreed design for
-> the next change and is marked _(planned)_ until it lands.
+> **Status.** All sections describe the code. Section 5 also records what was
+> decided not to build.
 > Update this file in the same PR as any change to MCP session handling.
 
 ---
@@ -144,32 +144,38 @@ any session. Credentials are **not** stored in Redis.
   While Redis is down, a multi-pod relay behaves like the per-pod store; sessions
   opened then are still swept. The relay logs which store it uses at startup.
 
-## 5. Automation runs _(planned, PR 2)_
+## 5. Automation runs
 
-- **One session id per run.** AI steps, integration MCP tasks and raw-URL MCP tasks
-  all send `session_id = "wf__<workflowId>__<runId>"`. AI steps already use this
-  string for the default execution scope (`runbook-server/internal/tasks/ai/workflow_trace.go`).
-  Steps with workflow scope (`wf__<workflowId>`) keep sharing across runs and are
-  never closed at run end.
-- **Raw-URL MCP tasks go through the relay**, so they share the run's session. The
-  relay's MCP client is brought up to the raw-URL client's standard first:
-  - per-event SSE parsing that matches the reply id, with a large buffer;
-  - `notifications/initialized`;
-  - the task's timeout;
-  - an indication of an unparseable reply, so runbook-server keeps its
-    don't-retry behaviour;
-  - task headers passed through and never logged.
+What an automation's MCP calls do today:
 
-  Raw-URL sessions have no integration id, so how they are closed is decided in
-  that PR.
-- **Close at run end.** A new relay action, `mcp_close_sessions {session_ids}`,
-  handled before the agent check. It closes every MCP server's session under those
-  ids, using the Section 4 machinery. runbook-server calls it from an activity when
-  a run completes, fails or is cancelled. The call is made for parent runs and for
-  child workflows, which have their own run id.
-- **Deploy order.** A runbook-server flag, default off, enables both raw-URL
-  routing and the run-end close. It is flipped on once the relay change is deployed
-  everywhere.
+| Call | Session | Closed |
+|---|---|---|
+| MCP task, raw URL | one per task, opened by runbook-server | `DELETE` when the task returns, also on error |
+| Tool listing (builder), raw URL or integration | one per call, opened by runbook-server | `DELETE` when the call returns |
+| MCP task, integration, direct | relay, keyed by the run id | relay idle sweep (Section 4) |
+| MCP task, integration, agent-proxied | forager, keyed by the run id | forager idle timeout (needs a forager release with forager#160) |
+| AI step using an MCP integration | relay, keyed by `wf__<workflowId>__<runId>` | relay idle sweep |
+
+Steps in a run therefore do not share one MCP session: each raw-URL task has its
+own, and an MCP task and an AI step use different keys. **To keep state across
+steps, use an integration with AI steps only, or a single MCP task.**
+
+**Not built** (decided 2026-10, `/challenge` on #40092):
+- one session id for MCP tasks and AI steps;
+- routing raw-URL tasks through the relay;
+- closing a run's sessions when it ends.
+
+On dev, no automation needed any of these:
+- no automation pairs an AI step with an MCP task on the same server;
+- the raw-URL automations are single-step test fixtures;
+- the one automation with several MCP steps (QA) isolates its runs itself.
+
+Relay routing would also have the relay call any URL a workflow names (an SSRF
+guard to port) and keep task headers to close sessions later. The idle sweep
+already closes sessions.
+
+**Reconsider if** an automation needs two or more steps to share state on one MCP
+server, or idle sessions put capacity pressure on an MCP server.
 
 ## 6. Decisions and limitations
 
@@ -205,8 +211,8 @@ any session. Credentials are **not** stored in Redis.
   would need a multi-key script, which Redis Cluster does not allow.
 - **Server forgets the session.** On a server restart, the next call silently gets
   a fresh session, and the state is lost without an error.
-- **Cancel race.** A cancelled run's still-running step can re-open a session after
-  the run-end close. That session is closed by the idle sweep.
+- **Run end.** A run's relay sessions are not closed when the run ends; the idle
+  sweep closes them (Section 5).
 - **Chat deletion.** Sessions are not closed when a chat is deleted; that is
   deferred.
 - **Forager.** Agent-proxied sessions follow forager's own idle rules, and stdio is
@@ -221,6 +227,3 @@ any session. Credentials are **not** stored in Redis.
   must show the navigated page.
 - **Isolation check:** two chats open different pages at the same time, and each
   sees only its own page.
-- **Run check** _(PR 2)_: a workflow with a raw-URL navigate step, then an AI step
-  using the same MCP integration, then a raw-URL snapshot step. All steps see the
-  same page. After the run, the old session id gets a 404 from the server.

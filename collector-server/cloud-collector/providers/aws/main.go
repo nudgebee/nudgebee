@@ -106,6 +106,7 @@ func init() {
 		"systemsmanager":      &awsSystemsManager{},
 		"costoptimizationhub": &awsCostOptimizationHub{},
 		"costexplorer":        &awsCostExplorer{},
+		"commitments":         &awsCommitments{},
 		"computeoptimizer":    &awsComputeOptimizer{},
 		"trustedadvisor":      &awsTrustedAdvisor{},
 	}
@@ -188,6 +189,23 @@ var (
 // preferable to an OOM in a multi-tenant deployment.
 const logGroupCacheMaxSize = 10_000
 
+// logStreamScoper is implemented by services whose detected log group is shared
+// by many resources, one stream per resource (the CloudWatch agent's default
+// EC2-Windows-Logs / EC2-Linux-Logs groups hold a stream per instance). For
+// them a detected group must be read through the resource's own streams only,
+// or the logs of every other host in the group are returned as this one's.
+// It returns "" when resourceId cannot be used as a stream prefix.
+type logStreamScoper interface {
+	LogStreamPrefix(resourceId string) string
+}
+
+// scopeQueryToStreamPrefix puts the stream filter in front of the query rather
+// than after it: a caller's query that ends in stats or limit has no
+// @logStream left (or has already been cut) by the time a trailing filter runs.
+func scopeQueryToStreamPrefix(queryString, prefix string) string {
+	return fmt.Sprintf("filter @logStream like /^%s/\n| %s", prefix, queryString)
+}
+
 var servicesWithoutDirectLogs = map[string]struct{}{
 	"dynamodb":      {},
 	"rds":           {},
@@ -222,9 +240,15 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 
 	//detect loggroup
 	detectionAttempted := false
+	streamPrefix := ""
 	if query.LogGroupName == "" {
 		if service, found := GetAwsService(query.ServiceName); found {
 			detectionAttempted = true
+			// Only a group found from the resource is scoped to its streams; a
+			// caller-supplied group is the caller's chosen scope.
+			if scoper, ok := service.(logStreamScoper); ok {
+				streamPrefix = scoper.LogStreamPrefix(query.ResourceId)
+			}
 			cacheKey := fmt.Sprintf("%s-%s-%s", account.AccountNumber, query.Region, query.ResourceId)
 			logGroupCacheMu.RLock()
 			loggroup, ok := logGroupCache[cacheKey]
@@ -302,11 +326,18 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 	// When a metric filter pattern is provided, use FilterLogEvents API
 	// which natively supports the same pattern syntax as CloudWatch metric filters.
 	if query.FilterPattern != "" {
-		return a.queryLogsWithFilterPattern(ctx, logsSvc, query)
+		resp, err := a.queryLogsWithFilterPattern(ctx, logsSvc, query, streamPrefix)
+		if err == nil && len(resp.Results) > 0 {
+			resp.LogGroupName, resp.LogStreamPrefix = query.LogGroupName, streamPrefix
+		}
+		return resp, err
 	}
 
 	if query.QueryString == "" {
 		query.QueryString = "fields @timestamp, @message"
+	}
+	if streamPrefix != "" {
+		query.QueryString = scopeQueryToStreamPrefix(query.QueryString, streamPrefix)
 	}
 
 	startQueryInput := &cloudwatchlogs.StartQueryInput{
@@ -386,10 +417,12 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 			}
 
 			return providers.QueryLogsResponse{
-					QueryId:    queryId,
-					Results:    logMessages,
-					Status:     string(status),
-					Statistics: stats,
+					QueryId:         queryId,
+					Results:         logMessages,
+					Status:          string(status),
+					Statistics:      stats,
+					LogGroupName:    query.LogGroupName,
+					LogStreamPrefix: streamPrefix,
 				},
 				nil
 		case logstypes.QueryStatusFailed, logstypes.QueryStatusCancelled, logstypes.QueryStatusTimeout:
@@ -406,7 +439,7 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 // queryLogsWithFilterPattern uses the FilterLogEvents API which natively supports
 // CloudWatch metric filter patterns. This returns exactly the log events that
 // would increment a metric filter counter — i.e., the logs that triggered the alarm.
-func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderContext, logsSvc *cloudwatchlogs.Client, query providers.QueryLogsRequest) (providers.QueryLogsResponse, error) {
+func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderContext, logsSvc *cloudwatchlogs.Client, query providers.QueryLogsRequest, streamPrefix string) (providers.QueryLogsResponse, error) {
 	logger := ctx.GetLogger()
 	logger.Info("using FilterLogEvents with metric filter pattern",
 		"logGroupName", query.LogGroupName, "filterPattern", query.FilterPattern)
@@ -420,6 +453,9 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 		StartTime:     ptr.Int64(query.StartTime.UTC().UnixMilli()),
 		EndTime:       ptr.Int64(query.EndTime.UTC().UnixMilli()),
 		Limit:         ptr.Int32(limit),
+	}
+	if streamPrefix != "" {
+		input.LogStreamNamePrefix = ptr.String(streamPrefix)
 	}
 
 	paginator := cloudwatchlogs.NewFilterLogEventsPaginator(logsSvc, input)
@@ -958,6 +994,8 @@ func (a *awsProvider) GetECSTaskDefinitionDetails(ctx providers.CloudProviderCon
 			resource.Tags[*tag.Key] = append(resource.Tags[*tag.Key], *tag.Value)
 		}
 	}
+	// Not a wrapped service call: this lands in event evidence, so redact here.
+	providers.RedactMetaSecrets(resource.Meta)
 	return resource, nil
 }
 
@@ -993,7 +1031,10 @@ func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext,
 	// For action use cases, MaxResults is typically sufficient.
 	// If full historical lookup is needed, pagination would be required here.
 	output, err := svc.LookupEvents(ctx.GetContext(), input)
-	return output.Events, err
+	if err != nil {
+		return nil, err
+	}
+	return output.Events, nil
 }
 
 func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier string, taskArns []string) ([]ecstypes.Task, error) {
@@ -1029,11 +1070,14 @@ func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, accou
 }
 
 func (a *awsProvider) GetUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int) (providers.GetUsageReportResponse, error) {
-	return getAwsUsageReport(ctx, account, month, year)
+	resp, err := getAwsUsageReport(ctx, account, month, year)
+	// The spend sync is the only one that sets the account's connection status,
+	// and it shows this error as the reason.
+	return resp, explainAssumeRoleRefusal(account, err)
 }
 
 func (a *awsProvider) StreamUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int, emit func([]providers.UsageReportItem) error) error {
-	return streamAwsUsageReport(ctx, account, month, year, emit)
+	return explainAssumeRoleRefusal(account, streamAwsUsageReport(ctx, account, month, year, emit))
 }
 
 // GetAvailableUsageReportPeriods implements providers.UsageReportPeriodDiscoverer
@@ -1288,6 +1332,18 @@ func (a *awsProvider) ApplyRecommendation(ctx providers.CloudProviderContext, ac
 	return service.ApplyRecommendation(ctx, account, recommendation)
 }
 
+func (a *awsProvider) GetApplyStatus(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) (providers.ApplyStatusResult, error) {
+	serviceKey := getServiceKeyFromServiceName(recommendation.ResourceServiceName)
+	if serviceKey == "" {
+		return providers.ApplyStatusResult{}, fmt.Errorf("unknown service name: %s", recommendation.ResourceServiceName)
+	}
+	checker, ok := awsServiceMap[serviceKey].(providers.ApplyStatusChecker)
+	if !ok {
+		return providers.ApplyStatusResult{}, errors.ErrUnsupported
+	}
+	return checker.GetApplyStatus(ctx, account, recommendation)
+}
+
 // getServiceKeyFromServiceName maps service names (e.g., "AWSELB") to service keys (e.g., "elb")
 // The mapping is initialized once at package load time in init()
 func getServiceKeyFromServiceName(serviceName string) string {
@@ -1383,7 +1439,7 @@ func validateAwsV2Command(command string) error {
 		return fmt.Errorf("command %q is not allowed", "sts "+positionals[1])
 	}
 	if len(positionals) > 1 && awsV2BlockedOperations[service][positionals[1]] {
-		return fmt.Errorf("AWS workspace CLI operation %s %s is not allowed", service, positionals[1])
+		return fmt.Errorf("AWS CLI operation %s %s is not allowed", service, positionals[1])
 	}
 	return nil
 }
@@ -1399,9 +1455,9 @@ func validateAwsV2Arguments(args []string) error {
 		case matchesAwsV2BlockedOption(lower, "--ca-bundle") || matchesAwsV2BlockedOption(lower, "--no-verify-ssl"):
 			return fmt.Errorf("custom AWS TLS settings are not allowed")
 		case matchesAwsV2BlockedOption(lower, "--with-decryption"):
-			return fmt.Errorf("decrypting AWS parameter values in the workspace CLI is not allowed")
+			return fmt.Errorf("decrypting AWS parameter values through cloud-collector is not allowed")
 		case strings.Contains(lower, "file://") || strings.Contains(lower, "fileb://"):
-			return fmt.Errorf("AWS workspace CLI cannot read files from cloud-collector")
+			return fmt.Errorf("AWS CLI cannot read files from cloud-collector")
 		}
 	}
 	return nil
@@ -1508,48 +1564,34 @@ func (a *awsProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, acco
 		return "", err
 	}
 
+	// Handle backslash line continuations before parsing
+	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
+	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
+
+	// The same boundary as the workspace path: no credential export, no
+	// collector-local file transfer.
+	if err := validateAwsV2Command(cleanCommand); err != nil {
+		return "", err
+	}
+
 	cmdEnv, err := awsCliEnv(ctx.GetContext(), account, command)
 	if err != nil {
 		return "", err
 	}
 
-	// Handle backslash line continuations before parsing
-	cleanCommand := strings.ReplaceAll(command, "\\\r\n", " ")
-	cleanCommand = strings.ReplaceAll(cleanCommand, "\\\n", " ")
-
-	var stdout, stderr string
-	opts := common.SecureCommandOptions{
-		Command: cleanCommand,
-		Env:     cmdEnv,
-	}
-
-	// Determine if the command uses a pipe (pipeline)
-	// We use shlex to properly handle quoted strings so that a pipe character inside a quote
-	// (e.g., in a query string) doesn't trigger pipeline execution.
-	usePipeline := false
-	args, err := shlex.Split(cleanCommand)
-	if err == nil {
-		for _, arg := range args {
-			if arg == "|" {
-				usePipeline = true
-				break
-			}
-		}
-	} else {
-		// If parsing fails, we fall back to a naive check
-		if strings.Contains(cleanCommand, "|") {
-			usePipeline = true
-		}
-	}
-
-	if usePipeline {
-		stdout, stderr, err = common.SecureExecutePipeline(ctx.GetContext(), opts)
-	} else {
-		stdout, stderr, err = common.SecureExecute(ctx.GetContext(), opts)
-	}
-
+	stdout, stderr, err := common.SecureExecute(ctx.GetContext(), common.SecureCommandOptions{
+		Command:   cleanCommand,
+		Env:       cmdEnv,
+		Untrusted: true,
+	})
 	if err != nil {
-		ctx.GetLogger().Error("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("AWS CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 
@@ -1583,6 +1625,7 @@ func (a *awsProvider) ExecuteCliCommandV2(ctx providers.CloudProviderContext, ac
 		Timeout:         timeout,
 		MaxOutputBytes:  maxOutput,
 		OutputTruncated: &outputTruncated,
+		Untrusted:       true,
 	})
 	result := providers.CliExecutionResult{Stdout: stdout, Stderr: stderr, OutputTruncated: outputTruncated}
 	if execErr == nil {

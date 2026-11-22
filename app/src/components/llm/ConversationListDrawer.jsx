@@ -59,6 +59,7 @@ const ConversationListDrawer = ({
     Investigation: 'Event Analysis',
     InstantNotification: 'Slack Channel',
     Automation: 'Automation',
+    DashboardBuilder: 'Dashboard',
   };
 
   const selectedSources = [
@@ -70,6 +71,7 @@ const ConversationListDrawer = ({
     'Investigation',
     'InstantNotification',
     'Automation',
+    'DashboardBuilder',
   ];
 
   const fetchConversations = (source = 'polling') => {

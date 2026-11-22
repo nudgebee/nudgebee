@@ -38,6 +38,11 @@ func TestCreateIntegrationConfig_MultiAccountSaveIsAtomic(t *testing.T) {
 	}
 	expectWritesUpTo := func(failAt int) {
 		pkgMock.ExpectBegin()
+		// LLM defaults check: tenant lock, then the tenant's LLM integrations and accounts.
+		pkgMock.ExpectExec(`pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 0))
+		pkgMock.ExpectQuery(`FROM integrations i\s+LEFT JOIN integrations_cloud_accounts`).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "name", "status", "accounts", "account_defaults", "tenant_default"}))
+		pkgMock.ExpectQuery(`FROM cloud_accounts WHERE tenant`).WillReturnRows(sqlmock.NewRows([]string{"id", "name"}))
 		pkgMock.ExpectQuery(`SELECT id::text FROM integrations\s+WHERE name`).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 		pkgMock.ExpectQuery(`INSERT INTO integrations\(`).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("int-new"))
 		pkgMock.ExpectExec(`DELETE FROM integrations_cloud_accounts\s+WHERE integration_id = \S+\s+AND cloud_account_id NOT IN`).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -56,6 +61,8 @@ func TestCreateIntegrationConfig_MultiAccountSaveIsAtomic(t *testing.T) {
 	t.Run("every requested account is linked before the commit", func(t *testing.T) {
 		ctx := ctxForTenant(t, testTenant)
 		expectWritesUpTo(-1)
+		pkgMock.ExpectExec(`INSERT INTO integration_config_values \(integration_id, name, value, is_encrypted\)`).
+			WithArgs("int-new", llmDefaultsMigratedKey).WillReturnResult(sqlmock.NewResult(0, 1))
 		pkgMock.ExpectCommit()
 
 		dto, err := CreateIntegrationConfig(ctx, "", "llm", "openai-main", values(), nil, accounts, true, "user")

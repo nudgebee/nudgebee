@@ -28,16 +28,19 @@ func (j Jaeger) Category() core.IntegrationCategory {
 func (j Jaeger) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
+		Testable: true,
 		Required: []string{"jaeger_query_url"},
 		Properties: map[string]core.IntegrationSchemaProperty{
 			"jaeger_query_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Jaeger Query API URL (e.g., https://jaeger.example.com:16686)",
+				IsTestable:  true,
 			},
 			"jaeger_api_token": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Bearer token for Jaeger API authentication (optional)",
 				IsEncrypted: true,
+				IsTestable:  true,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
@@ -99,4 +102,55 @@ func (j Jaeger) ValidateConfig(sc *security.SecurityContext, config []core.Integ
 	default:
 		return []error{fmt.Errorf("Jaeger API returned unexpected status: HTTP %d", resp.StatusCode)}
 	}
+}
+
+// JaegerConfig is a user-connected Jaeger query API: where it is and the optional
+// bearer token it wants.
+type JaegerConfig struct {
+	URL   string
+	Token string
+}
+
+// GetJaegerConfig reads the Jaeger integration linked to an account. An empty
+// accountId is refused: ListIntegrationConfigs only filters by account when one is
+// given, so it would otherwise return another account's Jaeger.
+func GetJaegerConfig(sc *security.RequestContext, accountId string) (JaegerConfig, error) {
+	if accountId == "" {
+		return JaegerConfig{}, fmt.Errorf("account_id is required to resolve a Jaeger integration")
+	}
+	configs, err := core.ListIntegrationConfigs(sc, accountId, IntegrationJaeger)
+	if err != nil {
+		return JaegerConfig{}, fmt.Errorf("failed to list Jaeger integration configs: %w", err)
+	}
+	for _, c := range configs {
+		cfg, err := jaegerConfigFromValues(c.Configs)
+		if err != nil {
+			return JaegerConfig{}, err
+		}
+		if cfg.URL != "" {
+			return cfg, nil
+		}
+	}
+	return JaegerConfig{}, fmt.Errorf("jaeger integration not found for account: %s", accountId)
+}
+
+func jaegerConfigFromValues(values []core.IntegrationConfigValue) (JaegerConfig, error) {
+	var cfg JaegerConfig
+	for _, v := range values {
+		switch v.Name {
+		case "jaeger_query_url":
+			cfg.URL = strings.TrimRight(strings.TrimSpace(v.Value), "/")
+		case "jaeger_api_token":
+			token := strings.TrimSpace(v.Value)
+			if token != "" && v.IsEncrypted {
+				d, err := common.Decrypt(v.Value)
+				if err != nil {
+					return JaegerConfig{}, fmt.Errorf("failed to decrypt jaeger_api_token: %w", err)
+				}
+				token = strings.TrimSpace(d)
+			}
+			cfg.Token = token
+		}
+	}
+	return cfg, nil
 }

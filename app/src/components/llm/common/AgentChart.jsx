@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import Chart from '@ui/Chart';
@@ -23,12 +23,17 @@ import { SERIES_PALETTE } from '@shared/charts/chartPlugins';
  *     "labels": ["storage-loki-0", ...],
  *     "series": [{ "key": "Provisioned", "data": [100, ...] }, ...],  // bar/line/area
  *     "values": [3.4, 23.2, ...],                                     // doughnut (alt to series)
- *     "format": "gi" | "usd" | "percent" | "number"
+ *     "format": "gi" | "usd" | "percent" | "number" | "bytes" | "bytes_per_second" | "seconds",
+ *     "source": "metrics",                // optional: built from queried metric data
+ *     "reference": ["critical (below 5)"] // optional, line only: constant lines (thresholds), drawn thin
  *   }
  */
 
 // Bounds keep an LLM from emitting a runaway spec that would clutter or stall the UI.
+// Trends get more points: metric charts are built from the queried data (#40909).
 const MAX_LABELS = 16;
+const MAX_TREND_LABELS = 120;
+const TREND_TYPES = ['line', 'area'];
 const MAX_SERIES = 6;
 const ALLOWED_TYPES = ['bar', 'line', 'area', 'doughnut', 'pie'];
 
@@ -37,12 +42,49 @@ const ALLOWED_TYPES = ['bar', 'line', 'area', 'doughnut', 'pie'];
 const CIRCULAR_TYPES = ['doughnut', 'pie'];
 
 const numberFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
+const smallFmt = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 2 });
 
-const FORMATTERS = {
+// formatNumber keeps two significant digits below 1, so a level near zero
+// (0.0046% of a volume free) does not read as 0.
+const formatNumber = (v) => (v !== 0 && Math.abs(v) < 1 ? smallFmt.format(v) : numberFmt.format(v));
+
+const BYTE_UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+
+// formatBytes scales each value to its own binary unit: 152043520 -> "145 MiB".
+const formatBytes = (v) => {
+  let unit = 0;
+  let scaled = v;
+  while (Math.abs(scaled) >= 1024 && unit < BYTE_UNITS.length - 1) {
+    scaled /= 1024;
+    unit += 1;
+  }
+  return `${numberFmt.format(scaled)} ${BYTE_UNITS[unit]}`;
+};
+
+// formatSeconds picks ms / s / min / h by size: 0.25 -> "250 ms", 9000 -> "2.5 h".
+const formatSeconds = (v) => {
+  const abs = Math.abs(v);
+  if (abs > 0 && abs < 1) {
+    return `${numberFmt.format(v * 1000)} ms`;
+  }
+  if (abs < 120) {
+    return `${numberFmt.format(v)} s`;
+  }
+  if (abs < 7200) {
+    return `${numberFmt.format(v / 60)} min`;
+  }
+  return `${numberFmt.format(v / 3600)} h`;
+};
+
+export const FORMATTERS = {
   usd: (v) => `$${numberFmt.format(v)}`,
   gi: (v) => `${numberFmt.format(v)} Gi`,
-  percent: (v) => `${numberFmt.format(v)}%`,
-  number: (v) => numberFmt.format(v),
+  percent: (v) => `${formatNumber(v)}%`,
+  number: formatNumber,
+  // Units of metric charts built from query results (#40909).
+  bytes: formatBytes,
+  bytes_per_second: (v) => `${formatBytes(v)}/s`,
+  seconds: formatSeconds,
 };
 
 const isFiniteNumber = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -60,7 +102,8 @@ export const parseChartSpec = (raw) => {
     return null;
   }
   const labels = Array.isArray(raw.labels) ? raw.labels.map((l) => String(l)) : [];
-  if (labels.length === 0 || labels.length > MAX_LABELS) {
+  const maxLabels = TREND_TYPES.includes(type) ? MAX_TREND_LABELS : MAX_LABELS;
+  if (labels.length === 0 || labels.length > maxLabels) {
     return null;
   }
   const format = FORMATTERS[raw.format] ? raw.format : 'number';
@@ -93,11 +136,17 @@ export const parseChartSpec = (raw) => {
     }
     series.push({ key: s.key, data: s.data });
   }
-  return { type, title, labels, series, format };
+  // A chart built from queried metrics plots levels and rates, whose samples do
+  // not add up: its legend shows each line's latest value instead of a total.
+  const metric = raw.source === 'metrics';
+  const keys = new Set(series.map((s) => s.key));
+  const reference = type === 'line' && Array.isArray(raw.reference) ? raw.reference.filter((k) => keys.has(k)) : [];
+  return { type, title, labels, series, format, metric, reference };
 };
 
 const AgentChart = ({ spec }) => {
-  const parsed = parseChartSpec(spec);
+  // Memoized so the arrays handed to the chart keep their identity across renders.
+  const parsed = useMemo(() => parseChartSpec(spec), [spec]);
   if (!parsed) {
     return null;
   }
@@ -168,8 +217,11 @@ const AgentChart = ({ spec }) => {
         shape={parsed.type}
         format={fmt}
         compactFormat={fmt}
-        integerY={parsed.format === 'number'}
+        // Counts get whole-number ticks; a metric's levels are not counts.
+        integerY={parsed.format === 'number' && !parsed.metric}
         height={260}
+        {...(parsed.metric ? { legendValue: 'last' } : {})}
+        {...(parsed.reference.length > 0 ? { referenceKeys: parsed.reference } : {})}
       />
     );
   }

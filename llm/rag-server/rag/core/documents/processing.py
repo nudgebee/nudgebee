@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -102,11 +103,13 @@ def update_integration_kb_load_result(
     document_count: Optional[int] = None,
     error_message: Optional[str] = None,
 ) -> None:
-    """Record a load's outcome on every integration KB row for an integration.
+    """Record a load's outcome on an integration's knowledge base.
 
-    An integration can have one KB row per cloud account in its tenant, all
-    backed by the same vector collection — so the update keys on integration_id
-    rather than a single KB id. On failure error_message holds the reason; on
+    An integration has one knowledge base, its organisation row (account_id
+    NULL, #40605), so the update keys on integration_id. A per-account row is
+    the old shape — only an llm-server still running older code re-creates one,
+    during a rolling deploy — and is left alone so it never turns active. On
+    failure error_message holds the reason; on
     success it holds any shortfall worth reporting — a load that indexed the text
     but dropped the pictures is active, not failed, and must still say so — and is
     cleared when there is nothing to report.
@@ -121,7 +124,7 @@ def update_integration_kb_load_result(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "document_count = :doc_count, last_loaded_at = NOW(), "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {
                             "status": status,
@@ -135,7 +138,7 @@ def update_integration_kb_load_result(
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "error_message = :error_message, updated_at = NOW() "
-                            "WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "WHERE integration_id = :iid AND kb_type = 'integration' AND account_id IS NULL"
                         ),
                         {"status": status, "error_message": error_message, "iid": integration_id},
                     )
@@ -463,6 +466,7 @@ def _chunk_long_documents(documents):
         # parent) already read; without parent_id every chunk lists as its own
         # document and none of them group.
         parent_id = getattr(doc, "id", None) or hashlib.md5(content.encode()).hexdigest()
+        contexts = _chunk_contexts(pieces, (doc.metadata or {}).get("title")) if Config.chunk_context_enabled else []
         for i, piece in enumerate(pieces):
             # Deep copy, not dict(): a shallow copy shares mutable values
             # (e.g. the `capabilities` list) across every chunk of this
@@ -472,8 +476,100 @@ def _chunk_long_documents(documents):
             metadata.setdefault("parent_id", parent_id)
             metadata["chunk_index"] = i
             metadata["chunk_count"] = len(pieces)
-            chunked.append(Document(page_content=piece, metadata=metadata))
+            chunk = Document(page_content=piece, metadata=metadata)
+            if contexts and contexts[i]:
+                metadata["chunk_context"] = contexts[i]
+                # The id hashes the context too, so a chunk whose text is
+                # unchanged but now carries context is re-embedded once instead
+                # of being skipped as already stored.
+                chunk.id = hashlib.md5(f"{contexts[i]}\n\n{piece}".encode()).hexdigest()
+            chunked.append(chunk)
     return chunked
+
+
+# Caps keep the context short next to a ~400-char chunk. The reranker scores
+# only Config.reranker_max_doc_chars, so it drops context lines that would not
+# fit beside the whole chunk (Document.retrieval_text).
+_CONTEXT_PATH_MAX_CHARS = 100
+_CONTEXT_TABLE_HEADER_MAX_CHARS = 120
+_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _chunk_contexts(pieces, title):
+    """What each chunk is about: "Title › Heading › Subheading", plus the
+    table's header row when the chunk starts inside a table.
+
+    Kept out of the chunk text: knowledge_document.join_chunks rebuilds a page
+    from its chunks by their exact overlap, so the stored text must stay a plain
+    slice of the page. The context goes into metadata and into the text that is
+    embedded and reranked. Returns [] when the chunks do not join back cleanly,
+    since offsets into the page would then be wrong.
+    """
+    starts = []
+    page = ""
+    for i, piece in enumerate(pieces):
+        carried = min(_CHUNK_OVERLAP_CHARS, len(page)) if i else 0
+        if carried and not piece.startswith(page[-carried:]):
+            return []
+        starts.append(len(page) - carried)
+        page += piece[carried:]
+
+    title = (title or "").strip()
+    if not title and page.startswith("Title: "):
+        title = page[len("Title: ") :].split("\n", 1)[0].strip()
+    return [_context_at(page, start, title) for start in starts]
+
+
+def _context_at(page, pos, title):
+    headings = []  # (level, text) stack of the sections pos sits inside
+    fence = ""  # opening marker of the code fence we are inside, if any
+    for line in page[:pos].split("\n"):
+        # A "# restart the pods" inside a code fence is a shell comment. As in
+        # CommonMark, a fence closes only on the same character, at least as
+        # long, with nothing after it, so a ``` inside a ```` block stays code.
+        marker = _FENCE_RE.match(line)
+        if marker:
+            if not fence:
+                fence = marker.group(1)
+            elif marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence) and not marker.group(2).strip():
+                fence = ""
+            continue
+        heading = None if fence else _HEADING_RE.match(line)
+        if not heading:
+            continue
+        level = len(heading.group(1))
+        # Docusaurus ends each heading with a zero-width space (its anchor link).
+        text = heading.group(2).replace("\u200b", "").strip()
+        headings = [h for h in headings if h[0] < level] + [(level, text)]
+    # The page's H1 usually repeats the title ("Supported Cloud Services" under
+    # "Supported Cloud Services | NudgeBee").
+    names = [text for level, text in headings if not (level == 1 and title.startswith(text))]
+    path = " › ".join(([title] if title else []) + names)
+    if len(path) > _CONTEXT_PATH_MAX_CHARS:
+        path = "…" + path[-(_CONTEXT_PATH_MAX_CHARS - 1) :]
+
+    header = _table_header_before(page, pos)
+    if header and len(header) > _CONTEXT_TABLE_HEADER_MAX_CHARS:
+        header = header[: _CONTEXT_TABLE_HEADER_MAX_CHARS - 1] + "…"
+    return "\n".join(part for part in (path, header) if part)
+
+
+def _table_header_before(page, pos):
+    """The header row of the markdown table pos is inside, when that row is
+    before pos (a chunk that starts at or above the header already holds it)."""
+    line_start = page.rfind("\n", 0, pos) + 1
+    if not page.startswith("|", line_start):
+        return ""
+    first = line_start
+    while first > 0:
+        previous = page.rfind("\n", 0, first - 1) + 1
+        if not page.startswith("|", previous):
+            break
+        first = previous
+    if first >= pos:
+        return ""
+    return page[first:].split("\n", 1)[0].strip()
 
 
 def _split_on_paragraphs(text, limit, overlap):
@@ -502,15 +598,29 @@ def _split_on_paragraphs(text, limit, overlap):
         else:
             current = para
         while len(current) > limit:
-            chunks.append(current[:limit])
+            cut = _line_cut(current, limit, overlap)
+            chunks.append(current[:cut])
             # max(1, ...) rather than max(0, ...): guarantees forward
             # progress even if a future caller passes overlap >= limit,
-            # where limit - overlap <= 0 would otherwise re-slice from 0
+            # where cut - overlap <= 0 would otherwise re-slice from 0
             # every time and loop forever.
-            current = current[max(1, limit - overlap) :]
+            current = current[max(1, cut - overlap) :]
     if current:
         chunks.append(current)
     return chunks or [text[:limit]]
+
+
+def _line_cut(text, limit, overlap):
+    """Where to slice a paragraph longer than `limit`: just after the last line
+    break in the second half of the window, else at `limit`. A markdown table is
+    one paragraph, and slicing it at a fixed width split rows mid-cell, so a
+    service name could be cut in two ("| Dyna" / "moDB |"). The next chunk still
+    starts with the last `overlap` characters before the cut, which is what
+    knowledge_document.join_chunks relies on."""
+    newline = text.rfind("\n", limit // 2, limit)
+    if newline != -1 and newline + 1 > overlap:
+        return newline + 1
+    return limit
 
 
 _KB_CHUNK_SHAPES = frozenset(
@@ -549,10 +659,30 @@ Document:
 {content}"""
 
 _CAPABILITY_SECTION_TEMPLATE = """
-Capabilities referenced must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
+Capabilities are the platform tools needed to carry out what the document describes. List every capability \
+whose description matches an action the document performs or tells the reader to perform, even when the \
+document never names the capability (a step that runs kubectl commands needs the Kubernetes CLI capability). \
+Each name must be copied EXACTLY, verbatim, from this list — never invent a name that isn't here. \
 If none of these apply, use an empty list:
 {capability_names}
 """
+
+# A capability's description is context for the model, not data: one line, bounded, so a long
+# or multi-line description cannot swell the prompt or break the list format.
+_CAPABILITY_DESCRIPTION_MAX_CHARS = 160
+
+
+def _capability_listing(catalog):
+    """The catalog as the prompt's `- name: description` lines, sorted by name. A capability
+    without a description is listed by name alone."""
+    descriptions = {}
+    for entry in catalog:
+        text = " ".join(str(entry.get("description") or "").split())
+        descriptions[entry["name"]] = text[:_CAPABILITY_DESCRIPTION_MAX_CHARS]
+    return "\n".join(
+        f"- {name}: {descriptions[name]}" if descriptions[name] else f"- {name}" for name in sorted(descriptions)
+    )
+
 
 # Bounds how many documents are classified concurrently per process_documents
 # call — keeps ingestion off the sequential-call path without opening an
@@ -610,6 +740,20 @@ def _content_id(doc):
 def _group_chunk_ids(group):
     """Normalised ids of every chunk a source document will be split into."""
     return {_normalize_point_id(_content_id(chunk)) for doc in group for chunk in _chunk_long_documents([doc])}
+
+
+def _chunk_id_pairs(group):
+    """(id, legacy id) of every chunk a source document will be split into; the
+    legacy id hashes the chunk text alone, as chunks were keyed before
+    chunk_context. The two are equal for a chunk without context."""
+    return [
+        (
+            _normalize_point_id(_content_id(chunk)),
+            _normalize_point_id(hashlib.md5(chunk.page_content.encode()).hexdigest()),
+        )
+        for doc in group
+        for chunk in _chunk_long_documents([doc])
+    ]
 
 
 def _unclassified_groups(groups, classified_ids):
@@ -675,12 +819,11 @@ def _classify_source_documents(groups, account_id, collection_name):
 
     from rag.core.utils.db_query import get_capability_catalog
 
-    valid_capabilities = {entry["name"] for entry in get_capability_catalog()}
+    catalog = get_capability_catalog()
+    valid_capabilities = {entry["name"] for entry in catalog}
     capability_section = ""
     if valid_capabilities:
-        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(
-            capability_names="\n".join(f"- {name}" for name in sorted(valid_capabilities))
-        )
+        capability_section = _CAPABILITY_SECTION_TEMPLATE.format(capability_names=_capability_listing(catalog))
 
     # Each call is one independent, I/O-bound LLM round-trip. Bounded
     # concurrency keeps this off any single request path while capping how many
@@ -745,7 +888,7 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
         raw = result.text.strip()
         parsed = json.loads(_extract_json_object(raw))
         shape = str(parsed.get("shape", "")).strip().lower()
-        capabilities = parsed.get("capabilities", [])
+        capabilities = parsed.get("capabilities")  # None when the model left the key out
     except Exception:
         stats["duration_seconds"] = time.monotonic() - call_start
         # Log the raw response, not just the traceback: a JSONDecodeError
@@ -778,6 +921,10 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
                     f"kb_metadata: dropped {len(dropped)} capability name(s) not in the real catalog: {dropped}"
                 )
         labels["capabilities"] = confirmed
+        # Stamp only a real answer: a catalog to ground against AND a list back from the
+        # model. A response without a capabilities list is not "the model found none".
+        if valid_capabilities and isinstance(capabilities, list):
+            labels["capabilities_extracted"] = True
         for doc in group:
             if doc.metadata is None:
                 doc.metadata = {}
@@ -794,7 +941,11 @@ def _classify_document_group(group, llm, capability_section, valid_capabilities)
 # The labels a classified chunk carries under its vector payload's `metadata`
 # (what RAG's metadata_filter matches at query time), and the kinds that make a
 # chunk count as classified.
-KB_LABEL_KEYS = ("kind", "shape", "capabilities")
+# capabilities_extracted is stamped only when the extraction really ran against a
+# non-empty catalog. Without it, empty `capabilities` could mean "the model found
+# none" or "the catalog was empty/unreachable", and the backfill could not tell them
+# apart (the labels written before the catalog existed stay empty forever).
+KB_LABEL_KEYS = ("kind", "shape", "capabilities", "capabilities_extracted")
 _KB_KINDS = ("sop", "knowledge")
 _LABEL_PAYLOAD_KEYS = [f"metadata.{key}" for key in KB_LABEL_KEYS]
 _LABEL_WRITE_BATCH = 500
@@ -864,13 +1015,21 @@ def _classify_kb_source_documents(documents, module, account_id, collection_name
     if module != "knowledge_base":
         return {}
     groups = [documents] if whole_call_is_one_document else [[doc] for doc in documents]
-    ids = set().union(*(_group_chunk_ids(group) for group in groups)) if groups else set()
+    pairs = [pair for group in groups for pair in _chunk_id_pairs(group)]
+    ids = {new for new, _ in pairs} | {legacy for _, legacy in pairs}
     try:
         stored_labels = _classified_labels(collection_name, ids)
     except Exception:
         # Fail open: at worst everything is classified again.
         logger.exception(f"kb_metadata: could not read the stored classifications of {collection_name}")
         stored_labels = {}
+    # A chunk stored before it carried a chunk_context sits under its old id,
+    # the hash of its text alone. Its labels describe the same text, so they
+    # count for the new id too: the first sync after chunk context shipped would
+    # otherwise send every long document back to the classifier.
+    for new, legacy in pairs:
+        if new not in stored_labels and legacy in stored_labels:
+            stored_labels[new] = stored_labels[legacy]
     if account_id:
         _classify_source_documents(_unclassified_groups(groups, stored_labels.keys()), account_id, collection_name)
     return stored_labels
@@ -969,24 +1128,32 @@ def _publish_kb_labels(fresh, collection_name, stored_before):
 def refresh_kb_collection_summary(collection_name):
     """Recompute a collection's rollup row of llm_kb_capability_entries — every
     kind, shape and capability its labelled chunks carry — from the labels in its
-    vector payload, which is the source of truth. The row is only what the
-    Knowledge Base tab reads; nothing decides from it whether a chunk is
-    classified.
+    vector payload, which is the source of truth, and write the per-page label rows
+    (entry_type = 'kb_document') the documents modal reads from the same scan. The
+    rollup is only what the Knowledge Base tab reads; nothing decides from it whether
+    a chunk is classified.
 
     Called after ingest labels chunks, after a prune removes some, and by the
-    backfill. Best-effort: a failure is logged and leaves the previous row, which
-    is stale, never wrong about what is classified.
+    backfill. Best-effort: a failure is logged and leaves the previous rows, which
+    are stale, never wrong about what is classified. A failed scan writes neither; the
+    page rows are written after the rollup, and a failure writing them leaves the
+    rollup in place. A prune leaves the rows of removed pages, which nothing lists,
+    and a page that is later re-created is re-labelled over them.
     """
     try:
+        from rag.core.documents import kb_document_seed
+
         client = get_qdrant_client()
         kinds, shapes, capabilities = set(), set(), set()
+        pages = {}
+        payload_keys = list(dict.fromkeys(_LABEL_PAYLOAD_KEYS + kb_document_seed.PAYLOAD_FIELDS))
         offset = None
         while True:
             batch, offset = client.scroll(
                 collection_name=collection_name,
                 limit=_SUMMARY_SCROLL_BATCH,
                 offset=offset,
-                with_payload=_LABEL_PAYLOAD_KEYS,
+                with_payload=payload_keys,
                 with_vectors=False,
             )
             for point in batch:
@@ -999,6 +1166,7 @@ def refresh_kb_collection_summary(collection_name):
                     shapes.add(shape)
                 if isinstance(metadata.get("capabilities"), list):
                     capabilities.update(c for c in metadata["capabilities"] if isinstance(c, str))
+                kb_document_seed.keep_page_point(pages, collection_name, point)
             if offset is None or not batch:
                 break
 
@@ -1007,13 +1175,29 @@ def refresh_kb_collection_summary(collection_name):
         set_kb_collection_summary(collection_name, sorted(kinds), sorted(shapes), sorted(capabilities))
     except Exception:
         logger.exception(f"kb_metadata: could not refresh the classification summary of {collection_name}")
+        return
+    _write_kb_page_labels(collection_name, pages)
+
+
+def _write_kb_page_labels(collection_name, pages):
+    """Upsert the per-page label rows collected by one summary scan; best-effort."""
+    try:
+        from rag.core.documents import kb_document_seed
+        from rag.core.utils.db_query import upsert_kb_document_labels
+
+        rows = kb_document_seed.rows_from_pages(collection_name, pages)
+        for start in range(0, len(rows), kb_document_seed.INSERT_BATCH):
+            upsert_kb_document_labels(rows[start : start + kb_document_seed.INSERT_BATCH])
+    except Exception:
+        logger.exception(f"kb_metadata: could not write the per-page label rows of {collection_name}")
 
 
 def _forget_kb_collection_summary(collection_name):
-    """Drop a deleted collection's rollup row (best-effort, like every write to it)."""
+    """Drop a recreated collection's rollup row (best-effort, like every write to it). The
+    per-page label rows stay: Postgres owns them, and re-embedding stamps them back."""
     from rag.core.utils.db_query import delete_kb_capabilities
 
-    delete_kb_capabilities(collection_name)
+    delete_kb_capabilities(collection_name, keep_documents=True)
 
 
 def _stamp_provenance(documents, source=None, tenant_id=None):
@@ -1061,11 +1245,11 @@ def _setup_collection(account_id, module, collection_name, source=None, tenant_i
             if metadata:
                 # Always make a static copy to avoid iteration errors.
                 #
-                # NOTE: source and tenant_id are set only at collection
-                # creation time (see vector_store._create_collection). Qdrant
-                # exposes no update_collection(metadata=...) API, so
-                # pre-existing collections cannot be retro-tagged without a
-                # drop-and-recreate. Search still reaches legacy collections
+                # NOTE: source and tenant_id are set at collection creation
+                # time (see vector_store._create_collection). A knowledge
+                # base's scope is changed later through
+                # collection.set_collection_scope (update_collection with
+                # metadata), not here. Search still reaches legacy collections
                 # via the ``account`` metadata path in ``rag.py``.
                 collection_meta = dict(metadata)
                 if "embeddings_generated_at" in collection_meta:
@@ -1130,6 +1314,7 @@ def process_documents(
     warning=None,
     run_id=None,
     source_document_count=None,
+    classify_account_id=None,
 ):
     """
     Process multiple documents asynchronously with batch embedding.
@@ -1201,11 +1386,17 @@ def process_documents(
     # knowledgebase_id, and it is one document however its loader split it
     # (lines, records, PDF chunks); everything else is a list of independent
     # documents.
+    # An organisation knowledge base has no account_id; the caller names the
+    # account whose LLM settings classify it (classify_account_id).
     stored_labels = _classify_kb_source_documents(
-        documents, module, account_id, collection_name, whole_call_is_one_document=bool(knowledgebase_id)
+        documents,
+        module,
+        classify_account_id or account_id,
+        collection_name,
+        whole_call_is_one_document=bool(knowledgebase_id),
     )
-    # Chunk ids hash page_content only, so the labels stamped above cannot
-    # change them.
+    # Chunk ids hash the chunk's text and chunk_context, never its labels, so
+    # the labels stamped above cannot change them.
     documents = _chunk_long_documents(documents)
     # The chunks this run classified, before stored labels are carried onto the
     # rest (see _carry_over_labels).

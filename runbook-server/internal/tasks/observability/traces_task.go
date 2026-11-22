@@ -112,7 +112,10 @@ func (t *TracesTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		}
 	}
 
-	// Optional legacy text query — passed through as-is to services-server.
+	// Code-mode query — passed through as-is to services-server, which executes it in the
+	// provider's own language. It replaces the where clause rather than adding to it, and a
+	// provider that cannot run one refuses instead of silently returning unfiltered traces
+	// (#41426).
 	query, _ := params["query"].(string)
 
 	requestContext := taskCtx.GetNewRequestContextForAccount(accountId)
@@ -508,8 +511,13 @@ func (t *TracesTask) InputSchema() *types.Schema {
 
 			// --- Text mode ---
 			"query": {
-				Type:        types.PropertyTypeString,
-				Description: "Traces text query (e.g. service.name = \"my-service\").",
+				Type: types.PropertyTypeString,
+				// Written in the trace provider's OWN language, and executed as written:
+				// Elasticsearch DSL or KQL, OpenObserve SQL, ClickHouse SQL, TraceQL,
+				// NRQL, DQL, SPL, or a Cloud Trace filter. A provider that cannot run one
+				// (SolarWinds) refuses rather than ignoring it, and the grouped / "By
+				// Traces" views use the filter builder instead — see #41426.
+				Description: "Trace query in the provider's own query language, run as written (Elasticsearch DSL/KQL, OpenObserve or ClickHouse SQL, TraceQL, NRQL, DQL, SPL, Cloud Trace filter). Leave empty and use Simple or Structured mode to filter with the builder instead.",
 				Required:    false,
 				Title:       "Query",
 				Order:       18,

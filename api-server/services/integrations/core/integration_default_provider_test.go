@@ -128,3 +128,41 @@ func TestHasAccountSourceIntegration(t *testing.T) {
 		assert.NoError(t, pkgMock.ExpectationsWereMet())
 	})
 }
+
+// Two links can hold an account's default for a moment: a UI save racing a k8s
+// collector heartbeat. The default lookup must then return the user's choice,
+// every time, not whichever row the planner reads first.
+func TestGetIntegrationByConfigNameValues_DefaultPrefersTheUsersChoice(t *testing.T) {
+	matchUserChoiceFirst := regexp.MustCompile(`(?s)FROM integrations i.*AND ica\.default_log_provider = 'true'.*AND i\.status != 'disabled'\s*ORDER BY \('default_log_provider' = ANY\(ica\.user_set_defaults\)\) DESC, \(i\.source = 'user'\) DESC, i\.id\s*LIMIT 1`)
+	pkgMock.ExpectQuery(matchUserChoiceFirst.String()).WillReturnRows(
+		sqlmock.NewRows([]string{"id", "name", "source", "type"}).AddRow("int-ch", "otel_clickhouse", "agent", "otel_clickhouse"))
+
+	got, err := GetIntegrationByConfigNameValues(ctxForTenant(t, testTenant), "acc-two-defaults", DefaultLogProvider, "true")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "int-ch", got.Id)
+	assert.NoError(t, pkgMock.ExpectationsWereMet())
+}
+
+// notifications-server writes the Microsoft Teams types, so every lookup of
+// them reads the database.
+func TestGetIntegrationByTypeNeverCachesMicrosoftTeams(t *testing.T) {
+	teamsRows := func() *sqlmock.Rows {
+		return sqlmock.NewRows([]string{"id", "name", "source", "type"}).AddRow("int-teams", "tenant-a", "user", "ms_teams")
+	}
+	pkgMock.ExpectQuery(matchPlainByType.String()).WillReturnRows(teamsRows())
+	pkgMock.ExpectQuery(matchPlainByType.String()).WillReturnRows(teamsRows())
+	for range 2 {
+		got, err := GetIntegrationByType(ctxForTenant(t, testTenant), "acc-teams", "ms_teams")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+	}
+	pkgMock.ExpectQuery(matchDefaultOrdered.String()).WillReturnRows(teamsRows())
+	pkgMock.ExpectQuery(matchDefaultOrdered.String()).WillReturnRows(teamsRows())
+	for range 2 {
+		_, err := GetIntegrationByTypePreferringDefault(
+			ctxForTenant(t, testTenant), "acc-teams-default", "ms_teams_team", "default_metrics_provider")
+		require.NoError(t, err)
+	}
+	assert.NoError(t, pkgMock.ExpectationsWereMet())
+}

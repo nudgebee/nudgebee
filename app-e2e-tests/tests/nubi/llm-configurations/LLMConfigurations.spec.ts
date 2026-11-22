@@ -29,7 +29,7 @@ import {
 test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
   test(
     "Configurations sanity - open AI & Tools, select the Providers tab, verify it's the selected tab and its table lists the provider columns",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openConfigurationsTab(page);
@@ -61,7 +61,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations sanity - select Tools & MCP > MCP Servers, verify the Connection column replaces Updated By and the status filter arrives preset to Enabled",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openConfigurationsTab(page);
@@ -84,7 +84,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - switch to MCP Servers and back to LLM Providers, verify the read-only banner names the matching Admin Integrations destination each time",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const locators = await openConfigurationsTab(page);
@@ -105,7 +105,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - read a configured provider name from the LLM Providers listing, search for it and press Enter, verify the request carries that name filter and only matching providers stay listed",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@regression", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -127,7 +127,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - search LLM Providers for a generated name no provider carries, verify the request carries that name filter and the listing falls back to the no-data state",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@regression", "@negative", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -147,7 +147,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - filter LLM Providers to a name with no match then clear the search box with its X control, verify the name filter is dropped from the request and the full listing returns",
-    { tag: ["@dev", "@regression", "@search", "@negative"] },
+    { tag: ["@regression", "@search", "@negative"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -171,7 +171,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - set the LLM Providers status filter to Disabled, verify the request carries the disabled status filter and no enabled provider stays listed",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@regression", "@search"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -200,7 +200,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - open the MCP Servers sub-tab and search it for a generated name no server carries, verify the request switches to the mcp type and keeps the preset enabled status filter",
-    { tag: ["@dev", "@regression", "@search", "@negative"] },
+    { tag: ["@regression", "@search", "@negative"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -223,7 +223,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - filter LLM Providers to a name with no match, switch to MCP Servers and back, verify the search box comes back empty and the unfiltered listing is restored",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const log = trackIntegrationQueries(page);
@@ -249,7 +249,7 @@ test.describe("Nubi AI & Tools Providers / Tools & MCP", () => {
 
   test(
     "Configurations - use the read-only banner's Manage in Integrations action, verify a new tab opens on the Admin integrations form for the llm provider type and AI & Tools stays open behind it",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const locators = await openConfigurationsTab(page);

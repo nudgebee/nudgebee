@@ -9,6 +9,7 @@ still validate and reach the service.
 
 import asyncio
 import json
+from unittest import mock
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,7 @@ from starlette.requests import Request
 
 from notifications_server.routers import common
 from notifications_server.routers.common import HasuraActionPayload
+from notifications_server.services import common as common_service_module
 
 GATEWAY_EXTRAS = {"action": {"name": "notifications_list_channels"}, "request_query": "query { ... }"}
 
@@ -78,3 +80,19 @@ def test_endpoint_falls_back_to_tenant_header(stub_services, endpoint):
     body = HasuraActionPayload.model_validate({"input": {"platform": "slack"}})
     resp = asyncio.run(endpoint(_request({"tenant": "tenant-h"}), body))
     assert json.loads(resp.body) == [{"platform": "slack", "tenant": "tenant-h"}]
+
+
+@pytest.mark.parametrize("platform", ["slack", "ms_teams"])
+def test_a_platform_with_no_installation_says_it_is_not_connected(platform):
+    service = common_service_module.CommonService.__new__(common_service_module.CommonService)
+    service.session = None
+    with mock.patch.object(common_service_module, "load_installations", return_value=[]):
+        assert service.list_channels(platform, "tenant-1") == {"data": [], "hint": "not_connected"}
+
+
+def test_discord_with_no_installation_carries_no_hint():
+    # The Discord tile reads any hint as "the bot can't see channels".
+    service = common_service_module.CommonService.__new__(common_service_module.CommonService)
+    service.session = None
+    with mock.patch.object(common_service_module, "load_installations", return_value=[]):
+        assert service.list_channels("discord", "tenant-1") == {"data": []}

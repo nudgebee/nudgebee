@@ -73,10 +73,6 @@ func TestAlertRuleProviderGettersUseActiveIntegrationConfigs(t *testing.T) {
 			_, err := getCubeAPMConfigs(ctx, "account")
 			return err
 		}},
-		{"Prometheus", "prometheus", "user", func(ctx *security.RequestContext) error {
-			_, err := getPrometheusUserConfig(ctx, "account")
-			return err
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
@@ -95,6 +91,26 @@ func TestAlertRuleProviderGettersUseActiveIntegrationConfigs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrometheusAlertRuleLookupEnforcesActiveFilter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	manager := &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	lookupErr := errors.New("active Prometheus integration lookup failed")
+	query := "SELECT i.id::text FROM integrations i JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id WHERE i.type = $1 AND i.tenant_id = $2 AND i.status != 'disabled' AND ica.cloud_account_id = $3 AND i.source = $4 LIMIT 1"
+	mock.ExpectQuery(regexp.QuoteMeta(query)).
+		WithArgs("prometheus", "tenant", "account", "user").
+		WillReturnError(lookupErr)
+	_, err = getPrometheusUserConfig(newTestRequestContext("tenant"), "account")
+	require.ErrorIs(t, err, lookupErr)
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestListIntegrationConfigValuesWithSource_EnforcesActiveFilter(t *testing.T) {

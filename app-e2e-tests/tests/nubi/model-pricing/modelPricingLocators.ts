@@ -25,6 +25,7 @@ export class ModelPricingLocators extends CommonLocators {
   readonly noMatchEmptyState: Locator;
   readonly priceFormDialog: Locator;
   readonly addPriceDialog: Locator;
+  readonly providerSelect: Locator;
   readonly providerInput: Locator;
   readonly modelInput: Locator;
   readonly inputRateInput: Locator;
@@ -104,6 +105,13 @@ export class ModelPricingLocators extends CommonLocators {
     // names. The rate fields are type='number', which is role=spinbutton, not
     // textbox. exact:true separates "Input rate" from "Input rate above threshold".
     // Provider and Model render only in add mode.
+    //
+    // Provider is a ds/Select since #40551, matched by id as a plain attribute:
+    // the panel it opens marks this dialog aria-hidden while it is up, so role
+    // lookups inside the dialog resolve to nothing until it closes. Its options
+    // are reached with filterOption(). providerInput is the text field the same
+    // spot held before, kept for an environment that has not picked that up.
+    this.providerSelect = page.locator("#pricing-provider-select");
     this.providerInput = this.priceFormDialog.getByRole("textbox", { name: "Provider", exact: true });
     this.modelInput = this.priceFormDialog.getByRole("textbox", { name: "Model", exact: true });
     this.inputRateInput = this.priceFormDialog.getByRole("spinbutton", { name: "Input rate", exact: true });

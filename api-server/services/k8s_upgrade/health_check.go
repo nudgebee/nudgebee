@@ -844,7 +844,7 @@ func performNodeGroupConfigurationCheck(ctx *security.RequestContext, request He
 }
 
 func getNodeGroupDetails(ctx *security.RequestContext, accountID, cloudAccountID, clusterName string, attributes map[string]string) ([]NodeGroups, error) {
-	accountDetails, err := GetAccountDetails(accountID)
+	accountDetails, err := GetAccountDetails(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get account details: %w", err)
 	}

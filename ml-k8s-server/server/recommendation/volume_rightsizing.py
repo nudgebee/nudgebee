@@ -142,23 +142,14 @@ class VolumeRightsizingService:
         account_id: str,
         tenant_id: str,
         metrics_provider: Optional[str] = None,
-        datadog_api_key: Optional[str] = None,
-        datadog_app_key: Optional[str] = None,
-        datadog_site: Optional[str] = None,
-        elasticsearch: Optional[dict] = None,
     ):
         self.account_id = account_id
         self.tenant_id = tenant_id
         self.engine = DatabaseEngine.get_engine()
         self.prometheus_url = MetricsServerConfigs.url
         # Accepted and no longer read: the claim keys are answered by the account's
-        # default provider. Kept on the signature so the trigger contract does not
-        # change in this PR; it goes with the Datadog/ES credential fields.
+        # default provider.
         self.metrics_provider = metrics_provider or "prometheus"
-        self.datadog_api_key = datadog_api_key
-        self.datadog_app_key = datadog_app_key
-        self.datadog_site = datadog_site
-        self.elasticsearch = elasticsearch
         # Named so a leaked pool is identifiable in `py-spy dump` and in
         # /proc/<pid>/task/*/comm on a live pod.
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pvc-rightsize")
@@ -920,20 +911,12 @@ async def generate_volume_rightsizing_recommendations(
     persist_recommendation: bool = True,
     max_recommendations: Optional[int] = None,
     metrics_provider: Optional[str] = None,
-    datadog_api_key: Optional[str] = None,
-    datadog_app_key: Optional[str] = None,
-    datadog_site: Optional[str] = None,
-    elasticsearch: Optional[dict] = None,
 ) -> VolumeRightsizingResult:
     """Main entry point for generating volume rightsizing recommendations."""
     service = VolumeRightsizingService(
         account_id,
         tenant_id,
         metrics_provider=metrics_provider,
-        datadog_api_key=datadog_api_key,
-        datadog_app_key=datadog_app_key,
-        datadog_site=datadog_site,
-        elasticsearch=elasticsearch,
     )
     try:
         result = await service.generate_recommendations(

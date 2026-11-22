@@ -1,6 +1,6 @@
 import { Html, Head, Main, NextScript, type DocumentContext } from 'next/document';
 import { getCriticalCssTokens } from '@hooks/useThemeProvider';
-import { awaitServerBrandingReady, brandHostFromHeaders, resolveServerBranding } from '@lib/serverBranding';
+import { awaitServerBrandingReady, brandHostFromHeaders, resolvePwaThemeColor, resolveServerBranding } from '@lib/serverBranding';
 
 type DocumentProps = { brandHost?: string | null };
 
@@ -22,6 +22,7 @@ export default function Document({ brandHost }: DocumentProps) {
   // theme.json — including branding/default — supplies faviconUrl.
   const faviconUrl = branding?.faviconUrl;
   const title = branding?.title;
+  const themeColor = resolvePwaThemeColor(branding);
 
   return (
     <Html lang='en'>
@@ -30,6 +31,13 @@ export default function Document({ brandHost }: DocumentProps) {
         {title && <meta property='og:title' content={title} key='title' />}
         {title && (
           <meta name='description' content={`${title} — Kubernetes and cloud observability, incident troubleshooting, and cost optimization.`} />
+        )}
+        {!branding?.isWhiteLabel && (process.env.ENABLE_PWA === 'true' || process.env.NEXT_PUBLIC_ENABLE_PWA === 'true') && (
+          <>
+            <link rel='manifest' href='/manifest.json' />
+            <link rel='apple-touch-icon' href='/logo192.png' />
+            <meta name='theme-color' content={themeColor} />
+          </>
         )}
         {/* Fonts: warm the connection early, then load the stylesheet from the HTML head
             (discovered immediately, in parallel) instead of a render-blocking CSS @import.

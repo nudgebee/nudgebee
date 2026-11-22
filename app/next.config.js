@@ -48,6 +48,11 @@ const nextConfig = {
         source: '/api/:gateway(graphql|rpc)',
         headers: [{ key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, private' }],
       },
+      {
+        // Service worker script must never be cached by browsers/proxies to ensure updates apply immediately
+        source: '/sw.js',
+        headers: [{ key: 'Cache-Control', value: 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0' }],
+      },
     ];
   },
   async redirects() {
@@ -84,12 +89,21 @@ const nextConfig = {
     ];
   },
   async rewrites() {
-    return [
-      {
-        source: '/.well-known/microsoft-identity-association.json',
-        destination: '/api/well-known/microsoft-identity-association',
-      },
-    ];
+    return {
+      // Ahead of the files in public/: the legal pages are answered per request
+      // host, so a partner host can send visitors to the partner's own policy.
+      beforeFiles: [
+        { source: '/manifest.json', destination: '/api/manifest' },
+        { source: '/privacy.html', destination: '/api/public/legal/privacy' },
+        { source: '/terms_of_use.html', destination: '/api/public/legal/terms' },
+      ],
+      afterFiles: [
+        {
+          source: '/.well-known/microsoft-identity-association.json',
+          destination: '/api/well-known/microsoft-identity-association',
+        },
+      ],
+    };
   },
   poweredByHeader: false,
   output: 'standalone',

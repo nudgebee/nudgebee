@@ -12,6 +12,7 @@ import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInf
 import CustomTable from '@shared/tables/CustomTable';
 import { perPodCaption } from './perPodTrend';
 import { buildTrendSeries } from './trendSeries';
+import { TrendRangeToggle } from './TrendRange';
 import type { RightSizingTrend } from '@hooks/useRightSizingTrend';
 
 interface RightSizingEvidenceProps {
@@ -125,7 +126,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
   const containers = useMemo(() => extractContainerData(rec), [rec]);
 
   // The drawer owns the fetch (useRightSizingTrend); this tab draws it in full.
-  const { perPod, loading: trendLoading, hasData: hasTrendData, cpuQueries, memoryQueries } = trend;
+  const { perPod, loading: trendLoading, hasData: hasTrendData, cpuQueries, memoryQueries, rangeDays, setRangeDays } = trend;
   const perPodCaptionText = perPodCaption(perPod);
 
   // The recommended values from the recommendation JSONB draw the flat
@@ -153,6 +154,11 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
   return (
     <Box sx={{ p: ds.space.mul(0, 7) }}>
       {/* CPU/Memory Trend Charts */}
+      {fullRecommendation && (
+        <Box sx={{ mb: ds.space[2] }}>
+          <TrendRangeToggle value={rangeDays} onChange={setRangeDays} />
+        </Box>
+      )}
       {trendLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space[4] }}>
           <CircularProgress size={24} />
@@ -169,7 +175,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
           }}
         >
           <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], fontStyle: 'italic', textAlign: 'center' }}>
-            No trend data available for the last 7 days
+            {`No trend data available for the last ${rangeDays} days`}
           </Typography>
         </Box>
       )}
@@ -181,7 +187,9 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
             size='sm'
             header={
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
-                <span>CPU (cores) {basis} — 7 day trend</span>
+                <span>
+                  CPU (cores) {basis} — {rangeDays} day trend
+                </span>
                 <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
               </Box>
             }
@@ -222,7 +230,9 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
             size='sm'
             header={
               <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
-                <span>Memory (MB) {basis} — 7 day trend</span>
+                <span>
+                  Memory (MB) {basis} — {rangeDays} day trend
+                </span>
                 <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
               </Box>
             }

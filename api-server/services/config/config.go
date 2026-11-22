@@ -134,15 +134,24 @@ type appConfig struct {
 	BaseUrl                                      string `mapstructure:"base_url"`
 	BrandingName                                 string `mapstructure:"branding_name"`
 
+	// Same exchange/queue collector-server's ConsumeCloudAccountCostReportJobs
+	// already consumes (cloud-collector/account/etl_usage_report.go) — the
+	// daily cron publishes here instead of calling store_usage synchronously.
+	// account.CreateAccount's first-sync-on-onboarding publishes here too
+	// (#41116), rather than blocking on an HTTP call bound to the request's
+	// own client timeout.
+	RabbitMqCloudAccountCostReportExchange string `mapstructure:"rabbit_mq_cloud_account_cost_report_exchange"`
+	RabbitMqCloudAccountCostReportQueue    string `mapstructure:"rabbit_mq_cloud_account_cost_report_queue"`
+
 	RabbitMqTroubleshootExchange string `mapstructure:"rabbit_mq_troubleshoot_exchange"`
 	RabbitMqTroubleshootQueue    string `mapstructure:"rabbit_mq_troubleshoot_queue"`
+	// llm-server's task queue: work one llm-server replica does once
+	// ({type, keys, sender}). Values must match llm-server's defaults for the
+	// same keys.
+	RabbitMqLlmServerTasksExchange string `mapstructure:"rabbit_mq_llm_server_tasks_exchange"`
+	RabbitMqLlmServerTasksQueue    string `mapstructure:"rabbit_mq_llm_server_tasks_queue"`
 
 	AuditPublishEnabled bool `mapstructure:"audit_publish_enabled"`
-	// Fan-out exchange used to broadcast integration cache invalidation
-	// events to every llm-server replica. Each llm-server pod binds an
-	// auto-delete + exclusive queue to it so every pod receives every
-	// message.
-	RabbitMqLLMCacheInvalidationExchange string `mapstructure:"rabbit_mq_llm_cache_invalidation_exchange"`
 
 	AutoPilotUrl string `mapstructure:"auto_pilot_url"`
 
@@ -240,6 +249,22 @@ type appConfig struct {
 	// references it, and stuck-delivery recovery only looks back 30 minutes.
 	NBRetentionDaysEventIncomingWebhooks int `mapstructure:"nb_retention_days_event_incoming_webhooks"`
 
+	// Retention window for inactive/deleted cloud resources that have no active
+	// references in spends, events, metrics, or application mappings.
+	NBRetentionDaysInactiveCloudResources int `mapstructure:"nb_retention_days_inactive_cloud_resources"`
+
+	// Retention window for telemetry metric points in cloud_resource_metrics.
+	NBRetentionDaysCloudResourceMetrics int `mapstructure:"nb_retention_days_cloud_resource_metrics"`
+
+	// Retention window for workload CPU/memory profile dumps in application_profile.
+	NBRetentionDaysApplicationProfiles int `mapstructure:"nb_retention_days_application_profiles"`
+
+	// Retention window for anomaly detection rows. Readers look back at most a month.
+	NBRetentionDaysAnomalies int `mapstructure:"nb_retention_days_anomalies"`
+
+	// Retention window for slo_report rows. The SLO views read the last 30 days.
+	NBRetentionDaysSloReports int `mapstructure:"nb_retention_days_slo_reports"`
+
 	// Oldest stuck webhook delivery the recovery cron will re-drive. Older ones
 	// are marked skipped: replaying a stale alert re-runs analysis on today's data.
 	StuckWebhookRecoveryMaxAgeMinutes int `mapstructure:"stuck_webhook_recovery_max_age_minutes"`
@@ -250,11 +275,21 @@ type appConfig struct {
 	// rag-server, so it grows with question volume, not with data volume.
 	NBRetentionDaysRagRetrievalTrace int `mapstructure:"nb_retention_days_rag_retrieval_trace"`
 
+	// sent_notifications holds every attempt to send a notification: the
+	// delivery history users read, and the rows threading and Teams buttons
+	// act on.
+	NBRetentionDaysSentNotifications int `mapstructure:"nb_retention_days_sent_notifications"`
+
 	// NBRetentionDaysEventAnalysis ages out event_log_analysis by the recency of
 	// the newest run for an event identity, not per row — see the
 	// event_log_analysis cleanup job in services/nb. Defaults to the critical
 	// event retention window so an event never outlives its own analysis.
 	NBRetentionDaysEventAnalysis int `mapstructure:"nb_retention_days_event_analysis"`
+
+	// KGSelfHostedScanFreshness is how many days a self-hosted VM may go
+	// unscanned before the knowledge graph drops its node. vmpackage never
+	// retires host rows, so the last scan time is the only sign a host is alive.
+	KGSelfHostedScanFreshness int `mapstructure:"kg_selfhosted_scan_freshness"`
 
 	KGEdgeStaleAfterDays           int `mapstructure:"kg_edge_stale_after_days"`
 	NBRetentionDaysKGInactiveEdges int `mapstructure:"nb_retention_days_kg_inactive_edges"`
@@ -277,6 +312,26 @@ type appConfig struct {
 
 	NBAnomalyTrainingDays    int `mapstructure:"nb_anomaly_training_days"`
 	NBAnomalyEvaluationHours int `mapstructure:"nb_anomaly_evaluation_hours"`
+	// When true, a Kubernetes anomaly is resolved only once its latest
+	// anomalous detection is NBAnomalyCloseStableHours old and a later run
+	// found it clean, so one that flaps hour to hour stays open instead of
+	// resolving and reopening every hour. Default off: alerts then close at the
+	// first clean run, as before.
+	FeatureAnomalyStableCloseEnabled bool `mapstructure:"feature_anomaly_stable_close_enabled"`
+	NBAnomalyCloseStableHours        int  `mapstructure:"nb_anomaly_close_stable_hours"`
+
+	// CPU SLO breach forecasting (docs/cpu-throttling-forecast-spec.md). Providers is
+	// the comma-separated list of metrics providers whose utilisation keys meet the
+	// contract the forecast relies on (summed, honouring step, with pod_count); a
+	// provider joins by fixing its keys, never by a branch in the forecast.
+	NBForecastProviders            string  `mapstructure:"nb_forecast_providers"`
+	NBForecastMinHours             int     `mapstructure:"nb_forecast_min_hours"`
+	NBForecastMinRiseThrottlingPct float64 `mapstructure:"nb_forecast_min_rise_throttling_pct"`
+	NBForecastMinRiseSaturationPct float64 `mapstructure:"nb_forecast_min_rise_saturation_pct"`
+	NBForecastMaxETAHours          float64 `mapstructure:"nb_forecast_max_eta_hours"`
+	NBForecastHighWithinHours      float64 `mapstructure:"nb_forecast_high_within_hours"`
+	NBForecastRefireCooldownHours  int     `mapstructure:"nb_forecast_refire_cooldown_hours"`
+	NBForecastFetchTimeoutSeconds  int     `mapstructure:"nb_forecast_fetch_timeout_seconds"`
 
 	NBSpendAnomalyBaselineDays               int     `mapstructure:"nb_spend_anomaly_baseline_days"`
 	NBSpendAnomalyZScoreThreshold            float64 `mapstructure:"nb_spend_anomaly_zscore_threshold"`
@@ -304,12 +359,36 @@ type appConfig struct {
 	// always-open behavior is the bug.
 	FeatureEventPointInTimeCloseEnabled bool `mapstructure:"feature_event_point_in_time_close_enabled"`
 
+	// When true, each re-detection of a still-firing alert that a scheduled job
+	// raises (Kubernetes and spend anomalies, SLO breaches) re-runs matching
+	// event-trigger workflows, as often as the job runs (hourly for anomalies
+	// and SLOs). Default off: a webhook alert's repeat delivery never re-runs
+	// them, and these jobs never did either until #40181 fixed the event id
+	// their re-fire message carried.
+	FeatureScheduledAlertWorkflowRefireEnabled bool `mapstructure:"feature_scheduled_alert_workflow_refire_enabled"`
+
 	// When true, a Kubernetes anomaly that fires again after it had cleared is
 	// announced in the next anomaly digest, labelled "returned" (issue #40007).
 	// The producer reads the stored status before its upsert to tell a return
 	// from the hourly re-detection of an open anomaly, which stays silent.
 	// Default off.
 	FeatureAnomalyReturnedDigestEnabled bool `mapstructure:"feature_anomaly_returned_digest_enabled"`
+
+	// When true, an SLO that recovers is published to notifications-server as a
+	// RESOLVED item of the SLO digest, which lists it under "Resolved" (issue
+	// #40006). Default off: turn it on only once notifications-server runs a
+	// build that knows resolved digest items — an older one shows the item as
+	// one more breaching SLO. That build lists the item when its
+	// DIGEST_RESOLVED_ENABLED is on, and drops it when off.
+	FeatureSLOResolvedDigestEnabled bool `mapstructure:"feature_slo_resolved_digest_enabled"`
+
+	// When true, the provider status check (observability.RefreshProviderStatus)
+	// notifies the tenant's channels when a default logs / metrics / traces
+	// integration stays unreachable across two checks, and again when it
+	// recovers. Default off: turn it on only once notifications-server runs a
+	// build that knows the integration_health message type — an older one logs
+	// it as an unknown type and delivers nothing.
+	FeatureProviderHealthAlertsEnabled bool `mapstructure:"feature_provider_health_alerts_enabled"`
 
 	// Triage scoring: when true, ComputeScore uses the LLM-verdict-per-class + deterministic
 	// policy path instead of the legacy severity*env formula. Default off (legacy formula).
@@ -328,6 +407,15 @@ type appConfig struct {
 	// cannot answer. Default on; turn it off to force CLI-always as a kill switch.
 	FeatureKGCloudTopologyFromDB bool `mapstructure:"feature_kg_cloud_topology_from_db"`
 
+	// When true, the knowledge graph reads load-balancer target membership from the
+	// target groups already stored on the load balancer's cloud_resourses row,
+	// instead of running `aws elbv2 describe-target-health` once per target group
+	// per build. Default on; turn it off to force the live calls back.
+	//
+	// Separate from FeatureKGCloudTopologyFromDB so reverting this cannot also
+	// revert the ENI, Route 53 and load-balancer-tag paths that flag governs.
+	FeatureKGLBTargetsFromRows bool `mapstructure:"feature_kg_lb_targets_from_rows"`
+
 	// When true, the knowledge graph reads each CloudFormation stack's
 	// managed-resource list from the stack's own cloud_resourses row, falling back
 	// to `aws cloudformation list-stack-resources` only when the key is absent.
@@ -338,6 +426,11 @@ type appConfig struct {
 	// together would mean a CloudFormation bug also reverts the ENI, Route 53 and
 	// load-balancer paths.
 	FeatureKGCFNStackResourcesFromDB bool `mapstructure:"feature_kg_cfn_stack_resources_from_db"`
+
+	// ESMetricsZeroMatchSampleEnabled makes an Elasticsearch metrics query that matches
+	// no documents also return a few real documents from the index, so the agent can
+	// see the actual field paths. Costs at most two extra bounded searches per miss.
+	ESMetricsZeroMatchSampleEnabled bool `mapstructure:"es_metrics_zero_match_sample_enabled"`
 
 	// Webhook execution mode - true for async (default), false for sync (useful for tests)
 	WebhookAsyncExecution bool `mapstructure:"webhook_async_execution"`
@@ -367,6 +460,11 @@ type appConfig struct {
 	KGInventoryChangeCandidateCap     int  `mapstructure:"kg_inventory_change_candidate_cap"`
 	KGInventoryChangeCreatesEnabled   bool `mapstructure:"kg_inventory_change_creates_enabled"`
 	KGResourcePatchEnabled            bool `mapstructure:"kg_resource_patch_enabled"`
+	// Size fuse for one knowledge-graph build (knowledge_graph/core/build_size_guard.go).
+	// A build whose graph grows past either cap is aborted before it saves, so one
+	// oversized tenant fails on its own instead of OOMKilling the pod (#40937).
+	KGBuildMaxNodes int `mapstructure:"kg_build_max_nodes"`
+	KGBuildMaxEdges int `mapstructure:"kg_build_max_edges"`
 
 	// Event post-process queue configuration
 	RabbitMqEventPostProcessExchange    string `mapstructure:"rabbit_mq_event_post_process_exchange"`
@@ -404,6 +502,14 @@ type appConfig struct {
 	RabbitMqWebhookProcessExchange    string `mapstructure:"rabbit_mq_webhook_process_exchange"`
 	RabbitMqWebhookProcessQueue       string `mapstructure:"rabbit_mq_webhook_process_queue"`
 	RabbitMqWebhookProcessConcurrency int    `mapstructure:"rabbit_mq_webhook_process_concurrency"`
+
+	// Agent first-connect queue: the initial recommendation scans and the
+	// server-side OpenCost sync a K8s agent's first connect kicks off. Queued so
+	// the work runs on the worker deployment and survives a pod restart instead
+	// of running in a goroutine on whichever API pod took the /v1/audit call.
+	// Turn the feature off to fall back to that in-process path without a release.
+	FeatureAgentConnectQueueEnabled bool `mapstructure:"feature_agent_connect_queue_enabled"`
+	RabbitMqAgentConnectConcurrency int  `mapstructure:"rabbit_mq_agent_connect_concurrency"`
 
 	// LLM investigation-completed callback consumer. llm-server publishes a
 	// completion envelope here when an event investigation reaches a terminal
@@ -494,7 +600,8 @@ func init() {
 
 	viper.SetDefault("rabbit_mq_troubleshoot_exchange", "llm_server_event_investigate")
 	viper.SetDefault("rabbit_mq_troubleshoot_queue", "llm_server_event_investigate")
-	viper.SetDefault("rabbit_mq_llm_cache_invalidation_exchange", "llm_cache_invalidation")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_exchange", "llm_server_tasks")
+	viper.SetDefault("rabbit_mq_llm_server_tasks_queue", "llm_server_tasks")
 
 	viper.SetDefault("rabbit_mq_user_onboard_queue", "notifications")
 	viper.SetDefault("rabbit_mq_user_onboard_exchange", "notifications_exchange")
@@ -503,6 +610,11 @@ func init() {
 	viper.SetDefault("rabbit_mq_services_cloudaccount_onboarding_queue", "cloudaccount_onboarding")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_queue", "anomaly_processing")
 	viper.SetDefault("rabbit_mq_services_anomaly_processing_concurrency", "1")
+
+	// Must match collector-server's own defaults for the same two keys
+	// (cloud-collector/config/config.go) — same physical queue, two services.
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_exchange", "cloud_account_cost_report_exchange")
+	viper.SetDefault("rabbit_mq_cloud_account_cost_report_queue", "cloud_account_cost_report")
 	viper.SetDefault("base_url", "http://nudgebee")
 	viper.SetDefault("branding_name", "Nudgebee")
 
@@ -565,10 +677,17 @@ func init() {
 	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
 	viper.SetDefault("nb_retention_days_ai_cost_report_dispatch_log", 7)
 	viper.SetDefault("nb_retention_days_event_incoming_webhooks", 14)
+	viper.SetDefault("nb_retention_days_inactive_cloud_resources", 30)
+	viper.SetDefault("nb_retention_days_cloud_resource_metrics", 60)
+	viper.SetDefault("nb_retention_days_application_profiles", 30)
+	viper.SetDefault("nb_retention_days_anomalies", 90)
+	viper.SetDefault("nb_retention_days_slo_reports", 90)
 	viper.SetDefault("stuck_webhook_recovery_max_age_minutes", 60)
 	viper.SetDefault("nb_retention_days_rag_retrieval_trace", 30)
+	viper.SetDefault("nb_retention_days_sent_notifications", 7)
 	viper.SetDefault("nb_retention_days_event_analysis", 90)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
+	viper.SetDefault("kg_selfhosted_scan_freshness", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
 	viper.SetDefault("nb_retention_days_kg_inactive_nodes", 7)
 	viper.SetDefault("llm_token_usage_cleanup_short_term_hours", 3)
@@ -590,14 +709,29 @@ func init() {
 
 	viper.SetDefault("nb_anomaly_training_days", 7)
 	viper.SetDefault("nb_anomaly_evaluation_hours", 1)
+	viper.SetDefault("feature_anomaly_stable_close_enabled", false)
+	viper.SetDefault("nb_anomaly_close_stable_hours", 3)
+	viper.SetDefault("nb_forecast_providers", "prometheus")
+	viper.SetDefault("nb_forecast_min_hours", 48)
+	viper.SetDefault("nb_forecast_min_rise_throttling_pct", 5)
+	viper.SetDefault("nb_forecast_min_rise_saturation_pct", 10)
+	viper.SetDefault("nb_forecast_max_eta_hours", 0)
+	viper.SetDefault("nb_forecast_high_within_hours", 48)
+	viper.SetDefault("nb_forecast_refire_cooldown_hours", 24)
+	viper.SetDefault("nb_forecast_fetch_timeout_seconds", 60)
 
 	viper.SetDefault("feature_event_point_in_time_close_enabled", true)
+	viper.SetDefault("feature_scheduled_alert_workflow_refire_enabled", false)
 	// Off by default, but declared: Unmarshal skips a key with no default, so
 	// without this line the environment variable could never turn it on.
 	viper.SetDefault("feature_anomaly_returned_digest_enabled", false)
+	viper.SetDefault("feature_slo_resolved_digest_enabled", false)
+	viper.SetDefault("feature_provider_health_alerts_enabled", false)
 	viper.SetDefault("feature_kg_cloud_topology_from_db", true)
+	viper.SetDefault("feature_kg_lb_targets_from_rows", true)
 	viper.SetDefault("feature_kg_cfn_stack_resources_from_db", true)
 	viper.SetDefault("webhook_async_execution", true)
+	viper.SetDefault("es_metrics_zero_match_sample_enabled", true)
 
 	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 
@@ -644,6 +778,11 @@ func init() {
 	// waiting for could not happen. It stays a switch, so turning it off restores
 	// account rebuilds without a deploy.
 	viper.SetDefault("kg_resource_patch_enabled", true)
+	// Keep in step with defaultBuildMaxNodes / defaultBuildMaxEdges in
+	// knowledge_graph/core/build_size_guard.go, which is where the calibration lives.
+	// Raise either per environment to let a legitimately large tenant through.
+	viper.SetDefault("kg_build_max_nodes", 68000)
+	viper.SetDefault("kg_build_max_edges", 340000)
 
 	// Event post-process queue configuration
 	viper.SetDefault("rabbit_mq_event_post_process_exchange", "event_post_process_exchange")
@@ -673,6 +812,12 @@ func init() {
 	viper.SetDefault("rabbit_mq_webhook_process_queue", "webhook_process")
 	viper.SetDefault("rabbit_mq_webhook_process_concurrency", 5)
 
+	// Agent first-connect queue configuration. Concurrency stays above 1 on
+	// purpose: a tenant onboarding several clusters at once must not have the
+	// last one's scans wait behind everyone else's OpenCost sync.
+	viper.SetDefault("feature_agent_connect_queue_enabled", true)
+	viper.SetDefault("rabbit_mq_agent_connect_concurrency", 5)
+
 	// LLM investigation-completed callback consumer. Exchange + routing key
 	// MUST match llm-server's publisher defaults; queue MUST differ from
 	// runbook-server's ("runbook_server_event_investigate_completed").
@@ -680,6 +825,15 @@ func init() {
 	viper.SetDefault("rabbit_mq_event_investigate_completed_routing_key", "llm_server_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_queue", "services_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_concurrency", 5)
+
+	// Before Unmarshal: a default set later never reaches Config, so ServerName
+	// stayed empty and SERVICES_SERVER_NAME was ignored.
+	hostName, hostErr := os.Hostname()
+	if hostErr != nil {
+		slog.Error("Unable to get hostname", "error", hostErr)
+		hostName = "localhost"
+	}
+	viper.SetDefault("services_server_name", hostName)
 
 	err := viper.ReadInConfig()
 	if err != nil {
@@ -755,13 +909,5 @@ func init() {
 	if Config.OtelMetricesExporter == "" {
 		Config.OtelMetricesExporter = Config.OtelExporter
 	}
-
-	hostName, err := os.Hostname()
-	if err != nil {
-		slog.Error("Unable to get hostname", "error", err)
-		hostName = "localhost"
-	}
-
-	viper.SetDefault("services_server_name", hostName)
 
 }

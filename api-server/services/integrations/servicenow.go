@@ -128,6 +128,9 @@ func (s ServiceNow) ValidateConfig(ctx *security.SecurityContext, values []core.
 const (
 	serviceNowUserPageSize = 200
 	serviceNowMaxPages     = 200 // safety cap → up to 40k users
+	// Offset paging needs a stable sort: without ORDERBY the Table API's order can
+	// shift between requests, so pages overlap and some users are never returned.
+	serviceNowUserQuery = "active=true^ORDERBYsys_id"
 )
 
 // normalizeServiceNowURL prepares the user-entered instance URL for the SDK.
@@ -198,7 +201,7 @@ func (s ServiceNow) ListUsers(ctx context.Context, values []core.IntegrationConf
 		resp, err := rb.Get(ctx, &tableapi.TableRequestBuilder2GetRequestConfiguration{
 			QueryParameters: &tableapi.TableRequestBuilder2GetQueryParameters{
 				Fields: []string{"sys_id", "user_name", "name", "email"},
-				Query:  "active=true",
+				Query:  serviceNowUserQuery,
 				Limit:  serviceNowUserPageSize,
 				Offset: page * serviceNowUserPageSize,
 			},

@@ -73,6 +73,10 @@ func setupReturnedTest(t *testing.T, flagOn bool) (*database.DatabaseManager, sq
 	return manager, mock, out
 }
 
+// upsertedEventID is the id the mocked upsert reports writing; the producer
+// ignores it.
+const upsertedEventID = "4c2d1e0f-9a8b-4c7d-8e6f-5a4b3c2d1e0f"
+
 // expectEventsUpsert expects InsertEvent's upsert. isInsert is what it reports:
 // true for a new row, false for an update of the stored finding.
 func expectEventsUpsert(mock sqlmock.Sqlmock, isInsert bool) {
@@ -81,7 +85,7 @@ func expectEventsUpsert(mock sqlmock.Sqlmock, isInsert bool) {
 		args[i] = sqlmock.AnyArg()
 	}
 	mock.ExpectQuery(regexp.QuoteMeta(eventsUpsert)).WithArgs(args...).
-		WillReturnRows(sqlmock.NewRows([]string{"is_insert"}).AddRow(isInsert))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "is_insert"}).AddRow(upsertedEventID, isInsert))
 }
 
 // returnedTestEvent is the event GenerateAnomalyEvent builds for a CPU anomaly.
@@ -127,9 +131,8 @@ func runUpsertAnomalyEvent(t *testing.T, flagOn bool, storedStatus string) *retu
 	return out
 }
 
-// An anomaly that had cleared and fires again is announced once. The message
-// names the stored row: InsertEvent returns the id it generated for an insert
-// even when the upsert updated that row instead.
+// An anomaly that had cleared and fires again is announced once, for the
+// stored row read before the upsert.
 func TestUpsertAnomalyEvent_AnnouncesAnAnomalyThatHadCleared(t *testing.T) {
 	for _, stored := range []string{"RESOLVED", "CLOSED", "resolved", "Closed"} {
 		t.Run(stored, func(t *testing.T) {

@@ -32,6 +32,18 @@ func validateModule(module string) error {
 // Returns true if any limit is exceeded, along with an error message.
 // If the check itself fails, it logs the error but returns false to not block the request.
 func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) (exceeded bool, errorMessage string) {
+	return checkBudgetLimits(tenantId, accountId, module, logger, false)
+}
+
+// CheckBudgetLimitsForReply is CheckBudgetLimits for a request that continues an
+// existing conversation (an approval answer, a follow-up, a restart). The count
+// limits are skipped because they cap how many conversations are created, which a
+// reply cannot change; every cost limit still applies.
+func CheckBudgetLimitsForReply(tenantId, accountId, module string, logger *slog.Logger) (exceeded bool, errorMessage string) {
+	return checkBudgetLimits(tenantId, accountId, module, logger, true)
+}
+
+func checkBudgetLimits(tenantId, accountId, module string, logger *slog.Logger, skipCount bool) (exceeded bool, errorMessage string) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
 		logger.Error("budget: error getting database manager for budget check", "error", err)
@@ -108,7 +120,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 		}
 
 		// Step 3: Tenant daily count
-		if tenantConfig.DailyCountEnabled {
+		if !skipCount && tenantConfig.DailyCountEnabled {
 			limit := resolveCountLimit(tenantConfig.DailyCountLimit, getSystemDefaultDailyCountLimit(EntityTypeTenant))
 			count, err := GetTenantDailyConversationCount(dbManager, tenantId, module)
 			if err != nil {
@@ -121,7 +133,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 		}
 
 		// Step 4: Tenant monthly count
-		if tenantConfig.MonthlyCountEnabled {
+		if !skipCount && tenantConfig.MonthlyCountEnabled {
 			limit := resolveCountLimit(tenantConfig.MonthlyCountLimit, getSystemDefaultMonthlyCountLimit(EntityTypeTenant, module))
 			count, err := GetTenantConversationCount(dbManager, tenantId, module)
 			if err != nil {
@@ -169,7 +181,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 	}
 
 	// Step 7: Account daily count
-	if accountConfig.DailyCountEnabled {
+	if !skipCount && accountConfig.DailyCountEnabled {
 		limit := resolveCountLimit(accountConfig.DailyCountLimit, getSystemDefaultDailyCountLimit(EntityTypeAccount))
 		count, err := GetAccountDailyConversationCount(dbManager, accountId, module)
 		if err != nil {
@@ -182,7 +194,7 @@ func CheckBudgetLimits(tenantId, accountId, module string, logger *slog.Logger) 
 	}
 
 	// Step 8: Account monthly count
-	if accountConfig.MonthlyCountEnabled {
+	if !skipCount && accountConfig.MonthlyCountEnabled {
 		limit := resolveCountLimit(accountConfig.MonthlyCountLimit, getSystemDefaultMonthlyCountLimit(EntityTypeAccount, module))
 		count, err := GetAccountConversationCount(dbManager, accountId, module)
 		if err != nil {

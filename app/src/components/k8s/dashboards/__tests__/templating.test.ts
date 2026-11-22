@@ -49,3 +49,56 @@ describe('referencedVariables', () => {
     expect(referencedVariables('')).toEqual([]);
   });
 });
+
+describe('renderTemplate with a dropdown', () => {
+  const picked = (values: string[], all = false, allValue?: string) => ({ n: { values, all, ...(allValue ? { allValue } : {}) } });
+
+  it('writes a plain token as a PromQL regex', () => {
+    expect(renderTemplate('x=~"$n"', picked(['a.b', 'c']))).toBe('x=~"a\\\\.b|c"');
+    expect(renderTemplate('x=~"$n"', picked(['a', 'b'], true))).toBe('x=~".*"');
+  });
+
+  it.each([
+    ['regex', '(a\\.b|c)'],
+    ['pipe', 'a.b|c'],
+    ['csv', 'a.b,c'],
+    ['raw', 'a.b,c'],
+    ['singlequote', "'a.b','c'"],
+    ['doublequote', '"a.b","c"'],
+    ['sqlstring', "'a.b','c'"],
+    ['json', '["a.b","c"]'],
+    ['lucene', '("a.b" OR "c")'],
+  ])('writes ${n:%s}', (format, expected) => {
+    expect(renderTemplate(`\${n:${format}}`, picked(['a.b', 'c']))).toBe(expected);
+  });
+
+  it('doubles a quote for sqlstring and escapes it for singlequote', () => {
+    expect(renderTemplate('${n:sqlstring}', picked(["o'x"]))).toBe("'o''x'");
+    expect(renderTemplate('${n:singlequote}', picked(["o'x"]))).toBe("'o\\'x'");
+  });
+
+  it('leaves an unknown format verbatim, so the typo shows', () => {
+    expect(renderTemplate('${n:nope}', picked(['a']))).toBe('${n:nope}');
+  });
+
+  it('spells out every option for All in a list format, and uses the wildcard in a pattern one', () => {
+    expect(renderTemplate('${n:csv}', picked(['a', 'b'], true))).toBe('a,b');
+    expect(renderTemplate('${n:regex}', picked(['a', 'b'], true))).toBe('.*');
+  });
+
+  it('sends a custom All value as written, whatever the format', () => {
+    expect(renderTemplate('x=~"$n"', picked(['a'], true, '.+'))).toBe('x=~".+"');
+    expect(renderTemplate('${n:csv}', picked(['a'], true, 'a\\.b'))).toBe('a\\.b');
+  });
+
+  it('counts a formatted token as a reference', () => {
+    expect(referencedVariables('${n:csv} $m ${o}')).toEqual(['n', 'm', 'o']);
+  });
+});
+
+describe('renderTemplate on a logs panel', () => {
+  it('writes All so a Loki selector keeps a non-empty matcher', () => {
+    expect(renderTemplate('{app=~"$n"}', { n: { values: ['a'], all: true } }, 'logql')).toBe('{app=~".+"}');
+    expect(renderTemplate('{app=~"$n"}', { n: { values: ['a.b'], all: false } }, 'logql')).toBe('{app=~"a\\\\.b"}');
+  });
+});

@@ -1,12 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Box, Stack, Typography, useMediaQuery } from '@mui/material';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import { Box, Stack, Typography } from '@mui/material';
 import { useRouter } from 'next/router';
 // TODO(ds-migration): SummarySkeletonLoader is a page-level loader — replace with composed ds/Skeleton blocks.
 import SummarySkeletonLoader from '@shared/SummarySkeletonLoader';
 import { formatNumber } from '@lib/formatter';
-import DoughnutChart from '@shared/charts/DoughnutChart';
-import Currency from '@shared/format/Currency';
 import CustomTable from '@shared/tables/CustomTable';
 import apiCloudAccount from '@api1/cloud-account';
 import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
@@ -16,8 +13,8 @@ import type { ICustomTableRow } from './ec2/types';
 import Text from '@shared/format/Text';
 import SeverityIcon from '@ui/SeverityIcon';
 import Datetime from '@shared/format/Datetime';
-import { getBudgetExpectedMonthlyExpense, getExpectedYearlyExpense } from '@lib/budget';
 import TotalCostChart from '@components/cloudaccount/CostChart';
+import CloudCostSummary from '@components/cloudaccount/CloudCostSummary';
 // TODO(ds-migration): GetInsightIcon is a leaf icon-resolver helper, not a UI component.
 import { GetInsightIcon } from '@shared/icons/GetInsightIcon';
 import Modal from '@ui/Modal';
@@ -27,11 +24,10 @@ import { StarsIcon } from '@assets';
 // TODO(ds-migration): SafeIcon is a pass-through img/svg renderer.
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getInsightRoute } from '@components/k8s/common/insightRoutes';
-import { ds, resolveColor, withAlpha } from '@utils/colors';
+import { ds } from '@utils/colors';
 import { Stat } from '@ui/Stat';
 import Trend from '@ui/Trend';
 import { Button } from '@ui/Button';
-import Tooltip from '@ui/Tooltip';
 import { hasWriteAccess } from '@lib/auth';
 import apiOwnership from '@api1/ownership';
 import OwnerBadge from '@components/ownership/OwnerBadge';
@@ -41,13 +37,6 @@ const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 const _INSTANCE_HEADERS = ['Service Name', 'Account Name', 'Savings', 'Actions'];
 const EVENT_TABLE_ID = 'EVENT_TABLE_ID';
 const EVENT_HEADERS = ['Instance ID', 'Events', 'Severity', 'Created at'];
-
-// Bumps a Stat's label one weight notch (regular → medium) without touching value or sub.
-// Selector targets the label Typography (`component='span'`) inside Stat's header row only —
-// Stat's value uses `component='div'`, and `sub` Typographies live outside the header row.
-const STAT_LABEL_BOLD_SX = {
-  '& > div:first-of-type span.MuiTypography-root': { fontWeight: 'var(--ds-font-weight-medium)' },
-};
 
 // Section heading — replaces the legacy `Title` component (lightVariant, no underline).
 const SectionHeading = ({ title, sx }: { title: string; sx?: object }) => (
@@ -762,197 +751,6 @@ const UtilizationAndHealth = ({ accountId, clusterSummary = {}, serviceName }: a
   );
 };
 
-const CostSummary = ({ clusterSummary = {}, currencySymbol = '$' }: any) => {
-  const smallScreen = useMediaQuery('(max-width:1440px)');
-
-  // Use gross spend (positive amounts only) for percentage calculations to avoid division by near-zero when credits offset costs
-  const currentGrossSpend =
-    clusterSummary?.gross_spends_aggregate?.aggregate?.sum?.amount || clusterSummary?.spends_aggregate?.aggregate?.sum?.amount || 0;
-  const lastMonthGrossSpend =
-    clusterSummary?.lm_gross_spends_aggregate?.aggregate?.sum?.amount || clusterSummary?.lm_spends_aggregate?.aggregate?.sum?.amount || 0;
-  const lastMonthCredits = Math.abs(clusterSummary?.lm_credits_aggregate?.aggregate?.sum?.amount || 0);
-  const lastMonthNetSpend = clusterSummary?.lm_spends_aggregate?.aggregate?.sum?.amount || 0;
-
-  const monthlyForecast = getBudgetExpectedMonthlyExpense(currentGrossSpend);
-
-  // Calculate percentage change using gross spend to avoid division by near-zero
-  const hasValidPercentage = lastMonthGrossSpend > 0;
-  const percentageChange = hasValidPercentage ? ((monthlyForecast - lastMonthGrossSpend) * 100) / lastMonthGrossSpend : 0;
-
-  const renderForecastValue = () => {
-    if (currentGrossSpend <= 0) {
-      return <Typography sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>No data available</Typography>;
-    }
-    return (
-      <Box display='flex' alignItems='center' gap={ds.space[1]}>
-        <Currency prefix={currencySymbol} value={monthlyForecast} />
-        {hasValidPercentage && Math.abs(percentageChange) < 1000 && (
-          <Trend sign={percentageChange > 0 ? -1 : 1} value={Math.abs(percentageChange)} width='auto' />
-        )}
-      </Box>
-    );
-  };
-
-  return (
-    <Stack gap={ds.space[2]}>
-      <DSCard size='md' header={<SectionHeading title='Cost Summary' />} elevation='flat'>
-        <Stack direction={'column'} gap={ds.space[4]}>
-          <Stat
-            id='cloud-summary-monthly-forecast'
-            size='md'
-            label='Monthly forecast'
-            sx={STAT_LABEL_BOLD_SX}
-            value={renderForecastValue()}
-            info={{
-              tooltip:
-                'Projected end-of-month cost based on current month-to-date spending. Percentage compares to last month gross usage (excludes credits).',
-            }}
-            sub={
-              lastMonthGrossSpend > 0 ? (
-                <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1] }}>
-                  <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
-                    Prev mo (gross):
-                  </Typography>
-                  <Currency prefix={currencySymbol} value={lastMonthGrossSpend} />
-                </Box>
-              ) : (
-                <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
-                  Prev mo (gross): No data
-                </Typography>
-              )
-            }
-          />
-          <Stat
-            id='cloud-summary-current-month'
-            size='md'
-            label='Current Month (MTD)'
-            sx={STAT_LABEL_BOLD_SX}
-            value={
-              currentGrossSpend > 0 ? (
-                <Currency prefix={currencySymbol} value={currentGrossSpend} />
-              ) : (
-                <Typography sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>No data available</Typography>
-              )
-            }
-            sub={
-              currentGrossSpend > 0 ? (
-                <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1] }}>
-                  <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
-                    Avg daily cost:
-                  </Typography>
-                  <Currency prefix={currencySymbol} value={currentGrossSpend / new Date().getDate()} />
-                </Box>
-              ) : (
-                <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
-                  Avg daily cost: No data
-                </Typography>
-              )
-            }
-          />
-          {lastMonthCredits > 0 && (
-            <Stat
-              id='cloud-summary-prev-month-net'
-              size='md'
-              label='Prev mo (net)'
-              sx={STAT_LABEL_BOLD_SX}
-              value={<Currency prefix={currencySymbol} value={lastMonthNetSpend} />}
-              sub={
-                <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.green[600] }}>
-                  Credits: -{currencySymbol}
-                  {formatNumber(lastMonthCredits)}
-                </Typography>
-              }
-            />
-          )}
-        </Stack>
-      </DSCard>
-      <DSCard
-        size='md'
-        elevation='flat'
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: smallScreen ? 'space-between' : 'flex-start',
-          flexWrap: 'wrap',
-          gap: ds.space[6],
-          border: `1px solid ${ds.green[200]}`,
-          backgroundColor: ds.green[100],
-        }}
-      >
-        <Box
-          sx={{
-            display: 'inherit',
-            alignItems: 'inherit',
-            justifyContent: 'inherit',
-            gap: ds.space[5],
-            flexGrow: smallScreen ? 1 : 0,
-          }}
-        >
-          <Box display='flex' flexDirection='column'>
-            <Box display='flex' alignItems='center' gap={ds.space[1]}>
-              <Typography sx={{ color: ds.gray[600], fontSize: ds.text.small, fontWeight: 'var(--ds-font-weight-medium)' }}>Savings</Typography>
-              <Tooltip
-                title="Savings are estimated by the cloud provider based on the account's full usage. On newly connected accounts they may appear higher than visible spend until cost reports accumulate enough history."
-                arrow
-              >
-                <InfoOutlinedIcon sx={{ fontSize: 14, color: ds.gray[400], cursor: 'help' }} />
-              </Tooltip>
-            </Box>
-            {clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings ? (
-              <Currency prefix='$' value={clusterSummary.recommendation_aggregate.aggregate.sum.estimated_savings * 12} suffix='/yr' />
-            ) : (
-              <Typography sx={{ color: ds.gray[500], fontSize: ds.text.caption }}>No savings available</Typography>
-            )}
-            <Typography sx={{ color: ds.gray[400], fontSize: ds.text.caption, whiteSpace: 'nowrap' }}>
-              estimated 12 mos{currencySymbol !== '$' ? ' · USD' : ''}
-            </Typography>
-          </Box>
-          {(() => {
-            // A USD saving over a non-USD spend is not a percentage.
-            if (currencySymbol !== '$') return null;
-            const savPct = (() => {
-              if (!clusterSummary?.recommendation_aggregate?.aggregate?.sum?.estimated_savings) {
-                return 0;
-              }
-
-              const yearlyGrossSpend =
-                clusterSummary?.yearly_gross_spends_aggregate?.aggregate?.sum?.amount ||
-                clusterSummary?.yearly_spends_aggregate?.aggregate?.sum?.amount ||
-                0;
-              const yearlyExpense = getExpectedYearlyExpense(currentGrossSpend, yearlyGrossSpend);
-
-              // Handle edge case: if yearly expense is too small (less than $1), return 0
-              if (yearlyExpense < 1) {
-                return 0;
-              }
-
-              const savingsPercentage = Math.round(
-                (clusterSummary.recommendation_aggregate.aggregate.sum.estimated_savings * 12 * 100) / yearlyExpense
-              );
-
-              return Math.min(savingsPercentage, 100);
-            })();
-            return (
-              <DoughnutChart
-                values={[savPct, 100 - savPct]}
-                displayValue={String(savPct)}
-                size={60}
-                cutout='75%'
-                borderWidth={0}
-                borderRadius={0}
-                colors={(() => {
-                  const c = resolveColor(String(ds.green[400]));
-                  return [c, withAlpha(c, 0.44)];
-                })()}
-              />
-            );
-          })()}
-        </Box>
-      </DSCard>
-    </Stack>
-  );
-};
-
 // Owner of the cloud account itself (resource_type='cloud_account', key=accountId).
 // Shows the effective owner; tenant admins can assign/replace it. A namespace or
 // workload under this account with no direct owner inherits this owner.
@@ -1014,13 +812,14 @@ const CloudAccountSummary = ({ accountId = '', clusterSummary = {}, loading = fa
               columnGap: ds.space[4],
               rowGap: ds.space[5],
               mb: ds.space[4],
+              mt: ds.space[5],
             }}
           >
             <ClusterSummary accountId={accountId} cloudProvider={cloudProvider} />
             <UtilizationAndHealth accountId={accountId} clusterSummary={clusterSummary} />
             {!isCF && (
               <Stack gap={ds.space[2]}>
-                <CostSummary clusterSummary={clusterSummary} currencySymbol={currencySymbol} />
+                <CloudCostSummary clusterSummary={clusterSummary} currencySymbol={currencySymbol} />
                 {accountId ? <AccountOwner accountId={accountId} accountName={(clusterSummary as any)?.account_name} /> : null}
               </Stack>
             )}

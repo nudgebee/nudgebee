@@ -181,7 +181,8 @@ func ListTickets(configurationId string, updatedBefore time.Time) ([]models.Tick
 		       COALESCE(severity, '') as severity,
 		       COALESCE(status, '') as status,
 		       ticket_id,
-		       COALESCE(url, '') as url
+		       COALESCE(url, '') as url,
+		       COALESCE(project_key, '') as project_key
 		FROM tickets
 		WHERE integration_id = $1
 		  AND LOWER(TRIM(COALESCE(status, ''))) NOT IN
@@ -347,6 +348,24 @@ func diffTicketUpdate(stored, current models.Ticket) (models.UpdateFields, bool)
 	return fields, update
 }
 
+// configForTicket overrides Projects[0] with the ticket's own project_key, so
+// a multi-project GitHub/GitLab integration's Get call targets the ticket's
+// actual repo rather than always the first configured one.
+func configForTicket(configuration models.TicketConfigurations, projectKey string) models.TicketConfigurations {
+	if projectKey == "" {
+		return configuration
+	}
+	projects := make([]models.Project, len(configuration.Projects))
+	copy(projects, configuration.Projects)
+	if len(projects) > 0 {
+		projects[0].Key = projectKey
+	} else {
+		projects = []models.Project{{Key: projectKey}}
+	}
+	configuration.Projects = projects
+	return configuration
+}
+
 // collectManagerUpdates calls manager.Get for each ticket and returns the
 // rows whose fields differ from what is stored, aborting early after
 // consecutiveFetchFailureLimit consecutive fetch errors (the same guard the
@@ -356,7 +375,7 @@ func collectManagerUpdates(ctx *gin.Context, manager ticket.TicketManager, confi
 	consecutiveFailures := 0
 	notFoundCount := 0
 	for _, t := range tickets {
-		current, err := manager.Get(ctx, configuration, t.TicketID)
+		current, err := manager.Get(ctx, configForTicket(configuration, t.ProjectKey), t.TicketID)
 		if err != nil {
 			if errors.Is(err, ticket.ErrNotFound) {
 				// Permanent and ticket-specific (deleted upstream, or never

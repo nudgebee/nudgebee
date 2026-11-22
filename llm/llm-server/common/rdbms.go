@@ -415,6 +415,15 @@ func GetDatabaseManager(name DatabaseManagerType) (*DatabaseManager, error) {
 	}
 }
 
+// PeekDatabaseManager returns the named manager only if it already exists. It
+// never creates one or opens a connection, for lookups that must not pay for
+// a connection themselves.
+func PeekDatabaseManager(name DatabaseManagerType) *DatabaseManager {
+	databaseManagerMutex.Lock()
+	defer databaseManagerMutex.Unlock()
+	return databaseManager[name]
+}
+
 type DatabaseHealth struct {
 	InUse     int   `json:"in_use"`
 	Idle      int   `json:"idle"`

@@ -6,12 +6,13 @@ import { LoginPage } from '../../pages/LoginPage';
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test.describe('Authentication', () => {
-  test('should login with LDAP credentials and reach home page', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {
+  test('should login with LDAP credentials and reach the default landing page', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {
     const loginPage = new LoginPage(page);
     await loginPage.doFullLogin();
 
-    // Verify we reached the home page after full login
-    await expect(page).toHaveURL(/.*\/home/, { timeout: 15000 });
+    // The default landing page: Nubi (/ask-nudgebee) on builds with Nubi in the left nav,
+    // /home before that. The suite runs against whatever build an env has, so accept both.
+    await expect(page).toHaveURL(/.*\/(ask-nudgebee|home)/, { timeout: 15000 });
   });
 
   test('should not remain on signin page after valid credentials', { tag: ["@dev", "@test", "@oss", "@smoke", "@functional"] }, async ({ page }) => {

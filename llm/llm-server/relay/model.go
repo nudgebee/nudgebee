@@ -12,6 +12,10 @@ type ActionExecuteBody struct {
 	// NoAgent marks an action the relay serves itself, without any agent
 	// (direct-mode MCP), so Execute must not gate it on k8s agent connectivity.
 	NoAgent bool `json:"-"`
+	// Quiet logs Execute's transport and non-200 failures at Debug. Set by a
+	// caller that records the failure itself and logs once when it matters
+	// (MCP integration health, #40994).
+	Quiet bool `json:"-"`
 }
 
 type RelayExecuteRequest struct {

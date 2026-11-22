@@ -8,19 +8,56 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
 const (
-	ZenDutyBaseURL = "https://www.zenduty.com/api"
+	// ZenDutyDefaultHost is used when a configuration's "url" value is blank —
+	// the long-standing default for accounts that predate per-region hosting.
+	ZenDutyDefaultHost = "www.zenduty.com"
 
 	// zendutyHTTPTimeout is the timeout for the ZenDuty HTTP client.
 	zendutyHTTPTimeout = 30 * time.Second
 )
 
+// NormalizeZenDutyURL turns the stored ZenDuty "url" config value into a base
+// URL. ZenDuty (rebranded Xurrent IMR) hosts accounts on region-specific
+// domains (e.g. imr.eu.xurrent.com for EU accounts) rather than one global
+// www.zenduty.com — so this value is per-integration, not a constant. The
+// value is whatever the tenant typed: a bare host or a full address with
+// https://, possibly with a trailing /api left over from copying the old
+// API base URL — that suffix is stripped here so CreateZenDutyClient's own
+// "/api" doesn't double up into ".../api/api". A scheme is added only when
+// none is present, and trailing slashes are dropped. Mirrors NormalizeJiraURL.
+func NormalizeZenDutyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = ZenDutyDefaultHost
+	}
+	lower := strings.ToLower(raw)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return strings.TrimRight(raw, "/")
+	}
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/api")
+	return strings.TrimRight(u.String(), "/")
+}
+
+// ZenDutyDashboardURL builds the web link for an incident on the account's
+// own host, for callers that need a link without round-tripping through the
+// API (e.g. an incident just created, before HTMLURL is known to be reliable).
+func ZenDutyDashboardURL(rawConfigURL, incidentID string) string {
+	return NormalizeZenDutyURL(rawConfigURL) + "/dashboard/incidents/" + incidentID
+}
+
 // ZenDutyClient provides methods to interact with the ZenDuty API.
 type ZenDutyClient struct {
 	apiKey     string
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -36,17 +73,20 @@ func (e ZenDutyStatusError) Error() string {
 	return fmt.Sprintf("request failed with status %d: %s", e.StatusCode, e.Body)
 }
 
-// CreateZenDutyClient creates a new ZenDuty API client.
-func CreateZenDutyClient(apiKey string) *ZenDutyClient {
+// CreateZenDutyClient creates a new ZenDuty API client. rawConfigURL is the
+// integration's stored "url" config value (a bare host, or empty for the
+// www.zenduty.com default) — see NormalizeZenDutyURL.
+func CreateZenDutyClient(apiKey, rawConfigURL string) *ZenDutyClient {
 	return &ZenDutyClient{
 		apiKey:     apiKey,
+		baseURL:    NormalizeZenDutyURL(rawConfigURL) + "/api",
 		httpClient: &http.Client{Timeout: zendutyHTTPTimeout},
 	}
 }
 
 // doRequest performs an HTTP request to the ZenDuty API.
 func (c *ZenDutyClient) doRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
-	url := ZenDutyBaseURL + endpoint
+	url := c.baseURL + endpoint
 
 	var reqBody io.Reader
 	if body != nil {
@@ -227,6 +267,14 @@ type ZenDutyIncidentNote struct {
 	Note      string `json:"note"`
 	CreatedAt string `json:"creation_date"`
 	User      string `json:"user"`
+	UserName  string `json:"user_name"`
+}
+
+// zenDutyNotesPage is the paginated envelope the incident-notes endpoint returns
+// (unlike most other ZenDuty list endpoints, which return a bare array).
+type zenDutyNotesPage struct {
+	Next    *string               `json:"next"`
+	Results []ZenDutyIncidentNote `json:"results"`
 }
 
 // CreateIncidentRequest represents the request body for creating an incident.
@@ -400,12 +448,28 @@ func (c *ZenDutyClient) AddIncidentNote(ctx context.Context, incidentID, note st
 
 // GetIncidentNotes fetches all notes for an incident from ZenDuty.
 func (c *ZenDutyClient) GetIncidentNotes(ctx context.Context, incidentID string) ([]ZenDutyIncidentNote, error) {
-	var notes []ZenDutyIncidentNote
+	var all []ZenDutyIncidentNote
 	endpoint := fmt.Sprintf("/incidents/%s/note/", incidentID)
-	if err := c.getJSON(ctx, endpoint, &notes); err != nil {
-		return nil, fmt.Errorf("failed to get incident notes: %w", err)
+	for endpoint != "" {
+		var page zenDutyNotesPage
+		if err := c.getJSON(ctx, endpoint, &page); err != nil {
+			return nil, fmt.Errorf("failed to get incident notes: %w", err)
+		}
+		all = append(all, page.Results...)
+
+		if page.Next == nil {
+			break
+		}
+		// "next" is an absolute URL; getJSON/doRequest expect a path relative to
+		// c.baseURL. If it doesn't share that prefix (unexpected host), stop here
+		// rather than mis-request - what's accumulated so far stands.
+		next, ok := strings.CutPrefix(*page.Next, c.baseURL)
+		if !ok {
+			break
+		}
+		endpoint = next
 	}
-	return notes, nil
+	return all, nil
 }
 
 // AcknowledgeIncident acknowledges an incident in ZenDuty.
@@ -446,6 +510,14 @@ func MapUrgencyFromString(urgency string) int {
 		return ZenDutyUrgencyLow
 	}
 	return ZenDutyUrgencyHigh
+}
+
+// MapUrgencyToString converts ZenDuty numeric urgency to string severity.
+func MapUrgencyToString(urgency int) string {
+	if urgency == ZenDutyUrgencyLow {
+		return "low"
+	}
+	return "high"
 }
 
 // MapStatusToString converts ZenDuty numeric status to string.

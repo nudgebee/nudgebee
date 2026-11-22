@@ -1,0 +1,167 @@
+[
+  {
+    "model": "gemini-3.8-flash",
+    "display_name": "Gemini 3.8 Flash",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.8-flash"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.8-flash"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3.6-flash",
+    "display_name": "Gemini 3.6 Flash",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.6-flash"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.6-flash"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3.5-flash",
+    "display_name": "Gemini 3.5 Flash",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.5-flash"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.5-flash"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3.5-flash-lite",
+    "display_name": "Gemini 3.5 Flash-Lite",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.5-flash-lite"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.5-flash-lite"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3-flash-preview",
+    "display_name": "Gemini 3 Flash Preview",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3-flash-preview"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3-flash-preview"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3.1-pro-preview",
+    "display_name": "Gemini 3.1 Pro Preview",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.1-pro-preview"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.1-pro-preview"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-3.7-flash",
+    "display_name": "Gemini 3.7 Flash",
+    "deprecated_on": "2026-10-21",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-3.7-flash"], "tested": true},
+      {"provider": "vertexai", "model_ids": ["gemini-3.7-flash"], "tested": false}
+    ]
+  },
+  {
+    "model": "gemini-2.5-flash",
+    "display_name": "Gemini 2.5 Flash",
+    "deprecated_on": "2026-10-21",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-2.5-flash"], "tested": true}
+    ]
+  },
+  {
+    "model": "gemini-2.5-flash-lite",
+    "display_name": "Gemini 2.5 Flash-Lite",
+    "deprecated_on": "2026-10-21",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-2.5-flash-lite"], "tested": true}
+    ]
+  },
+  {
+    "model": "gemini-2.5-pro",
+    "display_name": "Gemini 2.5 Pro",
+    "deprecated_on": "2026-10-21",
+    "providers": [
+      {"provider": "googleai", "model_ids": ["gemini-2.5-pro"], "tested": true}
+    ]
+  },
+  {
+    "model": "claude-sonnet-4-6",
+    "display_name": "Claude Sonnet 4.6",
+    "providers": [
+      {"provider": "bedrock", "model_ids": ["{region}.anthropic.claude-sonnet-4-6"], "tested": true},
+      {"provider": "anthropic", "model_ids": ["claude-sonnet-4-6"], "tested": false},
+      {"provider": "custom", "model_ids": ["vertex/claude-sonnet-4-6", "claude-sonnet-4-6"], "tested": true},
+      {"provider": "custom", "model_ids": ["anthropic/claude-sonnet-4.6"], "tested": false}
+    ]
+  },
+  {
+    "model": "claude-haiku-4-5",
+    "display_name": "Claude Haiku 4.5",
+    "deprecated_on": "2026-10-21",
+    "providers": [
+      {"provider": "bedrock", "model_ids": ["{region}.anthropic.claude-haiku-4-5-20251001-v1:0"], "tested": true},
+      {"provider": "anthropic", "model_ids": ["claude-haiku-4-5-20251001"], "tested": false}
+    ]
+  },
+  {
+    "model": "qwen3.6-35b-a3b-fp8",
+    "display_name": "Qwen3.6 35B A3B FP8",
+    "providers": [
+      {"provider": "huggingface", "model_ids": ["Qwen/Qwen3.6-35B-A3B-FP8"], "tested": true},
+      {"provider": "custom", "model_ids": ["Qwen/Qwen3.6-35B-A3B-FP8"], "tested": true}
+    ]
+  },
+  {
+    "model": "qwen3-vl-235b-a22b-instruct",
+    "display_name": "Qwen3 VL 235B Instruct",
+    "providers": [
+      {"provider": "custom", "model_ids": ["qwen/qwen3-vl-235b-a22b-instruct"], "tested": true}
+    ]
+  },
+  {
+    "model": "qwen3-235b-a22b-thinking-2507",
+    "display_name": "Qwen3 235B Thinking",
+    "providers": [
+      {"provider": "custom", "model_ids": ["qwen/qwen3-235b-a22b-thinking-2507"], "tested": true}
+    ]
+  },
+  {
+    "model": "qwen3-235b-vertex",
+    "display_name": "Qwen3 235B (Nudgebee gateway)",
+    "providers": [
+      {"provider": "custom", "model_ids": ["qwen3-235b-vertex"], "tested": true}
+    ]
+  },
+  {
+    "model": "nemotron-3-nano-30b-a3b-bf16",
+    "display_name": "Nemotron 3 Nano 30B BF16",
+    "providers": [
+      {"provider": "custom", "model_ids": ["NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"], "tested": true}
+    ]
+  },
+  {
+    "model": "nemotron-3-nano-30b-a3b-bf16-nanov3",
+    "display_name": "Nemotron 3 Nano 30B (nanov3)",
+    "providers": [
+      {"provider": "custom", "model_ids": ["NVIDIA-Nemotron-3-Nano-30B-A3B-BF16-nanov3"], "tested": true}
+    ]
+  },
+  {
+    "model": "nemotron-3.5-lightning",
+    "display_name": "Nemotron 3.5 Lightning",
+    "providers": [
+      {"provider": "custom", "model_ids": ["nvidia/nemotron-3.5-lightning"], "tested": true}
+    ]
+  },
+  {
+    "model": "gemma-4-26b-a4b-it",
+    "display_name": "Gemma 4 26B",
+    "providers": [
+      {"provider": "custom", "model_ids": ["google/gemma-4-26B-A4B-it"], "tested": true}
+    ]
+  },
+  {
+    "model": "clef",
+    "display_name": "Clef",
+    "decision": true,
+    "providers": [
+      {"provider": "cloudflare", "model_ids": ["clef"], "tested": true}
+    ]
+  }
+]

@@ -6,9 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/shlex"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestQuoteCommandArgRoundTrip(t *testing.T) {
@@ -220,56 +225,126 @@ func TestValidateCliCommand(t *testing.T) {
 	})
 }
 
-func TestSecureExecutePipeline(t *testing.T) {
-	t.Run("SimplePipelineSuccess", func(t *testing.T) {
-		opts := SecureCommandOptions{
-			Command: `echo "hello world" | grep hello`,
-		}
-		stdout, stderr, err := SecureExecutePipeline(context.Background(), opts)
-		if err != nil {
-			t.Fatalf("expected no error, got %v (stderr: %s)", err, stderr)
-		}
-		if strings.TrimSpace(stdout) != "hello world" {
-			t.Errorf("expected stdout 'hello world', got %q", stdout)
-		}
-	})
+func TestValidateUntrustedArgs(t *testing.T) {
+	workDir := t.TempDir()
+	secretDir := t.TempDir()
+	secret := filepath.Join(secretDir, "token.json")
+	require.NoError(t, os.WriteFile(secret, []byte("{}"), 0600))
 
-	t.Run("JqPipelineSuccess", func(t *testing.T) {
-		opts := SecureCommandOptions{
-			Command: `echo '{"foo": "bar"}' | jq .foo`,
+	refused := []struct{ name, command string }{
+		{"a pipe stage", "aws ec2 describe-regions | grep -r token " + secretDir},
+		{"an aws file:// parameter", "aws ec2 run-instances --cli-input-json file://" + secret},
+		{"an aws fileb:// parameter after =", "aws lambda invoke --payload=fileb://" + secret + " out"},
+		{"an az @ argument", "az rest --method post --url https://example.com --body @" + secret},
+		{"an az @ argument naming a folder", "az rest --method post --url https://example.com --body @" + secretDir},
+		{"a gcloud --flags-file value", "gcloud compute instances list --flags-file=" + secret},
+		{"a --*-file flag value as the next argument", "gcloud secrets versions add s --data-file " + secret},
+		{"a key=path list in a --*-file flag", "gcloud compute instances create vm --metadata-from-file a=b,startup-script=" + secret},
+		{"a comma-separated path list in a --*-file flag", "gcloud x --metadata-from-file a.txt," + secret},
+		{"a short file flag", "az deployment group create -g rg -f " + secret},
+		{"a short file flag with =", "az deployment group create -g rg -f=" + secret},
+		{"a key flag naming a local file", "az aks create -g rg -n c --ssh-key " + secret},
+		{"a path flag value", "az webapp deploy --src-path " + secretDir},
+		{"a relative path that leaves the working directory", "az rest --url https://example.com --body @../"},
+		{"a home directory reference", "aws ec2 run-instances --cli-input-json file://~/.aws/credentials"},
+		{"an environment variable in a file reference", "aws ec2 run-instances --cli-input-json file://$HOME/x"},
+	}
+	// Parameters that read a plain path with no file:// or @ prefix.
+	relSecret, err := filepath.Rel(workDir, secret)
+	require.NoError(t, err)
+	refused = append(refused, []struct{ name, command string }{
+		{"an aws streaming body path", "aws glacier upload-archive --account-id - --vault-name v --body " + secret},
+		{"an aws streaming body path after =", "aws glacier upload-archive --account-id - --vault-name v --body=" + secret},
+		{"an aws directory upload of /", "aws deploy push --application-name a --s3-location s3://b/k --source /"},
+		{"an aws directory upload of the temp dir", "aws gamelift upload-build --name n --build-version 1 --build-root " + secretDir},
+		{"a gcloud storage cp local source", "gcloud storage cp " + secret + " gs://bucket/x"},
+		{"a recursive gcloud storage cp of /", "gcloud storage cp -r / gs://bucket/x"},
+		{"an az upload-batch source", "az storage blob upload-batch -d c -s " + secretDir},
+		{"an az --source value", "az storage blob upload-batch -d c --source=" + secretDir},
+		{"a key=path pair", "aws ssm send-command --parameters commands=" + secret},
+		{"a relative path that leaves the working directory", "aws glacier upload-archive --account-id - --vault-name v --body " + relSecret},
+		{"a home directory path", "aws glacier upload-archive --account-id - --vault-name v --body ~/.aws/credentials"},
+		{"a log group flag naming a protected file", "aws logs filter-log-events --log-group-name " + secret},
+		{"a directory upload of / after a boolean flag", "gcloud builds submit --async /"},
+		{"a directory upload of the home directory", "aws deploy push --application-name a --s3-location s3://b/k --source ~"},
+		{"a path after a colon", "aws glacier upload-archive --account-id - --vault-name v --body x:" + secret},
+		{"a quoted path", `aws glacier upload-archive --account-id - --vault-name v --body '"` + secret + `"'`},
+		{"a path in brackets", "aws glacier upload-archive --account-id - --vault-name v --body [" + secret + "]"},
+		{"a nested key=value path", "aws ssm send-command --parameters a=b=" + secret},
+		{"a path attached to a short flag", "az deployment group create -g rg -f" + secret},
+		{"a path attached to an unknown short flag", "az storage blob upload-batch -d c -s" + secretDir},
+		{"a symlink in the working directory pointing out of it", "aws glacier upload-archive --account-id - --vault-name v --body link"},
+	}...)
+	require.NoError(t, os.Symlink(secret, filepath.Join(workDir, "link")))
+	for _, path := range []string{"/proc/self/environ", "/proc/1/environ", "/proc/self/root/proc/self/environ", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
+		if _, err := os.Stat(path); err == nil {
+			refused = append(refused, struct{ name, command string }{"an aws body of " + path, "aws glacier upload-archive --account-id - --vault-name v --body " + path})
 		}
-		stdout, _, err := SecureExecutePipeline(context.Background(), opts)
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-		if strings.TrimSpace(stdout) != `"bar"` {
-			t.Errorf(`expected stdout '"bar"', got %q`, stdout)
-		}
-	})
+	}
+	for _, tt := range refused {
+		t.Run("refuses "+tt.name, func(t *testing.T) {
+			args, err := shlex.Split(tt.command)
+			require.NoError(t, err)
+			assert.Error(t, ValidateUntrustedArgs(args, workDir))
+		})
+	}
 
-	t.Run("DisallowedTool", func(t *testing.T) {
-		opts := SecureCommandOptions{
-			Command: `echo "hello" | cat`,
-		}
-		_, _, err := SecureExecutePipeline(context.Background(), opts)
-		if err == nil {
-			t.Fatal("expected an error for disallowed tool, got none")
-		}
-		if !strings.Contains(err.Error(), "tool 'cat' is not allowed") {
-			t.Errorf("expected error about disallowed tool, got %v", err)
-		}
-	})
+	allowed := []struct{ name, command string }{
+		{"a pipe inside a quoted query", `aws logs start-query --query-string 'fields @timestamp, @message | filter level = "error" | limit 20'`},
+		{"a JMESPath query", `aws ec2 describe-instances --query "Reservations[].Instances[] | [0]"`},
+		{"a CloudWatch log group prefix of /", "aws logs describe-log-groups --log-group-name-prefix /"},
+		{"a CloudWatch log group named like a local path", "aws logs filter-log-events --log-group-name /var/log/messages"},
+		{"an Azure resource id", "az monitor metrics list --resource /subscriptions/0000/resourceGroups/rg"},
+		{"a KQL case-insensitive match", `az monitor log-analytics query --workspace w --analytics-query "Heartbeat | where Computer =~ 'vm1'"`},
+		{"a CloudWatch Insights field as an argument", "aws logs get-query-results --query-id @timestamp"},
+		{"a flag ending in file with a plain value", "aws s3 ls --profile default"},
+		{"a path flag naming nothing on disk", "az webapp deploy --src-path ./app.zip"},
+		{"a short flag with a plain value", "az group show -n rg -g rg"},
+		{"a key flag with a secret value", "az storage blob list --account-name a --account-key c2VjcmV0"},
+		{"stdin", "az rest --url https://example.com --body @-"},
+		{"a log group prefix of / after =", "aws logs describe-log-groups --log-group-name-prefix=/"},
+		{"an SSM parameter name that looks like a device path", "aws ssm get-parameter --name /dev/db/password"},
+		{"an SSM parameter path under /run that names nothing on disk", "aws ssm get-parameters-by-path --path /run/app/config"},
+		{"a cloud storage copy between buckets", "gcloud storage cp gs://a/b gs://c/d"},
+		{"a JSON value with a command path", `aws ecs run-task --cluster c --task-definition t --overrides '{"containerOverrides":[{"name":"x","command":["/bin/sh","-c","date"]}]}'`},
+		{"a key=path pair outside protected locations", "aws ssm send-command --document-name AWS-RunShellScript --parameters commands=/usr/bin/uptime"},
+		{"an IAM path prefix of /", "aws iam list-roles --path-prefix /"},
+		{"an S3 delimiter of /", "aws s3api list-objects-v2 --bucket b --delimiter /"},
+		{"a tag value of /", "aws ec2 create-tags --resources i-1 --tags Key=p,Value=/"},
+		{"a KQL case-insensitive equality", `az monitor log-analytics query --workspace w --analytics-query "T | where Name =~ 'x'"`},
+		{"a negative number", "aws cloudwatch get-metric-data --start-time -10"},
+	}
+	for _, tt := range allowed {
+		t.Run("allows "+tt.name, func(t *testing.T) {
+			args, err := shlex.Split(tt.command)
+			require.NoError(t, err)
+			assert.NoError(t, ValidateUntrustedArgs(args, workDir))
+		})
+	}
+}
 
-	t.Run("PipelineStageFailure", func(t *testing.T) {
-		opts := SecureCommandOptions{
-			Command: `echo "hello" | grep non-existent-string`,
-		}
-		stdout, _, err := SecureExecutePipeline(context.Background(), opts)
-		if err == nil {
-			t.Fatal("expected an error from grep, got none")
-		}
-		if stdout != "" {
-			t.Errorf("expected stdout to be empty, got %q", stdout)
-		}
-	})
+// An untrusted command is checked before it runs and starts in an empty
+// directory of its own, so a relative path reaches nothing on the collector.
+func TestSecureExecuteUntrusted(t *testing.T) {
+	_, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: `echo "hello world" | grep hello`, Untrusted: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shell pipes are not supported")
+	assert.False(t, IsCommandOutcome(err), "a refused command never ran")
+
+	stdout, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: "ls -A", Untrusted: true})
+	require.NoError(t, err)
+	assert.Empty(t, stdout)
+
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	stdout, _, err = SecureExecute(context.Background(), SecureCommandOptions{Command: "pwd", Untrusted: true})
+	require.NoError(t, err)
+	assert.NotEqual(t, cwd, strings.TrimSpace(stdout))
+	_, statErr := os.Stat(strings.TrimSpace(stdout))
+	assert.True(t, os.IsNotExist(statErr), "the working directory is removed afterwards")
+
+	// A collector-written command keeps the collector's working directory.
+	stdout, _, err = SecureExecute(context.Background(), SecureCommandOptions{Command: "pwd"})
+	require.NoError(t, err)
+	assert.Equal(t, cwd, strings.TrimSpace(stdout))
 }

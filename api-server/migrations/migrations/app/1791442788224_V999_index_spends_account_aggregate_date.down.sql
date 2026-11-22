@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_spends_tenant_account_aggregate_date;

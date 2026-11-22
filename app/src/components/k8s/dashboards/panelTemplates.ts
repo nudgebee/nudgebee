@@ -418,8 +418,10 @@ export const PANEL_TEMPLATES: PanelTemplate[] = [
       description: 'Individual events at the top two priorities in the selected time range.',
       draft: {
         table: 'events_v2',
-        columns: ['starts_at', 'title', 'priority', 'subject_type', 'subject_name', 'subject_namespace', 'status'],
-        filters: [{ column: 'priority', operator: '_in', value: 'P0, P1' }],
+        // P0–P3 is the platform's triage and lives in computed_priority. `priority` is the alert
+        // source's own wording (HIGH, MEDIUM, …) and never holds a P-value.
+        columns: ['starts_at', 'title', 'computed_priority', 'subject_type', 'subject_name', 'subject_namespace', 'status'],
+        filters: [{ column: 'computed_priority', operator: '_in', value: 'P0, P1' }],
         sortColumn: 'starts_at',
         limit: 25,
       },

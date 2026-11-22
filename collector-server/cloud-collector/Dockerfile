@@ -41,6 +41,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -o /app/cloud-collector-server ./cmd
 
 FROM ${RUNTIME_BASE}
+ARG IMAGE_VERSION=0.0.0
+ARG IMAGE_RELEASE=1
+LABEL name="nudgebee-cloud-collector" \
+      maintainer="nudgebee" \
+      vendor="nudgebee" \
+      version="${IMAGE_VERSION}" \
+      release="${IMAGE_RELEASE}" \
+      summary="Nudgebee cloud collector" \
+      description="Collects cloud provider inventory, cost and configuration data for the Nudgebee platform."
 
 WORKDIR /app
 

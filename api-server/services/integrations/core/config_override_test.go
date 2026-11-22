@@ -164,6 +164,15 @@ func TestConfigOverride_IntegrationNameIsCaseInsensitive(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// TestConfigOverride_IntegrationNameIgnoresSurroundingSpaces: provider resolution
+// trims the requested provider, so a probe naming " es " must match the same lookup.
+func TestConfigOverride_IntegrationNameIgnoresSurroundingSpaces(t *testing.T) {
+	o := sampleOverride()
+	o.IntegrationName = " es "
+	_, ok := configOverrideFor(WithConfigOverride(overrideCtx(t), o), "acc-1", "ES")
+	assert.True(t, ok)
+}
+
 // TestWithConfigOverride_PreservesSecurityContext: the preview must not quietly widen
 // who the caller is — same tenant, same permissions, only the config lookup changes.
 func TestWithConfigOverride_PreservesSecurityContext(t *testing.T) {

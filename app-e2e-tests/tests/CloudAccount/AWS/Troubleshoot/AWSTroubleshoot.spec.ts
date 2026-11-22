@@ -305,6 +305,8 @@ test(
     // the first refusal a person can actually trigger. Asserted here so the default is part of
     // the contract rather than an assumption.
     await expect(dialog.getByRole("tab", { name: "Suppression" })).toHaveAttribute("aria-selected", "true");
+    // Rule Name is validated before the match criterion, so it is filled to reach that branch.
+    await t.dialogField(dialog, "Rule Name").fill(uniqueRuleName());
 
     await t.dialogSubmit(dialog, /^Create Rule$/).click();
 

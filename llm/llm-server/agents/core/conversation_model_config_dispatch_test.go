@@ -3,6 +3,9 @@ package core
 import (
 	"testing"
 
+	"nudgebee/llm/common"
+
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -30,7 +33,7 @@ type blanketCall struct {
 }
 type tierCall struct {
 	conversationID string
-	overrides      ConversationTierOverrides
+	overrides      llmruntime.ConversationTierOverrides
 }
 type configSourceCall struct {
 	conversationID, configSource string
@@ -40,7 +43,7 @@ func (s *modelConfigDaoStub) UpdateConversationModelBlanket(conversationId, prov
 	s.blanketCalls = append(s.blanketCalls, blanketCall{conversationId, provider, model})
 	return s.blanketErr
 }
-func (s *modelConfigDaoStub) UpdateConversationTierOverrides(conversationId string, overrides ConversationTierOverrides) error {
+func (s *modelConfigDaoStub) UpdateConversationTierOverrides(conversationId string, overrides llmruntime.ConversationTierOverrides) error {
 	s.tierCalls = append(s.tierCalls, tierCall{conversationId, overrides})
 	return s.tierErr
 }
@@ -52,7 +55,7 @@ func (s *modelConfigDaoStub) UpdateConversationConfigSource(conversationId, conf
 func TestApplyConversationModelConfig_TierWinsWhenBothSet(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
-	tierOverrides := ConversationTierOverrides{Picks: map[string]TierModelPick{
+	tierOverrides := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
 		"reasoning": {Provider: "googleai", Model: "gemini-2.5-pro"},
 	}}
 
@@ -67,7 +70,7 @@ func TestApplyConversationModelConfig_TierWinsWhenBothSet(t *testing.T) {
 func TestApplyConversationModelConfig_TierOnly(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
-	tierOverrides := ConversationTierOverrides{Picks: map[string]TierModelPick{
+	tierOverrides := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{
 		"retrieval": {Provider: "openai", Model: "gpt-4o-mini"},
 	}}
 
@@ -81,7 +84,7 @@ func TestApplyConversationModelConfig_BlanketOnly(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
 
-	applyConversationModelConfig(ctx, stub, "conv-3", "anthropic", "claude-opus-4-7", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, stub, "conv-3", "anthropic", "claude-opus-4-7", llmruntime.ConversationTierOverrides{}, "", false)
 
 	require.Len(t, stub.blanketCalls, 1, "blanket dispatch must run")
 	assert.Equal(t, "conv-3", stub.blanketCalls[0].conversationID)
@@ -94,7 +97,7 @@ func TestApplyConversationModelConfig_NoopWhenBothEmpty(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
 
-	applyConversationModelConfig(ctx, stub, "conv-4", "", "", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, stub, "conv-4", "", "", llmruntime.ConversationTierOverrides{}, "", false)
 
 	assert.Empty(t, stub.blanketCalls)
 	assert.Empty(t, stub.tierCalls)
@@ -105,7 +108,7 @@ func TestApplyConversationModelConfig_PartialBlanketIgnored(t *testing.T) {
 	stub := &modelConfigDaoStub{}
 
 	// Provider without model — too incomplete to act on (caller's responsibility).
-	applyConversationModelConfig(ctx, stub, "conv-5", "openai", "", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, stub, "conv-5", "openai", "", llmruntime.ConversationTierOverrides{}, "", false)
 
 	assert.Empty(t, stub.blanketCalls, "must not dispatch with half-set blanket pair")
 	assert.Empty(t, stub.tierCalls)
@@ -117,7 +120,7 @@ func TestApplyConversationModelConfig_ConfigSourcePersistsAlongsideBlanket(t *te
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
 
-	applyConversationModelConfig(ctx, stub, "conv-6", "huggingface", "Qwen3.6-35B", ConversationTierOverrides{}, "env:tier:summary", false)
+	applyConversationModelConfig(ctx, stub, "conv-6", "huggingface", "Qwen3.6-35B", llmruntime.ConversationTierOverrides{}, "env:tier:summary", false)
 
 	require.Len(t, stub.configSrcCalls, 1, "pin must be written")
 	assert.Equal(t, "conv-6", stub.configSrcCalls[0].conversationID)
@@ -130,7 +133,7 @@ func TestApplyConversationModelConfig_ConfigSourceWithoutModelPick(t *testing.T)
 	stub := &modelConfigDaoStub{}
 
 	// Pinning a slot without naming a model is legal — the slot's primary serves.
-	applyConversationModelConfig(ctx, stub, "conv-7", "", "", ConversationTierOverrides{}, "db:int-1", false)
+	applyConversationModelConfig(ctx, stub, "conv-7", "", "", llmruntime.ConversationTierOverrides{}, "db:int-1", false)
 
 	require.Len(t, stub.configSrcCalls, 1)
 	assert.Equal(t, "db:int-1", stub.configSrcCalls[0].configSource)
@@ -144,7 +147,7 @@ func TestApplyConversationModelConfig_EmptyConfigSourceIsNoop(t *testing.T) {
 
 	// An unpinned turn must not clear an existing pin — the write only fires
 	// when a source is actually supplied.
-	applyConversationModelConfig(ctx, stub, "conv-8", "openai", "gpt-4o", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, stub, "conv-8", "openai", "gpt-4o", llmruntime.ConversationTierOverrides{}, "", false)
 
 	assert.Empty(t, stub.configSrcCalls, "no pin supplied → no write, so a prior pin survives")
 	require.Len(t, stub.blanketCalls, 1)
@@ -163,7 +166,7 @@ func TestApplyConversationModelConfig_ResetClearsEverything(t *testing.T) {
 	// selection is empty — but assert it wins even if something did tag along,
 	// since a partial clear leaves a state the picker can't render.
 	applyConversationModelConfig(ctx, stub, "conv-9", "openai", "gpt-4o",
-		ConversationTierOverrides{Picks: map[string]TierModelPick{"summary": {Provider: "googleai", Model: "x"}}},
+		llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{"summary": {Provider: "googleai", Model: "x"}}},
 		"db:int-1", true)
 
 	require.Len(t, stub.clearCalls, 1, "reset must clear the stored config")
@@ -177,8 +180,65 @@ func TestApplyConversationModelConfig_NoResetLeavesConfigAlone(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
 	stub := &modelConfigDaoStub{}
 
-	applyConversationModelConfig(ctx, stub, "conv-10", "openai", "gpt-4o", ConversationTierOverrides{}, "", false)
+	applyConversationModelConfig(ctx, stub, "conv-10", "openai", "gpt-4o", llmruntime.ConversationTierOverrides{}, "", false)
 
 	assert.Empty(t, stub.clearCalls, "an ordinary turn must never clear")
 	require.Len(t, stub.blanketCalls, 1)
+}
+
+// The chat UI resends the picked model with every message. Only a pick that
+// matches what the conversation stores is skipped; anything that would change
+// the row is still written.
+func TestConversationModelUnchanged(t *testing.T) {
+	str := func(s string) *string { return &s }
+	stored := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o")}
+	withSource := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o"), LlmConfigSource: str("db:int-1")}
+	withTiers := Conversation{LlmProvider: str("openai"), LlmModel: str("gpt-4o"), LlmTierOverrides: &llmruntime.ConversationTierOverrides{
+		Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "anthropic", Model: "claude-opus-4-7"}},
+	}}
+	tierPick := llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "openai", Model: "gpt-4o"}}}
+	none := llmruntime.ConversationTierOverrides{}
+
+	cases := []struct {
+		name     string
+		conv     Conversation
+		provider string
+		model    string
+		tiers    llmruntime.ConversationTierOverrides
+		source   string
+		reset    bool
+		want     bool
+	}{
+		{"same blanket pick", stored, "openai", "gpt-4o", none, "", false, true},
+		{"same pick and same config source", withSource, "openai", "gpt-4o", none, "db:int-1", false, true},
+		{"different model", stored, "openai", "gpt-4o-mini", none, "", false, false},
+		{"different provider", stored, "azure", "gpt-4o", none, "", false, false},
+		{"new config source", stored, "openai", "gpt-4o", none, "db:int-1", false, false},
+		{"stored tier picks the blanket write would clear", withTiers, "openai", "gpt-4o", none, "", false, false},
+		{"tier picks in the request", stored, "openai", "gpt-4o", tierPick, "", false, false},
+		{"reset", stored, "openai", "gpt-4o", none, "", true, false},
+		{"no model in the request", stored, "", "", none, "", false, false},
+		{"nothing stored yet", Conversation{}, "openai", "gpt-4o", none, "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, conversationModelUnchanged(tc.conv, tc.provider, tc.model, tc.tiers, tc.source, tc.reset))
+		})
+	}
+}
+
+// A turn that pins a config source and picks a model writes two columns but
+// tells the other replicas once.
+func TestApplyConversationModelConfig_BroadcastsOncePerCall(t *testing.T) {
+	var broadcasts [][]string
+	t.Cleanup(common.OnReplicaBroadcast(common.ChangeConversationOverride, common.ReplicaHandler{
+		OnKeys: func(keys []string) { broadcasts = append(broadcasts, keys) },
+		OnAll:  func() {},
+	}))
+	ctx := security.NewRequestContextForSuperAdmin()
+	stub := &modelConfigDaoStub{}
+
+	applyConversationModelConfig(ctx, stub, "conv-once", "openai", "gpt-4o", llmruntime.ConversationTierOverrides{}, "db:int-1", false)
+
+	assert.Equal(t, [][]string{{"conv-once"}}, broadcasts)
 }

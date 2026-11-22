@@ -34,7 +34,25 @@ type PropertyDef struct {
 	// Required marks an identity/always-present field, enforced by the conformance
 	// test (real nodes of this type must carry it).
 	Required bool
+	// Shape is the JSON shape the source stores the value in, declared where it
+	// is not a scalar. A hand-declared node's value must have the same shape
+	// (see SchemaProperties).
+	Shape PropertyShape
 }
+
+// PropertyShape is the JSON shape of a property's value.
+type PropertyShape string
+
+const (
+	// PropertyShapeScalar (the zero value): a string, number or boolean.
+	PropertyShapeScalar PropertyShape = ""
+	// PropertyShapeMap: an object of string values, e.g. Kubernetes annotations.
+	PropertyShapeMap PropertyShape = "map"
+	// PropertyShapeList: a list of strings, e.g. subnet ids.
+	PropertyShapeList PropertyShape = "list"
+	// PropertyShapeRecords: a list of objects, e.g. a Kubernetes Service's ports.
+	PropertyShapeRecords PropertyShape = "records"
+)
 
 // SpecificTypeSchema is the fixed concrete-property schema for one specific_type,
 // grouped under the ontology NodeType it rolls up to.

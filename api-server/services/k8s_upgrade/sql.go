@@ -14,7 +14,14 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func GetAccountDetails(accountID string) (AccountDetails, error) {
+// ErrNotFound is returned when a plan, step or task id does not resolve to the
+// caller's tenant and account. Handlers map it to 404 so a foreign id is
+// indistinguishable from a missing one.
+var ErrNotFound = errors.New("not found")
+
+// GetAccountDetails scopes the lookup to the caller's tenant: the agent row
+// carries no tenant of its own, so it is joined to cloud_accounts.
+func GetAccountDetails(ctx *security.RequestContext, accountID string) (AccountDetails, error) {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return AccountDetails{}, fmt.Errorf("failed to get database manager: %w", err)
@@ -22,8 +29,11 @@ func GetAccountDetails(accountID string) (AccountDetails, error) {
 
 	var details AccountDetails
 	err = databaseManager.Db.Get(&details, `
-		SELECT type, status, COALESCE(k8s_version, '') as k8s_version, COALESCE(k8s_provider, '') as k8s_provider
-		FROM agent WHERE cloud_account_id = $1 AND type = 'k8s'`, accountID)
+		SELECT a.type, a.status, COALESCE(a.k8s_version, '') as k8s_version, COALESCE(a.k8s_provider, '') as k8s_provider
+		FROM agent a
+		JOIN cloud_accounts ca ON ca.id = a.cloud_account_id
+		WHERE a.cloud_account_id = $1 AND a.type = 'k8s' AND ca.tenant = NULLIF($2, '')::uuid`,
+		accountID, ctx.GetSecurityContext().GetTenantId())
 	if err != nil {
 		return AccountDetails{}, fmt.Errorf("failed to fetch account details: %w", err)
 	}
@@ -423,6 +433,10 @@ func UpsertTask(ctx *security.RequestContext, tenantID string, request TaskUpser
 		}
 	}()
 
+	if err = verifyTaskUpsertScope(tx, tenantID, request); err != nil {
+		return err
+	}
+
 	var setClauses []string
 	var updatedFields []string
 	args := []interface{}{request.TaskID}
@@ -517,6 +531,90 @@ func UpsertTask(ctx *security.RequestContext, tenantID string, request TaskUpser
 	}
 
 	return nil
+}
+
+// planScope is the join every plan/step/task id must resolve through: the plan
+// has to belong to the caller's tenant and account.
+type planScopeQuerier interface {
+	Get(dest interface{}, query string, args ...interface{}) error
+}
+
+func planScopeExists(q planScopeQuerier, query string, args ...interface{}) (bool, error) {
+	var found bool
+	if err := q.Get(&found, "SELECT EXISTS ("+query+")", args...); err != nil {
+		return false, fmt.Errorf("failed to verify upgrade plan scope: %w", err)
+	}
+	return found, nil
+}
+
+// verifyPlanScope checks that every non-empty plan/step/task id belongs to a
+// plan of tenantID + accountID, and that they belong to each other. A mismatch
+// returns ErrNotFound.
+func verifyPlanScope(q planScopeQuerier, tenantID, accountID, planID, stepID, taskID string) error {
+	if planID != "" {
+		ok, err := planScopeExists(q, `SELECT 1 FROM upgrade_plan p WHERE p.id = $1::uuid AND p.tenant_id = NULLIF($2, '')::uuid AND p.account_id = $3::uuid`,
+			planID, tenantID, accountID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("upgrade plan %s: %w", planID, ErrNotFound)
+		}
+	}
+	if stepID != "" {
+		ok, err := planScopeExists(q, `SELECT 1 FROM upgrade_plan_steps s JOIN upgrade_plan p ON p.id = s.plan_id
+			WHERE s.id = $1::uuid AND p.tenant_id = NULLIF($2, '')::uuid AND p.account_id = $3::uuid AND ($4 = '' OR p.id = NULLIF($4, '')::uuid)`,
+			stepID, tenantID, accountID, planID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("upgrade plan step %s: %w", stepID, ErrNotFound)
+		}
+	}
+	if taskID != "" {
+		ok, err := planScopeExists(q, `SELECT 1 FROM upgrade_plan_tasks t
+			JOIN upgrade_plan_steps s ON s.id = t.step_id JOIN upgrade_plan p ON p.id = s.plan_id
+			WHERE t.id = $1::uuid AND p.tenant_id = NULLIF($2, '')::uuid AND p.account_id = $3::uuid
+			AND ($4 = '' OR p.id = NULLIF($4, '')::uuid) AND ($5 = '' OR s.id = NULLIF($5, '')::uuid)`,
+			taskID, tenantID, accountID, planID, stepID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("upgrade plan task %s: %w", taskID, ErrNotFound)
+		}
+	}
+	return nil
+}
+
+// VerifyPlanScope is verifyPlanScope against the metastore, for callers that
+// run commands or store results keyed by plan/step/task id.
+func VerifyPlanScope(tenantID, accountID, planID, stepID, taskID string) error {
+	dbm, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return fmt.Errorf("failed to get database manager: %w", err)
+	}
+	return verifyPlanScope(dbm.Db, tenantID, accountID, planID, stepID, taskID)
+}
+
+// verifyTaskUpsertScope scopes an upsert to the caller's plans. An existing task
+// id must already belong to them (a foreign task id is 404, not an insert), and
+// the step the task hangs off must too.
+func verifyTaskUpsertScope(tx *sqlx.Tx, tenantID string, request TaskUpsertRequest) error {
+	if request.TaskID != "" {
+		var exists bool
+		if err := tx.Get(&exists, `SELECT EXISTS (SELECT 1 FROM upgrade_plan_tasks WHERE id = $1::uuid)`, request.TaskID); err != nil {
+			return fmt.Errorf("failed to look up task: %w", err)
+		}
+		if exists {
+			// plan/step in the request are caller-supplied; the task alone must resolve.
+			if err := verifyPlanScope(tx, tenantID, request.AccountID, "", "", request.TaskID); err != nil {
+				return err
+			}
+		}
+	}
+	return verifyPlanScope(tx, tenantID, request.AccountID, request.PlanID, request.StepID, "")
 }
 
 func RecordUpsertActivity(userID, tenantID, operation string, request TaskUpsertRequest, tx *sqlx.Tx, updates []string) error {
@@ -696,10 +794,13 @@ func getCloudAccountAttributes(ctx *security.RequestContext, accountID string) (
 	}
 
 	if accountNumber, exists := attributes["k8s_provider_account_number"]; exists && accountNumber != "" {
-		cloudAccountQuery := `select id from cloud_accounts where account_number = $1`
+		// account_number is not unique across tenants; pin the lookup to the
+		// tenant that owns the k8s account being checked.
+		cloudAccountQuery := `select id from cloud_accounts where account_number = $1
+			and tenant = (select tenant from cloud_accounts where id = $2::uuid)`
 
 		var cloudAccountID string
-		err := databaseManager.Db.QueryRowx(cloudAccountQuery, accountNumber).Scan(&cloudAccountID)
+		err := databaseManager.Db.QueryRowx(cloudAccountQuery, accountNumber, accountID).Scan(&cloudAccountID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query cloud account ID for account_number %s: %w", accountNumber, err)
 		}

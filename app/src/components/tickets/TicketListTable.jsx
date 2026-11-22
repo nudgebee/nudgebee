@@ -13,8 +13,10 @@ import CopyButton from '@shared/buttons/CopyButton';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import ticketsApi from '@api1/tickets';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import { Link } from '@ui/Link';
+import { Skeleton } from '@ui/Skeleton';
 import { SeverityIcon } from '@ui/SeverityIcon';
 import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
@@ -23,6 +25,52 @@ import { ds } from '@utils/colors';
 
 // Leading provider icon for each cloud-provider group header in the Account filter.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
+
+// A comment attachment image proxied through our own API can take a few
+// seconds (GraphQL resolution + fetch server-side for GitHub, see
+// ticket-server's GetAttachment) - show a placeholder until it actually loads
+// instead of a blank gap.
+
+const ATTACHMENT_IMAGE_WIDTH = 720;
+
+const AttachmentImage = ({ src, alt }) => {
+  const [status, setStatus] = useState('loading');
+  return (
+    <Box sx={{ width: ATTACHMENT_IMAGE_WIDTH, maxWidth: '100%', margin: 'var(--ds-space-2) 0' }}>
+      {status === 'loading' && <Skeleton shape='rect' width={ATTACHMENT_IMAGE_WIDTH} height={180} />}
+      {status !== 'error' && (
+        // eslint-disable-next-line @next/next/no-img-element -- remote attachment proxied through our own API, not a static asset
+        <img
+          src={src}
+          alt={alt}
+          // No loading='lazy' here: it's viewport-intersection-based, and this
+          // element is display:none until loaded - no layout box to
+          // intersect, so Chrome never triggers the fetch and onLoad/onError
+          // never fire. We already gate visibility ourselves via `status`.
+          referrerPolicy='no-referrer'
+          onLoad={() => setStatus('loaded')}
+          onError={() => setStatus('error')}
+          style={{
+            display: status === 'loaded' ? 'block' : 'none',
+            maxWidth: '100%',
+            height: 'auto',
+            borderRadius: 'var(--ds-radius-lg)',
+          }}
+        />
+      )}
+      {status === 'error' && (
+        <Typography variant='caption' sx={{ color: 'var(--ds-gray-600)' }}>
+          {alt} (failed to load)
+        </Typography>
+      )}
+    </Box>
+  );
+};
+
+AttachmentImage.propTypes = {
+  src: PropTypes.string.isRequired,
+  alt: PropTypes.string,
+};
 
 const TICKET_HEADERS = [
   { name: 'Ticket ID', width: '10%' },
@@ -65,10 +113,41 @@ const PRIORITY_TO_DS_LEVEL = {
 const toDsSeverityLevel = (priority) => PRIORITY_TO_DS_LEVEL[String(priority || '').toLowerCase()] || 'info';
 
 // Platforms whose ticket detail panel shows an inline comment thread/composer.
-// Other platforms (PagerDuty, GitHub, GitLab, Zendesk, ...) fall through to the
-// "Comments are managed in {tool}" link-out, even though the backend already
-// implements GetComments/AddComment for several of them.
-const INLINE_COMMENT_PLATFORMS = ['jira', 'servicenow'];
+// All seven ticketing integrations now implement GetComments/AddComment backend-side.
+const INLINE_COMMENT_PLATFORMS = ['jira', 'servicenow', 'pagerduty', 'github', 'freshdesk', 'zenduty', 'gitlab'];
+
+// Marks where an attachment sat in the original comment text - shared by
+// GitHub (extractGithubUserAttachments) and Jira (fetchCommentsFromJira) in
+// ticket-server/services/tools/*.go. Splitting on it (capture group included)
+// lets the image render inline, in place, instead of always trailing the
+// full comment text.
+const ATTACHMENT_MARKER_RE = /\[\[nb-attachment:([^\]]+)\]\]/g;
+
+// GitHub auto-links a bare "#123" to the same-repo issue/PR (github.com's own
+// rendering, not part of markdown) - a generic markdown renderer has no
+// notion of this, so a dynamic field like "Parent / epic: #41396" renders as
+// plain text instead of a real link. Only a standalone "#123" (not glued to
+// a word, e.g. "something#123", and not followed by more word chars, e.g.
+// "#123something") matches, same as GitHub's own autolinker - so a *bare*
+// "#123456" in prose still linkifies even if it was meant as a hex color
+// (GitHub does the same). Code fences/spans are split out first so that
+// token is left alone specifically when it sits inside actual code (a CSS
+// block, a `#define`, ...), which is the one case worth protecting; the
+// lookbehind also keeps "C#123" or an existing "##123" from matching.
+const CODE_SPAN_OR_FENCE_RE = /(```[\s\S]*?```|`[^`]*`)/g;
+const BARE_ISSUE_REF_RE = /(?<![\w#/])#(\d+)\b/g;
+
+const linkifyGithubIssueRefs = (text, projectKey) => {
+  if (!text || !projectKey) {
+    return text;
+  }
+  return text
+    .split(CODE_SPAN_OR_FENCE_RE)
+    .map((part, i) =>
+      i % 2 === 1 ? part : part.replace(BARE_ISSUE_REF_RE, (_match, num) => `[#${num}](https://github.com/${projectKey}/issues/${num})`)
+    )
+    .join('');
+};
 
 const TicketDetailsComponent = ({ ticketData, accountsData }) => {
   const platform = ticketData?.platform?.toLowerCase();
@@ -143,6 +222,98 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
     }
   };
 
+  // Builds the fetchable src for a comment attachment: a direct URL (Freshdesk)
+  // is used as-is; an opaque id (ServiceNow/Jira) is resolved through our own
+  // proxy, since those platforms require backend-held credentials the browser
+  // doesn't have.
+  const attachmentSrc = (attachment) => {
+    if (attachment.url) {
+      return attachment.url;
+    }
+    if (!attachment.id) {
+      return null;
+    }
+    const params = new URLSearchParams({
+      account_id: ticketData.account_id,
+      integration_id: ticketData.integration_id,
+      source: platform,
+      ticket_id: ticketData.ticket_id,
+      attachment_id: attachment.id,
+    });
+    return `/api/tickets/attachment?${params.toString()}`;
+  };
+
+  // Shared by both the inline (GitHub) and trailing (ServiceNow/Jira/Freshdesk)
+  // attachment rendering paths.
+  const renderAttachmentNode = (attachment, key) => {
+    const src = attachmentSrc(attachment);
+    const isImage = (attachment.content_type || '').startsWith('image/');
+    if (isImage && src) {
+      return <AttachmentImage key={key} src={src} alt={attachment.name} />;
+    }
+    return src ? (
+      <Link key={key} href={src} target='_blank' rel='noopener noreferrer'>
+        {attachment.name}
+      </Link>
+    ) : (
+      <Typography key={key} variant='caption' sx={{ color: 'var(--ds-gray-600)' }}>
+        {attachment.name}
+      </Typography>
+    );
+  };
+
+  // Splits text/attachment segments on [[nb-attachment:<id>]] markers and
+  // renders each in original order, instead of text-then-all-images.
+  // `renderText` controls how a non-attachment segment renders - GitHub
+  // bodies are GFM markdown (render via MarkDowns), Jira bodies are wiki-markup
+  // (not GFM - would render wrong through a markdown parser, so plain text).
+  // Any attachment whose marker isn't found in the text (shouldn't normally
+  // happen) is appended at the end as a fallback so it's never silently dropped.
+  const renderCommentBodyWithInlineAttachments = (comment, renderText) => {
+    const attachmentsById = new Map((comment.attachments || []).map((a) => [a.id, a]));
+    const seenIds = new Set();
+    const parts = (comment.comment || '').split(ATTACHMENT_MARKER_RE);
+
+    const nodes = parts
+      .map((part, i) => {
+        if (i % 2 === 1) {
+          const attachment = attachmentsById.get(part);
+          if (!attachment) {
+            return null;
+          }
+          seenIds.add(attachment.id);
+          return renderAttachmentNode(attachment, `att-${i}`);
+        }
+        if (!part) {
+          return null;
+        }
+        return renderText(part, i);
+      })
+      .filter(Boolean);
+
+    (comment.attachments || []).forEach((attachment) => {
+      if (!seenIds.has(attachment.id)) {
+        nodes.push(renderAttachmentNode(attachment, `orphan-${attachment.id}`));
+      }
+    });
+
+    return nodes.length > 0 ? nodes : 'No content';
+  };
+
+  const renderMarkdownSegment = (part, i) => (
+    <MarkDowns key={`txt-${i}`} data={part} sx={{ p: 0, maxHeight: 'none', fontSize: 'var(--ds-text-body) !important' }} />
+  );
+
+  const renderPlainTextSegment = (part, i) => (
+    <Typography
+      key={`txt-${i}`}
+      variant='body2'
+      sx={{ whiteSpace: 'pre-wrap', color: 'var(--ds-gray-700)', lineHeight: 1.5, fontSize: 'var(--ds-text-body)' }}
+    >
+      {part}
+    </Typography>
+  );
+
   // Get account name from pre-loaded accounts data
   const getAccountName = () => {
     if (!ticketData?.account_id || !accountsData) {
@@ -201,6 +372,21 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
             Description
           </Typography>
           {(() => {
+            // GitHub descriptions are GFM markdown (### headings, the dynamic
+            // issue-form answers) - render via MarkDowns, same as GitHub
+            // comments below, instead of dumping the raw "### Heading" text.
+            // Unlike the comment thread (maxHeight: 'none' - already scrolls
+            // via its own list), this sits in a two-column grid next to the
+            // much shorter Additional Details card - a form with several
+            // dynamic fields can grow long, so it stays scrollable (under
+            // MarkDowns' own 500px default) instead of unbounded, so the two
+            // columns stay roughly balanced.
+            if (platform === 'github') {
+              const description = ticketData?.description
+                ? linkifyGithubIssueRefs(ticketData.description, ticketData?.project_key)
+                : 'No description available';
+              return <MarkDowns data={description} sx={{ p: 0, maxHeight: ds.space.mul(0, 150) }} />;
+            }
             const parsedData = parseDescription(ticketData?.description);
             if (parsedData.length > 0) {
               return (
@@ -414,17 +600,62 @@ const TicketDetailsComponent = ({ ticketData, accountsData }) => {
                                 </Typography>
                               )}
                             </Box>
-                            <Typography
-                              variant='body2'
-                              sx={{
-                                whiteSpace: 'pre-wrap',
-                                color: 'var(--ds-gray-700)',
-                                lineHeight: 1.5,
-                                fontSize: 'var(--ds-text-body)',
-                              }}
-                            >
-                              {comment.comment || 'No content'}
-                            </Typography>
+                            {platform === 'github' || platform === 'jira' || platform === 'freshdesk' ? (
+                              // Text and attachments are interleaved in original order via
+                              // [[nb-attachment:<id>]] markers - see renderCommentBodyWithInlineAttachments.
+                              renderCommentBodyWithInlineAttachments(comment, platform === 'github' ? renderMarkdownSegment : renderPlainTextSegment)
+                            ) : platform === 'gitlab' ? (
+                              // No attachment extraction for GitLab - an unembeddable image
+                              // (see GitLabService.GetAttachment) is rewritten to a markdown
+                              // link in place server-side, so this just needs real markdown
+                              // rendering for that link to be clickable, not literal text.
+                              comment.comment ? (
+                                <MarkDowns data={comment.comment} sx={{ p: 0, maxHeight: 'none', fontSize: 'var(--ds-text-body) !important' }} />
+                              ) : (
+                                <Typography variant='body2' sx={{ color: 'var(--ds-gray-700)', lineHeight: 1.5, fontSize: 'var(--ds-text-body)' }}>
+                                  No content
+                                </Typography>
+                              )
+                            ) : (
+                              <>
+                                {comment.comment ? (
+                                  <Typography
+                                    variant='body2'
+                                    sx={{
+                                      whiteSpace: 'pre-wrap',
+                                      color: 'var(--ds-gray-700)',
+                                      lineHeight: 1.5,
+                                      fontSize: 'var(--ds-text-body)',
+                                    }}
+                                  >
+                                    {comment.comment}
+                                  </Typography>
+                                ) : (
+                                  !comment.attachments?.length && (
+                                    <Typography
+                                      variant='body2'
+                                      sx={{ color: 'var(--ds-gray-700)', lineHeight: 1.5, fontSize: 'var(--ds-text-body)' }}
+                                    >
+                                      No content
+                                    </Typography>
+                                  )
+                                )}
+                                {comment.attachments?.length > 0 && (
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      flexWrap: 'wrap',
+                                      gap: 'var(--ds-space-2)',
+                                      mt: comment.comment ? 'var(--ds-space-2)' : 0,
+                                    }}
+                                  >
+                                    {comment.attachments.map((attachment, idx) =>
+                                      renderAttachmentNode(attachment, attachment.id || attachment.url || `${comment.created_at}-${idx}`)
+                                    )}
+                                  </Box>
+                                )}
+                              </>
+                            )}
                           </Box>
                         </Box>
                       </Box>

@@ -1,12 +1,13 @@
 import MarkDowns from '@shared/viewers/MarkDowns';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { getTableDataFromArrayOfObject } from '@lib/util';
 import PropTypes from 'prop-types';
-import React, { useCallback } from 'react';
+import React, { useCallback, useContext } from 'react';
 import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import CodeAnalysisRenderer, { isCodeAnalysisShape } from './code-analysis/CodeAnalysisRenderer';
 import AgentChart from './AgentChart';
+import { CitationClickContext, citationChipSx, parseCitationHref } from '../utils/citationLinks';
 
 // Matches an agent-emitted ```nb-chart fenced block and captures its JSON body.
 // The agent embeds these to render an inline chart alongside its tables.
@@ -51,6 +52,21 @@ const renderMarkdownWithCharts = (text, markDownProps, onLinkClick) => {
     parts.push(<MarkDowns key={`md-${i}`} data={after} sx={markDownProps} onLinkClick={onLinkClick} />);
   }
   return <>{parts}</>;
+};
+
+/** A dashboard definition as the dashboard builder answers: `{ title, definition: { panels: [...] } }`. */
+const isDashboardDefinition = (json) =>
+  !!json && typeof json === 'object' && typeof json.title === 'string' && Array.isArray(json.definition?.panels);
+
+const dashboardSummaryMarkdown = (dashboard) => {
+  const panels = dashboard.definition.panels;
+  const lines = [`**${dashboard.title}** — ${panels.length} panel${panels.length === 1 ? '' : 's'}`];
+  if (dashboard.description) lines.push('', dashboard.description);
+  lines.push('', ...panels.map((p) => `- ${p?.title || 'Untitled panel'}${p?.type ? ` (${p.type})` : ''}`));
+  if (Array.isArray(dashboard.warnings) && dashboard.warnings.length > 0) {
+    lines.push('', '**Changed while checking:**', ...dashboard.warnings.map((w) => `- ${w}`));
+  }
+  return lines.join('\n');
 };
 
 /**
@@ -184,6 +200,15 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         return false;
       }
 
+      // A step citation is resolved by the stream from the answer's own steps. An old
+      // step-number citation is not guessed at: the stream opens the step list instead.
+      const citation = parseCitationHref(href);
+      if (citation && onNavigateToTask) {
+        const direct = citation.rowId ? matchToolCall(href, linkText, messages) : null;
+        onNavigateToTask(groupIndex, direct ? direct.originalIndex : null, citation);
+        return true;
+      }
+
       // Try to find a matching tool call and navigate to its task card
       const matched = matchToolCall(href, linkText, messages);
       if (matched && onNavigateToTask) {
@@ -196,7 +221,12 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
     [messages, onNavigateToTask, groupIndex]
   );
 
-  const onLinkClickProp = messages.length > 0 ? handleLinkClick : undefined;
+  // Without the conversation's messages (an answer shown inside Tool Details), a citation is
+  // opened by the drawer around it, when there is one.
+  const openCitationInDrawer = useContext(CitationClickContext);
+  const onLinkClickProp = messages.length > 0 ? handleLinkClick : openCitationInDrawer || undefined;
+  // Step citations read as chips only where a click opens them.
+  const chipSx = onLinkClickProp ? citationChipSx : {};
 
   const renderContent = () => {
     if (!toolCall.text || (typeof toolCall.text === 'string' && toolCall.text.trim() === '')) {
@@ -247,10 +277,11 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         throw new Error('parsed JSON is a primitive; render as markdown');
       }
 
-      // Code analysis (agent_code_2) — render with purpose-built sections instead of a generic table.
+      // Code analysis (code_analyzer; agent_code_2 is the legacy name kept for
+      // pre-rename conversation history) — render with purpose-built sections instead of a generic table.
       // Sniff on agent name AND payload shape so we don't accidentally match other agents that happen
       // to return a `title` field.
-      if (toolCall.agentName === 'agent_code_2' && isCodeAnalysisShape(jsonParsed)) {
+      if ((toolCall.agentName === 'code_analyzer' || toolCall.agentName === 'agent_code_2') && isCodeAnalysisShape(jsonParsed)) {
         return <CodeAnalysisRenderer data={jsonParsed} onLinkClick={onLinkClickProp} />;
       }
 
@@ -276,6 +307,15 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
           >
             <code>{formattedJson}</code>
           </pre>
+        );
+      }
+
+      // A generated dashboard (Dashboards → Generate with Nubi): summarise it
+      // rather than flattening the definition into a table. The conversation's
+      // "Open as dashboard" button opens the real thing.
+      if (isDashboardDefinition(jsonParsed)) {
+        return (
+          <MarkDowns data={dashboardSummaryMarkdown(jsonParsed)} sx={{ width: '100%', overflowX: 'auto', p: 0 }} onLinkClick={onLinkClickProp} />
         );
       }
 
@@ -317,10 +357,8 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         </pre>
       );
     } catch {
-      return renderMarkdownWithCharts(cleanedText, { maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
+      return renderMarkdownWithCharts(cleanedText, { ...chipSx, maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
     }
-
-    return renderMarkdownWithCharts(cleanedText, { width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
   };
 
   return <>{renderContent()}</>;

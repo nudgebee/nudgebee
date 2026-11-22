@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -243,7 +244,7 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	// server's, not the caller's. Note PATH is also reserved; the request
 	// can append extra variables but not redefine where files land.
 	cmd.Env = []string{
-		"PATH=/usr/local/go/bin:/usr/local/bin:/app/google-cloud-sdk/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"PATH=/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
 		fmt.Sprintf("HOME=%s", workDir),
 		fmt.Sprintf("PWD=%s", workDir),
 		fmt.Sprintf("TMPDIR=%s", workDir),
@@ -296,6 +297,9 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	if err != nil {
 		resp.CommandStatus = "failed"
 		resp.Error = err.Error()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			resp.Error = fmt.Sprintf("command stopped at the %s workspace time limit (%v). Narrow it (a shorter time window, a filter, a limit) instead of running it again unchanged", timeout, err)
+		}
 	} else {
 		resp.CommandStatus = "success"
 	}

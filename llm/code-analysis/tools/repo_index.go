@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -201,7 +202,11 @@ func findModuleRoots(repoDir string) []ModuleRoot {
 				dir := filepath.Dir(rel)
 				if !seenDirs[dir] {
 					seenDirs[dir] = true
-					roots = append(roots, ModuleRoot{Path: dir, Kind: m.kind, Build: m.build})
+					build := m.build
+					if m.file == "package.json" && !packageJSONHasBuildScript(path) {
+						build = ""
+					}
+					roots = append(roots, ModuleRoot{Path: dir, Kind: m.kind, Build: build})
 				}
 				break // one kind per dir is enough
 			}
@@ -209,6 +214,39 @@ func findModuleRoots(repoDir string) []ModuleRoot {
 		return nil
 	})
 	return roots
+}
+
+// packageJSONHasBuildScript reports whether a package manifest defines a `build`
+// script. `npm run build` in a package without one fails for a reason that has
+// nothing to do with the code under analysis, and that failure reads as "the
+// change broke the build" — which is answered by adding a build script nobody
+// asked for. Such a module has no build command; it is reported as unverified.
+func packageJSONHasBuildScript(manifestPath string) bool {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return false
+	}
+	var manifest struct {
+		Scripts map[string]json.RawMessage `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return false
+	}
+	_, defined := manifest.Scripts["build"]
+	return defined
+}
+
+// moduleLine renders one module for a prompt. A module with no build command is
+// listed without a verify command rather than with a guessed one.
+func moduleLine(m ModuleRoot) string {
+	loc := m.Path
+	if loc == "." {
+		loc = "<repo root>"
+	}
+	if m.Build == "" {
+		return fmt.Sprintf("  - %s (%s) — no build command defined\n", loc, m.Kind)
+	}
+	return fmt.Sprintf("  - %s (%s) — verify: cd %s && %s\n", loc, m.Kind, m.Path, m.Build)
 }
 
 // FormatFacts returns just the stable repository facts (modules with their
@@ -222,11 +260,7 @@ func (idx *RepoIndex) FormatFacts() string {
 	if len(idx.ModuleRoots) > 0 {
 		b.WriteString("Modules (build/verify from the module's directory, not the repo root):\n")
 		for _, m := range idx.ModuleRoots {
-			loc := m.Path
-			if loc == "." {
-				loc = "<repo root>"
-			}
-			fmt.Fprintf(&b, "  - %s (%s) — verify: cd %s && %s\n", loc, m.Kind, m.Path, m.Build)
+			b.WriteString(moduleLine(m))
 		}
 	}
 	if len(idx.ConfigFiles) > 0 {
@@ -267,11 +301,7 @@ func (idx *RepoIndex) FormatAsContext() string {
 	if len(idx.ModuleRoots) > 0 {
 		b.WriteString("Modules (build/verify a fix from the module's directory, not the repo root):\n")
 		for _, m := range idx.ModuleRoots {
-			loc := m.Path
-			if loc == "." {
-				loc = "<repo root>"
-			}
-			fmt.Fprintf(&b, "  - %s (%s) — verify: cd %s && %s\n", loc, m.Kind, m.Path, m.Build)
+			b.WriteString(moduleLine(m))
 		}
 	}
 

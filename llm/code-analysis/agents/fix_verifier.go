@@ -66,7 +66,11 @@ func (r VerificationResult) Evidence() string {
 	var b strings.Builder
 	for _, s := range r.Steps {
 		if s.Skipped {
-			fmt.Fprintf(&b, "SKIPPED (cd %s && %s): %s\n", s.Dir, s.Command, s.SkipReason)
+			if s.Command == "" {
+				fmt.Fprintf(&b, "SKIPPED (%s): %s\n", s.Dir, s.SkipReason)
+			} else {
+				fmt.Fprintf(&b, "SKIPPED (cd %s && %s): %s\n", s.Dir, s.Command, s.SkipReason)
+			}
 			continue
 		}
 		verdict := "PASSED"
@@ -285,9 +289,25 @@ func (v *FixVerifier) Verify(ctx context.Context, workspaceDir string, buildCfg 
 	}
 	if !ranAny && result.Status == VerificationVerified {
 		result.Status = VerificationUnverified
-		result.Reason = "all affected modules were skipped (toolchain or dependencies unavailable in this environment)"
+		result.Reason = "all affected modules were skipped: " + skipReasons(result.Steps)
 	}
 	return result
+}
+
+// skipReasons lists why steps were skipped, each reason once, in the order met.
+// A module with no build command and a module whose toolchain is missing are
+// both skipped; the reader should be told which it was.
+func skipReasons(steps []VerificationStep) string {
+	var reasons []string
+	seen := map[string]bool{}
+	for _, s := range steps {
+		if !s.Skipped || seen[s.SkipReason] {
+			continue
+		}
+		seen[s.SkipReason] = true
+		reasons = append(reasons, s.SkipReason)
+	}
+	return strings.Join(reasons, "; ")
 }
 
 // recoverScopedBuild retries a failed whole-module Go build against only the

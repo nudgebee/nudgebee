@@ -3,6 +3,7 @@ import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
+import { Callout } from '@ui/Callout';
 import Text from '@shared/format/Text';
 import { toast as snackbar } from '@ui/Toast';
 import apiOwnership from '@api1/ownership';
@@ -45,6 +46,9 @@ export default function AssignOwnerModal({ open, onClose, resourceType, resource
   }, [open, resourceType, resourceKey]);
 
   const hasDirectOwner = effective && effective.found && effective.via === 'self' && effective.source === 'manual';
+  // The resolver ignores an owner set on a resource it does not hold as active, so a
+  // save here would report success and leave the resource unowned. Say so instead.
+  const notActive = !!effective?.no_active_resource;
 
   const finish = (didChange) => {
     if (didChange && onChange) onChange();
@@ -94,7 +98,7 @@ export default function AssignOwnerModal({ open, onClose, resourceType, resource
       <DsButton tone='secondary' size='md' onClick={() => finish(false)} disabled={saving} id='owner-cancel'>
         Cancel
       </DsButton>
-      <DsButton tone='primary' size='md' onClick={handleSave} disabled={!picked} loading={saving} id='owner-save'>
+      <DsButton tone='primary' size='md' onClick={handleSave} disabled={!picked || loading || notActive} loading={saving} id='owner-save'>
         Save
       </DsButton>
     </Box>
@@ -114,7 +118,11 @@ export default function AssignOwnerModal({ open, onClose, resourceType, resource
           <Text value='Effective owner' secondaryText />
           <Box sx={{ mt: 0.5 }}>{loading ? <Text value='Resolving…' secondaryText /> : <OwnerBadge owner={effective} />}</Box>
         </Box>
-        {canWrite ? (
+        {canWrite && notActive ? (
+          <Box data-testid='assign-owner-not-active'>
+            <Callout tone='warning' message='This resource is no longer active, so an owner assigned to it would not take effect.' />
+          </Box>
+        ) : canWrite ? (
           <Box>
             <OwnerPicker value={picked} onChange={setPicked} id='assign-owner-picker' />
             <Box sx={{ mt: 0.5 }}>

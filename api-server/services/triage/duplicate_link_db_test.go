@@ -33,7 +33,8 @@ func TestDuplicateLinksToFirstEventOfItsOwnChain_DB(t *testing.T) {
 	_, err := db.Exec(`
 		CREATE TABLE events (
 			id uuid PRIMARY KEY, starts_at timestamp, nb_status text,
-			nb_status_changed_at timestamp, labels jsonb, updated_at timestamp
+			nb_status_changed_at timestamp, labels jsonb, updated_at timestamp,
+			fingerprint text, cloud_account_id uuid
 		);
 		CREATE TABLE event_duplicates (
 			id uuid PRIMARY KEY DEFAULT gen_random_uuid(), event_id uuid NOT NULL,
