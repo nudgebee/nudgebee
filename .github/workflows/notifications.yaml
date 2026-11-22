@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   notifications-build:
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, whose repos have no
+    # postgresql-server-dev-16 (see the Install Build Essentials step).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
 
     # Real broker for tests/test_consumer_reconnect.py (consumer count stays one
