@@ -7,7 +7,9 @@ import { FormField } from '@shared/forms/FormComponents';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { ds } from '@utils/colors';
 import ClarificationQuestion from './ClarificationQuestion';
+import { Callout } from '@ui/Callout';
 import { getAiBuildActions, SavedAutomationSummary } from '@components/workflow/automationMenu';
+import type { AiBuildLiveState } from '@components/workflow/aiBuildSession';
 
 type ModalStage = 'input' | 'generating' | 'plan_review' | 'text_followup' | 'success' | 'error';
 
@@ -55,6 +57,9 @@ interface AiGenerateWorkflowModalProps {
     saved?: boolean;
     // The automation this session saved, as the list returns it; unset when it is not known.
     savedWorkflow?: SavedAutomationSummary;
+    // Set by a caller that switches the saved automation on; unset leaves its state unstated.
+    liveState?: AiBuildLiveState;
+    liveStateError?: string;
     // What the builder has done so far in this conversation: tool calls made, and tasks added.
     progress?: { steps: number; tasksAdded: number };
     workflowJson?: string;
@@ -92,6 +97,33 @@ const STAGE_MESSAGES = [
   'Validating and refining...',
 ];
 
+// What the success screen says about the saved automation's state, when the caller reported it.
+export function getLiveStateNote(liveState?: AiBuildLiveState, error?: string): { tone: 'success' | 'warning'; message: string } | null {
+  switch (liveState) {
+    case 'active':
+      return { tone: 'success', message: 'Saved, published as v1 and active. It is ready to run.' };
+    case 'paused':
+      return {
+        tone: 'warning',
+        message: `Saved and published as v1, but it could not be set active${
+          error ? ` (${error})` : ''
+        }. It is still paused: open it in the editor to activate it.`,
+      };
+    case 'inactive':
+      return {
+        tone: 'warning',
+        message: 'Saved as v1 but left inactive: config values it needs are not set yet. Add them, then activate it from the editor.',
+      };
+    case 'unverified':
+      return {
+        tone: 'warning',
+        message: 'Built, but the saved automation could not be found, so it was not set active. Check the Automations list.',
+      };
+    default:
+      return null;
+  }
+}
+
 const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
   open,
   onClose,
@@ -125,6 +157,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
     conversationId: string;
     sessionId: string;
     savedWorkflow?: SavedAutomationSummary;
+    liveState?: AiBuildLiveState;
+    liveStateError?: string;
   } | null>(null);
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -248,6 +282,8 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
                 conversationId: result.conversationId || conversationId,
                 sessionId,
                 savedWorkflow: result.savedWorkflow,
+                liveState: result.liveState,
+                liveStateError: result.liveStateError,
               });
               setStage('success');
             } else if (result.summaryText) {
@@ -574,8 +610,10 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
       case 'success': {
         // Drop a trailing "[Open in Editor](...)" link from the summary — we render our own button.
         const successMarkdown = (summaryText || '').replace(/\n*\[Open in Editor\]\([^)]*\)\s*$/i, '').trim();
+        const liveStateNote = getLiveStateNote(completedData?.liveState, completedData?.liveStateError);
         return (
-          <Box sx={{ mt: 2, mb: 2 }}>
+          <Box sx={{ mt: 2, mb: 2, display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
+            {liveStateNote && <Callout id='wf-ai-live-state' tone={liveStateNote.tone} message={liveStateNote.message} />}
             <Box
               sx={{
                 p: 2,
@@ -591,7 +629,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
                 <MarkDowns data={successMarkdown} sx={{}} allowExecutable={false} onLinkClick={null} />
               ) : (
                 <Typography variant='body1' sx={{ color: 'text.primary' }}>
-                  Your automation has been built and saved.
+                  {completedData?.liveState ? 'Your automation has been built.' : 'Your automation has been built and saved.'}
                 </Typography>
               )}
             </Box>

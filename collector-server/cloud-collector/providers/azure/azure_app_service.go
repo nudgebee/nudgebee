@@ -93,8 +93,11 @@ func fetchAppResourceRefs(ctx providers.CloudProviderContext, client *armappserv
 	if err != nil || rg == "" {
 		return nil
 	}
+	// Both calls need Microsoft.Web/sites/config/list/action, which Reader lacks;
+	// keep their expected 403s out of the permission audit.
+	callCtx := withoutPermissionAudit(ctx.GetContext())
 	var values []string
-	if resp, err := client.ListApplicationSettings(ctx.GetContext(), rg, *app.Name, nil); err == nil {
+	if resp, err := client.ListApplicationSettings(callCtx, rg, *app.Name, nil); err == nil {
 		for _, v := range resp.Properties {
 			if v != nil {
 				values = append(values, *v)
@@ -105,7 +108,7 @@ func fetchAppResourceRefs(ctx providers.CloudProviderContext, client *armappserv
 		// hold secrets); enrichment is best-effort, so this is Debug not Warn.
 		ctx.GetLogger().Debug("skipping app settings enrichment", "error", err, "app", *app.Name)
 	}
-	if resp, err := client.ListConnectionStrings(ctx.GetContext(), rg, *app.Name, nil); err == nil {
+	if resp, err := client.ListConnectionStrings(callCtx, rg, *app.Name, nil); err == nil {
 		for _, v := range resp.Properties {
 			if v != nil && v.Value != nil {
 				values = append(values, *v.Value)

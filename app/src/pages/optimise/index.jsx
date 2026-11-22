@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import SummaryView from '@components/optimise-new/summary/SummaryView';
 import { useRouter } from 'next/router';
@@ -11,11 +12,19 @@ import {
   SecuritytoolsBlue,
   ToolIconBlue,
   LLMConsumptionIcon,
-  IntegrationsIcon,
   AutomateBlue,
   BetaIcon,
 } from '@assets';
-import { hasFeatureAccess, hasPermission, hasReadAccess, hasWriteAccess, withAuth } from '@lib/auth';
+import {
+  hasFeatureAccess,
+  hasGrantOnAccount,
+  hasPermission,
+  hasReadAccess,
+  hasWriteAccess,
+  isGrantsOnlyUser,
+  missingPermissionMessage,
+  withAuth,
+} from '@lib/auth';
 import { useData } from '@context/DataContext';
 import { useSecurityTabCounts } from '@hooks/useSecurityTabCounts';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
@@ -30,18 +39,6 @@ const ResolutionsView = dynamic(() => import('@components/optimise-new/Resolutio
 const SecurityView = dynamic(() => import('@components/optimise-new/SecurityView'), { ssr: false });
 const AutoOptimizeTabs = dynamic(() => import('@components/autopilot/tables/AutoOptimizeTabs'), { ssr: false });
 const CostAnalyser = dynamic(() => import('@components/llm/cost-analyser/CostAnalyser'), { ssr: false });
-const GatewayUsage = dynamic(() => import('@components/llm/gateway-usage/GatewayUsage'), { ssr: false });
-
-export async function getServerSideProps() {
-  return {
-    props: {
-      enableLlmGateway: process.env.UI_ENABLE_LLM_GATEWAY === 'true',
-      // Public base URL of the AI Gateway, surfaced to the Connect tab's setup
-      // snippets. Empty when unset — the Connect tab shows a "not configured" state.
-      llmGatewayUrl: process.env.LLM_GATEWAY_PUBLIC_URL || '',
-    },
-  };
-}
 
 // Filter state OptimizeNewPage syncs to the URL (updateUrl). The Cost and
 // Configuration tabs are the same component reading these params at mount, so
@@ -58,7 +55,7 @@ const TAB_SCOPED_FILTER_PARAMS = ['category', 'search', 'severity', 'account', '
 // design — this is the app-side compatibility shim.
 const LEGACY_FRAGMENT_ALIASES = { recommendations: 'cost', 'cost-analyser': 'llm-analyser' };
 
-const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
+const Optimise = () => {
   const router = useRouter();
   const { selectedCluster } = useData();
   const [activeTab, setActiveTab] = useState(null);
@@ -97,24 +94,61 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
   // matching the backend authorization on the `ai_*` cost actions. `isTenantAdmin`
   // was too strict and hid the tab from account admins (#33341). Still gated by
   // the LLM_ANALYSER tenant feature flag.
+  // Matches the sidebar's own gate on these rows (optimizeSections,
+  // layout/index.jsx): a grants-only user needs Read on at least one of a
+  // row's modules; anyone else (built-in role) passes unrestricted. Without
+  // this, a tab the sidebar hides could still be reached by typing its URL,
+  // since nothing here re-checked the module grant.
+  const canAccessModule = (modules) =>
+    !isGrantsOnlyUser(selectedCluster?.value) ||
+    modules.some((m) => hasPermission(m, 'Read') || hasGrantOnAccount(m, 'Read', selectedCluster?.value));
+
   const filterOptions = useMemo(
     () =>
       [
-        { name: 'Summary', id: 'summary', fragment: 'summary', value: 0, icon: OptimizeSummaryIcon },
+        {
+          name: 'Summary',
+          id: 'summary',
+          fragment: 'summary',
+          value: 0,
+          icon: OptimizeSummaryIcon,
+          disabled: !canAccessModule(['recommendations']),
+          disabledTooltip: missingPermissionMessage('recommendations:Read'),
+        },
         // Labelled and keyed "Cost". `id` stays 'recommendations' so the tab
         // anchor (#anchor-tab-recommendations) and its e2e/tour hooks don't
         // move; only the URL fragment changed from 'recommendations' to 'cost'.
         // The old fragment is still written by backend notifications, the FinOps
         // agent prompt and the apply CTA, plus shared/bookmarked links —
         // LEGACY_FRAGMENT_ALIASES rewrites it to 'cost' on load.
-        { name: 'Cost', id: 'recommendations', fragment: 'cost', value: 1, icon: DollarIcon, iconSize: 18 },
-        { name: 'Configuration', id: 'configuration', fragment: 'configuration', value: 2, icon: ToolIconBlue, iconSize: 18 },
+        {
+          name: 'Cost',
+          id: 'recommendations',
+          fragment: 'cost',
+          value: 1,
+          icon: DollarIcon,
+          iconSize: 18,
+          disabled: !canAccessModule(['recommendations']),
+          disabledTooltip: missingPermissionMessage('recommendations:Read'),
+        },
+        {
+          name: 'Configuration',
+          id: 'configuration',
+          fragment: 'configuration',
+          value: 2,
+          icon: ToolIconBlue,
+          iconSize: 18,
+          disabled: !canAccessModule(['recommendations']),
+          disabledTooltip: missingPermissionMessage('recommendations:Read'),
+        },
         {
           name: 'Security',
           id: 'security',
           fragment: 'security',
           value: 3,
           icon: SecuritytoolsBlue,
+          disabled: !canAccessModule(['recommendations']),
+          disabledTooltip: missingPermissionMessage('recommendations:Read'),
           // `count` renders as a Chip beside the label (Tabs.jsx). Undefined
           // until the counts resolve, which is what keeps the strip from
           // flashing a row of zeroes on first paint.
@@ -133,13 +167,24 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
         },
         // Resolutions sits after the three finding tabs because it is the record of
         // what was already actioned, not another list to triage.
-        { name: 'Resolutions', id: 'resolutions', fragment: 'resolutions', value: 4, icon: RecommendationResolutionIcon, iconSize: 18 },
+        {
+          name: 'Resolutions',
+          id: 'resolutions',
+          fragment: 'resolutions',
+          value: 4,
+          icon: RecommendationResolutionIcon,
+          iconSize: 18,
+          disabled: !canAccessModule(['recommendations']),
+          disabledTooltip: missingPermissionMessage('recommendations:Read'),
+        },
         {
           name: 'Auto Optimize',
           id: 'auto-optimize',
           fragment: 'auto-optimize',
           value: 5,
           icon: AutomateBlue,
+          disabled: !canAccessModule(['autooptimize']),
+          disabledTooltip: missingPermissionMessage('autooptimize:Read'),
           tabOptions: [
             { id: 'Optimizations', text: 'Optimizations', value: 0, fragment: 'optimizations' },
             { id: 'approvals', text: 'Approvals', value: 1, fragment: 'approvals' },
@@ -162,34 +207,20 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
             icon: LLMConsumptionIcon,
             iconSize: 18,
           },
-        // AI Gateway usage — sibling analytics surface to the LLM Analyser, but over
-        // all BYO-token traffic forwarded through the gateway (its own query API), not
-        // agent conversations. Independently flag-gated for staged rollout. No
-        // tabOptions, so its value need not equal its array index (see note above).
-        //
-        // Unlike the LLM Analyser above, this tab's actions (`llm_gateway_*`) are
-        // TENANT-scoped — they classify to the `llm` module and their handlers take
-        // no account id. So an `llm:Read` custom grant is a legitimate way to reach
-        // it, and hasReadAccess alone could never admit one: a grants-only holder
-        // carries no account ids in the session, so the tab vanished for precisely
-        // the users an admin had granted it to.
-        isMounted &&
-          enableLlmGateway &&
-          (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read')) && {
-            name: 'AI Gateway',
-            id: 'ai-gateway',
-            fragment: 'ai-gateway',
-            value: 7,
-            icon: IntegrationsIcon,
-            iconSize: 18,
-          },
       ].filter(Boolean),
-    [isMounted, llmAnalyserEnabled, enableLlmGateway, selectedCluster?.value, securityCounts]
+    [isMounted, llmAnalyserEnabled, selectedCluster?.value, securityCounts]
   );
 
   useEffect(() => {
     if (!router.isReady) return;
     let hash = router.asPath.split('#')[1];
+    // The AI Gateway tab is its own page now. Its old sub-tab ids are still valid
+    // there under any section; that page moves the hash to the tab's real one.
+    const [gatewayFragment, gatewaySubFragment] = (hash || '').split('/');
+    if (gatewayFragment === 'ai-gateway') {
+      router.replace(gatewaySubFragment ? `/ai-gateway#monitor/${gatewaySubFragment}` : '/ai-gateway').catch(() => {});
+      return;
+    }
     // Rewrite a legacy fragment (#recommendations, #cost-analyser) to its
     // current name before anything else reads it, so old notification and
     // bookmark links resolve to the right tab. Keeps ?id= and every other
@@ -266,8 +297,10 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
     setOpenCreateAutoOptimize(false);
   };
 
+  const activeOption = filterOptions.find((option) => option.value === activeTab);
+
   const createAutoOptimizeButton =
-    activeTab === 5 && hasWriteAccess(router?.query?.accountId) ? (
+    activeTab === 5 && !activeOption?.disabled && hasWriteAccess(router?.query?.accountId) ? (
       <DsDropdownMenu
         align='end'
         disablePortal={false}
@@ -309,12 +342,13 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
       />
       {activeTab !== null && (
         <ErrorBoundary key={activeTab}>
-          {activeTab === 0 && <SummaryView />}
-          {activeTab === 1 && <OptimizeNewPage />}
-          {activeTab === 2 && <OptimizeNewPage lockedCategory='Configuration' />}
-          {activeTab === 3 && <SecurityView subTab={subTab} />}
-          {activeTab === 4 && <ResolutionsView />}
-          {activeTab === 5 && (
+          {activeOption?.disabled && <PermissionDeniedContent message={activeOption.disabledTooltip} />}
+          {activeTab === 0 && !activeOption?.disabled && <SummaryView />}
+          {activeTab === 1 && !activeOption?.disabled && <OptimizeNewPage />}
+          {activeTab === 2 && !activeOption?.disabled && <OptimizeNewPage lockedCategory='Configuration' />}
+          {activeTab === 3 && !activeOption?.disabled && <SecurityView subTab={subTab} />}
+          {activeTab === 4 && !activeOption?.disabled && <ResolutionsView />}
+          {activeTab === 5 && !activeOption?.disabled && (
             <AutoOptimizeTabs
               subTab={subTab}
               openCreateAutoOptimize={openCreateAutoOptimize}
@@ -324,7 +358,6 @@ const Optimise = ({ enableLlmGateway, llmGatewayUrl }) => {
             />
           )}
           {activeTab === 6 && <CostAnalyser />}
-          {activeTab === 7 && <GatewayUsage gatewayUrl={llmGatewayUrl} />}
         </ErrorBoundary>
       )}
     </>

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools" // Import the tools package to reference the execute tool
 	toolcore "nudgebee/llm/tools/core"
@@ -17,7 +18,7 @@ func init() {
 	toolDescription := `Retrieves Datadog traces. Input should be a natural language question about traces.`
 	toolInput := "Provide traces question in natural language"
 	toolOutput := "The tool will return the datadog traces data retrieved your query"
-	core.RegisterNBAgentFactoryAndTool(DatadogTracesAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogTracesAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogTracesAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -75,7 +76,7 @@ func (d DatadogTracesAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 			"Input: A valid Datadog trace query string. Optional: start_time, end_time, or range (e.g. '2d', '1w', '1mo' for months).",
 			"Output: JSON response from Datadog containing trace data.",
 		},
-		core.ToolLlm: { // Allow LLM for initial query generation and final summarization
+		llmruntime.ToolLlm: { // Allow LLM for initial query generation and final summarization
 			"Use this tool for reasoning, generating the initial Datadog trace query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -112,7 +113,7 @@ func (d DatadogTracesAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 func (d DatadogTracesAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	// This agent uses the specific Datadog trace execution tool.
 	// It might also use an LLM tool for query generation and summarization if not doing it directly.
-	toolsList := []string{tools.ToolDatadogTracesExecute, core.ToolLlm} // Include LLM for ReAct steps
+	toolsList := []string{tools.ToolDatadogTracesExecute, llmruntime.ToolLlm} // Include LLM for ReAct steps
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

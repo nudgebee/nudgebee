@@ -373,6 +373,12 @@ type fakeTool struct {
 	resp   toolcore.NBToolResponse
 	err    error
 	called int
+	// requestType is what the tool's classifier answers; empty answers read.
+	requestType toolcore.ToolRequestType
+	// unclassified makes the classifier answer "" (it cannot tell).
+	unclassified bool
+	// strict records NBQueryConfig.StrictReadOnly as the last Call saw it.
+	strict bool
 }
 
 func (f *fakeTool) Name() string                 { return f.name }
@@ -382,9 +388,131 @@ func (f *fakeTool) GetNameAliases() []string     { return nil }
 func (f *fakeTool) InputSchema() toolcore.ToolSchema {
 	return toolcore.ToolSchema{Type: toolcore.ToolSchemaTypeObject}
 }
-func (f *fakeTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+func (f *fakeTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (toolcore.ToolRequestType, error) {
+	if f.unclassified {
+		return "", nil
+	}
+	if f.requestType == "" {
+		return toolcore.ToolRequestTypeRead, nil
+	}
+	return f.requestType, nil
+}
+func (f *fakeTool) Call(ctx toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
 	f.called++
+	f.strict = ctx.QueryConfig.StrictReadOnly
 	return f.resp, f.err
+}
+
+// hintedTool is an unclassifiable tool whose MCP server marks it read-only (or not), and which counts any call to
+// the model-backed classifier.
+type hintedTool struct {
+	fakeTool
+	readOnlyHint bool
+	promptCalls  int
+}
+
+func (h *hintedTool) MCPReadOnlyHint() bool { return h.readOnlyHint }
+func (h *hintedTool) InferToolRequestTypePrompt(_ *security.RequestContext, _, _ string) (string, error) {
+	h.promptCalls++
+	return "classify this", nil
+}
+
+// An MCP tool its server marks readOnlyHint counts as a read (#42463 note 1); one without the hint is refused. The
+// per-poll check never asks a model (#42463 note 3): it runs on every poll of every watch.
+func TestToolSource_Observe_MCPReadOnlyHintAndNoModelCall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hint bool
+	}{{"read-only hint", true}, {"no hint", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			accountID := freshAccountID()
+			tool := &hintedTool{fakeTool: fakeTool{name: "fake_mcp_" + accountID[:8], unclassified: true,
+				resp: toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusSuccess, Data: "ok"}}, readOnlyHint: tc.hint}
+			toolcore.RegisterNBToolFactory(tool.name, func(string) (toolcore.NBTool, error) { return tool, nil })
+			w := Watch{AccountID: uuid.MustParse(accountID), SourceConfig: `{"tool_name":"` + tool.name + `","tool_input":{"command":"list issues"}}`}
+			_, err := toolSource{}.Observe(superAdminCtx(), w)
+			if tc.hint {
+				require.NoError(t, err)
+				assert.Equal(t, 1, tool.called)
+			} else {
+				require.ErrorIs(t, err, ErrNotReadOnly)
+				assert.Equal(t, 0, tool.called)
+			}
+			assert.Zero(t, tool.promptCalls, "no model call in the per-poll check")
+		})
+	}
+}
+
+// strict_read_only in the source config runs the poll under NBQueryConfig.StrictReadOnly (#42461), so the tool's own
+// strict rule (own cluster, strict kubectl read) applies on every poll.
+func TestToolSource_Observe_StrictReadOnlyReachesTheTool(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		accountID := freshAccountID()
+		tool := &fakeTool{name: "fake_strict_" + accountID[:8], resp: toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusSuccess, Data: "1/1"}}
+		registerFakeTool(t, accountID, tool)
+		cfg := `{"tool_name":"` + tool.name + `","tool_input":{"command":"kubectl get deploy api"}`
+		if strict {
+			cfg += `,"strict_read_only":true`
+		}
+		_, err := toolSource{}.Observe(superAdminCtx(), Watch{AccountID: uuid.MustParse(accountID), SourceConfig: cfg + `}`})
+		require.NoError(t, err)
+		assert.Equal(t, strict, tool.strict)
+	}
+}
+
+// unclassifiedTool is a primitive tool with no read/write classifier.
+type unclassifiedTool struct{ called int }
+
+func (u *unclassifiedTool) Name() string                 { return "fake_unclassified_watch_tool" }
+func (u *unclassifiedTool) GetType() toolcore.NBToolType { return toolcore.NBToolTypeTool }
+func (u *unclassifiedTool) Description() string          { return "fake" }
+func (u *unclassifiedTool) InputSchema() toolcore.ToolSchema {
+	return toolcore.ToolSchema{Type: toolcore.ToolSchemaTypeObject}
+}
+func (u *unclassifiedTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	u.called++
+	return toolcore.NBToolResponse{Status: toolcore.NBToolResponseStatusSuccess}, nil
+}
+
+// TestToolSource_Observe_RefusesCommandsThatAreNotReads (#42460): a watch
+// re-runs its command on every poll, so Observe runs it only when the tool's
+// own classifier calls it a read. A write, a command the tool cannot classify,
+// and a tool with no classifier are refused before the tool is called. The
+// command below put `-n demo` before the verb, which the deny-list missed.
+func TestToolSource_Observe_RefusesCommandsThatAreNotReads(t *testing.T) {
+	const command = "kubectl -n demo delete pod x"
+	for _, tc := range []struct {
+		name string
+		tool *fakeTool
+	}{
+		{"write", &fakeTool{requestType: toolcore.ToolRequestTypeDelete}},
+		{"cannot tell", &fakeTool{unclassified: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accountID := freshAccountID()
+			tc.tool.name = "fake_not_read_" + accountID[:8]
+			registerFakeTool(t, accountID, tc.tool)
+			w := Watch{
+				AccountID:    uuid.MustParse(accountID),
+				SourceConfig: `{"tool_name":"` + tc.tool.name + `","tool_input":{"command":"` + command + `"}}`,
+			}
+			_, err := toolSource{}.Observe(superAdminCtx(), w)
+			require.ErrorIs(t, err, ErrNotReadOnly)
+			assert.Equal(t, 0, tc.tool.called, "a command that is not a read must never run")
+		})
+	}
+
+	t.Run("no classifier", func(t *testing.T) {
+		tool := &unclassifiedTool{}
+		toolcore.RegisterNBToolFactory(tool.Name(), func(string) (toolcore.NBTool, error) { return tool, nil })
+		w := Watch{
+			AccountID:    uuid.MustParse(freshAccountID()),
+			SourceConfig: `{"tool_name":"` + tool.Name() + `","tool_input":{"command":"status"}}`,
+		}
+		_, err := toolSource{}.Observe(superAdminCtx(), w)
+		require.ErrorIs(t, err, ErrNotReadOnly)
+		assert.Equal(t, 0, tool.called)
+	})
 }
 
 func registerFakeTool(t *testing.T, accountID string, ft *fakeTool) {

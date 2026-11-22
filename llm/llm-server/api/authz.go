@@ -19,15 +19,19 @@ import "nudgebee/llm/security"
 // is a one-line change.
 const (
 	moduleAiAgents        = "ai_agents"
+	moduleAiBudget        = "ai_budget"
 	moduleAiConversations = "ai_conversations"
-	moduleAiFunctions     = "ai_functions"
 	moduleAiGeneration    = "ai_generation"
 	moduleAiGuardrails    = "ai_guardrails"
 	moduleAiKbs           = "ai_kbs"
 	moduleAiMemory        = "ai_memory"
 	moduleAiMisc          = "ai_misc"
+	moduleAiModels        = "ai_models"
 	moduleAiRca           = "ai_rca"
 	moduleAiTools         = "ai_tools"
+	moduleEvents          = "events"
+	moduleIntegrations    = "integrations"
+	moduleToolApproval    = "toolapproval"
 )
 
 // granted reports whether the caller holds a custom-role grant for
@@ -49,9 +53,9 @@ func grantedWrite(sc *security.SecurityContext, accountId, module string) bool {
 }
 
 // grantedRun is the common case for an operation the catalog classifies as
-// Execute (run an investigation, generate a query, sync a knowledge base).
-// Write is accepted too — someone who may rewrite the thing can already make it
-// do whatever running it would.
+// Execute (run an investigation, generate a query, sync a knowledge base). Write
+// and Execute are separate rights: running needs Execute, and a Write grant does
+// not imply it.
 func grantedRun(sc *security.SecurityContext, accountId, module string) bool {
-	return granted(sc, accountId, module, "Execute", "Write")
+	return granted(sc, accountId, module, "Execute")
 }

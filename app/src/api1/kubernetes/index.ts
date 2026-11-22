@@ -1,4 +1,6 @@
 import { queryGraphQL, gqlStringify, unwrapGraphQL } from '@lib/HttpService';
+import { isAccessDenied } from '@lib/accessDenied';
+import { eventSearchClause } from '@lib/eventSearch';
 
 import {
   getStartOfYear,
@@ -740,9 +742,32 @@ query AiRemediationGet($accountId: String!, $eventId: String) {
 }
 `;
 
+// Asks the assistant for a plan in the background (remediation loop, #40734): `plan` when there is none,
+// `recheck` when the plan is out of date, `replan` with the person's reasons and note. Queued; returns at once.
+export const AI_GENERATE_REMEDIATION_PLAN = `
+mutation AiGenerateRemediationPlan($accountId: String!, $eventId: String!, $mode: String!, $reasons: [String!], $note: String) {
+  ai_generate_remediation_plan(account_id: $accountId, event_id: $eventId, mode: $mode, reasons: $reasons, note: $note) {
+    data
+  }
+}
+`;
+
+// A person confirms the remediation loop's "Likely fixed" verdict of a run and resolves the event (#40734).
+export const EVENTS_APPLY_REMEDIATION_RESOLVE = `
+mutation EventsApplyRemediationResolve($accountId: String!, $eventId: String!, $runId: String!) {
+  events_apply_remediation_resolve(account_id: $accountId, event_id: $eventId, run_id: $runId) {
+    events {
+      event_id
+      prev_status
+      new_status
+    }
+  }
+}
+`;
+
 export const AI_REMEDIATION_EXECUTE = `
-mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String) {
-  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action) {
+mutation AiRemediationExecute($accountId: String!, $eventId: String, $command: String!, $configName: String, $slot: String, $executeCommand: String, $action: String, $acknowledgeUnknown: Boolean, $planVersion: String, $reason: String) {
+  ai_remediation_execute(account_id: $accountId, event_id: $eventId, command: $command, config_name: $configName, slot: $slot, execute_command: $executeCommand, action: $action, acknowledge_unknown: $acknowledgeUnknown, plan_version: $planVersion, reason: $reason) {
     data
   }
 }
@@ -929,10 +954,11 @@ function buildEventFilterParams(query: any) {
   if (query?.searchByLabel) {
     filterParams['labels'] = { _contains: query.searchByLabel };
   }
-  if (query?.messageSearch?.trim()) {
+  const searchClause = eventSearchClause(query?.messageSearch);
+  if (searchClause) {
     // Use `and` so we don't clobber an existing exact-match `title` filter
     // set by a drilldown defaultQuery.
-    and.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+    and.push(searchClause);
   }
   if (query?.resource_ids) {
     filterParams['resource_id'] = { _in: query.resource_ids };
@@ -1274,7 +1300,14 @@ const apiKubernetes = {
       return error;
     }
   },
-  async getEventsSimilarDataAndInsights(aggregation_key: string, service_key: string, id: string, end_date: string | null = null, account_id = '') {
+  async getEventsSimilarDataAndInsights(
+    aggregation_key: string,
+    service_key: string,
+    id: string,
+    end_date: string | null = null,
+    account_id = '',
+    signal?: AbortSignal
+  ) {
     try {
       // The event's start is UTC and may be written without a zone, so it is read as UTC here.
       const end = end_date ? new Date(/([Zz]|[+-]\d{2}:?\d{2})$/.test(end_date) ? end_date : `${end_date}Z`) : new Date();
@@ -1283,22 +1316,28 @@ const apiKubernetes = {
       }
       const DAY_MS = 24 * 60 * 60 * 1000;
 
-      const response = await queryGraphQL(EVENT_SIMILAR_AND_INSIGHTS, 'eventsSimilarAndInsightData', {
-        id: id,
-        // Without the account, the counts covered every account in the tenant: two accounts
-        // watching one cluster have the same service key, and their alerts were added together.
-        account_id,
-        aggregation_key: aggregation_key,
-        service_key: service_key,
-        // Anchored on the event, not on now: with `endDate` set to the event's
-        // start and these set from today, the range inverted on any event older
-        // than the window and the count silently came back 0.
-        // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
-        // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
-        sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
-        sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
-        endDate: end.toISOString(),
-      });
+      const response = await queryGraphQL(
+        EVENT_SIMILAR_AND_INSIGHTS,
+        'eventsSimilarAndInsightData',
+        {
+          id: id,
+          // Without the account, the counts covered every account in the tenant: two accounts
+          // watching one cluster have the same service key, and their alerts were added together.
+          account_id,
+          aggregation_key: aggregation_key,
+          service_key: service_key,
+          // Anchored on the event, not on now: with `endDate` set to the event's
+          // start and these set from today, the range inverted on any event older
+          // than the window and the count silently came back 0.
+          // Sent as ISO strings: queryGraphQL shifts a Date object by the browser's UTC offset, which
+          // moved both windows by that offset (a day's count of 67 read 53 for a viewer at UTC+5:30).
+          sdate_1_days: new Date(end.getTime() - DAY_MS).toISOString(),
+          sdate_7_days: new Date(end.getTime() - 7 * DAY_MS).toISOString(),
+          endDate: end.toISOString(),
+        },
+        undefined,
+        signal
+      );
       const d = response?.data?.data;
       return {
         data: {
@@ -1997,6 +2036,7 @@ query list_k8_issues_count {
       latest_priority?: string;
       nb_status?: string | string[];
       is_new_issue?: boolean;
+      search?: string;
     } = {
       account_id: 'demo',
       onlyGroupingCount: false,
@@ -2159,6 +2199,10 @@ query list_k8_issues_count {
       }
       if (query.is_new_issue !== undefined) {
         filterParams['is_new_issue'] = { _eq: query.is_new_issue };
+      }
+      const searchClause = eventSearchClause(query.search);
+      if (searchClause) {
+        filterParams['_and'] = [searchClause];
       }
 
       const endDate = query.end_date;
@@ -2938,6 +2982,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         : { cloud_resourses: [] };
       return {
         data,
+        // Lets callers tell "no pod found" apart from "denied the read" -- both
+        // otherwise resolve to the same empty cloud_resourses.
+        accessDenied: isAccessDenied(response),
       };
     } catch (error) {
       console.log('Your Error is', error);
@@ -3551,6 +3598,36 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     });
     return response?.data?.data?.ai_remediation_generate?.data;
   },
+  async askRemediationPlan({
+    accountId,
+    eventId,
+    mode,
+    reasons = [],
+    note = '',
+  }: {
+    accountId: string;
+    eventId: string;
+    mode: 'plan' | 'recheck' | 'replan';
+    reasons?: string[];
+    note?: string;
+  }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(AI_GENERATE_REMEDIATION_PLAN, 'AiGenerateRemediationPlan', {
+      accountId,
+      eventId,
+      mode,
+      reasons: reasons.length ? reasons : null,
+      note: note || null,
+    });
+    // Throws with the server's reason (e.g. the 24 h plan cap), so the tab can show it.
+    return unwrapGraphQL(response, 'Could not ask for the fix.')?.ai_generate_remediation_plan?.data;
+  },
+  // Resolves the event in the person's name, labelled with the run's verdict; throws with the server's reason.
+  async confirmRemediationResolve({ accountId, eventId, runId }: { accountId: string; eventId: string; runId: string }) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(EVENTS_APPLY_REMEDIATION_RESOLVE, 'EventsApplyRemediationResolve', { accountId, eventId, runId });
+    return unwrapGraphQL(response, 'Could not resolve the event.')?.events_apply_remediation_resolve;
+  },
   async getRemediation(accountId: string, eventId: string) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_GET, 'AiRemediationGet', {
@@ -3568,8 +3645,12 @@ query k8s_event_groupings($limit:Int,$offset:Int){
     // The action's execute command, sent on a verify run so the server can attach the result to the
     // attempt it checked rather than filing it as an attempt of its own.
     executeCommand?: string,
-    // The plan action, sent with slot "manual" to record a step the operator did outside NudgeBee.
-    action?: string
+    // The plan action, sent with slot "manual" or "decline" to name a step.
+    action?: string,
+    // acknowledgeUnknown: the person confirmed that the last run of this command, whose outcome is unknown,
+    // may have run. planVersion: the plan version the person reviewed; every decision carries it.
+    // reason: the person's optional reason for declining.
+    opts: { acknowledgeUnknown?: boolean; planVersion?: string; reason?: string } = {}
   ) {
     if (accountId === 'demo') return null;
     const response = await queryGraphQL(AI_REMEDIATION_EXECUTE, 'AiRemediationExecute', {
@@ -3580,6 +3661,9 @@ query k8s_event_groupings($limit:Int,$offset:Int){
       slot: slot || null,
       executeCommand: executeCommand || null,
       action: action || null,
+      acknowledgeUnknown: opts.acknowledgeUnknown || null,
+      planVersion: opts.planVersion || null,
+      reason: opts.reason || null,
     });
     // Throws with the server's reason on a rejected request (a 400), so the panel can show it.
     return unwrapGraphQL(response, 'Remediation request failed.')?.ai_remediation_execute?.data;

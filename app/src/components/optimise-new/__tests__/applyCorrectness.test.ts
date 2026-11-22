@@ -1,4 +1,5 @@
 import { interpolateMitigations, recommendationDetails } from '@api1/recommendation/data';
+import { buildCliCommand } from '@components/optimise-new/cliCommands';
 
 // The catalog's mitigations are executed by Apply, not just copied, so a value
 // baked into one is a value applied to a real resource that nobody chose.
@@ -57,6 +58,27 @@ describe('apply commands carry the values the recommendation computed', () => {
       recommendation: { filesystem_id: 'fs-0abc123' },
     });
     expect(out?.[0]).toContain('--file-system-id fs-0abc123');
+  });
+
+  it("runs the gp3 upgrade in the volume's own region, the same command Copy Command shows", () => {
+    // Without --region the executor falls back to the account's default region,
+    // where a volume from any other region is not found.
+    const rec = {
+      rule_name: 'aws_ec2_ebs_generation_upgrade',
+      resource_region: 'eu-west-1',
+      recommendation: { volume_id: 'vol-0abc123', volume_region: 'eu-west-1', recommendded_volume_type: 'gp3' },
+    };
+    const out = interpolateMitigations(mitigationsFor('aws_ec2_ebs_generation_upgrade'), rec);
+    const applied = out?.[0]?.match(/```\n?([\s\S]*?)```/)?.[1]?.trim();
+    expect(applied).toBe('aws ec2 modify-volume --volume-id vol-0abc123 --volume-type gp3 --region eu-west-1');
+    expect(buildCliCommand(rec)?.commands).toEqual([applied]);
+
+    // A payload without volume_region still names the row's region.
+    const fromRow = interpolateMitigations(mitigationsFor('aws_ec2_ebs_generation_upgrade'), {
+      ...rec,
+      recommendation: { volume_id: 'vol-0abc123', recommendded_volume_type: 'gp3' },
+    });
+    expect(fromRow?.[0]).toContain('--region eu-west-1');
   });
 
   it('offers no command for the rules that cannot name their own target', () => {

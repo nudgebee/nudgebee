@@ -7,8 +7,10 @@ import { buildWorkflowConversationMessages } from '@components/workflow/utils';
 import apiWorkflow from '@api1/workflow';
 import { getUserSession } from '@lib/auth';
 import { configKeyForSource, isWholeConfigSource } from '@utils/llmConfigSource';
-import { getBrandTitle } from '@hooks/useTenantBranding';
 import { getUpstreamStatus, mapUpstreamError } from '@lib/errorMessages';
+import { collectAutoApprovals } from '@components/llm/utils/followupRecord';
+import { buildMessagePlan } from '@components/llm/plan/planState';
+import { systemNoteOf } from '@components/llm/utils/systemNote';
 
 // metadata arrives as a JSON string or an already-parsed object.
 const parseMessageMetadata = (metadata) => {
@@ -33,6 +35,21 @@ const parseReferences = (raw) => {
   const parsed = typeof raw === 'string' ? safeJSONParse(raw) : raw;
   return Array.isArray(parsed) ? parsed : [];
 };
+// Steps numbered by the planner: every tool call of the agent except the critique's review rows
+// and sub-steps a call fanned out into, oldest first.
+const orderedCitationSteps = (toolCalls) =>
+  (toolCalls || [])
+    .filter((t) => {
+      if (!t?.id || t.tool_name === 'react_critique') {
+        return false;
+      }
+      const meta = typeof t.metadata === 'string' ? safeJSONParse(t.metadata) : t.metadata;
+      return !meta?.parent_tool_call_id;
+    })
+    .map((t, index) => ({ t, index, at: Date.parse(t.created_at) || 0 }))
+    .sort((a, b) => a.at - b.at || a.index - b.index)
+    .map(({ t }) => ({ rowId: t.id, toolId: t.tool_id }));
+
 export const buildDrawerTasks = (agents, message) => {
   const list = (agents || []).filter((agent) => agent.agent_name !== 'router');
   const agentIds = new Set(list.map((agent) => String(agent.id)));
@@ -152,6 +169,11 @@ export const buildDrawerTasks = (agents, message) => {
       // The input the parent sent this sub-agent (e.g. delegate_agent's prompt) —
       // Tool Details shows it as the step's Query box.
       toolParameters: spawnerTool?.parameters,
+      // The parent's call that started this sub-agent; an answer citing that call opens this row.
+      spawnerToolCallId: spawnerTool?.id,
+      // The top-level agent's own steps in the order they ran. An answer saved before citations
+      // carried a step's id cites it by its number (E5); this list maps that number to the step.
+      citationSteps: isRootAgent ? orderedCitationSteps(toolCalls) : undefined,
       isPlannerAction: Boolean(spawnerTool),
       created_at: agent.created_at,
       updated_at: agent.updated_at,
@@ -316,6 +338,13 @@ const parseConversationMessages = (conversationMessages, accountId) => {
       const responseReferences = [];
       let agentsWithoutRouter = conversationMessage?.llm_conversation_agents?.filter((r) => r.agent_name !== 'router') ?? [];
 
+      // Structured plan (#41443): when the notebook row carries one, the plan card
+      // shows it, so the row is not also listed as a task card.
+      const messagePlan = buildMessagePlan(agentsWithoutRouter);
+      if (messagePlan) {
+        agentsWithoutRouter = agentsWithoutRouter.filter((r) => r.id !== messagePlan.notebookAgentId);
+      }
+
       // Planner Logic
       let hasPlanner = false;
       let plannerId = null;
@@ -353,6 +382,9 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           user: conversationMessage?.user?.display_name || 'System',
           attachments: conversationMessage.attachments || [],
           liveStatus: parseMessageMetadata(conversationMessage.metadata)?.live_status,
+          plan: messagePlan || undefined,
+          // The platform's own turn: shown as a one-line note, not as a person's message.
+          systemNote: systemNoteOf(conversationMessage.message_config) || undefined,
         };
 
         if (conversationMessage.ack_message?.trim()) {
@@ -428,6 +460,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
 
         if (isOrchestratorAgent(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
+            // The plan card shows plan updates; no separate task row for them.
+            if (messagePlan && t.tool_name === 'update_notebook_v2') return;
             if (t.child_agent_id) {
               plannerIdChildMapping[t.child_agent_id] = t.tool_id;
               messageSequence.push(t.child_agent_id);
@@ -608,6 +642,8 @@ const parseConversationMessages = (conversationMessages, accountId) => {
           // Full per-call tree for the Tasks drawer (every agent + tool call, parent-linked). The
           // inline stream renders the curated task cards above; the drawer renders this fuller view.
           drawerTasks: buildDrawerTasks(conversationMessage.llm_conversation_agents, conversationMessage),
+          // Writes an approval rule let run without asking; listed with the turn's approvals.
+          autoApprovals: collectAutoApprovals(conversationMessage.llm_conversation_agents),
         };
       }
       const finalData = messageSequence.map((s) => toolRequestResponse[s]).filter(Boolean);
@@ -691,10 +727,15 @@ const initialState = {
   // is also the never-picked state and inherits the conversation's stored
   // config. Rides along with the next submitted turn, then resets.
   configCleared: false,
+  // Extra per-turn request config contributed by composer extensions (the
+  // ChatComposerToolbarExtra slot), merged into every chat turn's config.
+  extraRequestConfig: {},
   // Server-advertised image capability (from ai_list_models). Defaults to
   // disabled so the attach UI stays hidden until the backend confirms support.
   queueSupport: { enabled: false, maxMessages: 5 },
   imageSupport: { enabled: false, maxPerMessage: 0, maxSizeMb: 0, allowedMimeTypes: [] },
+  // True once ai_list_models has answered, so the composer can tell "still loading" from "none configured".
+  modelsLoaded: false,
 };
 
 function investigationReducer(state, action) {
@@ -749,6 +790,8 @@ function investigationReducer(state, action) {
       return action.payload
         ? { ...state, configCleared: true, selectedModel: null, selectedTierModels: null, selectedConfig: null }
         : { ...state, configCleared: false };
+    case 'SET_EXTRA_REQUEST_CONFIG':
+      return { ...state, extraRequestConfig: action.payload ?? {} };
     case 'SET_MODELS':
       return pruneSelectionsForModels(
         {
@@ -758,6 +801,7 @@ function investigationReducer(state, action) {
           defaultModel: action.defaultModel,
           imageSupport: action.imageSupport ?? state.imageSupport,
           queueSupport: action.queueSupport ?? state.queueSupport,
+          modelsLoaded: true,
         },
         action.availableModels
       );
@@ -775,6 +819,7 @@ function investigationReducer(state, action) {
         defaultModel: state.defaultModel,
         imageSupport: state.imageSupport,
         queueSupport: state.queueSupport,
+        modelsLoaded: state.modelsLoaded,
       };
     default:
       return state;
@@ -800,6 +845,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
     selectedTierModels,
     selectedConfig,
     configCleared,
+    extraRequestConfig,
     imageSupport,
   } = state;
 
@@ -1031,9 +1077,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
 
       if (!response?.query && !response?.response) {
         const errorMessage = res?.errors?.[0]?.message;
-        const msg = errorMessage?.includes('budget')
-          ? `Monthly Budget Limit exceeded for this account. Contact ${getBrandTitle()} Support team.`
-          : errorMessage || 'Failed to generate automation.';
+        const msg = errorMessage?.includes('budget') ? mapUpstreamError(429, errorMessage) : errorMessage || 'Failed to generate automation.';
         snackbar.error(msg);
         throw new Error('Automation generation failed');
       }
@@ -1097,6 +1141,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         // Carries the picker's "Clear all" to the server. Sending nothing would
         // leave the conversation's stored config in force.
         ...(configCleared && !selectedModel && !hasTierModels && !selectedConfig && { llm_config_reset: true }),
+        ...extraRequestConfig,
         // Scopes the turn to the event under investigation, so an automation the
         // model triggers gets tagged back to it (see tool_workflow_automation.go).
         ...(eventId && { event_id: eventId }),
@@ -1124,6 +1169,13 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         const status = getUpstreamStatus(res?.data);
         const fallback = parseHttpResponseBodyMessage(res?.data) || 'Failed to start investigation.';
         snackbar.error(mapUpstreamError(status, fallback));
+        throw new Error('Investigation generation failed');
+      }
+
+      // Refused before anything was saved (an @-mentioned agent the account can't use,
+      // a missing integration): show why instead of waiting on a run that never started.
+      if (response.data.status === 'FAILED') {
+        snackbar.error(response.data.response?.[0] || 'Failed to start investigation.');
         throw new Error('Investigation generation failed');
       }
 
@@ -1163,7 +1215,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
         onSuccess(llmSessionId);
       }
     },
-    [accountId, conversationIdAtDb, eventId, selectedModel, selectedTierModels, selectedConfig, configCleared]
+    [accountId, conversationIdAtDb, eventId, selectedModel, selectedTierModels, selectedConfig, configCleared, extraRequestConfig]
   );
 
   const startInvestigation = useCallback(
@@ -1355,6 +1407,9 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
                 : await apiAskNudgebee.getModelConfig(accountId, conversationResponses[0].id, signal);
               if (!isStale() && modelConfigRes?.data && !modelConfigRes?.errors?.length) {
                 const modelConfig = modelConfigRes.data;
+                // Composer picks stored with the conversation come back here,
+                // so the composer shows what the next turn will run with.
+                dispatch({ type: 'SET_EXTRA_REQUEST_CONFIG', payload: modelConfig.extra_request_config ?? {} });
                 const tierOverrides = modelConfig.tier_overrides;
                 if (tierOverrides && Object.keys(tierOverrides).length > 0) {
                   // Per-task mode. The server reports `current` as the default
@@ -1536,6 +1591,9 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
       } else if (selectedConfig) {
         requestPayload.config = { llm_config_source: selectedConfig.configSource };
       }
+      if (Object.keys(extraRequestConfig).length > 0) {
+        requestPayload.config = { ...requestPayload.config, ...extraRequestConfig };
+      }
       if (images?.length) {
         requestPayload.images = images;
       }
@@ -1577,7 +1635,7 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
       }
       return result.data;
     },
-    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig]
+    [accountId, conversationIdAtDb, selectedModel, selectedTierModels, selectedConfig, extraRequestConfig]
   );
 
   return {
@@ -1615,6 +1673,9 @@ export const useLLMInvestigationControl = (accountId, eventId) => {
     selectedConfig,
     setSelectedConfig: (cfg) => dispatch({ type: 'SET_SELECTED_CONFIG', payload: cfg }),
     clearModelConfig: () => dispatch({ type: 'SET_CONFIG_CLEARED', payload: true }),
+    extraRequestConfig,
+    setExtraRequestConfig: (config) => dispatch({ type: 'SET_EXTRA_REQUEST_CONFIG', payload: config }),
     imageSupport,
+    modelsLoaded: state.modelsLoaded,
   };
 };

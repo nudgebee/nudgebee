@@ -78,6 +78,13 @@ type Configuration struct {
 	ServiceApiServerURL  string `mapstructure:"service_api_server_url"`
 	ActionApiServerToken string `mapstructure:"action_api_server_token"`
 
+	// Budget alerts (EE, #41078): notifications-server (NOTIFICATION_SERVICE_URL /
+	// NOTIFICATION_SERVER_TOKEN, shared with other services) and how often the gateway scans
+	// quotas with a warn level. Unset URL or 0 seconds = alerts off.
+	NotificationServiceURL     string `mapstructure:"notification_service_url"`
+	NotificationServerToken    string `mapstructure:"notification_server_token"`
+	BudgetAlertIntervalSeconds int    `mapstructure:"gateway_budget_alert_interval_seconds"`
+
 	// GatewaySettingsRefreshSeconds is the poll interval for the per-tenant settings
 	// store (llm_gateway_tenant_settings), mirroring the routing/ratelimit refresh.
 	GatewaySettingsRefreshSeconds int `mapstructure:"gateway_settings_refresh_seconds"`
@@ -202,6 +209,9 @@ var keyDefaults = map[string]any{
 	"gateway_action_token":                  "",
 	"service_api_server_url":                "",
 	"action_api_server_token":               "",
+	"notification_service_url":              "",
+	"notification_server_token":             "",
+	"gateway_budget_alert_interval_seconds": 300,
 	"gateway_settings_refresh_seconds":      30,
 	"clickhouse_url":                        "",
 	"cache_provider":                        "inmemory",

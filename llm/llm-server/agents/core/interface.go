@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"nudgebee/llm/attachments"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"time"
@@ -59,15 +61,8 @@ const (
 	ConversationSourceAutomation           ConversationSource = "Automation"
 	ConversationSourcePRLifecycle          ConversationSource = "pr_lifecycle"
 	ConversationSourceRecommendation       ConversationSource = "recommendation"
+	ConversationSourceTriageClassification ConversationSource = "triage_classification"
 )
-
-// ImageAttachment represents an image attached to an agent request.
-// Exactly one of Data or URL must be set.
-type ImageAttachment struct {
-	Data     string `json:"data,omitempty"`      // Base64-encoded image data
-	URL      string `json:"url,omitempty"`       // URL pointing to the image
-	MIMEType string `json:"mime_type,omitempty"` // MIME type — only image/png and image/jpeg are accepted
-}
 
 // DO not use for API calls
 type NBAgentRequest struct {
@@ -89,14 +84,14 @@ type NBAgentRequest struct {
 	AccountContext string `json:"account_context,omitempty"`
 	// AccountPrompt is request/entry-point-specific additional guidance (for
 	// example event-analysis instructions) and stays in the dynamic human turn.
-	AccountPrompt      string                     `json:"account_prompt"`
-	SessionId          string                     `json:"session_id"`
-	ConversationSource ConversationSource         `json:"source"`
-	EnableCritique     bool                       `json:"enable_critique"`
-	ClientTools        []toolcore.NBToolCommand   `json:"client_tools"`
-	Capabilities       toolcore.AgentCapabilities `json:"capabilities"`
-	PreviousState      string                     `json:"previous_state"`
-	Images             []ImageAttachment          `json:"images,omitempty"`
+	AccountPrompt      string                        `json:"account_prompt"`
+	SessionId          string                        `json:"session_id"`
+	ConversationSource ConversationSource            `json:"source"`
+	EnableCritique     bool                          `json:"enable_critique"`
+	ClientTools        []toolcore.NBToolCommand      `json:"client_tools"`
+	Capabilities       toolcore.AgentCapabilities    `json:"capabilities"`
+	PreviousState      string                        `json:"previous_state"`
+	Images             []attachments.ImageAttachment `json:"images,omitempty"`
 	// SkillsContext carries fully-rendered skill content (a `<skills>...</skills>` block)
 	// for agents whose planner type is AgentPlannerTypeCustom AND whose Execute()
 	// makes direct LLM calls (loganalysis, logs_default.generateFinalResponse,
@@ -107,6 +102,15 @@ type NBAgentRequest struct {
 	// SelectedSkillIds when question-aware selection is enabled. The custom Execute()
 	// reads this field and prepends the block to its LLM prompt.
 	SkillsContext string `json:"skills_context,omitempty"`
+	// AgentInstructions is the text this agent always gets: skills linked to it
+	// with "always load" set (#40899). The executor
+	// resolves it per agent run (resolveAgentInstructions); it is not forwarded
+	// to sub-agents, which resolve their own.
+	AgentInstructions string `json:"agent_instructions,omitempty"`
+	// AlwaysLoadedKBIDs are the skills already in full in AgentInstructions.
+	// Knowledge discovery leaves them out so the model doesn't see them twice;
+	// a skill cut at the size cap is not listed, so search can find the rest.
+	AlwaysLoadedKBIDs []string `json:"always_loaded_kb_ids,omitempty"`
 	// InheritSkillsFromAgents lists ancestor agent names whose mapped KBs should be
 	// surfaced to this agent in addition to its own. Custom-planner delegators
 	// (metrics, traces, logs, logs_default) append their own name when invoking a
@@ -145,6 +149,14 @@ type NBAgentRequest struct {
 	TopLevelResume bool `json:"-" mapstructure:"-"`
 	// IsQueuedDispatch is internal: the queue claim owns this fresh message.
 	IsQueuedDispatch bool `json:"-" mapstructure:"-"`
+	// CallerSource is internal: the source the caller sent for this turn,
+	// before any fallback to the conversation's stored source, so a user's
+	// follow-up on an alert conversation can be told from the alert itself.
+	CallerSource ConversationSource `json:"-" mapstructure:"-"`
+	// RunProfile is internal: the profile of a governed run this request
+	// creates (from a validated run claim), written on the new conversation.
+	// Never decoded from a request body.
+	RunProfile *RunProfile `json:"-" mapstructure:"-"`
 	// KBPrestepContent holds relevant knowledge retrieved before planning. The
 	// planner renders it into the human message, not the cacheable system prefix.
 	KBPrestepContent string `json:"kb_prestep_content,omitempty"`
@@ -174,14 +186,27 @@ type NBAgentRequest struct {
 	// conversation reference for the UI's citation; never rendered into the
 	// prompt.
 	ChannelContextRefs map[string]any `json:"channel_context_refs,omitempty"`
-	// MemoryContext carries the composed memory slab (soul, preferences,
-	// patterns, decisions, collective, plus the <memory_index> audit footer).
+	// MemoryContext carries the composed memory slab (preferences, patterns,
+	// decisions, collective, plus the <memory_index> audit footer).
 	// Rendered as a reference-framed <user_memory> block in the human message.
 	MemoryContext string `json:"memory_context,omitempty"`
+	// RecentHistory is the tail of the rendered conversation history, set by
+	// the executor for the memory pre-step only. Never serialised.
+	RecentHistory string `json:"-"`
+	// UserStyle is the user's <user_style> block (tone, verbosity, format).
+	// It is an instruction on how to answer, so it is rendered as its own
+	// block right before <question> in the human message, never inside
+	// <user_memory> (see renderUserStyleBlock).
+	UserStyle string `json:"user_style,omitempty"`
 	// ReplyRef is an opaque per-question correlator echoed back unchanged on
 	// the /llm/response webhook — see ConversationApiRequest.ReplyRef. Never
 	// read by any agent; carried only for sendReplyToNotificationServer.
 	ReplyRef string `json:"reply_ref,omitempty"`
+	// AskerRef: same mechanism as ReplyRef, see ConversationApiRequest.AskerRef.
+	AskerRef string `json:"asker_ref,omitempty"`
+	// Title, when set, names a new conversation instead of the query-derived or
+	// LLM-generated title. For automated runs whose title other code reads.
+	Title string `json:"title,omitempty"`
 }
 
 // DO not use for API calls
@@ -200,13 +225,6 @@ type NBAgentResponse struct {
 	FollowupRequest       FollowupRequest                    `json:"followup"`
 	QueryConfig           *toolcore.NBQueryConfig            `json:"query_config,omitempty"`
 	References            []toolcore.NBToolResponseReference `json:"references,omitempty"`
-}
-
-type LlmToolResponse struct {
-	MessageContent []llms.MessageContent `json:"message_content"`
-	ChainName      string                `json:"chain_name"`
-	ResponseData   any                   `json:"response_data"`
-	Query          string                `json:"query"`
 }
 
 type NBAgentPlannerToolActionCondition struct {
@@ -230,9 +248,14 @@ type NBAgentPlannerToolAction struct {
 	// assigned by the ReAct3 planner as steps are generated, for use in citations
 	// and the response formatter. Empty for planner types that do not run react_3
 	// (tool / classification agents).
-	DisplayID  string                            `json:"display_id,omitempty"`
-	Dependency []string                          `json:"dependency"`
-	Condition  NBAgentPlannerToolActionCondition `json:"condition"`
+	DisplayID string `json:"display_id,omitempty"`
+	// SourceToolID is the ToolID of the step whose result this action reused
+	// from the turn cache. A cache hit takes the new action's ToolID but runs
+	// nothing and writes no tool-call row, so a citation of this step has to
+	// resolve to the row of the step that actually ran. Empty when the action ran.
+	SourceToolID string                            `json:"source_tool_id,omitempty"`
+	Dependency   []string                          `json:"dependency"`
+	Condition    NBAgentPlannerToolActionCondition `json:"condition"`
 	// TurnID groups the actions that the model emitted in a SINGLE completion
 	// (a parallel tool-call batch). react_4 flattens each action into its own
 	// step, so without this marker the rebuilt history splits one assistant turn
@@ -259,6 +282,14 @@ type NBAgentPlannerToolAction struct {
 	ExecutionParallelismLimit int    `json:"execution_parallelism_limit,omitempty"`
 	SequentialFallbackReason  string `json:"sequential_fallback_reason,omitempty"`
 	PlannerIteration          int    `json:"planner_iteration,omitempty"`
+	// PlanStep is the id of the update_notebook_v2 plan step this call serves:
+	// the model's reserved _plan_step argument, else the step in progress when
+	// the call was made (#41443). Persisted in the tool-call row's metadata so
+	// the UI can group calls under their step. Empty without a structured plan.
+	PlanStep string `json:"plan_step,omitempty"`
+	// PlanStepInferred is set when PlanStep came from the step in progress
+	// rather than the model naming it, so link quality can be measured.
+	PlanStepInferred bool `json:"plan_step_inferred,omitempty"`
 	// ThoughtSignature is the provider's opaque record of the reasoning that
 	// produced THIS tool call. Gemini 2.5/3.x thinking models return one with
 	// each native function call and require it replayed verbatim whenever that
@@ -372,6 +403,11 @@ type ToolInvocation struct {
 	// Failed is true when the step's tool reported failure, so a wrapper that
 	// forwards Response.Content upward doesn't relabel an error as success.
 	Failed bool
+	// DisplayID is the step's citation id (E1, E2, …) as the planner showed it
+	// to the model. SourceToolID is set when the step reused a cached result
+	// (see NBAgentPlannerToolAction.SourceToolID).
+	DisplayID    string `json:",omitempty"`
+	SourceToolID string `json:",omitempty"`
 }
 
 type NBAgentPlanner interface {
@@ -419,42 +455,6 @@ type MemoryFact struct {
 	// instead and don't ride this field.
 	DecisionType string `json:"decision_type,omitempty"`
 }
-
-type MemoryType string
-
-func (m MemoryType) Validate() MemoryType {
-	switch string(m) {
-	case "user_preference":
-		return MemoryTypeUserPreference
-	case "pattern":
-		return MemoryTypePattern
-	case "workflow":
-		return MemoryTypeWorkflow
-	case "investigation_result":
-		return MemoryTypeInvestigationResult
-	case "architectural_fact":
-		return MemoryTypeArchitecturalFact
-	case "dependency_mapping":
-		return MemoryTypeDependencyMapping
-	case "troubleshooting_guide":
-		return MemoryTypeTroubleshooting
-	case "configuration_insight":
-		return MemoryTypeConfigInsight
-	default:
-		return MemoryTypeInvestigationResult
-	}
-}
-
-const (
-	MemoryTypeInvestigationResult MemoryType = "investigation_result"
-	MemoryTypeArchitecturalFact   MemoryType = "architectural_fact"
-	MemoryTypeDependencyMapping   MemoryType = "dependency_mapping"
-	MemoryTypeTroubleshooting     MemoryType = "troubleshooting_guide"
-	MemoryTypeConfigInsight       MemoryType = "configuration_insight"
-	MemoryTypeUserPreference      MemoryType = "user_preference"
-	MemoryTypePattern             MemoryType = "pattern"
-	MemoryTypeWorkflow            MemoryType = "workflow"
-)
 
 // AgentPlannerType names either a DECLARED intent — what an agent's
 // GetPlannerType() returns to describe the kind of work it does — or the runtime
@@ -585,7 +585,7 @@ type NBAgent interface {
 // model. An agent that does not implement it defaults to the Retrieval tier
 // (see agentModelCategory).
 type NBAgentCategoryProvider interface {
-	GetModelCategory() ModelTier
+	GetModelCategory() llmruntime.ModelTier
 }
 
 // agentModelCategory returns the category an agent opted into, or a sensible
@@ -604,17 +604,17 @@ type NBAgentCategoryProvider interface {
 // or Reasoning (orchestrators). Global is no longer a per-agent routing target; it
 // remains the inherited base/fallback every tier resolves to when its own model is
 // unconfigured.
-func agentModelCategory(agent NBAgent) ModelTier {
+func agentModelCategory(agent NBAgent) llmruntime.ModelTier {
 	if agent == nil {
-		return ModelTierRetrieval
+		return llmruntime.ModelTierRetrieval
 	}
 	if p, ok := agent.(NBAgentCategoryProvider); ok {
 		return p.GetModelCategory()
 	}
 	if agent.GetPlannerType() == AgentPlannerTypeClassification {
-		return ModelTierSummary
+		return llmruntime.ModelTierSummary
 	}
-	return ModelTierRetrieval
+	return llmruntime.ModelTierRetrieval
 }
 
 // isSingleShotClassifier reports whether the agent is a single-shot
@@ -649,7 +649,7 @@ func isContextExtractionApplicable(source ConversationSource) bool {
 // NBAgentCacheScopeProvider is an optional interface that allows agents to define
 // their caching stability scope (e.g. Account or Global level vs Conversation).
 type NBAgentCacheScopeProvider interface {
-	GetCacheScope() CacheScope
+	GetCacheScope() llmruntime.CacheScope
 }
 
 // NBAgentRequestAwareToolProvider is an optional interface for agents whose

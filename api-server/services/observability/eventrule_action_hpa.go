@@ -186,54 +186,68 @@ func hpaQueries(hpaName, namespace string) map[string]string {
 // hpaMetricRows pairs each metric the HPA scales on with its current reading, so
 // the card says "cpu utilization 93% against a 70% target" rather than leaving
 // the reader to guess which signal pinned it.
+//
+// kube-state-metrics emits the current reading once per metric_target_type
+// (average, utilization, value) whatever the target's type is, so a reading is
+// only comparable to a target of the same type: pairing a utilization target with
+// the `value` series rendered 0.2 cores as "0%" and 91328512 bytes as "91328512%".
+// Readings of a type no target uses are dropped; a metric with no target at all
+// keeps every reading, each labelled with its own type.
 func hpaMetricRows(results map[string][]latestSample) ([][]any, string) {
-	targets := map[string]float64{}
-	types := map[string]string{}
+	type metricKey struct{ name, targetType string }
+	targets := map[metricKey]float64{}
+	targetNames := map[string]bool{}
 	for _, s := range results["target_metric"] {
-		name := s.Metric["metric_name"]
-		if name == "" || !usableValue(s.Value) {
+		key := metricKey{s.Metric["metric_name"], s.Metric["metric_target_type"]}
+		if key.name == "" || !usableValue(s.Value) {
 			continue
 		}
-		targets[name] = s.Value
-		types[name] = s.Metric["metric_target_type"]
+		targets[key] = s.Value
+		targetNames[key.name] = true
 	}
-	currents := map[string]float64{}
+	currents := map[metricKey]float64{}
 	for _, s := range results["current_metric"] {
-		if name := s.Metric["metric_name"]; name != "" && usableValue(s.Value) {
-			currents[name] = s.Value
+		key := metricKey{s.Metric["metric_name"], s.Metric["metric_target_type"]}
+		if key.name != "" && usableValue(s.Value) {
+			currents[key] = s.Value
 		}
 	}
 
-	names := make([]string, 0, len(targets))
-	for name := range targets {
-		names = append(names, name)
+	keys := make([]metricKey, 0, len(targets))
+	for key := range targets {
+		keys = append(keys, key)
 	}
-	for name := range currents {
-		if _, seen := targets[name]; !seen {
-			names = append(names, name)
+	for key := range currents {
+		if _, seen := targets[key]; !seen && !targetNames[key.name] {
+			keys = append(keys, key)
 		}
 	}
-	sort.Strings(names)
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i].name != keys[j].name {
+			return keys[i].name < keys[j].name
+		}
+		return keys[i].targetType < keys[j].targetType
+	})
 
-	rows := make([][]any, 0, len(names))
+	rows := make([][]any, 0, len(keys))
 	pinned := ""
-	for _, name := range names {
-		target, hasTarget := targets[name]
-		current, hasCurrent := currents[name]
-		label := name
-		if t := types[name]; t != "" {
-			label = name + " " + t
+	for _, key := range keys {
+		target, hasTarget := targets[key]
+		current, hasCurrent := currents[key]
+		label := key.name
+		if key.targetType != "" {
+			label = key.name + " " + key.targetType
 		}
 		switch {
 		case hasCurrent && hasTarget:
-			rows = append(rows, []any{label, fmt.Sprintf("%s (target %s)", hpaMetricValue(current, types[name]), hpaMetricValue(target, types[name]))})
+			rows = append(rows, []any{label, fmt.Sprintf("%s (target %s)", hpaMetricValue(current, key.targetType), hpaMetricValue(target, key.targetType))})
 			if current > target && pinned == "" {
 				pinned = label
 			}
 		case hasTarget:
-			rows = append(rows, []any{label, "target " + hpaMetricValue(target, types[name])})
+			rows = append(rows, []any{label, "target " + hpaMetricValue(target, key.targetType)})
 		case hasCurrent:
-			rows = append(rows, []any{label, hpaMetricValue(current, types[name])})
+			rows = append(rows, []any{label, hpaMetricValue(current, key.targetType)})
 		}
 	}
 	return rows, pinned

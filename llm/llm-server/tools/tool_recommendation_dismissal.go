@@ -172,7 +172,7 @@ func (m RecommendationDismissalTool) Call(nbCtx core.NbToolContext, input core.N
 		return errNBLLMToolResponse(errors.New("action must be one of dismiss, snooze, reactivate")), nil
 	}
 
-	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_update_dismissal", map[string]any{"object": object}, ToolRecommendationSetDismissal)
+	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_update_dismissal", recommendationsExecuteKey, map[string]any{"object": object}, ToolRecommendationSetDismissal)
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("recommendation_set_dismissal: failed", "error", err, "recommendation_id", recommendationId, "action", action)
 		return errNBLLMToolResponse(err), nil

@@ -31,6 +31,15 @@ func grantedWorkflows(sc *security.SecurityContext, accountId string, classes ..
 	return false
 }
 
+// HasWorkflowsGrant reports whether the caller holds any custom-role workflows
+// grant (Read, Write or Execute) covering accountId. The API's account gate
+// uses it so a principal with only custom roles (a person, or a bee account,
+// which can hold nothing else) reaches the endpoints whose own checks accept
+// that grant; it authorizes no operation by itself.
+func HasWorkflowsGrant(sc *security.SecurityContext, accountId string) bool {
+	return grantedWorkflows(sc, accountId, "Read", "Write", "Execute")
+}
+
 // canWriteWorkflows: a workflows:Write grant authorizes any workflow mutation
 // (update, delete, publish, version management).
 func canWriteWorkflows(sc *security.SecurityContext, accountId string) bool {
@@ -38,10 +47,10 @@ func canWriteWorkflows(sc *security.SecurityContext, accountId string) bool {
 }
 
 // canRunWorkflows: running, replaying, cancelling, pausing and resuming are the
-// Execute class. Write is accepted too, mirroring ExecuteTask — someone who may
-// rewrite a workflow can already make it do anything running it would.
+// Execute class. Write and Execute are separate rights: a workflows:Write grant
+// (edit workflows) does not let its holder run them.
 func canRunWorkflows(sc *security.SecurityContext, accountId string) bool {
-	return grantedWorkflows(sc, accountId, "Execute", "Write")
+	return grantedWorkflows(sc, accountId, "Execute")
 }
 
 // canInspectWorkflows: the read class, for operations the gateway classifies as

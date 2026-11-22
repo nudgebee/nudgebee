@@ -6,6 +6,7 @@ import { CommonLocators } from "../../GlobalLocators";
 // picker per connected app under "Do".
 export class NotificationLocators extends CommonLocators {
   readonly notificationsTab!: Locator;
+  readonly tabMenuBackdrop!: Locator;
 
   readonly notificationRuleBtn!: Locator;
   readonly blankRuleItem!: Locator;
@@ -29,7 +30,6 @@ export class NotificationLocators extends CommonLocators {
   readonly ruleError!: Locator;
 
   readonly slackChannelSelector!: Locator;
-  readonly msTeamsGroupSelector!: Locator;
   readonly msTeamsChannelSelector!: Locator;
   readonly gChatChannelSelector!: Locator;
   readonly emailInput!: Locator;
@@ -40,6 +40,7 @@ export class NotificationLocators extends CommonLocators {
 
     this.notificationsTab = page.locator("#anchor-tab-Notifications")
       .or(page.getByRole("tab", { name: "Notifications" }));
+    this.tabMenuBackdrop = page.locator(".MuiModal-backdrop").first();
 
     // "Add rule" opens a menu of starting points; "Blank rule" opens the editor.
     this.notificationRuleBtn = page.locator("#notification-rule")
@@ -70,7 +71,6 @@ export class NotificationLocators extends CommonLocators {
     this.ruleError = page.locator("#rule-error");
 
     this.slackChannelSelector = page.locator("#slack-channel");
-    this.msTeamsGroupSelector = page.locator("#msteam-groups");
     this.msTeamsChannelSelector = page.locator("#msteam-channel");
     this.gChatChannelSelector = page.locator("#gchat-channel");
     this.emailInput = page.locator("#email-input");

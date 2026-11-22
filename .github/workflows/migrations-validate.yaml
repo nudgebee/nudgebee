@@ -16,7 +16,12 @@ name: Migrations-Validate
 #      and `lint` do NOT catch that class; only a real apply does.
 #   5. Account delete plan — the Go test that checks account deletion's table
 #      list against the foreign keys of the database built in step 4.
-#   6. atlas migrate lint (advisory) — surfaces destructive / data-dependent
+#   6. Knowledge-base and metastore SQL tool tests — llm-server's knowledge-base
+#      queries, the KB migrations (V1013 / V1014 replayed on the old shape),
+#      rag-server's live-KB gate, and the SQL tools' views run as role
+#      nb_llm_sql_tools, against the database built in step 4. Each test seeds
+#      and removes its own tenant.
+#   7. atlas migrate lint (advisory) — surfaces destructive / data-dependent
 #      changes on new files for reviewer attention. Non-blocking: legitimate
 #      DROP migrations are common here, so lint informs rather than gates.
 
@@ -30,6 +35,19 @@ on:
       - "api-server/migrations/validate_migrations.py"
       # The account delete plan is checked against the migrated schema below.
       - "api-server/services/account/**"
+      # Knowledge-base queries are checked against the migrated schema below.
+      - "llm/llm-server/knowledge/**"
+      # The metastore SQL tools' views run as role nb_llm_sql_tools below.
+      - "llm/llm-server/tools/common_metadata_sql*.go"
+      - "llm/llm-server/tools/tool_event.go"
+      - "llm/llm-server/tools/tool_event_structured.go"
+      - "llm/llm-server/tools/tool_anomaly.go"
+      - "llm/llm-server/tools/tool_recommendation.go"
+      - "llm/llm-server/tools/tool_recommendation_resolution.go"
+      - "llm/llm-server/tools/tool_security.go"
+      - "llm/rag-server/tests/fixtures/kb_visibility_cases.json"
+      - "llm/rag-server/rag/core/utils/db_query.py"
+      - "llm/rag-server/tests/test_kb_visibility_db.py"
       - ".github/workflows/migrations-validate.yaml"
 
 concurrency:
@@ -163,7 +181,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: "1.26.x"
-          cache-dependency-path: api-server/services/go.sum
+          cache-dependency-path: |
+            api-server/services/go.sum
+            llm/llm-server/go.sum
 
       - name: Check the account delete plan against the migrated schema
         working-directory: ./api-server/services
@@ -171,6 +191,43 @@ jobs:
           APP_DATABASE_URL: postgres://nudgebee:postgres@localhost:5432/appdb?sslmode=disable
           REQUIRE_DB_TESTS: "true"
         run: go test ./account/ -run 'TestAccountDeletePlanCoversForeignKeys_DB' -count=1 -v
+
+      # Knowledge-base visibility, switch-offs, agent mappings, sync reconcile and
+      # Fact/SOP marks run their real queries here, and the KB migrations are
+      # replayed on the shape they migrate from (#41059).
+      - name: Check knowledge-base queries against the migrated schema
+        working-directory: ./llm/llm-server
+        env:
+          KB_TEST_DATABASE_URL: postgres://nudgebee:postgres@localhost:5432/appdb?sslmode=disable
+          REQUIRE_DB_TESTS: "true"
+        run: go test ./knowledge/ -run '_DB$' -count=1 -v
+
+      # The metastore SQL tools run model-written SQL as role nb_llm_sql_tools
+      # over the account-scoped nb_llm_tools views (V1112). Every tool view runs
+      # here, so a column or table missing from those views fails the PR (#43649).
+      - name: Check the metastore SQL tools' scoped role against the migrated schema
+        working-directory: ./llm/llm-server
+        env:
+          TOOLS_TEST_DATABASE_URL: postgres://nudgebee:postgres@localhost:5432/appdb?sslmode=disable
+          REQUIRE_DB_TESTS: "true"
+        run: go test ./tools/ -run '_DB$' -count=1 -v
+
+      # rag-server applies the same visibility rule in its own query before any
+      # search. Only the packages that query needs are installed (versions as in
+      # uv.lock), not the service's model stack.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Check rag-server's knowledge-base gate against the migrated schema
+        working-directory: ./llm/rag-server
+        env:
+          KB_TEST_DATABASE_URL: postgresql://nudgebee:postgres@localhost:5432/appdb
+          REQUIRE_DB_TESTS: "true"
+        run: |
+          uv run --no-project --python 3.11 \
+            --with sqlalchemy==2.0.52 --with psycopg2-binary==2.9.12 --with cryptography==50.0.1 \
+            --with python-dotenv==1.2.2 --with pytest==9.1.1 \
+            python -m pytest tests/test_kb_visibility_db.py -v -p no:cacheprovider
 
       # Advisory only (continue-on-error). Surfaces destructive / data-dependent
       # / backward-incompatible changes on migrations added in this PR, on a

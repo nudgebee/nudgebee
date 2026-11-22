@@ -9,6 +9,9 @@ var sensitiveEnvKeys = []string{
 	"GCP_SA_KEY",
 	"GITHUB_TOKEN",
 	"GITLAB_TOKEN",
+	"GH_TOKEN",
+	"GH_ENTERPRISE_TOKEN",
+	"GITHUB_ENTERPRISE_TOKEN",
 }
 
 // ScrubCredentials replaces sensitive environment values in command output.

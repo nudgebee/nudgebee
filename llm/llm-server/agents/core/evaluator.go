@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -43,7 +44,7 @@ func EvaluateAgentResponse(ctx *security.RequestContext, agentResponse NBAgentRe
 	// Response evaluation is a reasoning-heavy sub-operation; tag the context so
 	// its LLM calls resolve the Reasoning-tier model regardless of the host agent.
 	evalCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierReasoning),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
@@ -65,7 +66,7 @@ func EvaluateAgentResponse(ctx *security.RequestContext, agentResponse NBAgentRe
 		llms.TextParts(llms.ChatMessageTypeHuman, mainPrompt),
 	}
 
-	completion, err := GenerateAndTrackLLMContent(evalCtx, userId, accountId, agentResponse.ConversationId, agentResponse.MessageId, "evaluation_agent", false, messageContent, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(evalCtx, userId, accountId, agentResponse.ConversationId, agentResponse.MessageId, "evaluation_agent", false, messageContent, true)
 	if err != nil {
 		return AgentResponseEvaluationResult{}, err
 	}
@@ -104,7 +105,7 @@ func EvaluateAgentResponse(ctx *security.RequestContext, agentResponse NBAgentRe
 			llms.TextParts(llms.ChatMessageTypeSystem, toolSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, toolPrompt),
 		}
-		toolCompletion, err := GenerateAndTrackLLMContent(evalCtx, userId, accountId, agentResponse.ConversationId, agentResponse.MessageId, "evaluation_agent", false, toolMsg, true)
+		toolCompletion, err := llmruntime.GenerateAndTrackLLMContent(evalCtx, userId, accountId, agentResponse.ConversationId, agentResponse.MessageId, "evaluation_agent", false, toolMsg, true)
 		if err == nil {
 			err = common.ExtractAndUnmarshalJSON([]byte(toolCompletion.Choices[0].Content), &toolEval)
 			if err != nil {

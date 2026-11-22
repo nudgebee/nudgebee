@@ -208,7 +208,7 @@ func ApplyRuleChange(ctx *security.RequestContext, req ApplyRuleChangeRequest) (
 	if req.RuleID == "" || req.AccountID == "" {
 		return nil, fmt.Errorf("rule_id and account_id are required")
 	}
-	if !sc.HasAccountAccess(req.AccountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountID, security.SecurityAccessTypeUpdate) {
 		return nil, fmt.Errorf("account unauthorized")
 	}
 	target, err := ResolveRuleTarget(ctx, req.RuleID, ResolveOptions{})

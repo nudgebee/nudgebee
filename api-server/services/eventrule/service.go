@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/gonjasafe"
 	"nudgebee/services/observability/alertrule"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
@@ -101,6 +102,18 @@ var logActions = map[string]bool{
 	"k8s_pod_log_enricher": true,
 }
 
+// normalizeRuleSeverity clamps a severity to event_rule_severity, which holds
+// only 'critical' and 'warning'. Webhooks and provider syncs pass through
+// whatever the source reports ("high", "P1", "Critical", ""), so anything that
+// is not critical is stored as a warning rather than failing the insert on the
+// foreign key.
+func normalizeRuleSeverity(severity string) string {
+	if strings.EqualFold(strings.TrimSpace(severity), "critical") {
+		return "critical"
+	}
+	return "warning"
+}
+
 // upsertEventRule inserts or updates an event rule, returning the id and whether a row was affected.
 // isDefinition says whether this write carries the rule's *definition* (its
 // query, evaluation window and type) rather than one firing of it. It exists
@@ -125,10 +138,15 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 	if err != nil {
 		return "", false, fmt.Errorf("failed to marshal labels: %w", err)
 	}
+	// Every caller reaches the FK-constrained column through here, so narrow
+	// once: webhooks hand over free-form provider severities ("high", "error").
+	severity = NarrowSeverity(severity)
+	labelsJSON = narrowLabelsSeverity(labelsJSON)
 
 	if alertType == "" {
 		alertType = "metric"
 	}
+	severity = normalizeRuleSeverity(severity)
 
 	var providerConfigJSON *string
 	if providerConfig != nil {
@@ -174,7 +192,11 @@ func upsertEventRule(dbms *database.DatabaseManager, annotations any, labels any
 			category = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.category ELSE event_rules.category END,
 			metric_provider = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider ELSE event_rules.metric_provider END,
 			metric_provider_source = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.metric_provider_source ELSE event_rules.metric_provider_source END,
-			external_rule_id = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN EXCLUDED.external_rule_id ELSE event_rules.external_rule_id END,
+			-- COALESCE so an incoming write that carries no id keeps the one already
+			-- stored. Without it, any firing whose payload has no upstream id would
+			-- NULL the column on a webhook-sourced row (nilIfEmpty makes it NULL) and
+			-- silently un-manage a rule that an edit or disable could otherwise reach.
+			external_rule_id = CASE WHEN EXCLUDED.source NOT LIKE '%\_webhook' OR event_rules.source LIKE '%\_webhook' OR COALESCE(event_rules.source, '') = '' THEN COALESCE(EXCLUDED.external_rule_id, event_rules.external_rule_id) ELSE event_rules.external_rule_id END,
 			-- provider_config is merged, never replaced: other writers own keys in it (the
 			-- k8s-collector sync stores managed_by, which decides whether a Prometheus rule
 			-- may be changed), and a UI edit sends no provider_config at all.
@@ -442,17 +464,19 @@ func EventRuleExists(context *security.RequestContext, accountID, alert string) 
 func CreateEventRule(context *security.RequestContext, eventRequest EventConfig) (map[string]bool, error) {
 	data := make(map[string]bool)
 
-	// Allow tenant admin without userId for internal system calls (webhook processing, event queue consumers)
-	// that use NewSecurityContextForTenantAdmin with no userId.
-	// Account-level access is still enforced by HasAccountAccess below.
-	if !context.GetSecurityContext().IsSuperAdmin() &&
-		(context.GetSecurityContext().GetTenantId() == "" ||
-			!context.GetSecurityContext().IsTenantAdmin()) {
+	// Creating a rule needs create access to the rule's account, as updating and
+	// disabling one do: a tenant or account admin, or a custom role granted the
+	// action on that account (or tenant-wide). Internal system calls (webhook
+	// processing, event queue consumers) use a tenant-admin context and pass.
+	if sc := context.GetSecurityContext(); sc == nil || (!sc.IsSuperAdmin() && sc.GetTenantId() == "") {
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeCreate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeCreate) {
 		return data, fmt.Errorf("account unauthorized")
+	}
+	if err := checkActionParamAccess(context.GetSecurityContext(), eventRequest.AccountID, security.SecurityAccessTypeCreate, eventRequest.ActionParams); err != nil {
+		return data, err
 	}
 
 	// Fail fast on a blank name: below, the relay and external-provider branches
@@ -466,7 +490,10 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 
 	normalizeEventSource(&eventRequest)
 
-	externalRuleId := ""
+	// Seeded from the request so a parser that already knows the upstream id can
+	// record it; the external-provider branch below overwrites it with whatever
+	// the provider answers, so the providers that mint their own ids are unaffected.
+	externalRuleId := eventRequest.ExternalRuleID
 
 	// 1. Prometheus: sync via relay (existing path)
 	if eventRequest.Source == agentEventSourceName {
@@ -564,8 +591,11 @@ func UpdateEventRule(context *security.RequestContext, eventRequest EventConfig)
 		return data, common.ErrorUnauthorized("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
 		return data, common.ErrorUnauthorized("unauthorized")
+	}
+	if err := checkActionParamAccess(context.GetSecurityContext(), eventRequest.AccountID, security.SecurityAccessTypeUpdate, eventRequest.ActionParams); err != nil {
+		return data, err
 	}
 
 	// Fail fast on a blank name: below, the relay and external-provider branches
@@ -801,7 +831,7 @@ func DisableEventRule(context *security.RequestContext, eventRequest DisableEven
 		return data, fmt.Errorf("unauthorized")
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
+	if !context.GetSecurityContext().CanAccessAccount(eventRequest.AccountID, security.SecurityAccessTypeUpdate) {
 		return data, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -1428,7 +1458,11 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 					}
 
 					actionStart := time.Now()
-					result, err := action.Execute(execContext, svcParams)
+					var result playbooks.PlaybookActionResponse
+					err := checkActionScope(accountId, svcParams)
+					if err == nil {
+						result, err = action.Execute(execContext, svcParams)
+					}
 					svcResponse.DurationSeconds = time.Since(actionStart).Seconds()
 					if err != nil {
 						if strings.Contains(err.Error(), "agent not connected") {
@@ -1640,6 +1674,16 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 
 	//run auto discovery actions
 	for _, actionName := range playbooks.ListActions() {
+		// Same deadline as the configured actions above: the event is handed on
+		// with what was collected so far rather than waiting on more cloud
+		// round-trips (CanAutoExecute itself may look things up).
+		if playbookBudgetExpired(event) {
+			context.GetLogger().Warn("eventrule: playbook budget exhausted, skipping remaining auto actions",
+				"event_id", event.EventId, "next_action", actionName,
+				"deadline", event.Deadline.Format(time.RFC3339))
+			common.MetricsPlaybookBudgetExhausted(context.GetContext())
+			break
+		}
 		if slices.Contains(executedAction, actionName) {
 			continue
 		}
@@ -1767,7 +1811,7 @@ func evaluateRawParamsTemplatesWithExtraContext(rawParams map[string]any, event 
 		templateCtx[k] = v
 	}
 
-	tpl, err := gonja.FromString(string(rawData))
+	tpl, err := gonjasafe.FromString(string(rawData))
 	if err != nil {
 		return nil, err
 	}
@@ -1851,4 +1895,35 @@ func parseJSONStrings(params map[string]any) map[string]any {
 		}
 	}
 	return result
+}
+
+// NarrowSeverity maps a free-form severity onto the two values
+// event_rule_severity holds. event_rules.severity is foreign-keyed to that
+// table, so anything else fails the insert with 23503.
+func NarrowSeverity(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return "critical"
+	default:
+		return "warning"
+	}
+}
+
+// narrowLabelsSeverity narrows labels["severity"] in a marshalled labels object,
+// leaving the JSON untouched when it has no string severity.
+func narrowLabelsSeverity(labelsJSON []byte) []byte {
+	var m map[string]any
+	if err := json.Unmarshal(labelsJSON, &m); err != nil {
+		return labelsJSON
+	}
+	sev, ok := m["severity"].(string)
+	if !ok {
+		return labelsJSON
+	}
+	m["severity"] = NarrowSeverity(sev)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return labelsJSON
+	}
+	return out
 }

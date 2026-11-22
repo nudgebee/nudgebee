@@ -13,7 +13,6 @@ import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import { hasWriteAccess, canManage } from '@lib/auth';
-import { Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import LinkOutlinedIcon from '@mui/icons-material/LinkOutlined';
 import { ds } from 'src/utils/colors';
@@ -319,13 +318,7 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
           </ListingLayout.Body>
         ) : (
           <>
-            <ListingLayout.Toolbar
-              actions={
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
-                  {totalCount} {totalCount === 1 ? 'account' : 'accounts'}
-                </Typography>
-              }
-            >
+            <ListingLayout.Toolbar>
               <FilterDropdown
                 id={`${tool}-status-filter`}
                 label='Status'

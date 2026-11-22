@@ -187,15 +187,20 @@ type ObservabilityTraceResponse struct {
 	Coverage *ObservabilityTraceCoverage `json:"coverage,omitempty"`
 }
 
-// ObservabilityTraceCoverage says a trace result stopped at a cap, so it is a sample of the
-// window, not all of it. Note is the same fact in words the agent can repeat.
+// ObservabilityTraceCoverage says a trace result stopped at a cap. The rows shown are a sample of
+// the window unless Total is set, which means every match was counted and only the display was
+// cut. Note is the same fact in words the agent can repeat.
 type ObservabilityTraceCoverage struct {
 	// Limit is the cap that was hit.
 	Limit int `json:"limit"`
 	// Received is how many rows the backend returned; Returned is how many the tool kept.
-	Received int    `json:"received"`
-	Returned int    `json:"returned"`
-	Note     string `json:"note"`
+	Received int `json:"received"`
+	Returned int `json:"returned"`
+	// Total is the exact number of traces matching the window, set only when the backend
+	// stopped before the query's limit. Nil when the limit was reached, so the real total
+	// is unknown and the rows are a sample.
+	Total *int   `json:"total,omitempty"`
+	Note  string `json:"note"`
 }
 
 // ObservabilityTraceRawTable mirrors observability.RawTraceResult: an arbitrary ClickHouse result
@@ -209,6 +214,12 @@ type ObservabilityTraceRawTable struct {
 type ObservabilityLogLabel struct {
 	Label      string         `json:"label"`
 	Attributes map[string]any `json:"attributes"`
+	// Kind and Field are services-server's verdict on the name: Kind "field" when the
+	// backend itself reported it, "alias" when services-server translates it, with
+	// Field naming the reported backend field it translates to when there is one.
+	// Both are empty when the backend reported nothing.
+	Kind  string `json:"kind,omitempty"`
+	Field string `json:"field,omitempty"`
 }
 
 type ObservabilityLogLabelResponse struct {

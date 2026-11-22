@@ -215,12 +215,8 @@ func (t *HorizontalRightsizeTask) Execute(taskCtx types.TaskContext, params map[
 
 	// Check output of patch command
 	if respStr, ok := resp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil { // Handle unmarshal error
-			return nil, fmt.Errorf("failed to parse kubectl patch response: %w", err)
-		}
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			return nil, fmt.Errorf("kubectl patch error: %s", stderr)
+		if _, err := interpretKubectlResponse(respStr); err != nil {
+			return nil, fmt.Errorf("kubectl patch error: %w", err)
 		}
 	}
 

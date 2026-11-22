@@ -68,6 +68,7 @@ export const useTokenUsage = (accountId) => {
               message_thinking_tokens: message.message_thinking_tokens || 0,
               message_cache_hit_rate_percentage: message.message_cache_hit_rate_percentage,
               message_cost_usd: message.message_cost_usd || 0,
+              message_cache_savings: message.message_cache_savings || null,
               agents: message.agents,
             };
 

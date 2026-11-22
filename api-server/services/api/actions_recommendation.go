@@ -176,6 +176,39 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 
 		c.JSON(200, resp)
 		return
+	case "security_update_vm_active":
+		var request vmpackage.VMActiveRequest
+		payload := mlRequest
+		if mlRequest["object"] != nil {
+			obj, ok := mlRequest["object"].(map[string]interface{})
+			if !ok {
+				c.JSON(400, common.ErrorActionBadRequest("invalid object format"))
+				return
+			}
+			payload = obj
+		}
+		err := common.UnmarshalMapToStruct(payload, &request)
+		if err == nil {
+			err = common.ValidateStruct(request)
+		}
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := vmpackage.UpdateVMActive(ctx, request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, map[string]string{"status": "success"})
+		return
 	case "security_scan_vm_account":
 		var request vmpackage.ScanAccountRequest
 		var err error
@@ -248,29 +281,7 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
-			c.JSON(400, common.ErrorActionBadRequest("unauthorized"))
-			return
-		}
-
-		rows, err := vmpackage.ListScanStatusesForAccount(request.AccountId)
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-		data := make([]map[string]any, 0, len(rows))
-		for _, r := range rows {
-			data = append(data, map[string]any{
-				"cloud_resource_id": r.CloudResourceID,
-				"status":            r.Status,
-				"error":             r.Error,
-				"package_count":     r.PackageCount,
-				"finding_count":     r.FindingCount,
-				"scanned_at":        r.ScannedAt,
-				"updated_at":        r.UpdatedAt,
-			})
-		}
-		c.JSON(200, vmpackage.ListScanStatusesResponse{Data: data})
+		respondVMScanStatuses(c, ctx, request.AccountId)
 		return
 	case "security_list_vm_scan_datasources":
 		var request vmpackage.ListScanDatasourcesRequest
@@ -293,27 +304,7 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		// Same access the scan itself needs (vmpackage.ScanPackages): this
-		// list only feeds the dialog that starts one.
-		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) {
-			c.JSON(403, common.ErrorActionForbidden("unauthorized"))
-			return
-		}
-
-		options, err := vmpackage.ListScanDatasources(request.AccountId, ctx.GetSecurityContext().GetTenantId())
-		if err != nil {
-			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
-			return
-		}
-		data := make([]map[string]any, 0, len(options))
-		for _, o := range options {
-			data = append(data, map[string]any{
-				"id":     o.ID,
-				"name":   o.Name,
-				"status": o.Status,
-			})
-		}
-		c.JSON(200, vmpackage.ListScanDatasourcesResponse{Data: data})
+		respondVMScanDatasources(c, ctx, request.AccountId)
 		return
 	case "recommendation_job_create":
 		var request recommendation.RecommendationJobCreateRequest
@@ -533,6 +524,11 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 			})
 			return
 		}
+		// A retry re-applies the resolution against request.AccountId.
+		if !ctx.GetSecurityContext().CanAccessAccount(request.AccountId, security.SecurityAccessTypeUpdate) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
 
 		auditEvent := audit.Audit{
 			UserId:         ctx.GetSecurityContext().GetUserId(),
@@ -673,6 +669,60 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 	}
 }
 
+// respondVMScanStatuses answers security_list_vm_scan_statuses: the last scan
+// state of each VM in an account the caller may read.
+func respondVMScanStatuses(c *gin.Context, ctx *security.RequestContext, accountID string) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
+		c.JSON(403, common.ErrorActionForbidden("unauthorized"))
+		return
+	}
+
+	rows, err := vmpackage.ListScanStatusesForAccount(accountID)
+	if err != nil {
+		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+	data := make([]map[string]any, 0, len(rows))
+	for _, r := range rows {
+		data = append(data, map[string]any{
+			"cloud_resource_id": r.CloudResourceID,
+			"status":            r.Status,
+			"error":             r.Error,
+			"package_count":     r.PackageCount,
+			"finding_count":     r.FindingCount,
+			"scanned_at":        r.ScannedAt,
+			"updated_at":        r.UpdatedAt,
+		})
+	}
+	c.JSON(200, vmpackage.ListScanStatusesResponse{Data: data})
+}
+
+// respondVMScanDatasources answers security_list_vm_scan_datasources: the
+// discovery datasources that can scan an account, for the dialog that starts a
+// scan. It only reads, so it asks for read access; starting the scan itself
+// (vmpackage.ScanPackages) still needs create access.
+func respondVMScanDatasources(c *gin.Context, ctx *security.RequestContext, accountID string) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
+		c.JSON(403, common.ErrorActionForbidden("unauthorized"))
+		return
+	}
+
+	options, err := vmpackage.ListScanDatasources(accountID, ctx.GetSecurityContext().GetTenantId())
+	if err != nil {
+		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+	data := make([]map[string]any, 0, len(options))
+	for _, o := range options {
+		data = append(data, map[string]any{
+			"id":     o.ID,
+			"name":   o.Name,
+			"status": o.Status,
+		})
+	}
+	c.JSON(200, vmpackage.ListScanDatasourcesResponse{Data: data})
+}
+
 // scanVmAccount queues an on-demand scan for every discovery datasource that
 // runs in or targets req.AccountId — the manual-trigger counterpart to
 // cron.go's daily "VM Vulnerability Scan" job, scoped to one account instead
@@ -681,7 +731,7 @@ func handleRecommendationAction(actionPayload *ActionRequest, c *gin.Context, tr
 // vmpackage/queue back would be a cycle; cron.go's handler is the existing
 // precedent for this same list-then-publish glue.
 func scanVmAccount(ctx *security.RequestContext, req vmpackage.ScanAccountRequest) (vmpackage.ScanAccountResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeCreate) {
 		return vmpackage.ScanAccountResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 

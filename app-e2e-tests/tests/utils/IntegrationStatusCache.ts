@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import path from "path";
 import axios from "axios";
+import { postAlertInThread } from "../../notifications/SlackThreads";
 import { PLAYWRIGHT_REPORT_DIR } from "./paths";
 
 export type CloudProvider = "aws" | "azure" | "gcp";
@@ -110,7 +111,6 @@ async function sendIntegrationAlert(
   opts: IntegrationAlertOptions = {}
 ): Promise<boolean> {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL?.trim();
-  if (!webhookUrl?.startsWith("http")) return false;
 
   const providerName =
     opts.displayName ?? (provider === "gcp" ? "GCP" : provider.toUpperCase());
@@ -118,32 +118,38 @@ async function sendIntegrationAlert(
   const env = process.env.CLUSTER || process.env.E2E_ENVIRONMENT || "unknown";
   const baseUrl = process.env.BASE_URL || "";
 
-  try {
-    await axios.post(
-      webhookUrl,
+  const payload = {
+    blocks: [
       {
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `:warning: *${providerName} Integration ${statusLabel} — All ${providerName} Tests Skipped*`,
-            },
-          },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: [
-                `@qa — Please integrate *${providerName}* first, then re-run the tests.`,
-                `*Env:* \`${env}\`${baseUrl ? `  •  <${baseUrl}|Open App>` : ""}`,
-              ].join("\n"),
-            },
-          },
-        ],
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `:warning: *${providerName} Integration ${statusLabel} — All ${providerName} Tests Skipped*`,
+        },
       },
-      { timeout: 10000, headers: { "Content-Type": "application/json" } }
-    );
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: [
+            `@qa — Please integrate *${providerName}* first, then re-run the tests.`,
+            `*Env:* \`${env}\`${baseUrl ? `  •  <${baseUrl}|Open App>` : ""}`,
+          ].join("\n"),
+        },
+      },
+    ],
+  };
+
+  // Into the run's "other alerts" thread when a bot is configured; the webhook otherwise.
+  if (await postAlertInThread("other", payload)) {
+    console.log(`[IntegrationCache] Slack alert sent in thread for ${providerName} ${statusLabel}`);
+    return true;
+  }
+
+  if (!webhookUrl?.startsWith("http")) return false;
+
+  try {
+    await axios.post(webhookUrl, payload, { timeout: 10000, headers: { "Content-Type": "application/json" } });
     console.log(`[IntegrationCache] Slack alert sent for ${providerName} ${statusLabel}`);
     return true;
   } catch (err) {

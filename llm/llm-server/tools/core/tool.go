@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,8 +20,6 @@ import (
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
-
-const CacheChannelToolInvalidation = "llm_tool_invalidation"
 
 type toolCache struct {
 	mutex sync.RWMutex
@@ -81,10 +81,13 @@ func init() {
 		}),
 	}
 
-	common.CacheSubscribe(CacheChannelToolInvalidation, func(accountId string) {
-		slog.Info("received global tool invalidation", "account_id", accountId)
-		// Internal invalidation only (don't broadcast again)
-		invalidateCachesForAccount(accountId)
+	common.OnReplicaBroadcast(common.ChangeToolConfig, common.ReplicaHandler{
+		OnKeys: func(accountIds []string) {
+			for _, accountId := range accountIds {
+				invalidateCachesForAccount(accountId)
+			}
+		},
+		OnAll: common.ReplicaNoResync,
 	})
 }
 
@@ -222,9 +225,9 @@ func (c *toolCache) delete(accountId string) {
 }
 
 // invalidateCachesForAccount drops every cache derived from this account's tools
-// and integrations. Both the originating replica (via updateToolCache) and every
-// peer replica (via the CacheChannelToolInvalidation subscriber) run it, so it
-// must stay idempotent.
+// and integrations. It runs on the originating replica and every peer for a
+// tool_config_changed broadcast, and on every replica for an integration change
+// (InvalidateAccountIntegrationCache), so it must stay idempotent.
 func invalidateCachesForAccount(accountId string) {
 	toolCacheInstance.delete(accountId)
 	enabledToolsCacheInstance.delete(accountId)
@@ -243,11 +246,8 @@ func updateToolCache(accountId string) {
 	// Load fresh data from DB and update cache
 	tools := loadCustomNbToolsFromDB(accountId)
 	toolCacheInstance.set(accountId, tools)
-	invalidateCachesForAccount(accountId)
-	// Broadcast to other replicas
-	if err := common.CachePublish(CacheChannelToolInvalidation, accountId); err != nil {
-		slog.Error("tools: failed to broadcast tool invalidation", "error", err, "account_id", accountId)
-	}
+	// Runs invalidateCachesForAccount here, then on every other replica.
+	common.ReplicaBroadcast(context.Background(), common.ChangeToolConfig, accountId)
 }
 
 func InvalidateToolCache(accountId string) {
@@ -258,13 +258,15 @@ type ToolType string
 
 // Error messages
 const (
-	errAccountIDRequired  = "accountId is required"
-	errToolNameRequired   = "tool.name is required"
-	errToolIDRequired     = "tool.id is required"
-	errToolStatusRequired = "tool.status is required"
-	errUserIDRequired     = "userId is required"
-	errUnauthorized       = "auth: unauthorized"
-	errToolNameNotValid   = "tool.name doesnt follow naming guidelines"
+	errAccountIDRequired        = "accountId is required"
+	errToolNameRequired         = "tool.name is required"
+	errToolIDRequired           = "tool.id is required"
+	errToolStatusRequired       = "tool.status is required"
+	errUserIDRequired           = "userId is required"
+	errUnauthorized             = "auth: unauthorized"
+	errToolNameNotValid         = "tool.name doesnt follow naming guidelines"
+	errReadOnlyNeedsTenantAdmin = "tool: only a tenant admin or super admin can mark a write tool as read-only"
+	errToolNameTaken            = "tools: a built-in tool or agent already has this name"
 )
 
 // Log messages
@@ -323,12 +325,56 @@ type ToolDto struct {
 	NeedsConfig  bool              `json:"needs_config"`
 	IsConfigured bool              `json:"is_configured"`
 	ConfigSchema *ToolConfigSchema `json:"config_schema,omitempty"`
+	// Approval is when the tool's calls ask for approval (#40399).
+	Approval ToolApproval `json:"approval,omitempty"`
 	// AccountId / AccountName are populated only by ListToolsForTenant —
 	// the per-account list path leaves them empty (the page already knows
 	// which account it's on). The b-Cortex tenant-wide view uses them to
 	// render an Account column on custom-tool rows.
 	AccountId   string `json:"account_id,omitempty" db:"account_id"`
 	AccountName string `json:"account_name,omitempty" db:"account_name"`
+	// Visibility is account, organisation or selected_accounts (#41073).
+	Visibility string `json:"visibility,omitempty" db:"visibility"`
+	// AccountIds is the selection when creating a selected_accounts tool.
+	AccountIds []string `json:"account_ids,omitempty"`
+	// SwitchedOff marks an organisation tool this account switched off; only
+	// the tool list returns those.
+	SwitchedOff bool `json:"switched_off,omitempty"`
+}
+
+// auditRedactedValue replaces a value an audit must not keep; it is the
+// placeholder the shared audit redactor writes.
+const auditRedactedValue = "[REDACTED]"
+
+// toolForAudit is the copy of a tool its audit records: every env_vars value
+// is replaced and the names are kept. A container tool's environment can hold
+// credentials under any name, and the audit is read by every tenant admin.
+// The tool itself is not modified.
+func toolForAudit(tool ToolDto) ToolDto {
+	var names []string
+	switch envVars := tool.Config["env_vars"].(type) {
+	case map[string]any:
+		for name := range envVars {
+			names = append(names, name)
+		}
+	case map[string]string:
+		for name := range envVars {
+			names = append(names, name)
+		}
+	default:
+		return tool
+	}
+	redacted := make(map[string]any, len(names))
+	for _, name := range names {
+		redacted[name] = auditRedactedValue
+	}
+	config := make(map[string]any, len(tool.Config))
+	for k, v := range tool.Config {
+		config[k] = v
+	}
+	config["env_vars"] = redacted
+	tool.Config = config
+	return tool
 }
 
 func getSystemToolDto(context *security.RequestContext, accountId string, toolName string, summary AccountConfigSummary) ToolDto {
@@ -352,6 +398,7 @@ func getSystemToolDto(context *security.RequestContext, accountId string, toolNa
 		Config:       map[string]any{},
 		InputSchema:  ModelInputSchema(nbTool),
 		NBToolType:   nbTool.GetType(),
+		Approval:     ApprovalMode(nbTool),
 	}
 
 	if configTool, ok := nbTool.(NBToolConfig); ok {
@@ -365,7 +412,7 @@ func getSystemToolDto(context *security.RequestContext, accountId string, toolNa
 }
 
 func ListTools(context *security.RequestContext, accountId string) []ToolDto {
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+	if !context.GetSecurityContext().CanReadAccountData(accountId, "ai_tools") {
 		slog.Error("tools: unauthorized access to list tools", "account_id", accountId)
 		return []ToolDto{}
 	}
@@ -411,6 +458,9 @@ func ListTools(context *security.RequestContext, accountId string) []ToolDto {
 		if t.ExecutorType == ToolExecutorTypeMCP {
 			continue
 		}
+		if t.NBToolType == NBToolTypeTool {
+			t.Approval = customToolApproval(t.Config)
+		}
 		finalTools = append(finalTools, t)
 	}
 	toolDtoCacheInstance.set(accountId, finalTools)
@@ -427,8 +477,16 @@ func withMCPIntegrationToolDtos(cached []ToolDto, accountId string) []ToolDto {
 	return append(slices.Clip(cached), ListMCPIntegrationToolDtos(accountId)...)
 }
 
+// GetEnabledNBTools is the account's whole tool list (cached per account, never
+// per caller), for a caller who may use the AI there: a built-in role that reads
+// the account, or a custom-role right to run AI on it (CanRunAI). Callers that
+// show it to a model filter it per caller (agents/core ToolsForPrompt); each
+// call is checked again at dispatch.
 func GetEnabledNBTools(context *security.RequestContext, accountId string) []NBTool {
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+	if context == nil || context.GetSecurityContext() == nil {
+		return []NBTool{}
+	}
+	if !context.GetSecurityContext().CanRunAI(accountId) {
 		slog.Error("tools: unauthorized access to get enabled tools", "account_id", accountId)
 		return []NBTool{}
 	}
@@ -515,8 +573,6 @@ func withAccountSourcedTools(cached []NBTool, accountId string) []NBTool {
 
 func getToolStatus(tool NBTool) ToolStatus {
 	switch t := tool.(type) {
-	case nbCustomMCPTool:
-		return t.tool.Status
 	case nbCustomContainerTool:
 		return t.tool.Status
 	case mcpIntegrationTool:
@@ -527,7 +583,14 @@ func getToolStatus(tool NBTool) ToolStatus {
 }
 
 func CreateCustomTool(context *security.RequestContext, accountId string, tool ToolDto) (ToolDto, error) {
-	if accountId == "" {
+	if tool.Visibility == "" {
+		tool.Visibility = VisibilityAccount
+	}
+	if !ValidOrgItemVisibility(tool.Visibility) {
+		return ToolDto{}, errors.New("tools: invalid visibility " + tool.Visibility)
+	}
+	org := tool.Visibility != VisibilityAccount
+	if accountId == "" && !org {
 		return ToolDto{}, errors.New(errAccountIDRequired)
 	}
 
@@ -563,20 +626,39 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 		return ToolDto{}, err
 	}
 
-	// validate if user has access
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
-		slog.Error("tools: failed to get account access")
-		return ToolDto{}, errors.New(errUnauthorized)
+	if isSystemToolName(tool.Name) {
+		return ToolDto{}, errors.New(errToolNameTaken)
 	}
 
-	// check if tool exists with same name
-	toolIds, err := getCustomToolIdByNameAndAccountId(accountId, tool.Name)
-	if err != nil {
-		slog.Error("tools: failed to get custom tool", "error", err, "tool", tool.Name, "account", accountId)
-		return ToolDto{}, err
-	}
-	if len(toolIds) > 0 {
-		return ToolDto{}, errors.New("tools: tool with same name already exists")
+	// validate if user has access
+	if org {
+		if !CanManageOrgItems(context, tenantId) {
+			return ToolDto{}, errors.New(errUnauthorized)
+		}
+		if accountId != "" && !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+			return ToolDto{}, errors.New(errUnauthorized)
+		}
+		if err := CheckOrgToolName(dbms.Db, tenantId, tool.Name); err != nil {
+			return ToolDto{}, err
+		}
+		if err := CheckOrgToolSecrets(tool.Config); err != nil {
+			return ToolDto{}, err
+		}
+	} else {
+		if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
+			slog.Error("tools: failed to get account access")
+			return ToolDto{}, errors.New(errUnauthorized)
+		}
+
+		// check if tool exists with same name
+		toolIds, err := getCustomToolIdByNameAndAccountId(accountId, tool.Name)
+		if err != nil {
+			slog.Error("tools: failed to get custom tool", "error", err, "tool", tool.Name, "account", accountId)
+			return ToolDto{}, err
+		}
+		if len(toolIds) > 0 {
+			return ToolDto{}, errors.New("tools: tool with same name already exists")
+		}
 	}
 	toolConfigJson := []byte("{}")
 	if len(tool.Config) > 0 {
@@ -624,11 +706,23 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 	nullableCreatedBy := sql.NullString{String: tool.CreatedBy, Valid: tool.CreatedBy != ""}
 
 	toolAny, err := dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		_, err = tx.Exec("insert into llm_tools (id, name, description, config, type, status, executor_type, created_by, input_schema, nb_tool_type, tenant_id) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-			tool.Id, tool.Name, tool.Description, string(toolConfigJson), tool.Type, tool.Status, tool.ExecutorType, nullableCreatedBy, string(toolSchemaJson), tool.NBToolType, tenantId)
+		if err := CheckOrgItemName(tx, OrgToolKind, tenantId, tool.Name, "", org); err != nil {
+			return nil, err
+		}
+		_, err = tx.Exec("insert into llm_tools (id, name, description, config, type, status, executor_type, created_by, input_schema, nb_tool_type, tenant_id, visibility) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+			tool.Id, tool.Name, tool.Description, string(toolConfigJson), tool.Type, tool.Status, tool.ExecutorType, nullableCreatedBy, string(toolSchemaJson), tool.NBToolType, tenantId, tool.Visibility)
 		if err != nil {
 			slog.Error("tools: failed to insert tool", "error", err)
-			return ToolDto{}, err
+			return nil, err
+		}
+
+		if org {
+			if tool.Visibility == VisibilitySelectedAccounts {
+				if err := ReplaceOrgItemSelection(tx, OrgToolKind, tool.Id, tenantId, context.GetSecurityContext().GetUserId(), tool.AccountIds); err != nil {
+					return nil, err
+				}
+			}
+			return tool, nil
 		}
 
 		_, err = tx.Exec("insert into llm_tools_installation (tool_id, account_id, id) values ($1, $2, $3)",
@@ -636,11 +730,14 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 		)
 		if err != nil {
 			slog.Error("tools: failed to insert tool installation", "error", err)
-			return ToolDto{}, err
+			return nil, err
 		}
 
 		return tool, nil
 	})
+	if err != nil {
+		return ToolDto{}, err
+	}
 
 	if err == nil {
 		toolInstance := toolAny.(ToolDto)
@@ -652,7 +749,7 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 					EventTime:     time.Now().UTC(),
 					EventCategory: "tool",
 					EventType:     "CUSTOM_TOOL_CREATE",
-					EventState:    toolInstance,
+					EventState:    toolForAudit(toolInstance),
 					EventActor:    audit.EventActor(context.GetSecurityContext().GetUserId()),
 					EventTarget:   toolInstance.Id,
 					EventAction:   audit.EventActionCreate,
@@ -672,11 +769,12 @@ func CreateCustomTool(context *security.RequestContext, accountId string, tool T
 	}
 
 	toolDto := toolAny.(ToolDto)
-	// Update cache if operation succeeded
-	if err == nil {
+	if org {
+		InvalidateOrgToolCaches(tenantId, accountId)
+	} else {
 		updateToolCache(accountId)
 	}
-	return toolDto, err
+	return toolDto, nil
 }
 
 func getCustomToolIdByNameAndAccountId(accountId string, name string) ([]string, error) {
@@ -726,17 +824,30 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 		return err
 	}
 
-	// validate if user has access
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "write") {
-		slog.Error("tools: failed to get account access", "error", err)
-		return errors.New(errUnauthorized)
-	}
+	// An empty account deletes an organisation tool of the caller's tenant.
+	orgTenantId := ""
+	var toolIds []string
+	if accountId == "" {
+		orgTenantId = context.GetSecurityContext().GetTenantId()
+		if !CanManageOrgItems(context, orgTenantId) {
+			return errors.New(errUnauthorized)
+		}
+		if err := dbms.Db.Select(&toolIds, "select id::text from llm_tools where tenant_id = $1::uuid and lower(name) = lower($2) and type = $3 and visibility <> 'account'", orgTenantId, name, ToolTypeCustom); err != nil {
+			return fmt.Errorf("tools: failed to get organisation tool: %w", err)
+		}
+	} else {
+		// validate if user has access
+		if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
+			slog.Error("tools: failed to get account access", "error", err)
+			return errors.New(errUnauthorized)
+		}
 
-	// check if tool exists
-	toolIds, err := getCustomToolIdByNameAndAccountId(accountId, name)
-	if err != nil {
-		slog.Error("tools: failed to get custom tool", "error", err, "name", name, "accountId", accountId)
-		return err
+		// check if tool exists
+		toolIds, err = getCustomToolIdByNameAndAccountId(accountId, name)
+		if err != nil {
+			slog.Error("tools: failed to get custom tool", "error", err, "name", name, "accountId", accountId)
+			return err
+		}
 	}
 
 	if len(toolIds) == 0 {
@@ -771,6 +882,14 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 	}
 
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if orgTenantId != "" {
+			if _, err := LockOrgItemOwner(tx, OrgToolKind, toolIdToDelete); err != nil {
+				return nil, err
+			}
+			if err := CheckNotUsedByOrgAgents(tx, OrgToolKind, orgTenantId, name); err != nil {
+				return nil, err
+			}
+		}
 		_, err = tx.Exec("delete from llm_tools_installation where tool_id = $1", toolIdToDelete)
 		if err != nil {
 			slog.Error("tools: failed to delete tool installation", "error", err, "toolId", toolIdToDelete)
@@ -787,8 +906,12 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 	})
 
 	if err == nil {
-		// Delete all cache entries for this account
-		updateToolCache(accountId)
+		// Delete all cache entries for this account (every account for an organisation tool)
+		if orgTenantId != "" {
+			InvalidateOrgToolCaches(orgTenantId)
+		} else {
+			updateToolCache(accountId)
+		}
 
 		// Create audit entry for tool deletion
 		auditReq := &audit.AuditRequest{
@@ -798,7 +921,7 @@ func DeleteCustomTool(context *security.RequestContext, accountId, name string) 
 					EventTime:     time.Now().UTC(),
 					EventCategory: "tool",
 					EventType:     "CUSTOM_TOOL_DELETE",
-					EventState:    completeToolForAudit, // This is the state before deletion
+					EventState:    toolForAudit(completeToolForAudit), // This is the state before deletion
 					EventActor:    audit.EventActor(context.GetSecurityContext().GetUserId()),
 					EventTarget:   toolIdToDelete,
 					EventAction:   audit.EventActionDelete,
@@ -826,10 +949,6 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 		return errors.New("MCP tools are now managed via integrations, create an MCP integration instead")
 	}
 
-	if accountId == "" {
-		return errors.New(errAccountIDRequired)
-	}
-
 	if tool.Id == "" {
 		return errors.New(errToolIDRequired)
 	}
@@ -844,15 +963,13 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 	if tool.Status == "" {
 		return errors.New(errToolStatusRequired)
 	}
+	if !strings.EqualFold(tool.Name, name) && isSystemToolName(tool.Name) {
+		return errors.New(errToolNameTaken)
+	}
 
 	userId := context.GetSecurityContext().GetUserId()
 	if userId == "" {
 		return errors.New(errUserIDRequired)
-	}
-
-	if !context.GetSecurityContext().HasAccountAccess(accountId, "update") {
-		slog.Error("tool: failed to get account access")
-		return errors.New(errUnauthorized)
 	}
 
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -863,29 +980,66 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 
 	toolId := tool.Id
 
-	// Verify that the tool exists and is owned by the correct account and name using a transaction
+	// Transactional update
+	var owner OrgItemOwner
 	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		var exists bool
-		err := tx.Get(&exists, `
-		select exists(
-			select 1 from llm_tools_installation where account_id = $1 and tool_id = $2
-		)
-		`, accountId, toolId)
+		// An account tool is changed under the account that owns it; an
+		// organisation tool by a tenant admin of its tenant, with or without an account.
+		o, err := LockOrgItemOwner(tx, OrgToolKind, toolId)
 		if err != nil {
-			slog.Error("tool: failed to verify tool ownership", "error", err, "toolId", toolId, "account", accountId)
 			return nil, err
 		}
-		if !exists {
-			return nil, errors.New("tool not found or not owned by account - " + toolId)
+		owner = o
+		if owner.IsOrg() {
+			if !CanManageOrgItems(context, owner.TenantId) {
+				return nil, errors.New(errUnauthorized)
+			}
+			if accountId != "" && !context.GetSecurityContext().HasAccountAccess(accountId, "read") {
+				return nil, errors.New(errUnauthorized)
+			}
+			if !strings.EqualFold(owner.Name, tool.Name) {
+				if err := CheckOrgToolName(tx, owner.TenantId, tool.Name); err != nil {
+					return nil, err
+				}
+			}
+			if err := CheckOrgToolSecrets(tool.Config); err != nil {
+				return nil, err
+			}
+		} else {
+			if accountId == "" {
+				return nil, errors.New(errAccountIDRequired)
+			}
+			if !context.GetSecurityContext().Can(accountId, "ai_tools", "Write") {
+				slog.Error("tool: failed to get account access")
+				return nil, errors.New(errUnauthorized)
+			}
+			if owner.AccountId != accountId {
+				return nil, errors.New("tool not found or not owned by account - " + toolId)
+			}
 		}
-		return nil, nil
-	})
-	if err != nil {
-		return err
-	}
 
-	// Transactional update
-	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		// Marking a write tool read-only removes its approval prompt, so only a
+		// tenant admin or super admin may do it; anyone who can edit the tool may mark it write.
+		var stored string
+		if err := tx.GetContext(context.GetContext(), &stored, `select coalesce(config::text, '{}') from llm_tools where id = $1`, toolId); err != nil {
+			return nil, fmt.Errorf("tool: failed to read tool config: %w", err)
+		}
+		var previous map[string]any
+		_ = json.Unmarshal([]byte(stored), &previous)
+		sc := context.GetSecurityContext()
+		if CustomToolWrites(previous) && !CustomToolWrites(tool.Config) && !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
+			return nil, errors.New(errReadOnlyNeedsTenantAdmin)
+		}
+		if !strings.EqualFold(owner.Name, tool.Name) {
+			if err := CheckOrgItemName(tx, OrgToolKind, owner.TenantId, tool.Name, toolId, owner.IsOrg()); err != nil {
+				return nil, err
+			}
+			if owner.IsOrg() {
+				if err := CheckNotUsedByOrgAgents(tx, OrgToolKind, owner.TenantId, owner.Name); err != nil {
+					return nil, err
+				}
+			}
+		}
 		configJSON, err := common.MarshalJson(tool.Config)
 		if err != nil {
 			slog.Error("tool: failed to marshal config", "error", err)
@@ -948,7 +1102,7 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 				EventTime:     time.Now().UTC(),
 				EventCategory: "tool",
 				EventType:     "CUSTOM_TOOL_UPDATE",
-				EventState:    completeTool,
+				EventState:    toolForAudit(completeTool),
 				EventActor:    audit.EventActor(userId),
 				EventTarget:   toolId,
 				EventAction:   audit.EventActionUpdate,
@@ -966,7 +1120,11 @@ func UpdateCustomTool(context *security.RequestContext, accountId, name string, 
 	}
 
 	// Update all caches and broadcast invalidation to other replicas
-	updateToolCache(accountId)
+	if owner.IsOrg() {
+		InvalidateOrgToolCaches(owner.TenantId, accountId)
+	} else {
+		updateToolCache(accountId)
+	}
 	return nil
 }
 
@@ -1021,6 +1179,13 @@ func serializeRowToTool(rows *sqlx.Rows) (ToolDto, error) {
 	tool.IsConfigured = true
 	tool.NeedsConfig = false
 
+	switch v := toolMap["visibility"].(type) {
+	case string:
+		tool.Visibility = v
+	case []byte:
+		tool.Visibility = string(v)
+	}
+
 	// account_id / account_name are present only on rows produced by the
 	// tenant-wide list path (ListCustomToolsForTenant). Per-account paths
 	// don't JOIN them in, so the map lookup is nil and we leave the
@@ -1046,9 +1211,13 @@ func serializeRowToTool(rows *sqlx.Rows) (ToolDto, error) {
 }
 
 // ListCustomToolsForTenant returns custom tools across every account the
-// caller can read in the tenant. Same row-level filter as the agents path
-// (HasAccountAccess ladder); each row carries account_id + account_name so
-// the b-Cortex tenant-wide view can render an Account column.
+// caller can read in the tenant. Same row-level filter as the agents path:
+// tenant-wide readers (super/tenant admins, read-only included, or a
+// tenant-wide ai_tools Read/Write grant) see every account's; anyone else sees
+// the account tools of the accounts where CanReadAccountData(account,
+// "ai_tools") holds, plus the organisation tools of the tenant as before. Each
+// row carries account_id + account_name so the b-Cortex tenant-wide view can
+// render an Account column.
 func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
 	secCtx := context.GetSecurityContext()
 	tenantID := secCtx.GetTenantId()
@@ -1068,28 +1237,40 @@ func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
 	                 JOIN llm_tools_installation lti ON lt.id = lti.tool_id
 	            LEFT JOIN cloud_accounts ca         ON lti.account_id = ca.id
 	                WHERE lt.type = $1
-	                  AND ca.tenant = $2`
+	                  AND lt.visibility = 'account'
+	                  AND ca.tenant = $2::uuid`
 
-	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
-		secCtx.IsSuperAdminReadonly() ||
-		secCtx.IsTenantAdmin() ||
-		secCtx.IsTenantReadAdmin()
+	seesAllAccountsInTenant := secCtx.CanReadTenantModule("ai_tools")
 
 	var (
 		rows  *sqlx.Rows
 		query string
 		args  []any
 	)
+	// Organisation tools have no installation row and no account.
+	orgSelect := `SELECT lt.*, '' AS account_id, '' AS account_name
+	                FROM llm_tools lt
+	               WHERE lt.type = $1 AND lt.visibility <> 'account' AND lt.tenant_id = $2::uuid`
 	if seesAllAccountsInTenant {
-		query = baseSelect
+		query = baseSelect + " UNION ALL " + orgSelect
 		args = []any{ToolTypeCustom, tenantID}
 	} else {
+		// GetAccountIds is every account of the tenant, whatever the caller's
+		// role: account tools are limited to the readable ones ($3), while the
+		// organisation tools keep their tenant-wide filter ($4).
 		accountIDs := secCtx.GetAccountIds()
 		if len(accountIDs) == 0 {
 			return []ToolDto{}
 		}
-		query = baseSelect + ` AND lti.account_id = ANY($3::uuid[])`
-		args = []any{ToolTypeCustom, tenantID, pq.Array(accountIDs)}
+		readable := make([]string, 0, len(accountIDs))
+		for _, accountID := range accountIDs {
+			if secCtx.CanReadAccountData(accountID, "ai_tools") {
+				readable = append(readable, accountID)
+			}
+		}
+		query = baseSelect + ` AND lti.account_id = ANY($3::uuid[]) UNION ALL ` + orgSelect +
+			` AND (lt.visibility = 'organisation' OR EXISTS (SELECT 1 FROM llm_tool_account_overrides o WHERE o.tool_id = lt.id AND o.enabled AND o.account_id = ANY($4::uuid[])))`
+		args = []any{ToolTypeCustom, tenantID, pq.Array(readable), pq.Array(accountIDs)}
 	}
 
 	rows, err = dbms.Db.Queryx(query, args...)
@@ -1151,12 +1332,18 @@ func ListToolsForTenant(context *security.RequestContext) []ToolDto {
 			Config:       map[string]any{},
 			InputSchema:  ModelInputSchema(nbTool),
 			NBToolType:   nbTool.GetType(),
+			Approval:     ApprovalMode(nbTool),
 			// NeedsConfig / IsConfigured / ConfigSchema deliberately left
 			// at zero values — per-account config doesn't apply in the
 			// tenant-wide view.
 		})
 	}
-	tools = append(tools, ListCustomToolsForTenant(context)...)
+	for _, custom := range ListCustomToolsForTenant(context) {
+		if custom.NBToolType == NBToolTypeTool {
+			custom.Approval = customToolApproval(custom.Config)
+		}
+		tools = append(tools, custom)
+	}
 	return tools
 }
 
@@ -1175,7 +1362,7 @@ func ListCustomTools(accountId string) []ToolDto {
 		return []ToolDto{}
 	}
 	tools := make([]ToolDto, 0)
-	rows, err := dbms.Query("select lg.* from llm_tools lg join llm_tools_installation lgi on lg.id = lgi.tool_id where lgi.account_id = $1 and lg.type = $2", accountId, ToolTypeCustom)
+	rows, err := dbms.Query("select lg.* from llm_tools lg where lg.type = $2 and "+OrgToolKind.AccountScope("lg", 1), accountId, ToolTypeCustom)
 	if err != nil {
 		slog.Error(logFailedGetTools, "error", err)
 		return []ToolDto{}
@@ -1242,7 +1429,7 @@ func loadCustomNbToolsFromDB(accountId string) []NBTool {
 		return nil
 	}
 
-	rows, err := dbms.Query("select lg.* from llm_tools lg join llm_tools_installation lgi on lg.id = lgi.tool_id where lgi.account_id = $1 and lg.type = $2", accountId, ToolTypeCustom)
+	rows, err := dbms.Query("select lg.* from llm_tools lg where lg.type = $2 and "+OrgToolKind.AccountScope("lg", 1), accountId, ToolTypeCustom)
 	if err != nil {
 		slog.Error(logFailedGetTools, "error", err)
 		return nil

@@ -36,6 +36,9 @@ type GitHubSource struct {
 	token  string
 	client *github.Client
 	http   *http.Client
+	// archiveBase is where tarballs are downloaded from; a field so a test can
+	// point it at a local server.
+	archiveBase string
 }
 
 // NewGitHubSource builds a source for "owner/repo" at ref (tag/branch/SHA). If token
@@ -56,6 +59,8 @@ func NewGitHubSource(repoSlug, ref, token string) *GitHubSource {
 		token:  token,
 		client: client,
 		http:   &http.Client{Timeout: 60 * time.Second},
+
+		archiveBase: "https://codeload.github.com",
 	}
 }
 
@@ -73,11 +78,12 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*Bundle, error) {
 	}
 
 	// 2. Download the tarball pinned to that SHA (atomic snapshot, one request).
-	archiveURL := fmt.Sprintf("https://codeload.github.com/%s/%s/tar.gz/%s", g.owner, g.repo, sha)
-	files, err := g.downloadArchive(ctx, archiveURL)
+	archiveURL := fmt.Sprintf("%s/%s/%s/tar.gz/%s", g.archiveBase, g.owner, g.repo, sha)
+	archive, err := g.downloadArchive(ctx, archiveURL)
 	if err != nil {
 		return nil, fmt.Errorf("github: %w", err)
 	}
+	files := archive.templates
 
 	// 3. Parse the manifest and verify checksums before any DB write.
 	manifestRaw, ok := files["manifest.yaml"]
@@ -114,13 +120,28 @@ func (g *GitHubSource) Fetch(ctx context.Context) (*Bundle, error) {
 	}
 
 	bundle.OK = len(bundle.Templates) > 0
+	bundle.Extra, bundle.ExtraError = archive.extra, archive.extraErr
 	return bundle, nil
 }
 
-// downloadArchive GETs a .tar.gz and returns a map of repo-relative path -> bytes,
-// where the leading "<owner>-<repo>-<sha>/" archive prefix has been stripped. Only
-// manifest.yaml and templates/*.yaml are retained.
-func (g *GitHubSource) downloadArchive(ctx context.Context, url string) (map[string][]byte, error) {
+// archiveFiles is what downloadArchive keeps, as repo-relative path -> bytes.
+// Files an extension claims are kept apart from the templates so that nothing
+// about them can change what the template sync sees.
+type archiveFiles struct {
+	// templates holds manifest.yaml and templates/*.yaml.
+	templates map[string][]byte
+	// extra holds the files a registered extension claims.
+	extra map[string][]byte
+	// extraErr is set, and extra emptied, when the claimed files were too many
+	// or too large to keep.
+	extraErr error
+}
+
+// downloadArchive GETs a .tar.gz and returns the files it keeps, with the leading
+// "<owner>-<repo>-<sha>/" archive prefix stripped from their paths. Only
+// manifest.yaml, templates/*.yaml and the files a registered extension claims
+// are retained.
+func (g *GitHubSource) downloadArchive(ctx context.Context, url string) (*archiveFiles, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -144,7 +165,8 @@ func (g *GitHubSource) downloadArchive(ctx context.Context, url string) (map[str
 	}
 	defer func() { _ = gz.Close() }()
 
-	out := make(map[string][]byte)
+	out := &archiveFiles{templates: make(map[string][]byte), extra: make(map[string][]byte)}
+	extraBytes := 0
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
@@ -162,15 +184,32 @@ func (g *GitHubSource) downloadArchive(ctx context.Context, url string) (map[str
 		if !ok {
 			continue
 		}
-		isTemplate := strings.HasPrefix(rel, "templates/") && strings.HasSuffix(rel, ".yaml")
-		if rel != "manifest.yaml" && !isTemplate {
+		if claimedByExtension(rel) {
+			if out.extraErr != nil {
+				continue
+			}
+			// Read one byte past what is left of the budget, to tell "fits" from "too large".
+			data, err := io.ReadAll(io.LimitReader(tr, int64(maxExtraBytes-extraBytes)+1))
+			if err != nil {
+				return nil, fmt.Errorf("failed to read %q from archive: %w", rel, err)
+			}
+			extraBytes += len(data)
+			if len(out.extra) >= maxExtraFiles || extraBytes > maxExtraBytes {
+				out.extra = nil
+				out.extraErr = fmt.Errorf("extension files exceed the limit of %d files or %d bytes", maxExtraFiles, maxExtraBytes)
+				continue
+			}
+			out.extra[rel] = data
+			continue
+		}
+		if !templateOrManifest(rel) {
 			continue
 		}
 		data, err := io.ReadAll(io.LimitReader(tr, maxArchiveBytes))
 		if err != nil {
 			return nil, fmt.Errorf("failed to read %q from archive: %w", rel, err)
 		}
-		out[rel] = data
+		out.templates[rel] = data
 	}
 	return out, nil
 }

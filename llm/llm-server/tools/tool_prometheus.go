@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"nudgebee/llm/common"
-	"nudgebee/llm/config"
-	"nudgebee/llm/services_server"
-	"nudgebee/llm/tools/core"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,7 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+	"nudgebee/llm/knowledge"
+	"nudgebee/llm/services_server"
+	"nudgebee/llm/tools/core"
+
 	"github.com/google/uuid"
+	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/promql/parser"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -95,6 +99,94 @@ func init() {
 	})
 }
 
+// promQueryMetrics is the metrics backend call, a variable so tests can stand in for it.
+var promQueryMetrics = services_server.QueryMetrics
+
+const (
+	// promMinStep is the finest step prometheus_execute accepts: a typical scrape interval.
+	promMinStep = 15 * time.Second
+	// promMaxPointsPerSeries is Prometheus' own limit on points per series in a range query.
+	promMaxPointsPerSeries = 11000
+)
+
+// parsePromStep reads the optional step argument: a Prometheus duration ("30s",
+// "5m", "1h30m", "1d"), a Go duration ("1.5h"), or a number of seconds given as a
+// number or a numeric string. Absent or empty returns 0.
+func parsePromStep(v any) (time.Duration, error) {
+	seconds := func(f float64) (time.Duration, error) {
+		// Bounded to a year so the conversion to Duration cannot overflow.
+		if math.IsNaN(f) || f <= 0 || f > 365*24*3600 {
+			return 0, fmt.Errorf("parsePromStep: step %v must be a positive number of seconds", f)
+		}
+		return time.Duration(f * float64(time.Second)), nil
+	}
+	var d time.Duration
+	switch val := v.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return seconds(val)
+	case int:
+		return seconds(float64(val))
+	case int64:
+		return seconds(float64(val))
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("parsePromStep: step %q is not a duration: %w", val.String(), err)
+		}
+		return seconds(f)
+	case string:
+		str := strings.TrimSpace(val)
+		if str == "" {
+			return 0, nil
+		}
+		if f, err := strconv.ParseFloat(str, 64); err == nil {
+			return seconds(f)
+		}
+		if md, err := model.ParseDuration(str); err == nil {
+			d = time.Duration(md)
+		} else if gd, err := time.ParseDuration(str); err == nil {
+			d = gd
+		} else {
+			return 0, fmt.Errorf("parsePromStep: step %q is not a duration", str)
+		}
+	default:
+		return 0, fmt.Errorf("parsePromStep: step has unsupported type %T", v)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("parsePromStep: step %v must be positive", v)
+	}
+	return d, nil
+}
+
+// resolvePromStep turns a requested step into the whole-second step sent to the
+// backend, with a note when it had to be raised. requested 0 returns 0 (the
+// ~60-point default applies) and no note. The step is raised to promMinStep, and
+// further so that a series over window stays within promMaxPointsPerSeries.
+func resolvePromStep(requested, window time.Duration) (int, string) {
+	if requested <= 0 {
+		return 0, ""
+	}
+	ceilSeconds := func(d time.Duration) int { return int(math.Ceil(d.Seconds())) }
+	step := ceilSeconds(requested)
+	var notes []string
+	if step < int(promMinStep.Seconds()) {
+		step = int(promMinStep.Seconds())
+		notes = append(notes, fmt.Sprintf("the requested step %s is below the %s minimum", requested, promMinStep))
+	}
+	if window > 0 {
+		if floor := ceilSeconds(window / (promMaxPointsPerSeries - 1)); step < floor {
+			step = floor
+			notes = append(notes, fmt.Sprintf("a finer step would exceed Prometheus' %d points per series over the %s window", promMaxPointsPerSeries, window.Round(time.Second)))
+		}
+	}
+	if len(notes) == 0 {
+		return step, ""
+	}
+	return step, fmt.Sprintf("Step raised to %s: %s.", time.Duration(step)*time.Second, strings.Join(notes, "; "))
+}
+
 type PrometheusExecuteTool struct {
 	core.ReadOnlyTool
 }
@@ -118,7 +210,7 @@ func (m PrometheusExecuteTool) Description() string {
 		Important Notes:
 		* Ensure the PromQL query is syntactically correct and adheres to the PromQL specification.
 		* The output may contain a large volume of data points. You should process and summarize the data appropriately before presenting it to the user.
-		* For a large result (many series or many points), the full data is saved to a workspace file and the response carries only stats (min/max/avg/p99) for the most significant series. A "__data_note" key, present only then, gives the file name and totals. If you have shell_execute, read that file with jq/python for per-point detail or for series not shown inline instead of re-running the query; if you do not, narrow the label selector or add aggregation (e.g. sum by(...)) to get detail on specific series.
+		* For a large result (many series or many points), the full data is saved to a workspace file and the response carries only stats (min/max/avg/p99) for the most significant series. A "__data_note" key, present only then or when the query window is longer than 24h (then the full result is also saved, with the data still inline), gives the file name and totals; that file can be passed to analyze_metric_series as file_ref. If you have shell_execute, read that file with jq/python for per-point detail or for series not shown inline instead of re-running the query; if you do not, narrow the label selector or add aggregation (e.g. sum by(...)) to get detail on specific series.
 	`
 }
 
@@ -141,6 +233,10 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 			"range": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Time range for the query (e.g., '2d', '1w', '1h'). If provided, start_time is calculated relative to end_time.",
+			},
+			"step": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Optional resolution between points (e.g. '30s', '5m', '1h', or a number of seconds). Omit for ~60 points over the window. Minimum 15s; a step too fine for the window is raised so each series stays within 11,000 points, and the response says so.",
 			},
 		},
 		Required: []string{"command"},
@@ -211,6 +307,56 @@ func validatePromQLSyntax(query string) string {
 		return fmt.Sprintf(`{"error_type":"syntax_error","message":%q,"suggestion":%q}`, msg, hint)
 	}
 	return ""
+}
+
+// dottedIdentifier matches a bare `a.b` name. Only the first segment has to start
+// with a letter or an underscore, which is what keeps a float or a duration out —
+// those start with a digit. Later segments may: `composite.k8s.apiserver.request.5xx.rate`
+// and `kafka.request.time.99p` are real names on these backends.
+var dottedIdentifier = regexp.MustCompile(`[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+`)
+
+// promQLRejectsOnlyDots reports whether the only thing Prometheus's grammar
+// objected to is the dots inside identifiers. It re-parses the query with every
+// dotted name underscored and returns true only when that version is valid, so a
+// query that is malformed for any other reason — natural language, a stray
+// bracket — still fails the gate. The rewrite decides; it is never sent.
+func promQLRejectsOnlyDots(query string) bool {
+	underscored := dottedIdentifier.ReplaceAllStringFunc(query, func(s string) string {
+		return strings.ReplaceAll(s, ".", "_")
+	})
+	if underscored == query {
+		return false
+	}
+	_, err := promQLParser.ParseExpr(underscored)
+	return err == nil
+}
+
+// dottedMetricBackends are the backends whose own catalogue is written in dotted
+// OTel names and that answer a query carrying them. Verified per backend against
+// dev rather than inferred from the provider being "not Prometheus": SolarWinds
+// answers the dotted name and 404s every other spelling, and SigNoz is quoted
+// into `{"k8s.pod.cpu.usage"}` by api-server before the query is sent.
+//
+// A backend that is not listed keeps the gate, so an unverified one fails the way
+// it does today instead of in a new way. Add to this only with evidence that the
+// backend's names carry dots and that it accepts them.
+var dottedMetricBackends = map[string]bool{
+	"solarwinds": true,
+	"signoz":     true,
+}
+
+// backendAcceptsDottedNames is the membership test on its own, so every backend
+// can be exercised without an environment wired up for it.
+func backendAcceptsDottedNames(provider string) bool {
+	return dottedMetricBackends[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// metricsBackendAcceptsDottedNames resolves the account's metrics backend through
+// the same helper the discovery tools use, so the two cannot disagree about which
+// one it is. An unknown account and a failed lookup both resolve to "prometheus",
+// which is not on the list and so keeps the gate.
+func metricsBackendAcceptsDottedNames(accountId string) bool {
+	return backendAcceptsDottedNames(MetricsDiscoveryProvider(accountId))
 }
 
 func (m PrometheusExecuteTool) cleanupQuery(query string) string {
@@ -291,6 +437,9 @@ func extractPromQLFromCommand(command string, arguments map[string]any) (string,
 func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	// A targeted child's call reads the target's account throughout (views,
 	// provider, routing), exactly as inside the metrics/traces sub-agents.
+	// Saved files belong to the conversation's workspace, so they are written
+	// with the context as it was before ForTarget (see ForTarget's doc).
+	convCtx := nbRequestContext
 	nbRequestContext = nbRequestContext.ForTarget()
 	nbRequestContext.Ctx.GetLogger().Info("prometheus: executing queryPrometheus tool call", "query", input.Command)
 
@@ -322,6 +471,19 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		startTime = t1
 		endTime = t2
 	}
+	requestedStep, err := parsePromStep(input.Arguments["step"])
+	if err != nil {
+		return core.NBToolResponse{
+			Data:   fmt.Sprintf(`{"error_type":"invalid_step","message":%q,"suggestion":"Pass step as a duration such as '30s', '5m' or '1h', or as a number of seconds, or omit it."}`, err.Error()),
+			Status: core.NBToolResponseStatusError,
+		}, nil
+	}
+	stepSeconds, stepNote := resolvePromStep(requestedStep, endTime.Sub(startTime))
+
+	queryAccountId := nbRequestContext.AccountId
+	if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
+		queryAccountId = target.AccountID
+	}
 
 	for _, q := range queries {
 
@@ -330,21 +492,28 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		// or invalid label matchers in ~0ms — no network round-trip needed.
 		// Returns a structured, actionable error so the LLM can self-correct
 		// without escalating to the promql_query sub-agent (saves ~565s/run).
+		//
+		// The grammar is Prometheus's, but the backend is whatever the account
+		// configured. An OTel-named one reports metrics as
+		// `k8s.pod.memory.working_set` through metrics_list and answers that exact
+		// name, which this parser rejects for the dots. So when the dots are the
+		// only objection and the backend is one of those, let it judge its own names.
 		if parseErr := validatePromQLSyntax(q); parseErr != "" {
-			nbRequestContext.Ctx.GetLogger().Warn("prometheus: PromQL syntax error detected before relay call", "query", q, "error", parseErr)
-			return core.NBToolResponse{
-				Data:   parseErr,
-				Status: core.NBToolResponseStatusError,
-			}, nil
+			if promQLRejectsOnlyDots(q) && metricsBackendAcceptsDottedNames(queryAccountId) {
+				nbRequestContext.Ctx.GetLogger().Info("prometheus: dotted metric name kept for a backend that uses them", "query", q)
+			} else {
+				nbRequestContext.Ctx.GetLogger().Warn("prometheus: PromQL syntax error detected before relay call", "query", q, "error", parseErr)
+				return core.NBToolResponse{
+					Data:   parseErr,
+					Status: core.NBToolResponseStatusError,
+				}, nil
+			}
 		}
 
-		queryAccountId := nbRequestContext.AccountId
-		if target := nbRequestContext.QueryConfig.DelegatedTarget; target != nil && target.AccountID != "" {
-			queryAccountId = target.AccountID
-		}
 		apiDataAny, err := m.executePromQl(nbRequestContext, q, queryAccountId, map[string]any{
-			"end_time":   endTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
-			"start_time": startTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"end_time":     endTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"start_time":   startTime.UTC().Format("2006-01-02T15:04:05Z07:00"),
+			"step_seconds": stepSeconds,
 		})
 
 		if err != nil {
@@ -443,6 +612,8 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		totalSeries += len(apiData)
 		totalPoints += countSeriesPoints(apiData)
 	}
+	// Before the stats-only pass below strips the points they are built from.
+	chartNotes, charts := promChartNotes(nbRequestContext, queries, seriesByQuery)
 
 	// Every series already has stats (min/max/avg/p99). When the raw
 	// timestamps/values are too large to hand the planner inline, they are
@@ -465,7 +636,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	}
 	if oversized {
 		// Save before statsOnlySeries below: it strips timestamps/values from these same maps in place.
-		fileRef, refs, err = saveSeriesToWorkspace(nbRequestContext, seriesByQuery)
+		fileRef, refs, err = saveSeriesToWorkspace(convCtx, seriesByQuery)
 		saveFailed = err != nil
 		if saveFailed {
 			nbRequestContext.Ctx.GetLogger().Warn("prometheus: failed to save metrics to workspace", "error", err.Error())
@@ -517,8 +688,30 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		}, nil
 	}
 
+	// Every note rides in __data_note: the Prometheus agent keeps that key verbatim and
+	// would render any other key as a query.
+	var dataNotes []string
+	if stepNote != "" {
+		dataNotes = append(dataNotes, stepNote)
+	}
 	if oversized {
-		finalData["__data_note"] = seriesFileNote(fileRef, saveFailed, totalSeries, totalPoints, shown)
+		dataNotes = append(dataNotes, seriesFileNote(fileRef, saveFailed, totalSeries, totalPoints, shown))
+	} else if endTime.Sub(startTime) > 24*time.Hour {
+		// A history longer than the default day is what a trend is computed from, so it
+		// lands in a file even when it is small enough to stay inline as well.
+		longRef, longRefs, err := saveSeriesToWorkspace(convCtx, seriesByQuery)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Warn("prometheus: failed to save long-window metrics to workspace", "error", err.Error())
+		} else {
+			refs = longRefs
+			dataNotes = append(dataNotes, longWindowFileNote(longRef, totalSeries, totalPoints))
+		}
+	}
+	if len(dataNotes) > 0 {
+		finalData["__data_note"] = strings.Join(dataNotes, " ")
+	}
+	if len(chartNotes) > 0 {
+		finalData["__chart_note"] = strings.Join(chartNotes, "\n")
 	}
 
 	dataResponse, err := common.MarshalJson(finalData)
@@ -534,6 +727,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: append(refs, core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)),
+		Metadata:   core.MetricChartMetadata(charts),
 	}, nil
 }
 
@@ -558,13 +752,17 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	endTime = endTime.UTC()
 	startTime = startTime.UTC()
 
-	// Calculate dynamic step based on duration, aiming for ~60 data points
-	duration := endTime.Sub(startTime)
-	step := duration / 60
-	if step < time.Minute {
-		step = time.Minute
+	// A caller-resolved step (see resolvePromStep) wins; otherwise aim for ~60
+	// data points over the window.
+	stepSeconds, _ := configs["step_seconds"].(int)
+	if stepSeconds <= 0 {
+		duration := endTime.Sub(startTime)
+		step := duration / 60
+		if step < time.Minute {
+			step = time.Minute
+		}
+		stepSeconds = int(step.Seconds())
 	}
-	stepSeconds := int(step.Seconds())
 
 	// Ask the services-server rather than the relay: it resolves the account's
 	// metrics provider, so a Prometheus connected without an agent (#37536) is
@@ -578,7 +776,7 @@ func (m PrometheusExecuteTool) executePromQl(nbRequestContext core.NbToolContext
 	if nbRequestContext.Ctx == nil {
 		return nil, fmt.Errorf("executePromQl: nil request context")
 	}
-	response, err := services_server.QueryMetrics(*nbRequestContext.Ctx, core.ObservabilityMetricsQueryRequest{
+	response, err := promQueryMetrics(*nbRequestContext.Ctx, core.ObservabilityMetricsQueryRequest{
 		AccountId:    accountId,
 		Queries:      map[string]string{"query": query},
 		StartTime:    startTime.UnixMilli(),
@@ -735,6 +933,134 @@ func saveSeriesToWorkspace(nbRequestContext core.NbToolContext, seriesByQuery ma
 		Type:        "file",
 		Description: "Full Prometheus query results",
 	}}, nil
+}
+
+// promUnitBySuffix maps a metric name suffix to the unit of its raw values, and
+// of their per-second rate. Order matters: the first matching suffix wins.
+var promUnitBySuffix = []struct{ suffix, raw, perSecond string }{
+	{"_bytes_total", "bytes", "bytes_per_second"},
+	{"_bytes", "bytes", "bytes_per_second"},
+	{"_seconds_total", "seconds", "number"}, // rate of CPU seconds is cores
+	{"_seconds_bucket", "seconds", "number"},
+	{"_seconds", "seconds", "number"},
+}
+
+// promUnitLosingFuncs return a count or a time, not the metric's unit.
+var promUnitLosingFuncs = map[string]bool{
+	"count_over_time": true, "changes": true, "resets": true, "absent": true,
+	"absent_over_time": true, "timestamp": true, "time": true, "scalar": true,
+}
+
+// promChartFormat is the unit of a query's values, read from its metric name when the
+// query is one metric under functions and aggregations only. Arithmetic, counts or
+// several metrics change the unit, so those stay "number": no label beats a wrong one.
+func promChartFormat(query string) string {
+	expr, err := promQLParser.ParseExpr(query)
+	if err != nil {
+		return "number"
+	}
+	name, perSecond, quantile, known := "", false, false, true
+	parser.Inspect(expr, func(node parser.Node, _ []parser.Node) error {
+		switch n := node.(type) {
+		case *parser.BinaryExpr:
+			known = false
+		case *parser.AggregateExpr:
+			if n.Op == parser.COUNT || n.Op == parser.COUNT_VALUES || n.Op == parser.GROUP {
+				known = false
+			}
+		case *parser.Call:
+			switch {
+			case n.Func.Name == "rate" || n.Func.Name == "irate" || n.Func.Name == "deriv":
+				perSecond = true
+			case n.Func.Name == "histogram_quantile":
+				quantile = true // of rate(..._bucket): the bucket bound's unit, not per second
+			case promUnitLosingFuncs[n.Func.Name]:
+				known = false
+			}
+		case *parser.VectorSelector:
+			if name != "" && n.Name != name {
+				known = false
+			}
+			name = n.Name
+		}
+		return nil
+	})
+	if !known || name == "" {
+		return "number"
+	}
+	if quantile {
+		perSecond = false
+	}
+	for _, u := range promUnitBySuffix {
+		if strings.HasSuffix(name, u.suffix) {
+			if perSecond {
+				return u.perSecond
+			}
+			return u.raw
+		}
+	}
+	return "number"
+}
+
+// promChartNotes builds a chart of each query's full series (#40909) and returns the
+// notes that tell the model its chart_ref, with the charts for the response metadata.
+// A chart that cannot be built is skipped: the data is still inline or in the saved file.
+func promChartNotes(nbRequestContext core.NbToolContext, queries []string, seriesByQuery map[string][]any) ([]string, map[string]json.RawMessage) {
+	var notes []string
+	charts := map[string]json.RawMessage{}
+	for _, q := range queries {
+		var series []core.MetricChartSeries
+		for _, s := range seriesByQuery[q] {
+			ss, ok := s.(map[string]any)
+			if !ok {
+				continue
+			}
+			cs := core.MetricChartSeries{Labels: map[string]string{}}
+			if metric, ok := ss["metric"].(map[string]any); ok {
+				for k, v := range metric {
+					cs.Labels[k] = fmt.Sprint(v)
+				}
+			}
+			if ts, ok := ss["timestamps"].([]any); ok {
+				for _, t := range ts {
+					f, _ := t.(float64)
+					cs.Timestamps = append(cs.Timestamps, int64(f))
+				}
+			}
+			switch vals := ss["values"].(type) {
+			case []float64:
+				cs.Values = vals
+			case []any: // a series the stats pass above left unconverted
+				for _, v := range vals {
+					f, _ := v.(float64)
+					cs.Values = append(cs.Values, f)
+				}
+			}
+			series = append(series, cs)
+		}
+		title := q
+		if r := []rune(title); len(r) > 80 {
+			title = string(r[:79]) + "…"
+		}
+		chart, ok := core.BuildMetricChart(title, series)
+		if !ok {
+			continue
+		}
+		chart.Format = promChartFormat(q)
+		ref, err := core.AddMetricChart(charts, chart)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Warn("prometheus: unable to build chart", "error", err.Error())
+			continue
+		}
+		notes = append(notes, core.MetricChartNote(ref, chart.Title)+core.MetricChartCoverageNote(chart))
+	}
+	return notes, charts
+}
+
+// longWindowFileNote names the file a longer-than-a-day result was saved to, alongside
+// the inline data, and the two ways to work with it.
+func longWindowFileNote(fileRef string, totalSeries, totalPoints int) string {
+	return fmt.Sprintf("The query window is longer than 24h, so the full results (%d series, %d points, with timestamps and values) are also saved to file_ref %q. Pass that exact file_ref to analyze_metric_series to compute a trend, or read the file with shell_execute.", totalSeries, totalPoints, fileRef)
 }
 
 // seriesFileNote tells the planner where the complete data went and what is
@@ -1837,7 +2163,7 @@ func (s SearchMetricsTool) Call(nbRequestContext core.NbToolContext, input core.
 		}, nil
 	}
 
-	results := core.QueryRAG(
+	results := knowledge.QueryRAG(
 		nbRequestContext.UserId, nbRequestContext.AccountId, query,
 		"prometheus", 5,
 		nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true,

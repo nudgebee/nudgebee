@@ -1,5 +1,5 @@
 import { queryGraphQL, unwrapGraphQL } from '@lib/HttpService';
-import { getUserById, getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
+import { getUsers, getUserGroups, getUserGroup, getUserGroupUsers, createUserGroup } from '@lib/UserService';
 import cache from '@lib/cache';
 
 export const PREFERENCE_LAST_ACCOUNT_ID = 'last_account';
@@ -242,7 +242,7 @@ query ListUserTokens {
       last_provider
       last_model
       gateway_policy { providers models endpoints }
-      limits { metric period value model }
+      limits { metric period value model soft_pct }
       usage { requests tokens cost_usd }
     }
   }
@@ -289,7 +289,7 @@ query ListTenantTokens($user_id: String, $kind: String, $limit: Int, $offset: In
       last_provider
       last_model
       gateway_policy { providers models endpoints }
-      limits { metric period value model }
+      limits { metric period value model soft_pct }
       usage { requests tokens cost_usd }
     }
   }
@@ -404,6 +404,9 @@ const apiUser = {
     if (bodyData.status) {
       params.status = bodyData.status;
     }
+    if (bodyData.includeBees) {
+      params.includeBees = true;
+    }
     let cachedUserList = cache.getWithSuffix('user.listUsers', null, params);
     if (!cachedUserList) {
       let response = await getUsers(params);
@@ -423,15 +426,6 @@ const apiUser = {
       console.log('getWidget1Query Error is', err);
       return err;
     }
-  },
-  getUser: async function (id) {
-    let response = await getUserById({ id: id });
-    if (response.data && response.data.users && response.data.users.length > 0) {
-      return {
-        data: response.data.users[0],
-      };
-    }
-    return {};
   },
   getAllStatuses: async function () {
     try {

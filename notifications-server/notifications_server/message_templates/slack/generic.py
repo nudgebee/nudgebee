@@ -1,4 +1,5 @@
 import json
+from functools import partial
 from typing import Optional, List
 
 from pydantic import BaseModel
@@ -18,6 +19,9 @@ class WorkflowMetadata(BaseModel):
     triggered_by: Optional[str] = None
     workflow_id: Optional[str] = None
     account_id: Optional[str] = None
+    # The event that triggered the run, if any; step citations in the message
+    # link to that event's investigation.
+    event_id: Optional[str] = None
 
 
 _APPROVAL_FOOTER = "Your decision will resume the automation immediately."
@@ -71,7 +75,12 @@ def get_slack_generic_message_template(generic_params: GenericMessageParams) -> 
 
     # Reserve space for header + trailing so the footer never gets truncated
     body_budget = max(MAX_BLOCKS - len(header_blocks) - len(trailing_blocks), 1)
-    body_blocks = _build_body_blocks(generic_params.message or "", is_approval, max_blocks=body_budget)
+    body_blocks = _build_body_blocks(
+        generic_params.message or "",
+        is_approval,
+        max_blocks=body_budget,
+        citation_page_url=_citation_page_url(generic_params.workflow_metadata),
+    )
 
     blocks = header_blocks + body_blocks + trailing_blocks
 
@@ -124,9 +133,17 @@ def _build_meta_fields_block(
     return {"type": "section", "fields": fields}
 
 
-def _build_body_blocks(message: str, is_approval: bool, max_blocks: int = MAX_BLOCKS) -> List[dict]:
+def _citation_page_url(metadata: Optional[WorkflowMetadata]) -> Optional[str]:
+    if not metadata or not metadata.event_id or not metadata.account_id:
+        return None
+    return settings.urls.investigate_url(metadata.account_id, metadata.event_id, utm_source="slack")
+
+
+def _build_body_blocks(
+    message: str, is_approval: bool, max_blocks: int = MAX_BLOCKS, citation_page_url: Optional[str] = None
+) -> List[dict]:
     if is_approval:
-        slack_message = Transformer.markdown_to_slack_markdown(message)
+        slack_message = Transformer.markdown_to_slack_markdown(message, citation_page_url)
         if slack_message.strip():
             slack_message = "\n".join(f"> {line}" for line in slack_message.splitlines())
         return _chunk_into_sections(slack_message)[:max_blocks]
@@ -141,23 +158,50 @@ def _build_body_blocks(message: str, is_approval: bool, max_blocks: int = MAX_BL
     # Doesn't pass upload_image: this path has no Slack app/installation
     # context to upload a rendered image with, so flowchart diagrams here
     # keep using the existing code-block fallback.
-    groups = render_rich_segments(message, _plain_markdown_leaf)
+    groups = render_rich_segments(message, partial(_plain_markdown_leaf, citation_page_url=citation_page_url))
     blocks = [block for group in groups for block in group]
     return blocks[:max_blocks]
 
 
-def _plain_markdown_leaf(text: str) -> List[dict]:
-    return _chunk_into_sections(Transformer.markdown_to_slack_markdown(text))
+def _plain_markdown_leaf(text: str, citation_page_url: Optional[str] = None) -> List[dict]:
+    return _chunk_into_sections(Transformer.markdown_to_slack_markdown(text, citation_page_url))
 
 
 def _chunk_into_sections(slack_message: str) -> List[dict]:
     slack_message = slack_message.strip()
     if not slack_message:
         return []
-    chunks = [
-        slack_message[i : i + MAX_SLACK_BLOCK_LENGTH] for i in range(0, len(slack_message), MAX_SLACK_BLOCK_LENGTH)
-    ]
-    return [{"type": "section", "text": {"type": "mrkdwn", "text": chunk}} for chunk in chunks]
+    chunks = []
+    while len(slack_message) > MAX_SLACK_BLOCK_LENGTH:
+        cut = _section_cut(slack_message, MAX_SLACK_BLOCK_LENGTH)
+        chunks.append(slack_message[:cut].rstrip())
+        slack_message = slack_message[cut:].lstrip()
+    if slack_message:
+        chunks.append(slack_message)
+    return [{"type": "section", "text": {"type": "mrkdwn", "text": chunk}} for chunk in chunks if chunk]
+
+
+def _section_cut(text: str, limit: int) -> int:
+    """Where to end a section of at most ``limit`` chars: the last line break,
+    else the last space, never inside a <url|label> link, else ``limit``."""
+    for separator in ("\n", " "):
+        cut = text.rfind(separator, 0, limit)
+        while cut > 0 and _inside_link(text, cut):
+            cut = text.rfind(separator, 0, text.rfind("<", 0, cut))
+        if cut > 0:
+            return cut
+    return limit
+
+
+def _inside_link(text: str, cut: int) -> bool:
+    """True when ``cut`` falls between a link's "<" and its ">". A link never
+    spans lines, so a "<" without a ">" later on its line ("a < b") is text."""
+    opening = text.rfind("<", 0, cut)
+    if opening <= text.rfind(">", 0, cut) or text.rfind("\n", opening, cut) != -1:
+        return False
+    close = text.find(">", cut)
+    line_end = text.find("\n", cut)
+    return close != -1 and (line_end == -1 or close < line_end)
 
 
 def _build_context_block(text: str) -> dict:

@@ -114,3 +114,6 @@ export const useLatestRequest = () => {
     return () => id === latest.current;
   }, []);
 };
+
+/** The Observability tab of the integrations page, where metrics stores and Alertmanager are added. */
+export const OBSERVABILITY_INTEGRATIONS_URL = '/user-management?integration=observability#integrations';

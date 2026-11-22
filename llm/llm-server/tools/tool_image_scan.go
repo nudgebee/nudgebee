@@ -1,8 +1,6 @@
 package tools
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"math/rand"
 	"nudgebee/llm/common"
@@ -12,11 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"golang.org/x/exp/slog"
 )
 
 const ToolTriggerImageScan = "trigger_image_scan"
-const scanTriggeredEmptyResponse = "Scan triggered but received empty response"
 
 func init() {
 	core.RegisterNBToolFactory(ToolTriggerImageScan, func(accountId string) (core.NBTool, error) {
@@ -42,7 +40,7 @@ func (m ImageScanTool) Description() string {
 
 * Use this tool when you need to assess the security of a workload's container image.
 * **Input:** workload_name, and namespace.
-* **Output:** Returns the status of the scan.
+* **Output:** Waits for the scan (up to about 7 minutes) and returns each image's result (clean, vulnerable, failed or unscannable) with its most severe open findings. If the scan is still running when the wait ends, it says so; the results then appear in the cluster's Security > Image Scan tab.
 
 **Example Input:**
 {
@@ -69,14 +67,38 @@ func (m ImageScanTool) InputSchema() core.ToolSchema {
 	}
 }
 
-// AgentTaskResult holds the status and response from agent task polling
-type AgentTaskResult struct {
-	Status   string
-	Response string
+// imageScanResult is one image's outcome, read from the image_scan_summary row
+// the server-run scan writes when that image's scan ends. Status is the
+// summary's (clean | vulnerable | failed | unscannable), or imageScanRunning
+// while no summary newer than the request exists yet.
+type imageScanResult struct {
+	Image  string         `json:"image"`
+	Status string         `json:"status"`
+	Total  int            `json:"total,omitempty"`
+	Counts map[string]int `json:"counts,omitempty"`
+	Error  string         `json:"error,omitempty"`
 }
 
+const (
+	imageScanRunning     = "running"
+	imageScanFindingsMax = 10
+	imageScanTabHint     = "the cluster's Security > Image Scan tab"
+)
+
+// imageScanWait bounds how long the tool waits for the scan: exponential
+// backoff with jitter, about 7 minutes in all.
+var imageScanWait = struct {
+	attempts   int
+	initial    time.Duration
+	max        time.Duration
+	multiplier float64
+	jitter     float64
+}{attempts: 20, initial: 2 * time.Second, max: 30 * time.Second, multiplier: 1.5, jitter: 0.1}
+
 func (m ImageScanTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
-	startTime := time.Now()
+	// The scan stamps scanned_at in whole seconds, so compare from the start
+	// of the second the request was made in.
+	startTime := time.Now().UTC().Truncate(time.Second)
 	command := strings.TrimSpace(input.Command)
 	if command == "" {
 		return core.NBToolResponse{}, fmt.Errorf("empty command")
@@ -111,7 +133,7 @@ func (m ImageScanTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	nbRequestContext.Ctx.GetLogger().Info("security: triggering image scan", "accountId", nbRequestContext.AccountId, "workloadName", workloadName, "namespace", namespace)
 
-	response, err := TriggerImageScanApi(tenantId, nbRequestContext.AccountId, nbRequestContext.UserId, workloadName, namespace)
+	images, err := TriggerImageScanApi(tenantId, nbRequestContext.AccountId, nbRequestContext.UserId, workloadName, namespace)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("Unable to trigger Image Scan", "error", err.Error())
 		return core.NBToolResponse{
@@ -120,54 +142,51 @@ func (m ImageScanTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		}, err
 	}
 
-	agentResult, err := pollAgentTaskStatus(nbRequestContext, workloadName, namespace, startTime)
+	// The scan runs on the server, detached from this request, and records
+	// each image's outcome in its image_scan_summary row; that row is what
+	// says the scan is over.
+	results, err := waitForImageScans(nbRequestContext, images, func() (map[string]imageScanResult, error) {
+		return queryImageScanSummaries(nbRequestContext.AccountId, images, startTime)
+	}, time.Sleep)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("Error during agent task polling", "error", err.Error())
+		nbRequestContext.Ctx.GetLogger().Error("security: reading image scan results failed", "error", err.Error())
 		return core.NBToolResponse{
-			Data:   response,
-			Status: core.NBToolResponseStatusSuccess,
+			Data:   fmt.Sprintf("The image scan of workload '%s' in namespace '%s' was started, but its results could not be read: %s. They will appear in %s when the scan finishes.", workloadName, namespace, err, imageScanTabHint),
+			Status: core.NBToolResponseStatusError,
 		}, err
 	}
-
-	// Process the agent status for additional operations
-	if agentResult != nil {
-		return m.handleAgentStatus(nbRequestContext, agentResult.Status, agentResult.Response, workloadName, namespace, startTime)
-	}
-
-	return core.NBToolResponse{
-		Data:       response,
-		Type:       core.NBToolResponseTypeText,
-		Status:     core.NBToolResponseStatusSuccess,
-		References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"security", "image-scan"}, "Check Scurity Vulnerabilities", nil, "")},
-	}, nil
+	return m.scanResponse(nbRequestContext, workloadName, namespace, images, results)
 }
 
-// handlePollingResult processes the result of a single polling attempt
-func handlePollingResult(nbRequestContext core.NbToolContext, status, response string, found bool, err error, attempt, maxAttempts int) (*AgentTaskResult, bool, error) {
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("Error querying agent task status", "error", err.Error(), "attempt", attempt+1)
-		if attempt == maxAttempts-1 {
-			return nil, false, err
+// waitForImageScans polls until every image has a result or the wait budget
+// is spent, and returns the results it has. A failed poll is retried; it is
+// only an error when no poll ever succeeded.
+func waitForImageScans(nbRequestContext core.NbToolContext, images []string, poll func() (map[string]imageScanResult, error), sleep func(time.Duration)) (map[string]imageScanResult, error) {
+	interval := imageScanWait.initial
+	var lastErr error
+	var results map[string]imageScanResult
+	for attempt := range imageScanWait.attempts {
+		got, err := poll()
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Error("security: polling image scan results failed", "error", err.Error(), "attempt", attempt+1)
+			lastErr = err
+		} else {
+			results, lastErr = got, nil
+			if len(results) >= len(images) {
+				return results, nil
+			}
+			nbRequestContext.Ctx.GetLogger().Info("security: image scan still running", "done", len(results), "images", len(images), "attempt", attempt+1)
 		}
-		return nil, true, nil // Continue polling
-	}
-
-	if !found {
-		nbRequestContext.Ctx.GetLogger().Info("No agent task status found", "attempt", attempt+1)
-		if attempt == maxAttempts-1 {
-			return nil, false, fmt.Errorf("no agent task status found after maximum attempts")
+		if attempt < imageScanWait.attempts-1 {
+			var wait time.Duration
+			wait, interval = calculateBackoffWaitTime(interval, imageScanWait.jitter, imageScanWait.multiplier, imageScanWait.max)
+			sleep(wait)
 		}
-		return nil, true, nil // Continue polling
 	}
-
-	nbRequestContext.Ctx.GetLogger().Info("Agent task status fetched", "status", status, "response", response, "attempt", attempt+1)
-	if isTaskCompleted(status) {
-		nbRequestContext.Ctx.GetLogger().Info("Agent task completed", "status", status, "attempt", attempt+1)
-		return &AgentTaskResult{Status: status, Response: response}, false, nil // Task completed
+	if results == nil && lastErr != nil {
+		return nil, lastErr
 	}
-
-	nbRequestContext.Ctx.GetLogger().Info("Agent task still in progress", "status", status, "attempt", attempt+1)
-	return nil, true, nil // Continue polling
+	return results, nil
 }
 
 // calculateBackoffWaitTime calculates the wait time with exponential backoff and jitter
@@ -185,93 +204,134 @@ func calculateBackoffWaitTime(currentInterval time.Duration, jitterFactor float6
 	return waitTime, nextInterval
 }
 
-// pollAgentTaskStatus polls the agent_task table until the scan task is completed
-// Uses exponential backoff with jitter to reduce resource usage and avoid thundering herd
-// Returns the final agent status and response (for FAILED status) and any error
-func pollAgentTaskStatus(nbRequestContext core.NbToolContext, workloadName, namespace string, startTime time.Time) (*AgentTaskResult, error) {
-	// Exponential backoff configuration
-	maxAttempts := 20                  // Reduced attempts due to longer intervals
-	initialInterval := 2 * time.Second // Start with 2 seconds
-	maxInterval := 30 * time.Second    // Cap at 30 seconds
-	backoffMultiplier := 1.5           // Gentler exponential growth
-	jitterFactor := 0.1                // Add 10% jitter to avoid thundering herd
-
-	currentInterval := initialInterval
-
-	for attempt := range maxAttempts {
-		status, response, found, err := queryAgentTaskStatus(nbRequestContext, workloadName, namespace, startTime, attempt)
-
-		result, shouldContinue, resultErr := handlePollingResult(nbRequestContext, status, response, found, err, attempt, maxAttempts)
-		if !shouldContinue {
-			return result, resultErr
-		}
-
-		// Wait with backoff before next attempt (except on last attempt)
-		if attempt < maxAttempts-1 {
-			waitTime, nextInterval := calculateBackoffWaitTime(currentInterval, jitterFactor, backoffMultiplier, maxInterval)
-			nbRequestContext.Ctx.GetLogger().Info("Waiting before next polling attempt", "waitTime", waitTime, "baseInterval", currentInterval, "nextAttempt", attempt+2)
-			time.Sleep(waitTime)
-			currentInterval = nextInterval
-		}
-	}
-
-	nbRequestContext.Ctx.GetLogger().Warn("Agent task polling timed out after maximum attempts", "maxAttempts", maxAttempts)
-	return &AgentTaskResult{Status: "TIMEOUT", Response: ""}, nil
-}
-
-// queryAgentTaskStatus executes a parameterized SQL query and returns the status, response, whether found, and any error
-func queryAgentTaskStatus(nbRequestContext core.NbToolContext, workloadName, namespace string, startTime time.Time, attempt int) (string, string, bool, error) {
+// queryImageScanSummaries returns the images whose scan ended at or after
+// since, keyed by image.
+func queryImageScanSummaries(accountId string, images []string, since time.Time) (map[string]imageScanResult, error) {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("Unable to get database manager", "error", err.Error(), "attempt", attempt+1)
-		return "", "", false, fmt.Errorf("queryAgentTaskStatus: failed to get database manager: %w", err)
+		return nil, fmt.Errorf("queryImageScanSummaries: failed to get database manager: %w", err)
 	}
-
-	const query = `SELECT status, response::text FROM agent_task
+	const query = `SELECT account_object_id, recommendation::text FROM recommendation
 		WHERE cloud_account_id = $1
-		AND payload -> 'action_params' ->> 'name' LIKE $2
-		AND payload -> 'action_params' ->> 'namespace' = $3
-		AND payload ->> 'action_name' = 'image_scanner'
-		AND created_at >= $4
-		ORDER BY updated_at DESC LIMIT 1`
-
-	var status, response *string
-	err = dbManager.Db.QueryRow(query, nbRequestContext.AccountId, workloadName+"%", namespace, startTime.UTC()).Scan(&status, &response)
+		AND category = 'Security'
+		AND rule_name = 'image_scan_summary'
+		AND account_object_id = ANY($2)
+		AND (recommendation->>'scanned_at')::timestamptz >= $3`
+	rows, err := dbManager.Db.Query(query, accountId, pq.Array(images), since)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			nbRequestContext.Ctx.GetLogger().Info("No agent task status found", "attempt", attempt+1)
-			return "", "", false, nil
+		return nil, fmt.Errorf("queryImageScanSummaries: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]imageScanResult{}
+	for rows.Next() {
+		var image, body string
+		if err := rows.Scan(&image, &body); err != nil {
+			return nil, fmt.Errorf("queryImageScanSummaries: scan: %w", err)
 		}
-		nbRequestContext.Ctx.GetLogger().Error("Unable to fetch agent task status", "error", err.Error(), "attempt", attempt+1)
-		return "", "", false, fmt.Errorf("queryAgentTaskStatus: %w", err)
+		r := imageScanResult{Image: image}
+		if err := common.UnmarshalJson([]byte(body), &r); err != nil {
+			return nil, fmt.Errorf("queryImageScanSummaries: decode %q: %w", image, err)
+		}
+		r.Image = image
+		out[image] = r
 	}
-
-	if status == nil {
-		nbRequestContext.Ctx.GetLogger().Error("Status field is null in agent task response", "attempt", attempt+1)
-		return "", "", false, fmt.Errorf("status field is null in agent task response")
-	}
-
-	nbRequestContext.Ctx.GetLogger().Info("Agent task data retrieved", "status", *status, "attempt", attempt+1)
-
-	var responseStr string
-	if response != nil {
-		responseStr = *response
-	}
-
-	return *status, responseStr, true, nil
+	return out, rows.Err()
 }
 
-// isTaskCompleted checks if the task status indicates completion (not TODO or PROCESSING)
-func isTaskCompleted(status string) bool {
-	return status != "" && !strings.Contains(status, "TODO") && !strings.Contains(status, "PROCESSING")
+// scanResponse reports every image's outcome and, when any image has
+// findings, the most severe open ones. A scan still running when the wait ends
+// is not a failure: the answer says where its results will appear.
+func (m ImageScanTool) scanResponse(nbRequestContext core.NbToolContext, workloadName, namespace string, images []string, results map[string]imageScanResult) (core.NBToolResponse, error) {
+	report := struct {
+		Workload  string            `json:"workload"`
+		Namespace string            `json:"namespace"`
+		Message   string            `json:"message"`
+		Images    []imageScanResult `json:"images"`
+		Findings  []map[string]any  `json:"findings,omitempty"`
+	}{Workload: workloadName, Namespace: namespace}
+
+	var running, failed []string
+	vulnerable := false
+	for _, image := range images {
+		r, ok := results[image]
+		if !ok {
+			r = imageScanResult{Image: image, Status: imageScanRunning}
+			running = append(running, image)
+		}
+		switch r.Status {
+		case "failed", "unscannable":
+			failed = append(failed, image)
+		case "vulnerable":
+			vulnerable = true
+		}
+		report.Images = append(report.Images, r)
+	}
+
+	switch {
+	case len(running) > 0:
+		report.Message = fmt.Sprintf("The scan is still running for %s. Its results will appear in %s when it finishes; check there or run this tool again later.", strings.Join(running, ", "), imageScanTabHint)
+	case len(failed) == len(images):
+		report.Message = fmt.Sprintf("The scan failed for every image (%s); see each image's error.", strings.Join(failed, ", "))
+	case vulnerable:
+		report.Message = fmt.Sprintf("Scan finished. Findings below are the %d most severe open ones; the full list is in %s.", imageScanFindingsMax, imageScanTabHint)
+	default:
+		report.Message = "Scan finished."
+	}
+
+	if vulnerable {
+		findings, err := queryOpenImageFindings(nbRequestContext.AccountId, workloadName, namespace)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Error("security: reading image scan findings failed", "error", err.Error(), "workloadName", workloadName, "namespace", namespace)
+			report.Message += fmt.Sprintf(" The findings could not be read here (%s); see %s.", err, imageScanTabHint)
+		}
+		report.Findings = findings
+	}
+
+	data, err := common.MarshalJson(report)
+	if err != nil {
+		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("trigger_image_scan: marshal: %w", err)
+	}
+	resp := core.NBToolResponse{
+		Data:       string(data),
+		Type:       core.NBToolResponseTypeJson,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"security", "image-scan"}, "Check Security Vulnerabilities", nil, "")},
+	}
+	if len(running) == 0 && len(failed) == len(images) {
+		resp.Status = core.NBToolResponseStatusError
+		return resp, fmt.Errorf("image scan of workload '%s' in namespace '%s' failed for every image", workloadName, namespace)
+	}
+	return resp, nil
 }
 
-// dummy function to check the invoking of tool_image_Scan
-// func TriggerImageScanApi(s, workloadName, namespace string) (any, error) {
-// 	return `{"ok","success"}`, nil
-// }
+// queryOpenImageFindings returns the workload's most severe open image
+// findings.
+func queryOpenImageFindings(accountId, workloadName, namespace string) ([]map[string]any, error) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("queryOpenImageFindings: failed to get database manager: %w", err)
+	}
+	// Named fields only: the full recommendation carries each CVE's whole
+	// description and reference list, several KB per finding.
+	query := `SELECT image, vulnerability_id, severity, package_id,
+		recommendation::jsonb->>'PkgName' AS package_name,
+		recommendation::jsonb->>'InstalledVersion' AS installed_version,
+		recommendation::jsonb->>'FixedVersion' AS fixed_version,
+		recommendation::jsonb->>'Title' AS title
+		FROM (` + SecurityView + `
+		AND cr.cloud_account_id = $1::uuid AND cr.workload_name = $2 AND cr.namespace = $3
+		AND r.status = 'Open' AND r.rule_name = 'image_scan') f
+		ORDER BY CASE severity WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 3 ELSE 4 END, vulnerability_id
+		LIMIT ` + fmt.Sprint(imageScanFindingsMax)
+	var data []map[string]any
+	if err := dbManager.QueryAndScan(&data, query, accountId, workloadName, namespace); err != nil {
+		return nil, fmt.Errorf("queryOpenImageFindings: %w", err)
+	}
+	return data, nil
+}
 
-func TriggerImageScanApi(tenantId, accountId, userId, workloadName, namespace string) (string, error) {
+// TriggerImageScanApi starts the scan and returns the images it scans.
+func TriggerImageScanApi(tenantId, accountId, userId, workloadName, namespace string) ([]string, error) {
 	// Construct the ServicesRequest payload
 	request := services_server.ScanImageServiceRequest{
 		Action: services_server.Action{
@@ -291,20 +351,19 @@ func TriggerImageScanApi(tenantId, accountId, userId, workloadName, namespace st
 	// Call the Execute function
 	result, err := services_server.ExecuteScanImageQuery(request)
 	if err != nil {
-		return "", fmt.Errorf("failed to trigger image scan: %w", err)
+		return nil, fmt.Errorf("failed to trigger image scan: %w", err)
 	}
 	// Check if the result is empty
 	if len(result) == 0 {
-		return "", fmt.Errorf("no data returned from scan image query")
+		return nil, fmt.Errorf("no data returned from scan image query")
 	}
 
 	// check if the result contains the "result" key
-	if _, ok := result["result"]; !ok {
+	jsonStr, ok := result["result"]
+	if !ok {
 		slog.Error("trigger_image_scan: result key not found in response", "result", result)
-		return scanTriggeredEmptyResponse, nil
+		return nil, fmt.Errorf("scan triggered, but the response named no images")
 	}
-	// Get the JSON string from the map
-	jsonStr := result["result"]
 
 	// Define a structure to hold the parsed data
 	var parsedData []struct {
@@ -314,88 +373,19 @@ func TriggerImageScanApi(tenantId, accountId, userId, workloadName, namespace st
 	// Parse the JSON
 	if err := common.UnmarshalJson([]byte(jsonStr), &parsedData); err != nil {
 		slog.Error("trigger_image_scan: error parsing JSON response", "error", err)
-		return scanTriggeredEmptyResponse, nil
+		return nil, fmt.Errorf("scan triggered, but its response could not be read: %w", err)
 	}
 
-	// Extract all image values into a slice
-	images := make([]string, len(parsedData))
-	for i, item := range parsedData {
-		images[i] = item.Image
+	images := make([]string, 0, len(parsedData))
+	for _, item := range parsedData {
+		if item.Image != "" {
+			images = append(images, item.Image)
+		}
 	}
-
-	// Join the images with commas
-	imageList := strings.Join(images, ",")
-	if imageList == "" {
-		return scanTriggeredEmptyResponse, nil
+	if len(images) == 0 {
+		return nil, fmt.Errorf("scan triggered, but the response named no images")
 	}
-	return fmt.Sprintf("Scan triggered successfully for %s.\n Image/s: %s", workloadName, imageList), nil
-
-}
-
-// handleAgentStatus processes the final agent status and performs appropriate actions
-// Returns the final NBToolResponse based on the agent status
-// For FAILED status, includes the response message in the error details
-func (m ImageScanTool) handleAgentStatus(nbRequestContext core.NbToolContext, agentStatus, agentResponse, workloadName, namespace string, startTime time.Time) (core.NBToolResponse, error) {
-	nbRequestContext.Ctx.GetLogger().Info("Agent task final status", "status", agentStatus, "response", agentResponse, "workloadName", workloadName, "namespace", namespace)
-
-	switch agentStatus {
-	case "COMPLETED":
-		securityQuery := SecurityView + ` AND cr.cloud_account_id = $1::uuid AND cr.workload_name = $2 AND cr.namespace = $3 AND r.updated_at >= $4 LIMIT 10`
-		dbManager, err := common.GetDatabaseManager(common.Metastore)
-		if err != nil {
-			return core.NBToolResponse{
-				Data:   fmt.Sprintf("Scan for workload '%s' in namespace '%s' completed, but unable to fetch security view.", workloadName, namespace),
-				Status: core.NBToolResponseStatusError,
-			}, fmt.Errorf("handleAgentStatus: failed to get database manager: %w", err)
-		}
-		var data []map[string]any
-		err = dbManager.QueryAndScan(&data, securityQuery, nbRequestContext.AccountId, workloadName, namespace, startTime.UTC())
-		if err != nil {
-			nbRequestContext.Ctx.GetLogger().Error("Unable to fetch security view", "error", err.Error(), "workloadName", workloadName, "namespace", namespace)
-			return core.NBToolResponse{
-				Data:   fmt.Sprintf("Scan for workload '%s' in namespace '%s' completed, but unable to fetch security view.", workloadName, namespace),
-				Status: core.NBToolResponseStatusError,
-			}, fmt.Errorf("scan for workload '%s' in namespace '%s' completed, but unable to fetch security view: %w", workloadName, namespace, err)
-		}
-		if len(data) == 0 {
-			nbRequestContext.Ctx.GetLogger().Info("No security findings found for the scanned workload", "workloadName", workloadName, "namespace", namespace)
-			return core.NBToolResponse{
-				Data:   fmt.Sprintf("Scan for workload '%s' in namespace '%s' completed, but no security findings found.", workloadName, namespace),
-				Status: core.NBToolResponseStatusSuccess,
-			}, nil
-		}
-		bytesData, err := common.MarshalJson(data)
-		if err != nil {
-			return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("handleAgentStatus: marshal error: %w", err)
-		}
-		nbRequestContext.Ctx.GetLogger().Info("Security findings found for the scanned workload", "workloadName", workloadName, "namespace", namespace)
-		return core.NBToolResponse{
-			Data:       string(bytesData),
-			Type:       core.NBToolResponseTypeTable,
-			Status:     core.NBToolResponseStatusSuccess,
-			References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"security", "image-scan"}, "Check Scurity Vulnerabilities", nil, "")},
-		}, nil
-	case "FAILED":
-		errorMsg := fmt.Sprintf("Scan for workload '%s' in namespace '%s' failed.", workloadName, namespace)
-		if agentResponse != "" {
-			errorMsg += fmt.Sprintf(" Error details: %s", agentResponse)
-		}
-		return core.NBToolResponse{
-			Data:   errorMsg,
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("scan for workload '%s' in namespace '%s' failed: %s", workloadName, namespace, agentResponse)
-	case "TIMEOUT":
-		return core.NBToolResponse{
-			Data:   fmt.Sprintf("Scan for workload '%s' in namespace '%s' timed out.", workloadName, namespace),
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("scan for workload '%s' in namespace '%s' timed out", workloadName, namespace)
-	default:
-		nbRequestContext.Ctx.GetLogger().Warn("Unexpected Image Scan status", "status", agentStatus, "workloadName", workloadName, "namespace", namespace)
-		return core.NBToolResponse{
-			Data:   fmt.Sprintf("Unexpected Image Scan status '%s' for workload '%s' in namespace '%s'.", agentStatus, workloadName, namespace),
-			Status: core.NBToolResponseStatusError,
-		}, fmt.Errorf("unexpected Image Scan status '%s' for workload '%s' in namespace '%s'", agentStatus, workloadName, namespace)
-	}
+	return images, nil
 }
 
 // InferToolRequestType: this tool only triggers a scan, which changes no

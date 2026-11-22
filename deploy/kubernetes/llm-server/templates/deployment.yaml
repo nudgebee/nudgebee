@@ -98,6 +98,9 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            - name: workspace-proxy
+              containerPort: {{ .Values.service.workspaceProxyTlsPort }}
+              protocol: TCP
           livenessProbe:
             httpGet:
               path: /health

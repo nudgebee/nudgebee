@@ -1,0 +1,5 @@
+{
+  "type": "example_changed",
+  "keys": ["00000000-0000-0000-0000-000000000001"],
+  "sender": "services-server/pod-a"
+}

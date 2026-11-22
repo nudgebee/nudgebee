@@ -3,7 +3,6 @@ package k8s
 import (
 	"errors"
 	"fmt"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
 	"strings"
@@ -152,12 +151,8 @@ func (t *WorkloadRestartTask) Execute(taskCtx types.TaskContext, params map[stri
 
 	// Check output
 	if respStr, ok := restartResp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil { // Handle unmarshal error
-			return nil, fmt.Errorf("failed to parse kubectl restart response: %w", err)
-		}
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			return nil, fmt.Errorf("kubectl restart error: %s", stderr)
+		if _, err := interpretKubectlResponse(respStr); err != nil {
+			return nil, fmt.Errorf("kubectl restart error: %w", err)
 		}
 	}
 

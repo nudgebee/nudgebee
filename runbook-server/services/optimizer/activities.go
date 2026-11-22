@@ -101,7 +101,8 @@ func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) err
 
 	if task.Status == string(model.AutopilotTaskStatusSkipped) ||
 		task.Status == string(model.AutopilotTaskStatusComplete) ||
-		task.Status == string(model.AutopilotTaskStatusFailed) {
+		task.Status == string(model.AutopilotTaskStatusFailed) ||
+		task.Status == string(model.AutopilotTaskStatusPendingApproval) {
 		slog.Info("Task already processed, skipping execution", "task_id", taskID, "status", task.Status)
 		return nil
 	}

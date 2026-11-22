@@ -37,7 +37,10 @@ func init() {
 // Enterprise metrics index. It exists because prometheus_execute validates PromQL before
 // sending anything, while the Splunk metric source only accepts SPL — so no query could
 // satisfy both.
-type SplunkMetricsQueryTool struct{}
+type SplunkMetricsQueryTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m SplunkMetricsQueryTool) Name() string {
 	return ToolSplunkMetricsQuery
@@ -206,7 +209,7 @@ func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input 
 		}, nil
 	}
 
-	summarized, refs := inlineESResponse(nbRequestContext, response, "splunk_metrics_query", "Splunk")
+	summarized, refs, metadata := inlineESResponse(nbRequestContext, response, "splunk_metrics_query", "Splunk")
 	data, err := common.MarshalJson(summarized)
 	if err != nil {
 		return core.NBToolResponse{Status: core.NBToolResponseStatusError}, fmt.Errorf("splunk_metrics_query: marshal response: %w", err)
@@ -216,5 +219,6 @@ func (m SplunkMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input 
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: refs,
+		Metadata:   metadata,
 	}, nil
 }

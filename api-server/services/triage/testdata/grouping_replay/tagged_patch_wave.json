@@ -1,0 +1,179 @@
+{
+ "name": "tagged_patch_wave",
+ "story": "A scheduled patch run restarts six hosts of three applications in one patch group over twenty minutes; that is one incident. A host in another patch group restarting during it, and a CPU alarm on a host of the same patch group that did not restart, are not part of it.",
+ "namespace": "cloud",
+ "shape": "tagged",
+ "maps": {},
+ "expect": {
+  "together": [
+   [
+    "w1",
+    "w2",
+    "w3",
+    "w4",
+    "w5",
+    "w6"
+   ]
+  ],
+  "apart": [
+   [
+    "w1",
+    "x1"
+   ],
+   [
+    "w1",
+    "y1"
+   ],
+   [
+    "x1",
+    "y1"
+   ]
+  ]
+ },
+ "events": [
+  {
+   "id": "w1",
+   "alert": "billing-1-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "billing-1",
+   "fingerprint": "fp-billing-1-WindowsOSReboot-Alarm",
+   "starts_s": 0,
+   "arrives_s": 90,
+   "ends_s": 0,
+   "tags": {
+    "application": "billing",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "w2",
+   "alert": "billing-2-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "billing-2",
+   "fingerprint": "fp-billing-2-WindowsOSReboot-Alarm",
+   "starts_s": 150,
+   "arrives_s": 450,
+   "ends_s": 150,
+   "tags": {
+    "application": "billing",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "w3",
+   "alert": "crm-1-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "crm-1",
+   "fingerprint": "fp-crm-1-WindowsOSReboot-Alarm",
+   "starts_s": 400,
+   "arrives_s": 490,
+   "ends_s": 400,
+   "tags": {
+    "application": "crm",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "x1",
+   "alert": "warehouse-1-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "warehouse-1",
+   "fingerprint": "fp-warehouse-1-WindowsOSReboot-Alarm",
+   "starts_s": 500,
+   "arrives_s": 590,
+   "ends_s": 500,
+   "tags": {
+    "application": "warehouse",
+    "environment": "prod",
+    "Patch Group": "prod-group-4-sat"
+   }
+  },
+  {
+   "id": "y1",
+   "alert": "analytics-1-WindowsCPUUtilization-Alarm-P1",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "analytics-1",
+   "fingerprint": "fp-analytics-1-WindowsCPUUtilization-Alarm-P1",
+   "starts_s": 600,
+   "arrives_s": 690,
+   "ends_s": 600,
+   "tags": {
+    "application": "analytics",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "w4",
+   "alert": "crm-2-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "crm-2",
+   "fingerprint": "fp-crm-2-WindowsOSReboot-Alarm",
+   "starts_s": 650,
+   "arrives_s": 890,
+   "ends_s": 650,
+   "tags": {
+    "application": "crm",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "w5",
+   "alert": "payroll-1-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "payroll-1",
+   "fingerprint": "fp-payroll-1-WindowsOSReboot-Alarm",
+   "starts_s": 900,
+   "arrives_s": 990,
+   "ends_s": 900,
+   "tags": {
+    "application": "payroll",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  },
+  {
+   "id": "w6",
+   "alert": "payroll-2-WindowsOSReboot-Alarm",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "payroll-2",
+   "fingerprint": "fp-payroll-2-WindowsOSReboot-Alarm",
+   "starts_s": 1150,
+   "arrives_s": 1240,
+   "ends_s": 1150,
+   "tags": {
+    "application": "payroll",
+    "environment": "prod",
+    "Patch Group": "prod-group-3-sun"
+   }
+  }
+ ]
+}

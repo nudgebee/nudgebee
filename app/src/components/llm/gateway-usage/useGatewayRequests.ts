@@ -2,7 +2,7 @@
  * useGatewayRequests — fetches a page of recent AI Gateway requests.
  *
  * Mirrors `useGatewayData`: it refetches on every change to a request field
- * (date window · optional user/provider/model/status/tool scope · limit ·
+ * (date window · optional user/key/provider/model/status/tool scope · limit ·
  * offset), owns loading/error/data state, and cleans up in-flight requests with
  * an AbortController so a fast filter change never lands a stale response.
  * Backs the Requests sub-tab.
@@ -20,6 +20,7 @@ export function useGatewayRequests(
   filters: { startDate: string; endDate: string },
   opts: {
     userId?: string;
+    apiKeyId?: string;
     providers?: string[];
     models?: string[];
     status?: string;
@@ -41,6 +42,7 @@ export function useGatewayRequests(
     startDate: filters.startDate,
     endDate: filters.endDate,
     userId: opts.userId ?? '',
+    apiKeyId: opts.apiKeyId ?? '',
     providers: opts.providers ?? [],
     models: opts.models ?? [],
     status: opts.status ?? '',
@@ -66,6 +68,7 @@ export function useGatewayRequests(
             startDate: `${filters.startDate}T00:00:00Z`,
             endDate: `${filters.endDate}T23:59:59.999Z`,
             userId: opts.userId,
+            apiKeyId: opts.apiKeyId,
             providers: opts.providers,
             models: opts.models,
             status: opts.status,

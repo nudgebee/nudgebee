@@ -81,4 +81,15 @@ func TestWorkflowBuilderPromptEngineRules(t *testing.T) {
 
 	// (c) whole-value templates for non-string params (covers MCP args/headers).
 	assert.Contains(t, planning, "WHOLE-VALUE TEMPLATES FOR NON-STRING PARAMS", "planning context missing whole-value template rule (#31494)")
+
+	// (d) webhook steps read parsed fields from Inputs.webhook_json, not the raw string (#40458).
+	assert.Contains(t, schema, "Inputs.webhook_json.<field>", "workflow schema missing the webhook_json rule (#40458)")
+	assert.Contains(t, planning, "Inputs.webhook_json.<field>", "planning context missing the webhook_json rule (#40458)")
+
+	// (e) an input default is never rendered, so a skipped chat target's placeholder goes in the
+	// step's params.
+	assert.Contains(t, schema, "used as written and never rendered", "workflow schema missing the plain input default rule")
+	clarification := getClarificationSystemPrompt("e", "c", "i")
+	assert.Contains(t, clarification, "{{ Configs.slack_channel }} as a placeholder in its params, never as an input's default")
+	assert.Contains(t, clarification, "{{ Configs.slack_user_id }} as a placeholder in its params, never as an input's default")
 }

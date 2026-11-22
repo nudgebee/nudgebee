@@ -186,9 +186,12 @@ var promMuteSources = []string{
 	"zenduty_webhook",
 }
 
+// A pushed CloudWatch alarm was stored under AWS_EventBridge until the collector
+// stored it as AWS_CloudWatch_Alarm. Rules and mutes written under the old source
+// still describe those alarms, so an AWS_EventBridge rule covers both.
 var muteEventSources = map[string][]string{
 	"AWS_CloudWatch_Alarm":            {"AWS_CloudWatch_Alarm", "AWS_EventBridge"},
-	"AWS_EventBridge":                 {"AWS_EventBridge"},
+	"AWS_EventBridge":                 {"AWS_EventBridge", "AWS_CloudWatch_Alarm"},
 	"GCP_Metric_Alert":                {"GCP_Metric_Alert"},
 	"Azure_Monitor_Alert":             {"Azure_Monitor_Alert"},
 	agentEventSourceName:              promMuteSources,
@@ -196,6 +199,8 @@ var muteEventSources = map[string][]string{
 	"prometheus_alertmanager_webhook": promMuteSources,
 	// pagerduty_webhook events are keyed by the alert name (100% on dev).
 	"pagerduty_webhook": promMuteSources,
+	// Orion events carry the alert name as aggregation_key, as the rule does.
+	"orion_webhook": {"orion_webhook"},
 }
 
 // MuteEventSources returns the event sources a mute of this rule source covers,
@@ -794,7 +799,7 @@ func resolveRuleTargets(ctx *security.RequestContext, db *sqlx.DB, ids []string,
 
 	out := make([]*RuleTarget, 0, len(rows))
 	for _, r := range rows {
-		if !sc.HasAccountAccess(r.AccountID, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanReadAccountOrTenantUsage(r.AccountID) {
 			continue
 		}
 		t := r.toTarget()

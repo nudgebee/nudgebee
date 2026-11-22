@@ -18,7 +18,6 @@ const (
 )
 
 var ErrUnableToFetchData = errors.New("error: unable to fetch data")
-var ErrUserNotAuthorized = errors.New("error: user is not authoirized to perform this action")
 
 // Lives in tools/core (not agents/core) to avoid a circular import.
 // TierModelPick is one task's choice: which credential serves it and which
@@ -37,6 +36,9 @@ type TierModelPick struct {
 // NBQueryConfig holds structured configuration for agent requests and tool contexts.
 // It replaces the previous map[string]any with compile-time type safety.
 // JSON tags match the original map keys to preserve backward compatibility with DB-stored configs.
+// A new message inherits every field from the previous message's config unless
+// core.inheritableMessageConfig clears it; add a field there if it belongs to
+// one request only.
 type NBQueryConfig struct {
 	// Observability/event context
 	EventId          string `json:"event_id,omitempty"`
@@ -70,6 +72,12 @@ type NBQueryConfig struct {
 	// K8sOrchestratorMode selects a K8s orchestrator variant per-request.
 	// Empty defers to the service-level default.
 	K8sOrchestratorMode string `json:"k8s_orchestrator_mode,omitempty"`
+
+	// InvestigationDepth is the depth a user picked for this chat conversation
+	// (quick / standard / deep). Sticky within a conversation via MergeFrom's
+	// fill-if-zero. Read only by the enterprise depth resolver
+	// (ee/investigationdepth); an OSS build stores it and ignores it.
+	InvestigationDepth string `json:"investigation_depth,omitempty"`
 
 	// Log provider override: outranks LLM_SERVER_LOG_PROVIDER_OVERRIDE and account
 	// routing ("k8s" = kubectl path). Case-sensitive — api-server spells ES "ES".
@@ -123,6 +131,27 @@ type NBQueryConfig struct {
 	// it is never inherited by the conversation's next turn.
 	ReadOnlyRun bool `json:"read_only_run,omitempty"`
 
+	// StrictReadOnly narrows a read-only turn further: kubectl_execute and the cloud CLI tools run only a
+	// strict read on the account's own target (tools.readOnlyCheckRefusal). Set by the alert's follow-up
+	// check (#40734), not by other read-only runs. Inherited like ReadOnlyRun.
+	StrictReadOnly bool `json:"strict_read_only,omitempty"`
+
+	// RemediationPlanTurn marks NudgeBee's background planning turn in an alert's conversation (#40734): the
+	// kind of request it answers (auto, ask, recheck, replan). propose_fix there writes the alert's plan for that
+	// request, without a follow-up run. Set with ReadOnlyRun and StrictReadOnly; inherited like them.
+	RemediationPlanTurn string `json:"remediation_plan_turn,omitempty"`
+
+	// SystemNote marks a message NudgeBee wrote into a conversation (a planning turn, a follow-up check, an
+	// investigation summary): the app shows this one line as a note instead of a person's message. Saved on that
+	// message only; never inherited (MergeFrom does not copy it).
+	SystemNote string `json:"system_note,omitempty"`
+
+	// InvestigationRunId marks a turn of an alert investigation's stages with the run it belongs to (the event's
+	// log_analysis row id), with the remediation loop on (#40734). The message is saved with it in
+	// metadata.investigation_run_id (as is any follow-up the turn raises), which stage recovery reads to stay inside
+	// one run and the conversation history leaves out. Never inherited by the conversation's next turn.
+	InvestigationRunId string `json:"investigation_run_id,omitempty"`
+
 	// Memory overrides the server-wide memory settings for this one request.
 	// Grouped rather than three flat flags because they are one concern, and a
 	// reader should not have to know that a "rerank" flag relates to a "memory"
@@ -133,12 +162,28 @@ type NBQueryConfig struct {
 	ToolConfigs map[string]string `json:"tool_configs,omitempty"`
 	// DelegatedTarget is scoped to one child agent invocation. It is saved on
 	// the agent row for resume, never in the conversation's message_config.
-	DelegatedTarget    *ExecutionTarget  `json:"delegated_target,omitempty"`
-	ClientTools        []NBToolCommand   `json:"client_tools,omitempty"`
-	Capabilities       AgentCapabilities `json:"capabilities,omitzero"`
-	ToolConfirmations  map[string]string `json:"tool_confirmations,omitempty"`
-	ToolConfigMetadata map[string]any    `json:"tool_config_metadata,omitempty"`
-	DiscoveredTools    []string          `json:"discovered_tools,omitempty"`
+	DelegatedTarget *ExecutionTarget  `json:"delegated_target,omitempty"`
+	ClientTools     []NBToolCommand   `json:"client_tools,omitempty"`
+	Capabilities    AgentCapabilities `json:"capabilities,omitzero"`
+	// ToolConfirmations holds the approval answers for this request, keyed
+	// per tool and target account, or per action for tools implementing
+	// ToolConfirmationScope. A new message does not inherit them
+	// (core.inheritableMessageConfig); a resume of the same request does.
+	ToolConfirmations map[string]string `json:"tool_confirmations,omitempty"`
+	// ToolConfirmationRefs says, for each key in ToolConfirmations, which
+	// follow-up message the person answered and who they were, so an approved
+	// write can be recorded under that one approval. Scoped like
+	// ToolConfirmations: a new message does not inherit them.
+	ToolConfirmationRefs map[string]ToolConfirmationRef `json:"tool_confirmation_refs,omitempty"`
+	ToolConfigMetadata   map[string]any                 `json:"tool_config_metadata,omitempty"`
+	DiscoveredTools      []string                       `json:"discovered_tools,omitempty"`
+}
+
+// ToolConfirmationRef is one answered write approval: the follow-up message
+// the person answered, and the person.
+type ToolConfirmationRef struct {
+	MessageId  string `json:"message_id"`
+	ApprovedBy string `json:"approved_by,omitempty"`
 }
 
 // IsEmpty returns true when the config has no meaningful values set.
@@ -146,10 +191,10 @@ func (q NBQueryConfig) IsEmpty() bool {
 	return q.EventId == "" && q.RecommendationId == "" && len(q.KnowledgeHints) == 0 && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
-		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" &&
+		q.CurrentCluster == "" && q.CurrentClusterId == "" && q.K8sOrchestratorMode == "" && q.InvestigationDepth == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && q.LlmConfigSource == "" && !q.LlmConfigReset && len(q.ToolConfigs) == 0 && q.DelegatedTarget == nil &&
-		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
-		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun &&
+		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 && len(q.ToolConfirmationRefs) == 0 &&
+		len(q.ToolConfigMetadata) == 0 && q.LogProviderOverride == "" && !q.SkipConversationHistory && !q.ReadOnlyRun && !q.StrictReadOnly && q.RemediationPlanTurn == "" && q.SystemNote == "" && q.InvestigationRunId == "" &&
 		len(q.DiscoveredTools) == 0 && q.Memory.IsEmpty()
 }
 
@@ -293,6 +338,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if q.K8sOrchestratorMode == "" {
 		q.K8sOrchestratorMode = src.K8sOrchestratorMode
 	}
+	if q.InvestigationDepth == "" {
+		q.InvestigationDepth = src.InvestigationDepth
+	}
 	if q.LogProviderOverride == "" {
 		q.LogProviderOverride = src.LogProviderOverride
 	}
@@ -355,6 +403,12 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if !q.ReadOnlyRun {
 		q.ReadOnlyRun = src.ReadOnlyRun
 	}
+	if !q.StrictReadOnly {
+		q.StrictReadOnly = src.StrictReadOnly
+	}
+	if q.RemediationPlanTurn == "" {
+		q.RemediationPlanTurn = src.RemediationPlanTurn
+	}
 	if src.ToolConfigs != nil {
 		q.ToolConfigs = lo.Assign(src.ToolConfigs, q.ToolConfigs)
 	}
@@ -366,6 +420,9 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if src.ToolConfirmations != nil {
 		q.ToolConfirmations = lo.Assign(src.ToolConfirmations, q.ToolConfirmations)
+	}
+	if src.ToolConfirmationRefs != nil {
+		q.ToolConfirmationRefs = lo.Assign(src.ToolConfirmationRefs, q.ToolConfirmationRefs)
 	}
 	if src.ToolConfigMetadata != nil {
 		q.ToolConfigMetadata = lo.Assign(src.ToolConfigMetadata, q.ToolConfigMetadata)
@@ -439,6 +496,10 @@ type NbToolContext struct {
 	// dependency; only framework code reads these fields.
 	KnowledgePolicy         string
 	KnowledgePolicyResolved bool
+	// RequestType is what the approval gate decided this call is. A write type
+	// (create/update/delete) means the call passed the gate; empty means the
+	// tool was called outside the planner, so it must be treated as a read.
+	RequestType ToolRequestType
 	// Stats accumulates the DB/relay split for the in-flight tool call. A tool
 	// that records sets this on its local copy of the context at the top of
 	// Call(); because NbToolContext is passed by value the pointer — not the
@@ -552,16 +613,4 @@ func (c NbToolContext) ForTarget() NbToolContext {
 	c.TargetAccountId = c.AccountId
 	c.QueryConfig.DelegatedTarget = nil
 	return c
-}
-
-// updateMessageHistory updates the message history with the assistant's
-// response and requested tool calls.
-func UpdateMessageHistory(messageHistory []llms.MessageContent, resp *llms.ContentResponse) []llms.MessageContent {
-	respchoice := resp.Choices[0]
-
-	assistantResponse := llms.TextParts(llms.ChatMessageTypeAI, respchoice.Content)
-	for _, tc := range respchoice.ToolCalls {
-		assistantResponse.Parts = append(assistantResponse.Parts, tc)
-	}
-	return append(messageHistory, assistantResponse)
 }

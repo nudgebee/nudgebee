@@ -29,6 +29,9 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		r.POST("/api/webhooks/slack", handler)
 		r.GET("/swagger/doc.json", handler)
 		r.GET("/openapi.json", handler)
+		r.GET("/healthz", handler)
+		r.GET("/health/details", handler)
+		r.GET("/debug/pprof/heap", handler)
 		return r
 	}
 
@@ -74,4 +77,46 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("only the exact /health path is public", func(t *testing.T) {
+		config.Config.ServiceApiServerToken = "secret"
+		r := build()
+		for _, path := range []string{"/healthz", "/health/details", "/debug/pprof/heap"} {
+			if got := status(r, http.MethodGet, path, ""); got != http.StatusUnauthorized {
+				t.Errorf("%s: got %d, want %d", path, got, http.StatusUnauthorized)
+			}
+		}
+	})
+}
+
+// TestNewEngineProtectsPprof runs the real router setup so pprof cannot move
+// back above the auth middleware unnoticed: gin binds a route's middleware at
+// registration time, so pprof registered before r.Use would skip auth.
+func TestNewEngineProtectsPprof(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prevToken := config.Config.ServiceApiServerToken
+	prevHeader := config.Config.ServiceApiServerTokenHeader
+	t.Cleanup(func() {
+		config.Config.ServiceApiServerToken = prevToken
+		config.Config.ServiceApiServerTokenHeader = prevHeader
+	})
+	config.Config.ServiceApiServerToken = "secret"
+	config.Config.ServiceApiServerTokenHeader = "X-ACTION-TOKEN"
+
+	r := newEngine()
+	get := func(token string) int {
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/cmdline", nil)
+		if token != "" {
+			req.Header.Set("X-ACTION-TOKEN", token)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := get(""); got != http.StatusUnauthorized {
+		t.Errorf("pprof without token: got %d, want %d", got, http.StatusUnauthorized)
+	}
+	if got := get("secret"); got != http.StatusOK {
+		t.Errorf("pprof with token: got %d, want %d", got, http.StatusOK)
+	}
 }

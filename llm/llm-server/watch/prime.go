@@ -118,6 +118,10 @@ func Prime(rctx *security.RequestContext, in CreateInput, timeout time.Duration)
 	primeRctx := security.NewRequestContext(primeCtx, rctx.GetSecurityContext(), rctx.GetLogger(), rctx.GetTracer(), rctx.GetMeter())
 
 	obs, obsErr := src.Observe(primeRctx, probe)
+	if errors.Is(obsErr, ErrNotReadOnly) {
+		// Refused before it ran, like a ValidateConfig rejection.
+		return PrimeOutcome{Phase: PrimePhaseValidate, Err: obsErr}
+	}
 	if obsErr != nil {
 		return PrimeOutcome{
 			Phase:    PrimePhaseObserve,

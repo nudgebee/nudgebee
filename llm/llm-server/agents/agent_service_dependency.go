@@ -11,6 +11,7 @@ package agents
 import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -130,8 +131,8 @@ func (l ServiceDependencyGraphAgent) GetSystemPrompt(ctx *security.RequestContex
 		},
 		{
 			Question:    "Find all databases in the prod namespace",
-			Answer:      `kg_search_nodes(query:"", node_types:["Database"], namespace:"prod")`,
-			Explanation: "KG search for discovery by type and namespace",
+			Answer:      `kg_search_nodes(query:"", roles:["database"], namespace:"prod")`,
+			Explanation: "roles covers Database-type nodes and workloads or VMs that act as databases; node_types:[\"Database\"] would miss the in-cluster ones",
 		},
 		{
 			Question:    "Find all RDS databases in our AWS account",
@@ -180,8 +181,8 @@ func (l ServiceDependencyGraphAgent) GetPlannerType() core.AgentPlannerType {
 // GetCacheScope places the system prompt — including the embedded agent_kg_usage.txt
 // guidance — in the per-account cached prefix (12h TTL). The 4KB embed is paid once
 // per account per cache window, not per ReAct iteration.
-func (l ServiceDependencyGraphAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (l ServiceDependencyGraphAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
 
 // Compile-time assertion that V2 opts out of default-tool injection.

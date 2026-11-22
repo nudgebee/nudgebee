@@ -84,6 +84,7 @@ export const EventListing: string[] = [
   'TENANT_CREATE',
   'TENANT_UPDATE',
   'TENANT_DELETE',
+  'TENANT_FEATURE',
   'TENANT_USER_CREATE',
   'TENANT_USER_UPDATE',
   'TENANT_USER_DELETE',
@@ -126,6 +127,10 @@ export const EventListing: string[] = [
   'CUSTOM_TOOL_UPDATE',
   'CHAT_CLARIFICATION_RESPOND',
   'CHAT_TOOL_CONFIRMATION_RESPOND',
+  'CHAT_TOOL_POLICY_APPROVE',
+  'TOOL_APPROVAL_RULE_CREATE',
+  'TOOL_APPROVAL_RULE_UPDATE',
+  'TOOL_APPROVAL_RULE_DELETE',
   'CHAT_CONVERSATION_DELETE',
   'CLI_EXECUTE',
 ];
@@ -139,6 +144,7 @@ export const CategoryListing: string[] = [
   // New automation audits use 'AUTOMATION' (renders as "Automation").
   'AUTO_RUNBOOK',
   'CHAT_ACTIONS',
+  'SECURITY',
   'GROUPS',
   'K8S_RELAY',
   'K8S_AGENT',

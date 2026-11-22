@@ -97,3 +97,30 @@ describe('apiKubernetes.getK8sEventGroupings rank and severity filters', () => {
     );
   });
 });
+
+// The Triage Inbox search (#41158) filters the events a group is built from, in
+// both the list and the count, so the total matches the rows shown.
+describe('apiKubernetes.getK8sEventGroupings search', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({ data: { data: { event_groupings: { rows: [] }, event_groupings_aggregate: { rows: [] } } } });
+  });
+
+  const fullQuery = (): string => mockQuery.mock.calls[0][0];
+  const listCall = () => fullQuery().slice(fullQuery().indexOf('event_groupings: '), fullQuery().indexOf('event_groupings_aggregate:'));
+  const countCall = () => fullQuery().slice(fullQuery().indexOf('event_groupings_aggregate:'));
+
+  it('matches title, resource and alert name in the list and the count', async () => {
+    await apiKubernetes.getK8sEventGroupings(20, 0, { account_id: 'acc-1', search: 'web-01' }, ['fingerprint'], ['fingerprint']);
+
+    const clause = '_and:[{_or:[{title:{_ilike:"%web-01%"}},{subject_name:{_ilike:"%web-01%"}},{aggregation_key:{_ilike:"%web-01%"}}]}]';
+    expect(listCall()).toContain(clause);
+    expect(countCall()).toContain(clause);
+  });
+
+  it('adds nothing for blank search text', async () => {
+    await apiKubernetes.getK8sEventGroupings(20, 0, { account_id: 'acc-1', search: '  ' }, ['fingerprint'], ['fingerprint']);
+
+    expect(fullQuery()).not.toContain('_ilike');
+  });
+});

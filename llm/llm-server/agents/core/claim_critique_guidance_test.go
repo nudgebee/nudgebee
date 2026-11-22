@@ -115,6 +115,7 @@ func TestClaimGuidancePromptRegistered(t *testing.T) {
 // End to end through both planners: step 2 runs only with the flag on and a
 // rejection, replaces only the feedback text, and falls back on failure.
 func TestClaimGuidanceBothPlanners(t *testing.T) {
+	critiqueCallsInOrder(t)
 	previousFeedback := config.Config.ClaimCritiqueFeedbackEnabled
 	previousGuidance := config.Config.ClaimCritiqueActionableFeedbackEnabled
 	t.Cleanup(func() {
@@ -123,14 +124,8 @@ func TestClaimGuidanceBothPlanners(t *testing.T) {
 	})
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	previousDAO := GetConversationDao()
-	conversationDaoMutex.Lock()
 	SetConversationDao(&claimTestDAO{IConversationDao: previousDAO})
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() {
-		conversationDaoMutex.Lock()
-		defer conversationDaoMutex.Unlock()
-		SetConversationDao(previousDAO)
-	})
+	t.Cleanup(func() { SetConversationDao(previousDAO) })
 	accepted := strings.Replace(validClaimAudit, `"inferred"`, `"observed"`, 1)
 	cases := []struct {
 		name            string

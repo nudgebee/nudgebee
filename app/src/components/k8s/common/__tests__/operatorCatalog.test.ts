@@ -1,4 +1,11 @@
-import { getOperatorsForKind, getOperatorsForLabel, operatorAppliesToType, OperatorDescriptor, splitSetMembership } from '../operatorCatalog';
+import {
+  getOperatorsForKind,
+  getOperatorsForLabel,
+  narrowOperatorsForLabel,
+  operatorAppliesToType,
+  OperatorDescriptor,
+  splitSetMembership,
+} from '../operatorCatalog';
 
 // Mirrors what the backend sends as capabilities.supported_operator_descriptors for a
 // schema-backed provider (Pinot/Hive advertise exactly this operator set), including
@@ -131,5 +138,18 @@ describe('splitSetMembership', () => {
     expect(splitSetMembership([200, ' 500 ', null, undefined, ''])).toEqual(['200', '500']);
     expect(splitSetMembership(200)).toEqual(['200']);
     expect(splitSetMembership(null)).toEqual([]);
+  });
+});
+
+describe('narrowOperatorsForLabel', () => {
+  const chipOps = getOperatorsForLabel(PINOT_DESCRIPTORS, 'chip', 'string');
+
+  it('offers only exact operators on ClickHouse logs level, which refuses patterns', () => {
+    expect(tokensOf(narrowOperatorsForLabel(chipOps, 'otel_clickhouse', 'level'))).toEqual(['_eq', '_neq', '_regex', '_nregex']);
+  });
+
+  it('leaves other labels and other providers alone', () => {
+    expect(narrowOperatorsForLabel(chipOps, 'otel_clickhouse', 'namespace')).toEqual(chipOps);
+    expect(narrowOperatorsForLabel(chipOps, 'loki', 'level')).toEqual(chipOps);
   });
 });

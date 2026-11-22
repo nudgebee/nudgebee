@@ -13,7 +13,9 @@ import (
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,6 +35,26 @@ func IsLLMSecretFieldName(name string) bool {
 // values. It MUST stay in sync with the Enum declared in ConfigSchema; the
 // drift-guard test in llm_test.go enforces that.
 var llmProviders = []string{"anthropic", "azure", "bedrock", "googleai", "huggingface", "openai", "custom", "sagemaker", "vertexai"}
+
+// Decision models (#40902) pick one answer from a fixed list for a single AI
+// decision. They live in the "decision" slot (llm_tier_*_decision), which chat
+// never uses. Cloudflare and TypeSafe sell only decision models, so they are
+// rejected in every chat key. OpenAI's decision model (gpt-6-luna) is also a
+// chat model, so for OpenAI only the slot separates the two. Keep in sync with
+// llm-server's llms/decision package.
+var decisionModels = map[string][]string{
+	"cloudflare": {"clef", "clef-flash"},
+	"typesafe":   {"jev-latest"},
+	"openai":     {"gpt-6-luna"},
+}
+
+// cloudflareAccountID matches a Cloudflare account id (hex).
+var cloudflareAccountID = regexp.MustCompile(`^[A-Fa-f0-9]{16,64}$`)
+
+func isDecisionOnlyProvider(p string) bool {
+	p = strings.ToLower(strings.TrimSpace(p))
+	return p == "cloudflare" || p == "typesafe"
+}
 
 // providerRequiredFields returns the base field names that must be non-empty
 // for a given provider. These mirror the RequiredWhen contracts declared in
@@ -508,6 +530,7 @@ func (m LLM) ValidateConfig(securityContext *security.SecurityContext, integrati
 	}
 
 	errs = append(errs, validateConfiguredFallback(securityContext, cfg, accountId)...)
+	errs = append(errs, validateDecisionModel(cfg)...)
 
 	// Summarization model contract.
 	if cfg["add_model_for_summarization"] == "true" {
@@ -1125,6 +1148,55 @@ func apiStyleSlotProvider(cfg map[string]string, name string) string {
 	return cfg["llm_provider"]
 }
 
+// validateDecisionModel checks the decision slot, and that no chat key uses a
+// decision-only provider.
+func validateDecisionModel(cfg map[string]string) []error {
+	var errs []error
+	for name, value := range cfg {
+		if name == "llm_tier_provider_decision" {
+			continue
+		}
+		isProviderKey := strings.HasPrefix(name, "llm_provider") || strings.HasPrefix(name, "llm_tier_provider_") || strings.HasPrefix(name, "llm_fallback_provider")
+		if isProviderKey && isDecisionOnlyProvider(value) {
+			errs = append(errs, fmt.Errorf("%s: %s is only available as a decision model and cannot be used for chat", name, value))
+		}
+	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg["llm_tier_provider_decision"]))
+	if provider == "" {
+		if cfg["llm_tier_min_confidence_decision"] != "" {
+			errs = append(errs, fmt.Errorf("llm_tier_min_confidence_decision is set but no decision model is configured"))
+		}
+		return errs
+	}
+	models, ok := decisionModels[provider]
+	if !ok {
+		errs = append(errs, fmt.Errorf("llm_tier_provider_decision %q is invalid; must be cloudflare, typesafe or openai", provider))
+	}
+	required := []string{"llm_tier_model_decision", "llm_tier_api_key_decision"}
+	if provider == "cloudflare" {
+		required = append(required, "llm_tier_api_endpoint_decision")
+	}
+	for _, f := range required {
+		if cfg[f] == "" {
+			errs = append(errs, fmt.Errorf("%s is required when llm_tier_provider_decision is set", f))
+		}
+	}
+	if m := cfg["llm_tier_model_decision"]; ok && m != "" && !slices.Contains(models, m) {
+		errs = append(errs, fmt.Errorf("llm_tier_model_decision %q is invalid for %s; must be one of %s", m, provider, strings.Join(models, ", ")))
+	}
+	// Only Cloudflare uses the endpoint (its account id); the others ignore it.
+	if ep := cfg["llm_tier_api_endpoint_decision"]; provider == "cloudflare" && ep != "" && !cloudflareAccountID.MatchString(ep) && !strings.HasPrefix(ep, "https://") {
+		errs = append(errs, fmt.Errorf("llm_tier_api_endpoint_decision must be a Cloudflare account id or an https URL"))
+	}
+	if raw := cfg["llm_tier_min_confidence_decision"]; raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err != nil || v <= 0 || v > 1 {
+			errs = append(errs, fmt.Errorf("llm_tier_min_confidence_decision must be a number above 0 and at most 1"))
+		}
+	}
+	return errs
+}
+
 // llmFallbackRefConfig is core.LLMFallbackRefConfig; a var so tests can stub the DB.
 var llmFallbackRefConfig = core.LLMFallbackRefConfig
 
@@ -1206,6 +1278,9 @@ func validateFallbackRef(sc *security.SecurityContext, ref, model, modelKey, acc
 		return fmt.Errorf("%s is required for the fallback %q", modelKey, ref)
 	}
 	parts := strings.Split(ref, ":")
+	if n := len(parts); n >= 3 && parts[n-2] == "tier" && parts[n-1] == "decision" {
+		return fmt.Errorf("llm_fallback_ref_source %q: the decision slot holds a decision model and cannot be a fallback", ref)
+	}
 	scope := ""
 	switch {
 	case len(parts) == 2 && parts[0] == "env" && parts[1] == "global":

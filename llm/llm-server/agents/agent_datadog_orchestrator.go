@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -14,13 +15,12 @@ const (
 )
 
 func init() {
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogOrchestratorName, func(accountId string) (core.NBAgent, error) {
+	// Legacy name "datadog_debug" is an alias so stored history and
+	// @datadog_debug invocations still resolve, but the agent list shows one
+	// entry and the legacy name is not offered as a second tool.
+	core.RegisterTargetAwareNBAgentFactoryAndToolWithAliases(AgentDatadogOrchestratorName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogOrchestratorAgent(accountId), nil
-	}, "An agent specialized in troubleshooting and debugging issues using Datadog Observability tool", "Provide a natural language query describing the Issue to be debugged.", "Markdown response with debugging steps and findings.")
-	// Legacy-name alias so stored history / @datadog_debug invocations still resolve.
-	core.RegisterNBAgentFactory("datadog_debug", func(accountId string) (core.NBAgent, error) {
-		return NewDatadogOrchestratorAgent(accountId), nil
-	})
+	}, "An agent specialized in troubleshooting and debugging issues using Datadog Observability tool", "Provide a natural language query describing the Issue to be debugged.", "Markdown response with debugging steps and findings.", "datadog_debug")
 }
 
 type DatadogOrchestratorAgent struct {
@@ -57,12 +57,12 @@ func (a *DatadogOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 // so it may register a background watch.
 func (a *DatadogOrchestratorAgent) IsWatchCapable() bool { return true }
 
-func (a *DatadogOrchestratorAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a *DatadogOrchestratorAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
-func (a *DatadogOrchestratorAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (a *DatadogOrchestratorAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }
 
 func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -72,9 +72,9 @@ func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext,
 			`Input: JSON {"resource_type":"services|containers|apm_entities","query":"<name or search text>"} — both fields required.`,
 			"Output: matching Datadog resources. Use for a quick lookup; delegate to the specialist datadog sub-agents for deep investigation.",
 		},
-		DatadogLogAgentName: {
-			"Use this tool to search Datadog logs based on a natural language query.",
-			"Input: A natural language question about logs you want to retrieve from Datadog.",
+		LogsAgentName: {
+			"Use this tool to search logs (it reads Datadog logs on a Datadog account) based on a natural language query.",
+			"Input: A natural language question about the logs you want to retrieve.",
 			`Example query for this tool: "Find error logs for service my-api in the last hour"`,
 		},
 		DatadogMetricsAgentName: {
@@ -118,13 +118,13 @@ func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext,
 		},
 	}
 
-	return core.NBAgentPrompt{
+	prompt := core.NBAgentPrompt{
 		Role: "You are a super-intelligent AI that helps engineers troubleshoot and debug issues in Datadog environments. Your role is to act as a seasoned Datadog expert, guiding users to create XML-based execution plans.",
 		Instructions: []string{
 			"When a user asks a question, your goal is to create a plan as an XML document to help them solve the problem.",
 			"Each <step> in the XML plan represents a step and MUST contain 'id', 'tool', 'query', and 'reason' fields.",
 			"The 'id' field should be a unique string identifier for the step (e.g., 'M1', 'L2').",
-			"The 'tool' field must specify the name of the tool to be used for that step (e.g., 'datadog_metrics', 'datadog_logs').",
+			"The 'tool' field must specify the name of the tool to be used for that step (e.g., 'datadog_metrics', 'logs').",
 			"The 'query' field must contain the specific natural language input or question for the specified tool.",
 			"The 'reason' field should be a concise, single-sentence description of what this step aims to achieve.",
 			"Optionally, a step can include a 'dependency' field, which is an array of 'id's of previous steps that this step depends on.",
@@ -138,21 +138,21 @@ func (a *DatadogOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext,
 			"The 'tool' field must be one of the tools listed in the 'Instructions on tool usage' section.",
 			"Only use the tools provided. Do not make up tools.",
 			"Ensure that the generated plan is relevant to Datadog and uses Datadog-specific terminology and concepts.",
-			"The 'query' for 'datadog_logs', 'datadog_metrics', 'datadog_traces', or 'datadog_events' tools should be a natural language question that these tools can understand to fetch data.",
+			"The 'query' for 'logs', 'datadog_metrics', 'datadog_traces', or 'datadog_events' tools should be a natural language question that these tools can understand to fetch data.",
 		},
 		ToolUsage: toolUsage,
 		Examples: []core.NBAgentPromptExample{
 			{
 				Question: "My service 'cart-service' is showing a lot of errors in the 'prod' environment.",
-				Answer:   `<plan_response><thought>The user's service is showing a lot of errors. I will gather error rate metrics and logs to identify the cause.</thought><plan><step><id>M1</id><tool>datadog_metrics</tool><query><![CDATA[What is the error rate for service:cart-service env:prod over the last 30 minutes?]]></query><reason><![CDATA[Check the error rate metric for 'cart-service' in 'prod' environment for the last 30 minutes using Datadog metrics.]]></reason></step><step><id>L1</id><tool>datadog_logs</tool><query><![CDATA[Show me error logs for service:cart-service env:prod from the last 30 minutes.]]></query><reason><![CDATA[Fetch error logs for 'cart-service' in 'prod' environment for the last 30 minutes from Datadog logs.]]></reason></step></plan></plan_response>`,
+				Answer:   `<plan_response><thought>The user's service is showing a lot of errors. I will gather error rate metrics and logs to identify the cause.</thought><plan><step><id>M1</id><tool>datadog_metrics</tool><query><![CDATA[What is the error rate for service:cart-service env:prod over the last 30 minutes?]]></query><reason><![CDATA[Check the error rate metric for 'cart-service' in 'prod' environment for the last 30 minutes using Datadog metrics.]]></reason></step><step><id>L1</id><tool>logs</tool><query><![CDATA[Show me error logs for service:cart-service env:prod from the last 30 minutes.]]></query><reason><![CDATA[Fetch error logs for 'cart-service' in 'prod' environment for the last 30 minutes from Datadog logs.]]></reason></step></plan></plan_response>`,
 			},
 			{
 				Question: "CPU usage is high on host 'db-server-01'. What's going on?",
-				Answer:   `<plan_response><thought>The user is reporting high CPU usage on a host. I will retrieve CPU metrics, identify top processes, and collect related logs to diagnose the issue.</thought><plan><step><id>CPU_METRIC</id><tool>datadog_metrics</tool><query><![CDATA[Get CPU utilization for host:db-server-01 for the last hour.]]></query><reason><![CDATA[Retrieve CPU utilization metrics for host 'db-server-01' for the past hour from Datadog.]]></reason></step><step><id>TOP_PROCESSES</id><tool>datadog_metrics</tool><query><![CDATA[What are the top CPU consuming processes on host:db-server-01 for the last hour?]]></query><reason><![CDATA[Identify the top CPU consuming processes on 'db-server-01' using Datadog metrics for the past hour.]]></reason></step><step><id>RELATED_LOGS</id><tool>datadog_logs</tool><query><![CDATA[Search for logs from host:db-server-01 with severity ERROR or WARN in the last hour.]]></query><reason><![CDATA[Fetch error or warning logs from 'db-server-01' in the last hour via Datadog logs.]]></reason></step></plan></plan_response>`,
+				Answer:   `<plan_response><thought>The user is reporting high CPU usage on a host. I will retrieve CPU metrics, identify top processes, and collect related logs to diagnose the issue.</thought><plan><step><id>CPU_METRIC</id><tool>datadog_metrics</tool><query><![CDATA[Get CPU utilization for host:db-server-01 for the last hour.]]></query><reason><![CDATA[Retrieve CPU utilization metrics for host 'db-server-01' for the past hour from Datadog.]]></reason></step><step><id>TOP_PROCESSES</id><tool>datadog_metrics</tool><query><![CDATA[What are the top CPU consuming processes on host:db-server-01 for the last hour?]]></query><reason><![CDATA[Identify the top CPU consuming processes on 'db-server-01' using Datadog metrics for the past hour.]]></reason></step><step><id>RELATED_LOGS</id><tool>logs</tool><query><![CDATA[Search for logs from host:db-server-01 with severity ERROR or WARN in the last hour.]]></query><reason><![CDATA[Fetch error or warning logs from 'db-server-01' in the last hour via Datadog logs.]]></reason></step></plan></plan_response>`,
 			},
 			{
 				Question: "A pod in my 'production' namespace is crash-looping. Can you find out why?",
-				Answer:   `<plan_response><thought>A pod is crash-looping. I need to identify the pod and collect its logs and events to determine the root cause.</thought><plan><step><id>C1</id><tool>datadog_containers</tool><query><![CDATA[Get all containers in namespace 'production' that are not in a running state.]]></query><reason><![CDATA[Identify non-running containers in the 'production' namespace to find the crash-looping pod.]]></reason></step><step><id>L1</id><tool>datadog_logs</tool><query><![CDATA[Based on the pod name from <OUTPUT_OF_C1>, show me the logs for that pod from the last 15 minutes.]]></query><reason><![CDATA[Fetch recent logs for the identified crash-looping pod to see error messages.]]></reason></step><step><id>E1</id><tool>datadog_events</tool><query><![CDATA[Based on the pod name from <OUTPUT_OF_C1>, show me all Kubernetes events for that pod from the last hour.]]></query><reason><![CDATA[Check for Kubernetes events like OOMKilled or other warnings related to the pod.]]></reason></step></plan></plan_response>`,
+				Answer:   `<plan_response><thought>A pod is crash-looping. I need to identify the pod and collect its logs and events to determine the root cause.</thought><plan><step><id>C1</id><tool>datadog_containers</tool><query><![CDATA[Get all containers in namespace 'production' that are not in a running state.]]></query><reason><![CDATA[Identify non-running containers in the 'production' namespace to find the crash-looping pod.]]></reason></step><step><id>L1</id><tool>logs</tool><query><![CDATA[Based on the pod name from <OUTPUT_OF_C1>, show me the logs for that pod from the last 15 minutes.]]></query><reason><![CDATA[Fetch recent logs for the identified crash-looping pod to see error messages.]]></reason></step><step><id>E1</id><tool>datadog_events</tool><query><![CDATA[Based on the pod name from <OUTPUT_OF_C1>, show me all Kubernetes events for that pod from the last hour.]]></query><reason><![CDATA[Check for Kubernetes events like OOMKilled or other warnings related to the pod.]]></reason></step></plan></plan_response>`,
 			},
 		},
 		Rag: core.NBAgentPromptRag{
@@ -197,6 +197,10 @@ Example: ...found in [Resource Search - E1](#task-E1) and [Logs - E3](#task-E3).
 Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
 `,
 	}
+	if n := mcpIntegrationsNudge(query.AccountId); n != "" {
+		prompt.Instructions = append(prompt.Instructions, n)
+	}
+	return prompt
 }
 
 func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
@@ -208,7 +212,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		// Re-homed here when the resource_search agent was removed (#32503 Phase 2) —
 		// Datadog data is live (not in the DB inventory), so it stays platform-owned.
 		tools.ToolDatadogResourceSearchExecute,
-		DatadogLogAgentName,                          // For logs
+		LogsAgentName,                                // For logs (Datadog logs on a Datadog account)
 		DatadogMetricsAgentName,                      // For metrics
 		DatadogEventsAgentName,                       // For Events
 		DatadogContainersAgentName,                   // For Containers, Pods, Nodes, Workloads
@@ -216,7 +220,7 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		DatadogIncidentAgentName,                     // For Incidents
 		AgentDatadogHostsName,                        // For Hosts
 		AgentDatadogSoftwareCatalogName,              // For Software Catalog
-		getTicketAgentName(),                         // For JIRA/Ticketing
+		TicketsV2AgentName,                           // For JIRA/Ticketing
 		WorkflowAgentName,                            // For Workflows
 		GithubAgentName,                              // For Github
 		WebSearchAgentName,                           // For Web Search
@@ -232,8 +236,10 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 		// reached on-demand via search_tools + delegate_agent, which surfaces
 		// redis_command_executer / rabbit_execute (both carry their own ToolPrompt()).
 		DelegateAgentToolName,      // For dynamic specialist sub-agents
+		SearchToolsToolName,        // MCP tools and automations when they are not declared
 		tools.SearchSkillsToolName, // Search knowledge bases by query (#34819)
 	}
+	supportedToolNames = appendMemoryToolName(supportedToolNames)
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
@@ -260,7 +266,11 @@ func getDatadogPlannerSupportedTools(ctx *security.RequestContext, accountId str
 	// sub-agent, one is reachable only after the orchestrator decides to delegate —
 	// the hop that registering automations as tools exists to remove. Free on
 	// accounts without the feature flag: the source returns nothing at all.
-	tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
+	// With MCP tools on demand neither is declared: both are found with
+	// search_tools, as on the other orchestrators.
+	if !config.Config.LlmServerMCPToolsOnDemandEnabled {
+		tools = append(tools, toolcore.ListAccountSourcedTools(accountId)...)
+	}
 
 	// Conditionally add think tool for complex investigations
 	if config.Config.LlmServerThinkToolEnabled {

@@ -232,6 +232,15 @@ func approvalSignature(token, status, approver, signingKey string) string {
 	return "v0=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// VerifyApprovalSignature reports whether sig is the approval link's signature
+// over token, status and approver. With no signing key nothing verifies.
+func VerifyApprovalSignature(token, status, approver, sig, signingKey string) bool {
+	if signingKey == "" || sig == "" {
+		return false
+	}
+	return hmac.Equal([]byte(approvalSignature(token, status, approver, signingKey)), []byte(sig))
+}
+
 // buildApprovalURL returns the one-click approval link embedded in the email.
 // It points at the public app (Next.js) — the app server-side verifies the
 // HMAC and proxies the decision to runbook-server. runbook-server itself must
@@ -369,13 +378,10 @@ func (t *ApprovalTask) OutputSchema() *types.Schema {
 			},
 			"approver": {
 				Type: "string",
-				// Populated from the caller's security context (GetUserId), so
-				// it is empty when the approval arrives without a user identity
-				// — notably the Slack button path, which completes via a system
-				// context. The signed `approver` in the approval URL is not
-				// forwarded by handleCompleteWorkflowApproval today. Treat as
-				// best-effort and always template it with a default.
-				Description: "Approver identifier. Best-effort: empty when the approval arrives without a user identity (e.g. the Slack button path).",
+				// The deciding user's id, or "email:<address>" for a signed
+				// email link. A path without a user identity leaves the system
+				// user, so template it with a default.
+				Description: "Approver identifier: the deciding user's id, or \"email:<address>\" when decided from an approval email link. Best-effort: a path without a user identity leaves the system user.",
 				Required:    false,
 			},
 			"comments": {

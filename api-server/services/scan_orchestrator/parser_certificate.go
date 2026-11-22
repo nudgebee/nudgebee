@@ -3,6 +3,8 @@ package scan_orchestrator
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -13,17 +15,32 @@ const CertificateExpiryRuleName = "certificate_expiry"
 
 // DefaultCertExpiryWarningDays mirrors the collector's default in
 // handle_certificate_scanner_report (event_handler.py:2205) — certificates
-// expiring within this many days are flagged High severity. Future PR may
-// thread the cloud_account_attrs setting `certificate_expiry_recommendation`
-// through here.
+// expiring within this many days are flagged High severity, unless the account
+// sets certExpiryWarningDaysAttr.
 const DefaultCertExpiryWarningDays = 30
+
+// certExpiryWarningDaysAttr is the cloud_account_attrs key the cluster
+// integration settings write the per-account warning window under, as a
+// plain day count stored as text (e.g. "45").
+const certExpiryWarningDaysAttr = "certificate_expiry_recommendation"
+
+// parseCertExpiryWarningDays reads a stored warning-window value. ok is false
+// for anything that is not a positive whole number of days; the caller then
+// falls back to DefaultCertExpiryWarningDays.
+func parseCertExpiryWarningDays(raw string) (days int, ok bool) {
+	days, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || days <= 0 {
+		return 0, false
+	}
+	return days, true
+}
 
 // ParseCertificates turns the agent's snake_cased cert-manager certificate
 // list (returned by get_resource for cert-manager.io/v1/certificates) into
 // Recommendation rows. Mirrors the collector's
 // handle_certificate_scanner_report (event_handler.py:2198-2253):
 //
-//   - severity = High when status.not_after is within DefaultCertExpiryWarningDays
+//   - severity = High when status.not_after is within warningDays
 //   - certificates without status.not_after are skipped (not yet issued)
 //   - account_object_id matches collector's get_certificate_id —
 //     "<namespace>/<name>"
@@ -31,7 +48,7 @@ const DefaultCertExpiryWarningDays = 30
 // Note the snake_case input: agent's get_resource passes K8s output through
 // SnakeKeysDeep (kube/snake.go), so notAfter → not_after etc. The collector
 // reads camelCase because it ran in Robusta which used Hikaru.
-func ParseCertificates(certs []map[string]any, account ScanAccount, now time.Time) ([]Recommendation, error) {
+func ParseCertificates(certs []map[string]any, account ScanAccount, now time.Time, warningDays int) ([]Recommendation, error) {
 	out := make([]Recommendation, 0, len(certs))
 	for _, cert := range certs {
 		md, _ := cert["metadata"].(map[string]any)
@@ -48,7 +65,7 @@ func ParseCertificates(certs []map[string]any, account ScanAccount, now time.Tim
 		}
 		daysUntilExpiry := int(notAfter.Sub(now).Hours() / 24)
 		severity := "Info"
-		if daysUntilExpiry <= DefaultCertExpiryWarningDays {
+		if daysUntilExpiry <= warningDays {
 			severity = "High"
 		}
 

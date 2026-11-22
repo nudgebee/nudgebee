@@ -16,12 +16,14 @@ import (
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v67/github"
+	"go.yaml.in/yaml/v3"
 )
 
 type GitHubService struct{}
@@ -38,6 +40,10 @@ func (s *GitHubService) Create(ctx *gin.Context, config models.TicketConfigurati
 
 func (s *GitHubService) GetCreateMeta(ctx *gin.Context, config models.TicketConfigurations, projectKey string) (interface{}, error) {
 	return FetchGitHubIssueCreateMeta(ctx, config, projectKey)
+}
+
+func (s *GitHubService) GetTransitionMeta(ctx *gin.Context, config models.TicketConfigurations, projectKey string) (interface{}, error) {
+	return FetchGitHubProjectTransitionMeta(ctx, config, projectKey)
 }
 
 func (s *GitHubService) AddComment(ctx *gin.Context, config models.TicketConfigurations, t models.Ticket) error {
@@ -345,9 +351,41 @@ func createGithubIssueWithClient(ctx *gin.Context, githubClient *github.Client, 
 	owner := parts[0]
 	repo := parts[1]
 
+	// Any additional field beyond the reserved ones (assignee/labels, handled
+	// separately) came from an issue-form template's dynamic fields - fold the
+	// answers into the body as GitHub's own UI would, since the REST Issues API
+	// has no field slot for them. fieldOrder (sent by the frontend from the
+	// matching GetCreateMeta Template) restores the form's declared layout,
+	// since additionalFields is otherwise just an unordered map.
+	fieldOrder := extractGithubFieldOrder(additionalFields)
+	fieldLabels := extractGithubFieldLabels(additionalFields)
+
+	body := ticket.Description
+	if descriptionHasOrderedPosition(fieldOrder) {
+		// The form itself has a "Description"/"Summary" question (parsed in
+		// FetchGitHubIssueCreateMeta) and said where it belongs relative to
+		// its other questions - e.g. a Feature Request form's Summary is its
+		// 3rd field, not its 1st. Render it as one ordered section among the
+		// rest, in its real position, instead of always pinning it first.
+		if strings.TrimSpace(ticket.Description) != "" {
+			additionalFields["description"] = ticket.Description
+		}
+		body = formatGithubIssueFormAnswers(additionalFields, fieldOrder, fieldLabels)
+	} else if extra := formatGithubIssueFormAnswers(additionalFields, fieldOrder, fieldLabels); extra != "" {
+		// No form-declared position for it (a plain ticket, or a form with no
+		// Description/Summary question at all) - keep it as the fixed
+		// leading section it has always been, headed only when there are
+		// other sections for it to sit alongside.
+		if strings.TrimSpace(body) != "" {
+			body = "### Description\n\n" + body + "\n\n---\n\n" + extra
+		} else {
+			body = extra
+		}
+	}
+
 	issueRequest := github.IssueRequest{
 		Title:  &ticket.Title,
-		Body:   &ticket.Description,
+		Body:   &body,
 		Labels: &labels,
 	}
 
@@ -392,6 +430,11 @@ func createGithubIssueWithClient(ctx *gin.Context, githubClient *github.Client, 
 	ticket.Severity = "NA"
 	ticket.URL = createdIssue.GetHTMLURL()
 	ticket.Platform = "github"
+	// Persisted to NudgeBee's own DB as-is (CreateIssue inserts ticket.Description
+	// directly) - the composed body, not the original free text, so the local
+	// record matches what the issue actually contains (nothing reads this
+	// ticket back from GitHub to redisplay it; tickets_list reads the DB row).
+	ticket.Description = body
 	now := time.Now()
 	ticket.CreatedAt = &now
 
@@ -425,31 +468,117 @@ const (
 )
 
 // Template represents a template for creating an issue.
+//
+// Order lists dynamic (non-static) field keys in the source form's declared
+// order. Only GitHub issue-form templates populate it - Fields is a map, so
+// without it the body sections rebuilt from submitted answers would come out
+// in random order instead of matching the form's layout. Other providers
+// leave it empty; a consumer with no Order falls back to map order.
 type Template struct {
 	Name   string               `json:"name"`
 	Fields map[string]FieldInfo `json:"fields"`
+	Order  []string             `json:"order,omitempty"`
+}
+
+type githubGraphQLError struct {
+	Message    string `json:"message"`
+	Type       string `json:"type"`
+	Extensions struct {
+		Code string `json:"code"`
+	} `json:"extensions"`
+}
+
+type githubProjectStatusOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type githubPageInfo struct {
+	HasNextPage bool    `json:"hasNextPage"`
+	EndCursor   *string `json:"endCursor"`
+}
+
+type githubProjectStatusField struct {
+	ID      string                      `json:"id"`
+	Name    string                      `json:"name"`
+	Options []githubProjectStatusOption `json:"options"`
+}
+
+type githubProject struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Number int    `json:"number"`
+}
+
+type githubProjectItem struct {
+	ID         string        `json:"id"`
+	IsArchived bool          `json:"isArchived"`
+	Project    githubProject `json:"project"`
+}
+
+type githubProjectsPageResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Repository struct {
+			ProjectsV2 struct {
+				Nodes    []githubProject `json:"nodes"`
+				PageInfo githubPageInfo  `json:"pageInfo"`
+			} `json:"projectsV2"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+type githubProjectFieldsResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Node struct {
+			Fields struct {
+				Nodes    []githubProjectStatusField `json:"nodes"`
+				PageInfo githubPageInfo             `json:"pageInfo"`
+			} `json:"fields"`
+		} `json:"node"`
+	} `json:"data"`
+}
+
+type githubIssueProjectItemsPageResponse struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		Repository struct {
+			Issue struct {
+				ProjectItems struct {
+					Nodes    []githubProjectItem `json:"nodes"`
+					PageInfo githubPageInfo      `json:"pageInfo"`
+				} `json:"projectItems"`
+			} `json:"issue"`
+		} `json:"repository"`
+	} `json:"data"`
+}
+
+type githubProjectStatusMutation struct {
+	Errors []githubGraphQLError `json:"errors"`
+	Data   struct {
+		UpdateProjectV2ItemFieldValue struct {
+			ProjectV2Item struct {
+				ID string `json:"id"`
+			} `json:"projectV2Item"`
+		} `json:"updateProjectV2ItemFieldValue"`
+	} `json:"data"`
 }
 
 // FetchGitHubIssueCreateMeta fetches and formats the GitHub issue create metadata.
 func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketConfigurations, repoKey string) (any, error) {
-	var githubClient *github.Client
-
-	var err error
-	if configuration.AuthType != "application" {
-		githubClient = clients.CreateGithubClient(configuration.Password)
-	} else {
-		installationIDStr := configuration.Password
-		var installationID int64
-		installationID, err = strconv.ParseInt(installationIDStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid installation ID: %w", err)
-		}
-		githubClient, err = clients.CreateGithubClientWithInstallationToken(ctx, installationID)
-		if err != nil {
-			return nil, err
-		}
+	githubClient, err := githubClientForConfiguration(ctx, configuration)
+	if err != nil {
+		return nil, err
 	}
 
+	return fetchGitHubIssueCreateMetaWithClient(ctx, githubClient, repoKey)
+}
+
+// fetchGitHubIssueCreateMetaWithClient is split out from FetchGitHubIssueCreateMeta
+// so tests can drive it against an httptest-backed client, mirroring
+// createGithubIssueWithClient / getGithubIssueWithClient.
+func fetchGitHubIssueCreateMetaWithClient(ctx *gin.Context, githubClient *github.Client, repoKey string) (any, error) {
 	parts := strings.Split(repoKey, "/")
 	if len(parts) != 2 {
 		slog.Error("Invalid github project key:", "error", slog.AnyValue(repoKey))
@@ -464,10 +593,17 @@ func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketCon
 		return nil, err
 	}
 
+	// "id" must be the login, not GetID()'s numeric GitHub user ID: the
+	// frontend's generic option-value fallback (no explicit "key") stores
+	// "id" verbatim as the selected value, and createGithubIssueWithClient
+	// validates/assigns by login (IsAssignee, issueRequest.Assignee) - every
+	// other provider in this file already puts the real submission value in
+	// "id" for the same reason (e.g. Jira/Freshdesk use their wire id, never
+	// an unrelated internal numeric one).
 	assigneeValues := make([]interface{}, len(allAssignees))
 	for i, assignee := range allAssignees {
 		assigneeValues[i] = map[string]interface{}{
-			"id":    assignee.GetID(),
+			"id":    assignee.GetLogin(),
 			"name":  assignee.GetLogin(),
 			"value": assignee.GetLogin(),
 		}
@@ -489,21 +625,24 @@ func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketCon
 		labelOpts.Page = resp.NextPage
 	}
 
+	// Same reasoning as assigneeValues above: "id" must be the label name,
+	// not GetID()'s numeric label ID - issueRequest.Labels (and the "labels"
+	// merge in createGithubIssueWithClient) takes names, never numeric ids.
 	labelValues := make([]interface{}, len(allLabels))
 	for i, label := range allLabels {
 		labelValues[i] = map[string]interface{}{
-			"id":    label.GetID(),
+			"id":    label.GetName(),
 			"name":  label.GetName(),
 			"value": label.GetName(),
 		}
 	}
 
-	// GitHub has no real issue-type concept, so we ship a single "Issue"
-	// template. The frontend's GitHub branch uses "Issue" as the ticket_type
-	// value, and matches case-insensitively.
-	template := Template{
-		Name: "Issue",
-		Fields: map[string]FieldInfo{
+	// assignee/labels/summary/description are always offered, regardless of
+	// which (if any) issue-form template is selected - they're repo-level
+	// (assignee, labels) or have no per-form equivalent (summary/description
+	// bind to the static Subject/Description inputs every ticket has).
+	staticFields := func(dynamic map[string]FieldInfo) map[string]FieldInfo {
+		fields := map[string]FieldInfo{
 			"assignee": {
 				AllowedValues: assigneeValues,
 				Key:           "assignee",
@@ -534,12 +673,817 @@ func FetchGitHubIssueCreateMeta(ctx *gin.Context, configuration models.TicketCon
 				Type:          "string",
 				Group:         FieldGroupDescription,
 			},
-		},
+		}
+		for key, field := range dynamic {
+			fields[key] = field
+		}
+		return fields
+	}
+
+	// GitHub has no real issue-type concept, so the plain "Issue" template is
+	// always offered, alongside any real form templates - a repo that also
+	// defines forms shouldn't lose the option to file a plain issue. The
+	// leading icon matches the convention most repos' own template names
+	// already follow (e.g. "🐛 Bug Report"), so this fallback doesn't stand
+	// out as the one option with no icon.
+	templates := []Template{{Name: "📝 Issue", Fields: staticFields(nil)}}
+
+	// Repos that define issue-form templates (.github/ISSUE_TEMPLATE/*.yml) get
+	// one additional Template per form, carrying that form's own custom
+	// fields. Parsing is best-effort per file - a malformed form is skipped
+	// rather than failing create-meta for the whole repo.
+	formTemplates, err := fetchGithubIssueFormTemplates(ctx, githubClient, owner, repo)
+	if err != nil {
+		slog.Warn("github: failed to list issue form templates, falling back to plain issue template",
+			"owner", owner, "repo", repo, "error", err)
+	}
+	for _, t := range formTemplates {
+		if strings.EqualFold(strings.TrimSpace(t.Name), "Issue") {
+			// A form literally named "Issue" is redundant with the
+			// always-present static template above (same purpose: a plain
+			// issue, no custom fields) - skip it rather than offering two.
+			slog.Warn("github: issue form named \"Issue\" collides with the static template, skipping it",
+				"owner", owner, "repo", repo)
+			continue
+		}
+		t.Fields = staticFields(t.Fields)
+		templates = append(templates, t)
 	}
 
 	// Match the Jira shape: {data: [template]}. The RPC action exposes this
 	// as `tickets_get_create_meta.data`, which the frontend iterates.
-	return map[string]interface{}{"data": []Template{template}}, nil
+	return map[string]interface{}{"data": templates}, nil
+}
+
+// githubIssueFormReservedKeys are the field keys already used by the static
+// assignee/labels/summary/description slots above. A form field whose id or
+// label would collide must be renamed - TicketFormComponent filters the
+// literal keys "summary" and "description" out of its dynamic-field render
+// (they're shown via the static Subject/Description inputs instead), so a
+// form field landing on one of those keys would silently never render.
+var githubIssueFormReservedKeys = map[string]bool{
+	"assignee":    true,
+	"labels":      true,
+	"summary":     true,
+	"description": true,
+}
+
+// githubIssueFormFile is the subset of GitHub's issue-forms YAML schema
+// (docs.github.com/en/communities/.../syntax-for-issue-forms) this parser
+// understands: the form name and its body items.
+type githubIssueFormFile struct {
+	Name string                `yaml:"name"`
+	Body []githubIssueFormItem `yaml:"body"`
+}
+
+type githubIssueFormItem struct {
+	Type       string `yaml:"type"`
+	ID         string `yaml:"id"`
+	Attributes struct {
+		Label    string        `yaml:"label"`
+		Multiple bool          `yaml:"multiple"`
+		Options  []interface{} `yaml:"options"`
+	} `yaml:"attributes"`
+	Validations struct {
+		Required bool `yaml:"required"`
+	} `yaml:"validations"`
+}
+
+// fetchGithubIssueFormTemplates fetches and parses every issue-form YAML file
+// in .github/ISSUE_TEMPLATE/, skipping config.yml (the chooser config, not a
+// form) and any file this parser can't read as a form. Returns (nil, nil) -
+// not an error - when the repo has no such directory.
+func fetchGithubIssueFormTemplates(ctx *gin.Context, githubClient *github.Client, owner, repo string) ([]Template, error) {
+	_, entries, _, err := githubClient.Repositories.GetContents(ctx, owner, repo, ".github/ISSUE_TEMPLATE", nil)
+	if err != nil {
+		var ghErr *github.ErrorResponse
+		if errors.As(err, &ghErr) && ghErr.Response != nil && ghErr.Response.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var templates []Template
+	for _, entry := range entries {
+		lower := strings.ToLower(entry.GetName())
+		if entry.GetType() != "file" || (!strings.HasSuffix(lower, ".yml") && !strings.HasSuffix(lower, ".yaml")) {
+			continue
+		}
+		if lower == "config.yml" || lower == "config.yaml" {
+			continue
+		}
+
+		fileContent, _, _, err := githubClient.Repositories.GetContents(ctx, owner, repo, entry.GetPath(), nil)
+		if err != nil {
+			slog.Warn("github: failed to fetch issue form file, skipping", "owner", owner, "repo", repo, "path", entry.GetPath(), "error", err)
+			continue
+		}
+		raw, err := fileContent.GetContent()
+		if err != nil {
+			slog.Warn("github: failed to decode issue form file, skipping", "owner", owner, "repo", repo, "path", entry.GetPath(), "error", err)
+			continue
+		}
+
+		template, ok := parseGithubIssueFormYAML(entry.GetName(), raw)
+		if !ok {
+			continue
+		}
+		templates = append(templates, template)
+	}
+	return templates, nil
+}
+
+// parseGithubIssueFormYAML parses one issue-form file into a Template. Returns
+// ok=false for a file with no usable input fields - a plain markdown-only
+// template, a legacy non-forms template, or YAML this parser couldn't read -
+// rather than erroring; the caller falls back to the plain static template.
+func parseGithubIssueFormYAML(fileName, raw string) (Template, bool) {
+	var form githubIssueFormFile
+	if err := yaml.Unmarshal([]byte(raw), &form); err != nil {
+		slog.Warn("github: failed to parse issue form YAML, skipping", "file", fileName, "error", err)
+		return Template{}, false
+	}
+
+	name := strings.TrimSpace(form.Name)
+	if name == "" {
+		name = strings.TrimSuffix(strings.TrimSuffix(fileName, ".yml"), ".yaml")
+	}
+
+	// Bind one body item, if any, directly onto the static Description slot
+	// (literal key "description") instead of rendering it as its own
+	// duplicate-looking field: the item naturally keyed "description" wins
+	// when the form has one, else the one keyed "summary" (a common label
+	// for the same kind of free-text "what is this about" question, e.g. a
+	// Spike Request's Summary) is used instead - GitHub's real issue title
+	// always comes from the separate top-level title: key, never a body
+	// item, so a "Summary" question is never actually a title duplicate.
+	// When the form has neither, the generic optional Description box is
+	// left untouched. When it has both (two distinct questions), only
+	// "description" is bound here - "summary" still renders as its own
+	// field below, so the user sees both rather than losing one.
+	contentKey := ""
+	for _, candidate := range []string{"description", "summary"} {
+		for _, item := range form.Body {
+			if githubFieldKeyFor(item) == candidate {
+				contentKey = candidate
+				break
+			}
+		}
+		if contentKey != "" {
+			break
+		}
+	}
+
+	fields := map[string]FieldInfo{}
+	var order []string
+	used := map[string]bool{}
+	boundContent := false
+	for _, item := range form.Body {
+		field, ok := githubFormFieldFromItem(item)
+		if !ok {
+			continue
+		}
+		naturalKey := githubFieldKeyFor(item)
+		if !boundContent && contentKey != "" && naturalKey == contentKey {
+			field.Key = "description"
+			field.Group = FieldGroupDescription
+			fields["description"] = field
+			used["description"] = true
+			boundContent = true
+			// Recorded at its real position in the form, not skipped: a
+			// "Summary"/"Description" question is rarely the form's first
+			// field (see e.g. a Feature Request form: Function, Who asked
+			// for this, Summary, What this unblocks), so createGithubIssueWithClient
+			// must be able to place it where the form actually put it,
+			// not always first.
+			order = append(order, "description")
+			continue
+		}
+		// Any other body field is never dropped on a reserved-key collision
+		// (assignee/labels/summary, or a second item that also happens to be
+		// keyed "description"/"summary" beyond the one bound above) - renamed
+		// instead, so it stays visible under a disambiguated key rather than
+		// silently losing required content the plain Issues API has no way
+		// to flag as missing.
+		key := uniqueGithubFieldKey(naturalKey, used)
+		field.Key = key
+		fields[key] = field
+		order = append(order, key)
+	}
+
+	if len(fields) == 0 {
+		return Template{}, false
+	}
+	return Template{Name: name, Fields: fields, Order: order}, true
+}
+
+// githubFieldKeyFor derives a stable field key: the form's own id when given
+// (GitHub requires ids unique within a form already), else a slug of the label.
+func githubFieldKeyFor(item githubIssueFormItem) string {
+	if id := strings.TrimSpace(item.ID); id != "" {
+		return githubSlugify(id)
+	}
+	return githubSlugify(item.Attributes.Label)
+}
+
+var githubSlugNonAlnumRe = regexp.MustCompile(`[^a-z0-9]+`)
+
+func githubSlugify(s string) string {
+	slug := strings.Trim(githubSlugNonAlnumRe.ReplaceAllString(strings.ToLower(strings.TrimSpace(s)), "_"), "_")
+	if slug == "" {
+		return "field"
+	}
+	return slug
+}
+
+// uniqueGithubFieldKey renames a key that collides with a reserved static
+// field or an earlier field in the same form, so it can't silently overwrite
+// or (for "summary"/"description") get filtered out by the frontend.
+func uniqueGithubFieldKey(key string, used map[string]bool) string {
+	candidate := key
+	for n := 2; githubIssueFormReservedKeys[candidate] || used[candidate]; n++ {
+		candidate = fmt.Sprintf("%s_%d", key, n)
+	}
+	used[candidate] = true
+	return candidate
+}
+
+// githubFormFieldFromItem maps one issue-forms body item to a FieldInfo.
+// "markdown" items are display-only text with no answer, so they're skipped,
+// as is any item type this parser doesn't model yet.
+func githubFormFieldFromItem(item githubIssueFormItem) (FieldInfo, bool) {
+	label := strings.TrimSpace(item.Attributes.Label)
+	if label == "" {
+		label = strings.TrimSpace(item.ID)
+	}
+
+	switch item.Type {
+	case "input":
+		return FieldInfo{Name: label, Required: item.Validations.Required, Type: "string"}, true
+	case "textarea":
+		return FieldInfo{Name: label, Required: item.Validations.Required, Type: "text"}, true
+	case "dropdown":
+		fieldType := "select"
+		if item.Attributes.Multiple {
+			fieldType = "array"
+		}
+		return FieldInfo{Name: label, Required: item.Validations.Required, Type: fieldType, AllowedValues: githubFormOptionValues(item.Attributes.Options)}, true
+	case "checkboxes":
+		values, anyRequired := githubFormCheckboxValues(item.Attributes.Options)
+		return FieldInfo{Name: label, Required: anyRequired, Type: "multiselect", AllowedValues: values}, true
+	default:
+		return FieldInfo{}, false
+	}
+}
+
+// githubFormOptionValues converts dropdown options (plain scalars per
+// GitHub's schema) into the {id,name,value} shape every other FieldInfo's
+// AllowedValues already uses.
+func githubFormOptionValues(options []interface{}) []interface{} {
+	values := make([]interface{}, 0, len(options))
+	for _, opt := range options {
+		label := fmt.Sprint(opt)
+		if label == "" {
+			continue
+		}
+		values = append(values, map[string]interface{}{"id": label, "name": label, "value": label})
+	}
+	return values
+}
+
+// githubFormCheckboxValues converts checkboxes options - each either a plain
+// string or a {label, required} map - into AllowedValues, and reports whether
+// any option is itself required (checkboxes has no field-level `required`;
+// GitHub puts it per-option instead).
+func githubFormCheckboxValues(options []interface{}) ([]interface{}, bool) {
+	values := make([]interface{}, 0, len(options))
+	anyRequired := false
+	for _, opt := range options {
+		var label string
+		if o, ok := opt.(map[string]interface{}); ok {
+			label = fmt.Sprint(o["label"])
+			if req, _ := o["required"].(bool); req {
+				anyRequired = true
+			}
+		} else {
+			label = fmt.Sprint(opt)
+		}
+		if label == "" {
+			continue
+		}
+		values = append(values, map[string]interface{}{"id": label, "name": label, "value": label})
+	}
+	return values, anyRequired
+}
+
+// githubFieldOrderKey is the additionalFields key the frontend uses to carry
+// a GetCreateMeta Template's field Order back on ticket creation - see
+// extractGithubFieldOrder. additionalFields otherwise flows through
+// untouched to other providers' encoders (jira/freshdesk), so this is
+// deliberately namespaced to avoid ever colliding with a real field id.
+const githubFieldOrderKey = "_field_order"
+
+// githubFieldLabelsKey carries each dynamic field's real FieldInfo.Name
+// (e.g. "Reproduction steps") back on ticket creation - see
+// extractGithubFieldLabels. Without it, the body heading can only be
+// reconstructed from the field's key/id (e.g. "reprod"), which commonly
+// differs from its label - GitHub form authors frequently give a field a
+// short id and a fuller display label.
+const githubFieldLabelsKey = "_field_labels"
+
+// extractGithubFieldOrder pulls the client-supplied field order out of
+// additionalFields and removes it, so it is never rendered as an answer of
+// its own. additionalFields is a plain map with no inherent order, and the
+// create request carries nothing else that would let the body sections
+// match the form's declared layout - see Template.Order and
+// TicketFormComponent's fieldOrder prop, which is this same value's
+// round trip from GetCreateMeta through the UI and back.
+func extractGithubFieldOrder(additionalFields map[string]interface{}) []string {
+	raw, ok := additionalFields[githubFieldOrderKey]
+	if !ok {
+		return nil
+	}
+	delete(additionalFields, githubFieldOrderKey)
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	order := make([]string, 0, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			order = append(order, s)
+		}
+	}
+	return order
+}
+
+// extractGithubFieldLabels pulls the client-supplied key->label map out of
+// additionalFields and removes it, so it is never rendered as an answer of
+// its own (mirrors extractGithubFieldOrder).
+func extractGithubFieldLabels(additionalFields map[string]interface{}) map[string]string {
+	raw, ok := additionalFields[githubFieldLabelsKey]
+	if !ok {
+		return nil
+	}
+	delete(additionalFields, githubFieldLabelsKey)
+	rawMap, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	labels := make(map[string]string, len(rawMap))
+	for key, v := range rawMap {
+		if s, ok := v.(string); ok && s != "" {
+			labels[key] = s
+		}
+	}
+	return labels
+}
+
+// descriptionHasOrderedPosition reports whether fieldOrder places
+// "description" at a specific spot - meaning the parsed form had its own
+// Description/Summary question (see parseGithubIssueFormYAML's content-field
+// binding) rather than relying on the generic, position-less static box.
+func descriptionHasOrderedPosition(fieldOrder []string) bool {
+	for _, key := range fieldOrder {
+		if key == "description" {
+			return true
+		}
+	}
+	return false
+}
+
+// formatGithubIssueFormAnswers renders every additionalFields entry beyond
+// "labels" (handled separately in createGithubIssueWithClient) as a markdown
+// section, approximating what GitHub's own UI does when it flattens a
+// submitted issue form into the plain Issues API's body field. order (the
+// matching GetCreateMeta Template's field order - see extractGithubFieldOrder)
+// is honored first so sections match the form's declared layout; any
+// additionalFields key order doesn't cover (stale cached order, or a key
+// order never knew about) falls back to alphabetical. labels (see
+// extractGithubFieldLabels) gives each section its real form label (e.g.
+// "Reproduction steps") when known; a key labels doesn't cover falls back
+// to a heading reconstructed from the key itself (e.g. "reprod" -> "Reprod").
+func formatGithubIssueFormAnswers(additionalFields map[string]interface{}, order []string, labels map[string]string) string {
+	seen := map[string]bool{"labels": true}
+	keys := make([]string, 0, len(additionalFields))
+	for _, key := range order {
+		if seen[key] {
+			continue
+		}
+		if _, ok := additionalFields[key]; ok {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	rest := make([]string, 0, len(additionalFields))
+	for key := range additionalFields {
+		if !seen[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
+
+	var sections []string
+	for _, key := range keys {
+		value := formatGithubFieldValue(additionalFields[key])
+		if value == "" {
+			continue
+		}
+		heading := labels[key]
+		if heading == "" {
+			heading = githubFieldHeading(key)
+		}
+		sections = append(sections, "### "+heading+"\n\n"+value)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func formatGithubFieldValue(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if list, ok := v.([]interface{}); ok {
+		parts := make([]string, 0, len(list))
+		for _, item := range list {
+			if s := githubFieldValueScalar(item); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ", ")
+	}
+	return githubFieldValueScalar(v)
+}
+
+// githubFieldValueScalar renders one answer value as text. A multiselect
+// (checkboxes) field's selections arrive as {"id": ...} objects - the same
+// wire shape TicketFormComponent uses for every provider's multiselect type
+// (see jiraOptionIDString for the Jira equivalent) - so a plain fmt.Sprint
+// would render "map[id:...]" instead of the value.
+func githubFieldValueScalar(v interface{}) string {
+	if m, ok := v.(map[string]interface{}); ok {
+		for _, key := range []string{"id", "value", "key"} {
+			if s := strings.TrimSpace(fmt.Sprint(m[key])); s != "" && m[key] != nil {
+				return s
+			}
+		}
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+// githubFieldHeading turns a field key (e.g. "what_happened") into a heading
+// (e.g. "What Happened"). additionalFields carries only the key, not the
+// form's original label, so this is an approximation.
+func githubFieldHeading(key string) string {
+	words := strings.FieldsFunc(key, func(r rune) bool { return r == '_' || r == '-' })
+	for i, w := range words {
+		if w == "" {
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+const githubProjectsQuery = `query($owner: String!, $repo: String!, $cursor: String) {
+	repository(owner: $owner, name: $repo) {
+		projectsV2(first: 100, after: $cursor) {
+			nodes { id title number }
+			pageInfo { hasNextPage endCursor }
+		}
+	}
+}`
+
+const githubProjectFieldsQuery = `query($id: ID!, $cursor: String) {
+	node(id: $id) {
+		... on ProjectV2 {
+			fields(first: 100, after: $cursor) {
+				nodes {
+					... on ProjectV2SingleSelectField {
+						id
+						name
+						options { id name }
+					}
+				}
+				pageInfo { hasNextPage endCursor }
+			}
+		}
+	}
+}`
+
+const githubIssueProjectItemsQuery = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+	repository(owner: $owner, name: $repo) {
+		issue(number: $number) {
+			projectItems(first: 100, after: $cursor, includeArchived: false) {
+				nodes { id isArchived project { id title number } }
+				pageInfo { hasNextPage endCursor }
+			}
+		}
+	}
+}`
+
+func githubGraphQLRequest(ctx *gin.Context, githubClient *github.Client, query string, variables map[string]interface{}, response interface{}) error {
+	req, err := githubClient.NewRequest(http.MethodPost, "graphql", map[string]interface{}{
+		"query":     query,
+		"variables": variables,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create GitHub GraphQL request: %w", err)
+	}
+	if _, err := githubClient.Do(ctx, req, response); err != nil {
+		var rateLimitErr *github.RateLimitError
+		var abuseErr *github.AbuseRateLimitError
+		if errors.As(err, &rateLimitErr) || errors.As(err, &abuseErr) {
+			return fmt.Errorf("GitHub GraphQL request failed: %w", err)
+		}
+		var githubErr *github.ErrorResponse
+		if errors.As(err, &githubErr) && githubErr.Response != nil &&
+			(githubErr.Response.StatusCode == http.StatusUnauthorized ||
+				githubErr.Response.StatusCode == http.StatusForbidden ||
+				githubErr.Response.StatusCode == http.StatusNotFound) {
+			return &githubProjectsPermissionError{err: fmt.Errorf("GitHub Projects lookup is unauthorized: %w", err)}
+		}
+		return fmt.Errorf("GitHub GraphQL request failed: %w", err)
+	}
+	return nil
+}
+
+type githubProjectsPermissionError struct{ err error }
+
+func (e *githubProjectsPermissionError) Error() string { return e.err.Error() }
+func (e *githubProjectsPermissionError) Unwrap() error { return e.err }
+
+const maxGitHubGraphQLPages = 100
+
+func pageCursor(pageInfo githubPageInfo, context string, page int) (string, bool, error) {
+	if !pageInfo.HasNextPage {
+		return "", false, nil
+	}
+	if page >= maxGitHubGraphQLPages || pageInfo.EndCursor == nil || *pageInfo.EndCursor == "" {
+		return "", false, fmt.Errorf("GitHub Projects %s exceeded the pagination limit of %d pages", context, maxGitHubGraphQLPages)
+	}
+	return *pageInfo.EndCursor, true, nil
+}
+
+func githubClientForConfiguration(ctx *gin.Context, configuration models.TicketConfigurations) (*github.Client, error) {
+	if configuration.AuthType != "application" {
+		return clients.CreateGithubClient(configuration.Password), nil
+	}
+	installationID, err := strconv.ParseInt(configuration.Password, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid installation ID: %w", err)
+	}
+	return clients.CreateGithubClientWithInstallationToken(ctx, installationID)
+}
+
+func githubGraphQLErrors(errors []githubGraphQLError) error {
+	if len(errors) == 0 {
+		return nil
+	}
+	err := fmt.Errorf("GitHub Projects status lookup failed: %s", errors[0].Message)
+	allPermissionErrors := true
+	for _, graphqlErr := range errors {
+		code := graphqlErr.Type
+		if code == "" {
+			code = graphqlErr.Extensions.Code
+		}
+		switch strings.ToUpper(code) {
+		case "INSUFFICIENT_SCOPES", "FORBIDDEN", "NOT_FOUND":
+		default:
+			allPermissionErrors = false
+		}
+	}
+	if allPermissionErrors {
+		return &githubProjectsPermissionError{err: err}
+	}
+	return err
+}
+
+func fetchProjectFields(ctx *gin.Context, client *github.Client, projectID string) ([]githubProjectStatusField, error) {
+	var fields []githubProjectStatusField
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubProjectFieldsResponse
+		if err := githubGraphQLRequest(ctx, client, githubProjectFieldsQuery, map[string]interface{}{"id": projectID, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		fields = append(fields, response.Data.Node.Fields.Nodes...)
+		next, more, err := pageCursor(response.Data.Node.Fields.PageInfo, "fields", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return fields, nil
+		}
+		cursor = &next
+	}
+}
+
+func fetchProjects(ctx *gin.Context, client *github.Client, owner, repo string) ([]githubProject, error) {
+	var projects []githubProject
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubProjectsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubProjectsQuery, map[string]interface{}{"owner": owner, "repo": repo, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		projects = append(projects, response.Data.Repository.ProjectsV2.Nodes...)
+		next, more, err := pageCursor(response.Data.Repository.ProjectsV2.PageInfo, "projects", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return projects, nil
+		}
+		cursor = &next
+	}
+}
+
+func projectStatusValues(ctx *gin.Context, client *github.Client, owner, repo string) ([]interface{}, error) {
+	projects, err := fetchProjects(ctx, client, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	type transitionOption struct {
+		id, name, value string
+	}
+	statusOptions := []transitionOption{
+		{id: "open", name: "open", value: "open"},
+		{id: "closed", name: "closed", value: "closed"},
+	}
+	for _, project := range projects {
+		fields, err := fetchProjectFields(ctx, client, project.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, field := range fields {
+			if !strings.EqualFold(field.Name, "Status") {
+				continue
+			}
+			for _, option := range field.Options {
+				if option.ID == "" || option.Name == "" {
+					continue
+				}
+				value := fmt.Sprintf("github-project:%s:%s:%s", project.ID, field.ID, option.ID)
+				statusOptions = append(statusOptions, transitionOption{
+					id: value, name: fmt.Sprintf("Project #%d %s: %s", project.Number, project.Title, option.Name), value: value,
+				})
+			}
+		}
+	}
+	labelCounts := make(map[string]int, len(statusOptions))
+	for _, option := range statusOptions {
+		labelCounts[option.name]++
+	}
+	values := make([]interface{}, 0, len(statusOptions))
+	for _, option := range statusOptions {
+		name := option.name
+		if labelCounts[name] > 1 {
+			idSuffix := option.id
+			if len(idSuffix) > 8 {
+				idSuffix = idSuffix[len(idSuffix)-8:]
+			}
+			name = fmt.Sprintf("%s (%s)", name, idSuffix)
+		}
+		values = append(values, map[string]interface{}{"id": option.id, "name": name, "value": option.value})
+	}
+	return values, nil
+}
+
+func FetchGitHubProjectTransitionMeta(ctx *gin.Context, configuration models.TicketConfigurations, repoKey string) (interface{}, error) {
+	client, err := githubClientForConfiguration(ctx, configuration)
+	if err != nil {
+		return nil, err
+	}
+	return fetchGitHubProjectTransitionMetaWithClient(ctx, client, repoKey)
+}
+
+func fetchGitHubProjectTransitionMetaWithClient(ctx *gin.Context, client *github.Client, repoKey string) (interface{}, error) {
+	parts := strings.Split(repoKey, "/")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid github project key %q: expected format 'owner/repo'", repoKey)
+	}
+	values, err := projectStatusValues(ctx, client, parts[0], parts[1])
+	if err != nil {
+		var permissionErr *githubProjectsPermissionError
+		if errors.As(err, &permissionErr) {
+			return map[string]interface{}{
+				"data": []interface{}{
+					map[string]interface{}{"id": "open", "name": "open", "value": "open"},
+					map[string]interface{}{"id": "closed", "name": "closed", "value": "closed"},
+				},
+				"warning": "GitHub Projects status choices are unavailable because this token is not authorized to read Projects; open/closed remain available.",
+			}, nil
+		}
+		return nil, err
+	}
+	return map[string]interface{}{"data": values}, nil
+}
+
+func fetchIssueProjectItems(ctx *gin.Context, client *github.Client, owner, repo string, issueNumber int) ([]githubProjectItem, error) {
+	var items []githubProjectItem
+	var cursor *string
+	for page := 1; ; page++ {
+		var response githubIssueProjectItemsPageResponse
+		if err := githubGraphQLRequest(ctx, client, githubIssueProjectItemsQuery, map[string]interface{}{"owner": owner, "repo": repo, "number": issueNumber, "cursor": cursor}, &response); err != nil {
+			return nil, err
+		}
+		if err := githubGraphQLErrors(response.Errors); err != nil {
+			return nil, err
+		}
+		for _, item := range response.Data.Repository.Issue.ProjectItems.Nodes {
+			if !item.IsArchived {
+				items = append(items, item)
+			}
+		}
+		next, more, err := pageCursor(response.Data.Repository.Issue.ProjectItems.PageInfo, "issue project items", page)
+		if err != nil {
+			return nil, err
+		}
+		if !more {
+			return items, nil
+		}
+		cursor = &next
+	}
+}
+
+type githubProjectStatusSelection struct {
+	itemID, projectID, fieldID, optionID, optionName string
+}
+
+func (s *GitHubService) updateProjectStatus(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, status string) (string, error) {
+	status = strings.TrimSpace(status)
+	encodedParts := strings.Split(status, ":")
+	encoded := len(encodedParts) == 4 && encodedParts[0] == "github-project" &&
+		encodedParts[1] != "" && encodedParts[2] != "" && encodedParts[3] != ""
+	if strings.HasPrefix(status, "github-project:") && !encoded {
+		return "", fmt.Errorf("invalid GitHub Project status selection; choose a current Project status option")
+	}
+	items, err := fetchIssueProjectItems(ctx, githubClient, owner, repo, issueNumber)
+	if err != nil {
+		return "", err
+	}
+	var match *githubProjectStatusSelection
+	for _, item := range items {
+		if encoded && item.Project.ID != encodedParts[1] {
+			continue
+		}
+		fields, err := fetchProjectFields(ctx, githubClient, item.Project.ID)
+		if err != nil {
+			return "", err
+		}
+		for _, field := range fields {
+			if !strings.EqualFold(field.Name, "Status") ||
+				(encoded && field.ID != encodedParts[2]) {
+				continue
+			}
+			for _, option := range field.Options {
+				if (encoded && option.ID == encodedParts[3]) ||
+					(!encoded && strings.EqualFold(option.Name, status)) {
+					if match != nil {
+						return "", fmt.Errorf("GitHub issue %s/%s#%d has an ambiguous Project status selection; refusing transition", owner, repo, issueNumber)
+					}
+					match = &githubProjectStatusSelection{
+						itemID: item.ID, projectID: item.Project.ID, fieldID: field.ID,
+						optionID: option.ID, optionName: option.Name,
+					}
+				}
+			}
+		}
+	}
+	if match == nil {
+		return "", fmt.Errorf("GitHub issue %s/%s#%d is not linked to Project status %q (it may be missing, stale, or unauthorized)", owner, repo, issueNumber, status)
+	}
+
+	var mutation githubProjectStatusMutation
+	if err := githubGraphQLRequest(ctx, githubClient, `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+		updateProjectV2ItemFieldValue(input: {
+			projectId: $projectId
+			itemId: $itemId
+			fieldId: $fieldId
+			value: { singleSelectOptionId: $optionId }
+		}) {
+			projectV2Item { id }
+		}
+	}`, map[string]interface{}{
+		"projectId": match.projectID,
+		"itemId":    match.itemID,
+		"fieldId":   match.fieldID,
+		"optionId":  match.optionID,
+	}, &mutation); err != nil {
+		return "", err
+	}
+	if len(mutation.Errors) > 0 {
+		return "", fmt.Errorf("GitHub Project status update failed: %s", mutation.Errors[0].Message)
+	}
+	return match.optionName, nil
 }
 
 // listAllRepoAssignees returns up to 1000 users that can be assigned to issues
@@ -943,8 +1887,15 @@ func (s *GitHubService) List(ctx *gin.Context, config models.TicketConfiguration
 
 // Update updates fields on a GitHub issue
 func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) error {
+	_, err := s.UpdateWithStatus(ctx, config, ticketID, updateFields)
+	return err
+}
+
+// UpdateWithStatus updates a GitHub issue and returns the status that should
+// be persisted locally. Project selectors are resolved to their option names.
+func (s *GitHubService) UpdateWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, updateFields models.UpdateFields) (string, error) {
 	if err := utils.ValidateGitHubIssueID(ticketID); err != nil {
-		return fmt.Errorf("invalid ticket ID: %w", err)
+		return "", fmt.Errorf("invalid ticket ID: %w", err)
 	}
 
 	var githubClient *github.Client
@@ -955,11 +1906,11 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 	} else {
 		installationID, err := strconv.ParseInt(config.Password, 10, 64)
 		if err != nil {
-			return fmt.Errorf("invalid installation ID: %w", err)
+			return "", fmt.Errorf("invalid installation ID: %w", err)
 		}
 		githubClient, err = clients.CreateGithubClientWithInstallationToken(ctx, installationID)
 		if err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -968,33 +1919,46 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 		projectKey = config.Projects[0].Key
 	}
 	if projectKey == "" {
-		return fmt.Errorf("project_key is required for GitHub (expected owner/repo format)")
+		return "", fmt.Errorf("project_key is required for GitHub (expected owner/repo format)")
 	}
 	if err := utils.ValidateProjectKey(projectKey); err != nil {
-		return fmt.Errorf("invalid project key: %w", err)
+		return "", fmt.Errorf("invalid project key: %w", err)
 	}
 	parts := strings.Split(projectKey, "/")
 	if len(parts) != 2 {
-		return fmt.Errorf("invalid project key %q: expected format 'owner/repo'", projectKey)
+		return "", fmt.Errorf("invalid project key %q: expected format 'owner/repo'", projectKey)
 	}
 	owner, repo := parts[0], parts[1]
 
 	issueNumber, err := strconv.Atoi(ticketID)
 	if err != nil {
-		return fmt.Errorf("invalid issue number: %w", err)
+		return "", fmt.Errorf("invalid issue number: %w", err)
+	}
+
+	isRESTState := strings.EqualFold(updateFields.Status, "open") || strings.EqualFold(updateFields.Status, "closed")
+	if updateFields.Status != "" && !isRESTState &&
+		(len(updateFields.AssigneeList()) > 0 || updateFields.Description != "" || len(updateFields.Labels) > 0) {
+		return "", fmt.Errorf("GitHub Project status transitions cannot be combined with REST issue field updates")
 	}
 
 	issueRequest := &github.IssueRequest{}
 	hasUpdates := false
+	persistedStatus := ""
 
 	if updateFields.Status != "" {
 		// GitHub uses "open" or "closed" states
 		state := strings.ToLower(updateFields.Status)
-		if state != "open" && state != "closed" {
-			return fmt.Errorf("invalid status for GitHub: %s. Use 'open' or 'closed'", updateFields.Status)
+		if state == "open" || state == "closed" {
+			issueRequest.State = &state
+			hasUpdates = true
+			persistedStatus = state
+		} else {
+			var err error
+			persistedStatus, err = s.updateProjectStatus(ctx, githubClient, owner, repo, issueNumber, updateFields.Status)
+			if err != nil {
+				return "", err
+			}
 		}
-		issueRequest.State = &state
-		hasUpdates = true
 	}
 
 	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
@@ -1016,19 +1980,24 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 	}
 
 	if !hasUpdates {
-		return nil
+		return persistedStatus, nil
 	}
 
 	_, _, err = githubClient.Issues.Edit(ctx, owner, repo, issueNumber, issueRequest)
 	if err != nil {
-		return fmt.Errorf("failed to update GitHub issue: %w", err)
+		return "", fmt.Errorf("failed to update GitHub issue: %w", err)
 	}
 
 	slog.Info("GitHub issue updated", "ticketID", ticketID)
-	return nil
+	return persistedStatus, nil
 }
 
-// Transition changes the state of a GitHub issue (open/closed)
+// Transition changes a GitHub issue state or its linked Project v2 Status.
 func (s *GitHubService) Transition(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) error {
-	return s.Update(ctx, config, ticketID, models.UpdateFields{Status: status})
+	_, err := s.TransitionWithStatus(ctx, config, ticketID, status)
+	return err
+}
+
+func (s *GitHubService) TransitionWithStatus(ctx *gin.Context, config models.TicketConfigurations, ticketID string, status string) (string, error) {
+	return s.UpdateWithStatus(ctx, config, ticketID, models.UpdateFields{Status: status})
 }

@@ -232,7 +232,7 @@ const defaultStyles = {
         marginBottom: 'var(--ds-space-1)',
       },
       '& strong, & b': {
-        fontWeight: 'var(--ds-font-weight-regular)',
+        fontWeight: 'var(--ds-font-weight-medium)',
         color: ds.gray[700],
       },
       '& code': {

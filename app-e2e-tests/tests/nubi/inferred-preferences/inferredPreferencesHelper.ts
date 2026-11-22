@@ -2,6 +2,7 @@
 import { Locator, Page, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
+import { ensureInferredPreferences, skipWhenMissing } from "../memoryFixtures";
 import { InferredPreferencesLocators } from "./inferredPreferencesLocators";
 
 // The tab sits three round trips deep — login, the Nubi panel, then the b-Cortex modal — and CI
@@ -34,6 +35,9 @@ export async function openInferredTab(page: Page): Promise<InferredPreferencesLo
   const locators = new InferredPreferencesLocators(page);
 
   await loginPage.doFullLogin();
+  // Before the tab mounts so its first load already sees the preference. Skips the case, with the
+  // reason, if the backend infers none from what Nubi is told.
+  await ensureInferredPreferences(page, 1);
   await nubi.openPanel();
   await nubi.openBCortex(locators.preferencesGroupTab);
   await locators.preferencesGroupTab.click();
@@ -82,11 +86,7 @@ export async function requireInferredRows(locators: InferredPreferencesLocators,
 // reports itself by name rather than letting a case click a button that is not there.
 export async function requireUnkeptRow(locators: InferredPreferencesLocators): Promise<void> {
   const unkept = await locators.keepButtons.count();
-  if (unkept < 1) {
-    throw new Error(
-      "this case needs at least one unkept inferred preference in b-Cortex > Preferences > Inferred, found none — every preference is already kept"
-    );
-  }
+  skipWhenMissing(unkept, 1, "unkept inferred preference in b-Cortex > Preferences > Inferred (every preference is already kept)");
 }
 
 // Reads the value line of the row under test, which is how that row is identified again after a

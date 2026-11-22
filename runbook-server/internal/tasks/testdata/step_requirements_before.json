@@ -1,0 +1,325 @@
+{
+  "_comment": "The step permission table on main before #41037 option C (module:class per step type), for TestBuiltInRolesAnswerAsBefore. Do not update: it is the baseline built-in roles are held to.",
+  "steps": {
+    "aws.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "azure.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "cicd.argocd.cli": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "cloud.aws.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "cloud.azure.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "cloud.gcp.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "cloud.k8s.cli": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "core.approval": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "core.call-workflow": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "core.foreach": {
+      "module": "",
+      "class": ""
+    },
+    "core.group": {
+      "module": "",
+      "class": ""
+    },
+    "core.print": {
+      "module": "",
+      "class": ""
+    },
+    "core.switch": {
+      "module": "",
+      "class": ""
+    },
+    "core.wait": {
+      "module": "",
+      "class": ""
+    },
+    "crypto.decode": {
+      "module": "",
+      "class": ""
+    },
+    "crypto.decrypt": {
+      "module": "",
+      "class": ""
+    },
+    "crypto.encode": {
+      "module": "",
+      "class": ""
+    },
+    "crypto.encrypt": {
+      "module": "",
+      "class": ""
+    },
+    "crypto.hash": {
+      "module": "",
+      "class": ""
+    },
+    "data.filter": {
+      "module": "",
+      "class": ""
+    },
+    "data.transform": {
+      "module": "",
+      "class": ""
+    },
+    "dbms.query": {
+      "module": "database",
+      "class": "Write"
+    },
+    "dbms.redis.cli": {
+      "module": "database",
+      "class": "Write"
+    },
+    "events.add_evidence": {
+      "module": "events",
+      "class": "Write"
+    },
+    "events.store": {
+      "module": "events",
+      "class": "Write"
+    },
+    "gcp.cli": {
+      "module": "cloud",
+      "class": "Write"
+    },
+    "google_chat.join_space": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "integrations.http": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "integrations.ssh": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "k8s.cli": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.continuous_rightsize": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.horizontal_rightsize": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.node_graceful_shutdown": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.pod_delete": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.profile": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.pv_rightsize": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.vertical_rightsize": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "k8s.workload_restart": {
+      "module": "k8s",
+      "class": "Write"
+    },
+    "llm.a2a_call": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "llm.classify": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "llm.event_investigate": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "llm.investigate": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "llm.mcp_call": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "llm.nubi": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "llm.router": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "llm.summary": {
+      "module": "llm",
+      "class": "Execute"
+    },
+    "mq.rabbitmqadmin.cli": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "network.dns": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.ntp": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.ping": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.ssl": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.tcp": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.traceroute": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "network.whois": {
+      "module": "workflows",
+      "class": "Execute"
+    },
+    "notifications.add_channel_members": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.add_reaction": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.create_channel": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.dm": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.email": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.im": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "notifications.read_thread": {
+      "module": "notifications",
+      "class": "Read"
+    },
+    "observability.log_groups": {
+      "module": "logs",
+      "class": "Read"
+    },
+    "observability.logs": {
+      "module": "logs",
+      "class": "Read"
+    },
+    "observability.metrics": {
+      "module": "metrics",
+      "class": "Read"
+    },
+    "observability.traces": {
+      "module": "traces",
+      "class": "Read"
+    },
+    "scm.github.cli": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "scm.gitlab.cli": {
+      "module": "integrations",
+      "class": "Write"
+    },
+    "scripting.run_script": {
+      "module": "workflows",
+      "class": "Write"
+    },
+    "slack.join_channel": {
+      "module": "notifications",
+      "class": "Write"
+    },
+    "tickets.acknowledge": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.add_comment": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.assign": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.create": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.escalate": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.get": {
+      "module": "tickets",
+      "class": "Read"
+    },
+    "tickets.get_comments": {
+      "module": "tickets",
+      "class": "Read"
+    },
+    "tickets.resolve": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.transition": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "tickets.update": {
+      "module": "tickets",
+      "class": "Write"
+    },
+    "vertical_rightsize_generate": {
+      "module": "recommendations",
+      "class": "Write"
+    }
+  }
+}

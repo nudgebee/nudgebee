@@ -59,14 +59,6 @@ type Config struct {
 		// below the broker's max_message_size, which refuses anything larger.
 		// Env: RABBITMQ_MAX_MESSAGE_BYTES.
 		MaxMessageBytes int64 `mapstructure:"max_message_bytes"`
-		// LLMCacheInvalidationExchange is the fanout exchange llm-server
-		// consumes to drop its per-account integration caches. The relay
-		// publishes {"account_ids":[...]} there after registering agent
-		// datasources or changing their labels. Same name and default as
-		// api-server / llm-server (rabbit_mq_llm_cache_invalidation_exchange).
-		// Empty disables publishing.
-		// Env: RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE
-		LLMCacheInvalidationExchange string `mapstructure:"llm_cache_invalidation_exchange"`
 	} `mapstructure:"rabbitmq"`
 
 	Security struct {
@@ -183,7 +175,6 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("rabbitmq.url", "RABBITMQ_URL")
 	_ = v.BindEnv("rabbitmq.message_ttl", "RABBITMQ_MESSAGE_TTL")
 	_ = v.BindEnv("rabbitmq.max_message_bytes", "RABBITMQ_MAX_MESSAGE_BYTES")
-	_ = v.BindEnv("rabbitmq.llm_cache_invalidation_exchange", "RABBIT_MQ_LLM_CACHE_INVALIDATION_EXCHANGE")
 
 	//bind all otel env vars
 	_ = v.BindEnv("otel.exporter_otlp_endpoint", "OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -241,7 +232,6 @@ func Load() (*Config, error) {
 	v.SetDefault("rabbitmq.exchange_name", "nudgebee-relay")
 	v.SetDefault("rabbitmq.message_ttl", "1m")
 	v.SetDefault("rabbitmq.max_message_bytes", DefaultRabbitMQMaxMessageBytes)
-	v.SetDefault("rabbitmq.llm_cache_invalidation_exchange", "llm_cache_invalidation")
 
 	v.SetDefault("signing.private_key", "")
 	v.SetDefault("signing.key_id", "default")

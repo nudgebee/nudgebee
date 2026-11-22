@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -141,8 +142,8 @@ func newDigestContext(tenantID string) (*security.RequestContext, context.Cancel
 	bg, cancel := context.WithTimeout(context.Background(), digestGenerationTimeout)
 	rc := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(bg, core.ContextKeyModelTier, core.ModelTierSummary),
-			core.ContextKeyCacheScope, core.CacheScopeGlobal),
+			context.WithValue(bg, llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
+			llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		sc, slog.Default(), nil, nil,
 	)
 	return rc, cancel
@@ -410,7 +411,7 @@ func summariseClass(ctx *security.RequestContext, p events.DigestPeriod, c event
 		fmt.Fprintf(&sb, "\n## Analysis %d\n%s\n", i+1, core.TruncateMiddle(body, digestMaxCharsPerAnalysis/2, digestMaxCharsPerAnalysis/2))
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx, "", c.AccountID, "", "", "event_digest_class_summary", false,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
@@ -629,7 +630,7 @@ func synthesiseBriefing(
 			history, f.Problem, f.Fix, f.BlastRadius)
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		ctx, "", briefingAccountID(findings), "", "", "event_digest_briefing", false,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),

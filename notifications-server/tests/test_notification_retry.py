@@ -15,28 +15,41 @@ from notifications_server.configs.settings import settings
 from notifications_server.emailer.sender import EmailBatchError
 from notifications_server.processors import notification as processor_module
 from notifications_server.processors.notification import NotificationProcessor, NotificationSendFailed
+from notifications_server.services import delivery_records
 
 
 class _FakeMessageService:
     def __init__(self, responses):
         self.responses = responses
+        self.requests = []
 
-    async def send_message(self, _parsed):
+    async def send_message(self, parsed):
+        self.requests.append(parsed)
         return self.responses
 
 
 class _FakeTaskProducer:
+    """Keeps what was published, with each message's dispatch id set aside so
+    the rest compares exactly."""
+
     def __init__(self):
         self.calls = []
         self.headers = None
+        self.published = []
+        self.dispatch_ids = []
+
+    def _keep(self, queue, message, headers):
+        self.published.append(dict(message))
+        message = dict(message)
+        self.dispatch_ids.append(message.pop("dispatch_id", None))
+        self.calls.append((queue, message))
+        self.headers = headers
 
     async def publish_delayed_message(self, message, headers=None):
-        self.calls.append(("delayed", message))
-        self.headers = headers
+        self._keep("delayed", message, headers)
 
     async def publish_dlq_message(self, message, headers=None):
-        self.calls.append(("dlq", message))
-        self.headers = headers
+        self._keep("dlq", message, headers)
 
 
 def _processor(responses, task_producer=None):
@@ -279,6 +292,28 @@ def test_a_whole_message_failure_on_a_retry_keeps_the_earlier_scope():
     assert retried["retry_destinations"] == scope and retried["retry_platforms"] == ["slack"]
 
 
+def test_every_attempt_of_a_send_carries_its_dispatch_id():
+    producer = _FakeTaskProducer()
+    processor = _processor([{"platform": "slack", "status": "failed"}], producer)
+    task = {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}}
+
+    asyncio.run(processor.process_task({}, json.dumps(task).encode()))
+    asyncio.run(processor.process_task(producer.headers, json.dumps(producer.published[-1]).encode()))
+
+    first, second = producer.dispatch_ids
+    assert first and first == second
+
+
+def test_the_send_is_told_which_attempt_it_is():
+    processor = _processor([{"platform": "slack", "status": "success"}])
+    task = {"kind": "notification", "tenant_id": "t1", "parameters": {"message": "hi"}, "dispatch_id": "d-1"}
+
+    asyncio.run(processor.process_task({"nb-retry-count": 2}, json.dumps(task).encode()))
+
+    [request] = processor._message_service.requests
+    assert (request.attempt, request.dispatch_id) == (3, "d-1")
+
+
 class _Emailer:
     def __init__(self, error=None):
         self.error = error
@@ -291,11 +326,15 @@ class _Emailer:
 
 
 def _email_retry(monkeypatch, error, task, rules=(["a@x.io", "b@x.io", "c@x.io"], [], False)):
+    async def no_record(_engine, _rows):
+        pass
+
     async def configured_rules(*_args):
         return rules
 
     emailer = _Emailer(error)
     monkeypatch.setattr(processor_module.ProcessorFactory, "get", lambda _kind: emailer)
+    monkeypatch.setattr(delivery_records, "record", no_record)
     producer = _FakeTaskProducer()
     processor = _processor([], producer)
     processor._get_configured_email_rules = configured_rules

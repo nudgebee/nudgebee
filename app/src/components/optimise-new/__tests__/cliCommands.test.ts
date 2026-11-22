@@ -129,16 +129,28 @@ describe('buildCliCommand', () => {
     expect(cmd?.commands).toEqual(['aws logs put-retention-policy --log-group-name /aws/lambda/fn --retention-in-days 30 --region us-east-1']);
   });
 
-  it('updates a GCP bucket default class and skips the Azure rows sharing the rule', () => {
+  it('turns on Autoclass for a GCP bucket and skips the Azure rows sharing the rule', () => {
     const gcp = buildCliCommand(
       rec('storage_class_optimization', {
         bucket_name: 'artifacts.example.appspot.com',
-        recommended_classes: ['NEARLINE', 'COLDLINE'],
+        recommended_action: 'enable_autoclass',
+        enablement_charge: 0.42,
         cloud_provider: 'gcp',
       })
     );
-    expect(gcp?.commands).toEqual(['gcloud storage buckets update gs://artifacts.example.appspot.com --default-storage-class=NEARLINE']);
+    expect(gcp?.commands).toEqual(['gcloud storage buckets update gs://artifacts.example.appspot.com --enable-autoclass']);
+    expect(gcp?.intro).toContain('One-time enablement charge ≈ $0.42.');
+    expect(gcp?.destructive).toBe(false);
     expect(hasCliCommand(rec('storage_class_optimization', { benefits: [], cloud_provider: 'azure' }))).toBe(false);
+  });
+
+  it('offers no command for a GCP storage class row from before Autoclass pricing', () => {
+    const legacy = rec('storage_class_optimization', {
+      bucket_name: 'artifacts.example.appspot.com',
+      recommended_classes: ['NEARLINE', 'COLDLINE', 'ARCHIVE'],
+      cloud_provider: 'gcp',
+    });
+    expect(hasCliCommand(legacy)).toBe(false);
   });
 
   it('quotes shell metacharacters in names', () => {

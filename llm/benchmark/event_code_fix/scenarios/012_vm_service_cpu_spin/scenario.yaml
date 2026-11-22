@@ -1,0 +1,42 @@
+name: vm_service_cpu_spin
+type: vm_event
+tags: [vm, cpu, metrics, service]
+
+# The same fault as 011 (vm_cpu_spin), raised the way a per-service alert is:
+# the series keeps node-agent's container_id, which for a systemd service is its
+# cgroup path (/system.slice/<unit>.service). The investigation starts from one
+# unit instead of the whole host, and should read that unit's own series.
+alert:
+  alertname: ServiceHighCpuUsage
+  labels:
+    instance_id: ${VM_A_INSTANCE_ID}
+    container_id: /system.slice/nb-bench-spin.service
+    severity: high
+  summary: "CPU usage of nb-bench-spin.service above 90% for 10 minutes on ${VM_A_HOST}"
+  log_lines: |
+    The systemd service nb-bench-spin.service on ${VM_A_HOST} has used more than 90% of a CPU core for 10 minutes.
+  fingerprint: bench-vm-service-cpu-spin-012
+
+vm:
+  settle_seconds: 120
+  inject:
+    - vm/fault.sh cpu_spin inject ${VM_A_SSH}
+  restore:
+    - vm/fault.sh cpu_spin restore ${VM_A_SSH}
+
+# A host-scoped query that never names the unit reads the host aggregate, where
+# one spinning core is a small share; the unit's own series is what shows it.
+expected_telemetry:
+  signals: [metrics]
+  target_markers:
+    - ${VM_A_INSTANCE}
+    - ${VM_A_HOST}
+  service_markers:
+    - nb-bench-spin
+  forbidden_markers:
+    - ${VM_B_INSTANCE}
+    - ${VM_B_HOST}
+
+expected_diagnosis:
+  - "The response must attribute the CPU usage to the service nb-bench-spin.service itself: a single shell busy-loop (sh -c 'while :; do :; done') pinned at about 100% of one CPU core on ${VM_A_HOST}."
+  - "The response must NOT blame other services on ${VM_A_HOST}, a traffic increase, or ${VM_B_HOST}; the load is one runaway unit on one host."

@@ -40,7 +40,7 @@ const workspaceSpecAnnotationKey = "nudgebee.com/workspace-spec-version"
 // workspaceSpecVersion is bumped whenever an existing healthy workspace pod
 // must be recreated to pick up a pod-spec-only change. CreateWorkspace checks
 // it during recovery, while the leader sweep upgrades a bounded batch at a time.
-const workspaceSpecVersion = "workspace-readonly-rootfs-v3"
+const workspaceSpecVersion = "workspace-proxy-ca-v5"
 
 const workspaceSpecUpgradeBatchSize = 5
 
@@ -67,6 +67,9 @@ type WorkspaceTokenClaims struct {
 	// Grants is set only on execution tokens (audience AudienceWorkspaceExecute):
 	// the authority of the user whose command is running.
 	Grants *security.WorkspaceGrants `json:"grants,omitempty"`
+	// Scm binds the token to one GitHub/GitLab integration for llm-server's
+	// SCM proxy; set only for gh/glab commands.
+	Scm *ScmClaims `json:"scm,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -464,6 +467,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 	args := []string{"/app/code-analysis-agent", "--server"}
 
 	volumes, volumeMounts := workspaceWritableLayout(storageLimit)
+	caVolume, caMount := workspaceProxyCAVolume()
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      podName,
@@ -478,7 +482,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 			},
 		},
 		Spec: corev1.PodSpec{
-			Volumes: volumes,
+			Volumes: append(volumes, caVolume),
 			// GKE resolves metadata.google.internal to the real metadata IP
 			// (169.254.169.254) inside pods, but the NetworkPolicy blackholes
 			// that IP to prevent IMDS credential theft — silently dropping
@@ -510,7 +514,7 @@ func (w *workspaceManager) CreateWorkspace(ctx *security.RequestContext, account
 						},
 					},
 					Resources:    buildWorkspaceResources(),
-					VolumeMounts: volumeMounts,
+					VolumeMounts: append(volumeMounts, caMount),
 					ReadinessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
@@ -1129,7 +1133,7 @@ func isAgentContractViolation(result executeResponse) bool {
 	return result.CommandStatus == "success" && result.Error != ""
 }
 
-func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountId string, conversationId string, command string, env map[string]string) (string, error) {
+func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountId string, conversationId string, command string, env map[string]string) (out string, err error) {
 	if accountId == "" {
 		ctx.GetLogger().Error("workspace: accountId is required for direct execution")
 		return "", fmt.Errorf("workspace: accountId is required")
@@ -1142,10 +1146,17 @@ func (w *workspaceManager) ExecuteCommand(ctx *security.RequestContext, accountI
 	}
 	logger.Info("workspace: executing command", "command_preview", cmdLog, "account_id", accountId, "conversation_id", conversationId)
 
-	env, err := w.commandEnv(ctx, accountId, env)
+	env, err = w.commandEnv(ctx, accountId, env)
 	if err != nil {
 		return "", err
 	}
+	token := env[ENV_NB_WORKSPACE_TOKEN]
+	defer func() {
+		out = scrubToken(out, token)
+		if err != nil && token != "" && strings.Contains(err.Error(), token) {
+			err = fmt.Errorf("%s", scrubToken(err.Error(), token))
+		}
+	}()
 	payload := executePayload{
 		Command:        command,
 		ConversationId: conversationId,
@@ -1300,6 +1311,32 @@ func classifyAndLogResult(result executeResponse, logger *slog.Logger, podName s
 	return result.Response, cmdErr
 }
 
+// workspaceFileAPIClient is the direct-to-pod client for the file API (list,
+// read, stream, save, delete). It fails fast only when the pod cannot be
+// reached (the dial), so a caller outside the cluster still falls back to the
+// k8s proxy quickly, but gives a reachable pod time to answer and send the
+// file. With a 200 ms header / 500 ms total limit, a pod slow on a session's
+// first request, or a large file, fell through to the proxy, which fails on
+// clusters that do not allow pods/proxy: on dev, 74 of 1153 saves in a week,
+// every one of them lost.
+//
+// It is shared, so idle connections are pooled like the manager's own client
+// (idle ones closed after 90 s): workspace pods come and go, and an unbounded
+// idle pool would keep connections to every old pod IP.
+var workspaceFileAPIClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 10 * time.Second,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+	},
+	Timeout: 30 * time.Second,
+}
+
 func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accountId string, method string, endpoint string, queryParams map[string]string, body any) ([]byte, error) {
 	if accountId == "" {
 		return nil, fmt.Errorf("workspace: accountId is required")
@@ -1372,12 +1409,7 @@ func (w *workspaceManager) callWorkspaceAPI(ctx *security.RequestContext, accoun
 	// Note: method is GET, POST, DELETE etc.
 	directUrl := buildURL(fmt.Sprintf("http://%s:%d%s", podIP, config.Config.LlmServerWorkspacePort, endpoint))
 
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 200 * time.Millisecond,
-		},
-		Timeout: 500 * time.Millisecond,
-	}
+	httpClient := workspaceFileAPIClient
 	req, err := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -1734,12 +1766,7 @@ func (w *workspaceManager) callWorkspaceAPIStream(ctx *security.RequestContext, 
 	// 2. Try Direct IP Execution
 	directUrl := buildURL(fmt.Sprintf("http://%s:%d%s", podIP, config.Config.LlmServerWorkspacePort, endpoint))
 
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			ResponseHeaderTimeout: 200 * time.Millisecond,
-		},
-		Timeout: 500 * time.Millisecond,
-	}
+	httpClient := workspaceFileAPIClient
 	req, err := http.NewRequestWithContext(ctx.GetContext(), method, directUrl, bytes.NewBuffer(bodyBytes))
 	if err == nil {
 		req.Header.Set("Content-Type", "application/json")

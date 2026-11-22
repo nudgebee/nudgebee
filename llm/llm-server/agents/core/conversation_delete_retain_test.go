@@ -17,10 +17,10 @@ func newRetainTestDao(t *testing.T) sqlmock.Sqlmock {
 	t.Helper()
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
-	prev := conversationDao
-	conversationDao = &ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}}
+	prev := PeekConversationDao()
+	SetConversationDao(&ConversationDao{dbManager: &common.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}})
 	t.Cleanup(func() {
-		conversationDao = prev
+		SetConversationDao(prev)
 		_ = db.Close()
 	})
 	return mock

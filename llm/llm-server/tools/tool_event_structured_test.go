@@ -332,12 +332,14 @@ func TestBuildAggregateEventsQuery(t *testing.T) {
 }
 
 // The cap holds even when a filter value contains the word "limit", which
-// makes buildLimitedQuery skip its own LIMIT.
+// buildLimitedQuery reads as the query's own LIMIT.
 func TestBuildAggregateEventsQueryKeepsItsLimit(t *testing.T) {
-	q, err := buildAggregateEventsQuery([]string{"title"}, false, []string{"(title ILIKE '%rate limit%' OR description ILIKE '%rate limit%')"}, 200)
+	q, err := buildAggregateEventsQuery([]string{"title"}, false, []string{"(title ILIKE '%rate limit%' OR description ILIKE '%rate limit%')"}, maxAggregateEventsRows)
 	require.NoError(t, err)
-	assert.True(t, strings.HasSuffix(q, " LIMIT 200"))
-	assert.Equal(t, q+";", buildLimitedQuery(q, 200), "no second wrapper is needed")
+	assert.True(t, strings.HasSuffix(q, " LIMIT 100"))
+	got, rowCap := buildLimitedQuery(q, maxAggregateEventsRows)
+	assert.Equal(t, "select * from ("+q+") as ql limit 101;", got)
+	assert.Equal(t, maxAggregateEventsRows, rowCap, "every group aggregate_events asks for fits under the hard maximum")
 }
 
 func TestBuildManifestOnlyEvidenceDropsEmptyEvidence(t *testing.T) {
@@ -434,6 +436,33 @@ func TestOffloadEventEvidence_WorkspaceFileHoldsUncappedValidJSON(t *testing.T) 
 	assert.NotContains(t, inlineStr, `"timestamps"`, "raw series stay in the file, not inline")
 	require.Len(t, refs, 1)
 	assert.Equal(t, "event_evt-1_evidence.json", refs[0].Url)
+}
+
+// The event pipeline reads an event before its conversation exists (#41579).
+// With no conversation there is no workspace a later call could read, so the
+// key facts come back inline and nothing is saved.
+func TestOffloadEventEvidence_NoConversationSkipsSave(t *testing.T) {
+	sc := security.NewRequestContextForSuperAdmin()
+	evidence := events.InvestigateData{
+		PodMetrics: []events.InvestigateDataInsight{{Data: metricSeriesJSON(t, 400), Title: "json"}},
+	}
+	saved := false
+	wm := &mockWorkspaceManager{
+		saveFileFunc: func(ctx *security.RequestContext, accountId, conversationId, path, content string) error {
+			saved = true
+			return nil
+		},
+	}
+
+	inline, refs := offloadEventEvidence(sc, wm, "acct-1", "", "evt-1", evidence)
+
+	assert.False(t, saved, "no file without a conversation")
+	assert.Nil(t, refs)
+	inlineStr, ok := inline.(string)
+	require.True(t, ok)
+	assert.Contains(t, inlineStr, "key facts below")
+	assert.Contains(t, inlineStr, "pod_metrics=")
+	assert.NotContains(t, inlineStr, "saved to", "must not point at a file that was not written")
 }
 
 func TestOffloadEventEvidence_SaveFailureFallsBackToCappedInline(t *testing.T) {
@@ -611,6 +640,43 @@ func TestEventEvidencePreview_InlinesInsightsWorstFirst(t *testing.T) {
 	assert.Less(t, strings.Index(out, "[traces]"), strings.Index(out, "[others] Deployment occurred"), "critical before warning")
 	assert.Less(t, strings.Index(out, "[others] Deployment occurred"), strings.Index(out, "Found 4 deployment(s)"), "warning before info")
 	assert.NotContains(t, out, "[pod_events]", "pod_events insights are carried by rootCauseSlice")
+}
+
+// A CI failure's only evidence is a markdown job-log excerpt. The preview used
+// to list it by size alone, so the summary never saw the error line.
+func TestEventEvidencePreview_InlinesMarkdownStart(t *testing.T) {
+	jobLog := "Repository: nudgebee/example  |  Job: 1  |  Failed step: Run tests  |  Log lines: 900\n\n" +
+		"**Error lines**\n\n```\n812:12:01:09 --- FAIL: TestRetryBudget (0.02s)\n```\n\n" +
+		"**Log context (lines 700-900)**\n\n```\n" + strings.Repeat("12:01:08 noise line\n", 400) + "```\n"
+	id := events.InvestigateData{
+		Markdowns: []events.InvestigateDataInsight{{Title: "markdown", Data: jobLog, AdditionalInfo: map[string]any{"title": "GitHub Actions job log", "action_name": "github_actions_job_log"}}},
+		Others:    []events.InvestigateDataInsight{{Data: "{}", Insight: []events.Insight{{Message: "No merged pull requests found", Severity: "warning"}}}},
+	}
+	out := buildEventEvidencePreview(id)
+
+	assert.Contains(t, out, `markdown_data "GitHub Actions job log" (start):`)
+	assert.Contains(t, out, "Failed step: Run tests")
+	assert.Contains(t, out, "--- FAIL: TestRetryBudget")
+	assert.LessOrEqual(t, len(out), eventEvidencePreviewBytes)
+	assert.Contains(t, out, "markdown_data[evidence_type=markdowns]=", "the section list still points at the full log")
+}
+
+func TestPreviewMarkdowns_CapsSectionsAndSkipsNonText(t *testing.T) {
+	long := strings.Repeat("y", previewMarkdownChars*2)
+	out := previewMarkdowns([]events.InvestigateDataInsight{
+		{Title: "a", Data: map[string]any{"not": "text"}},
+		{Title: "b", Data: long},
+		{Title: "c", Data: "  "},
+		{Title: "d", Data: "second"},
+		{Title: "e", Data: "third"},
+	})
+
+	assert.NotContains(t, out, `"a"`)
+	assert.NotContains(t, out, `"c"`)
+	assert.Contains(t, out, `"b"`)
+	assert.Contains(t, out, `"d"`)
+	assert.NotContains(t, out, `"e"`, "at most previewMarkdownSections sections")
+	assert.Less(t, len(out), previewMarkdownChars*2)
 }
 
 func TestInsightHighlights_StaysWithinBudget(t *testing.T) {

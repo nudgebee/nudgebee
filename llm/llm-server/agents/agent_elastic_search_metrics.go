@@ -473,7 +473,7 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		"You MUST execute every query via `es_metrics_query` before answering.",
 		"For custom/non-standard metrics with no user-supplied exact field path, discover field names via a `size:1` sample document or `metrics_labels_list` BEFORE writing the final query.",
 		tsRule,
-		"NEVER use `size:0` or `aggs` in queries — use filter queries only.",
+		"For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with `size:0`: metric aggs (`avg`, `sum`, `max`, `value_count`) optionally inside `terms` (with `order` and `size` for top-N) or `date_histogram`. For `aggregate_metric_double` fields (APM `transaction.duration.summary`), the average is a `sum` aggregation divided by a `value_count` aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.",
 		"NEVER return the generated DSL as the final answer — users want metric values.",
 		"NEVER query log-specific indices for metric data.",
 		// `__name__` is OURS, not the model's invention: for Beats-family indices the
@@ -576,8 +576,8 @@ func (e ElasticSearchMetricsAgent) buildSystemPrompt(
 		ToolUsage: map[string][]string{
 			tools.ToolESMetricsQuery: {
 				"Executes an Elasticsearch DSL query against the metrics API.",
-				"Input: JSON object with `index` (index pattern) and `query` (DSL body with filter queries — NO aggs or size:0).",
-				"Output: Metric time-series results (timestamps and values) extracted from document hits.",
+				"Input: JSON object with `index` (index pattern) and `query` (DSL body: filter queries for time series; aggs with size:0 for averages, sums, counts and top-N).",
+				"Output: Metric time-series results (timestamps and values) built from document hits or aggregation buckets.",
 			},
 			tools.ToolMetricsList: {
 				"Lists available metric names in an Elasticsearch index.",
@@ -761,7 +761,7 @@ func esSchemaGuidance(
 	)
 	instructions = append(instructions, discoveryHints...)
 	instructions = append(instructions,
-		"**Query Patterns:** Use `bool`/`filter` queries only. Do NOT use `size:0` or `aggs` — the backend extracts time-series from document hits, not aggregation results.",
+		"**Query Patterns:** Use `bool`/`filter` queries for time series. For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with `size:0`: metric aggs (`avg`, `sum`, `max`, `value_count`) optionally inside `terms` (with `order` and `size` for top-N) or `date_histogram`. For `aggregate_metric_double` fields (APM `transaction.duration.summary`), the average is a `sum` aggregation divided by a `value_count` aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.",
 	)
 
 	return instructions

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"nudgebee/services/integrations/core"
@@ -22,8 +24,44 @@ const (
 )
 
 const (
-	ZenDutyDefaultURL = "https://www.zenduty.com/api"
+	// ZenDutyDefaultHost is used when a configuration's "url" value is blank —
+	// the long-standing default for accounts that predate per-region hosting.
+	ZenDutyDefaultHost = "www.zenduty.com"
+	ZenDutyDefaultURL  = "https://" + ZenDutyDefaultHost + "/api"
 )
+
+// NormalizeZenDutyURL turns the stored ZenDuty "url" config value into an API
+// base URL (scheme + host, no trailing slash, "/api" appended). ZenDuty
+// (rebranded Xurrent IMR) hosts accounts on region-specific domains (e.g.
+// imr.eu.xurrent.com for EU accounts) rather than one global www.zenduty.com,
+// so this is per-integration, not a constant. A trailing /api left over from
+// copying the old API base URL is stripped before re-appending it, so the
+// result never doubles up into ".../api/api". Mirrors ticket-server's
+// NormalizeZenDutyURL/NormalizeJiraURL.
+func NormalizeZenDutyURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ZenDutyDefaultURL
+	}
+	lower := strings.ToLower(raw)
+	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return strings.TrimRight(raw, "/") + "/api"
+	}
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/api")
+	return strings.TrimRight(u.String(), "/") + "/api"
+}
+
+// ZenDutyDashboardURL builds the web link for an incident on the account's
+// own host, for callers (e.g. the webhook handler) that have no html_url to
+// fall back on.
+func ZenDutyDashboardURL(rawConfigURL, incidentID string) string {
+	host := strings.TrimSuffix(NormalizeZenDutyURL(rawConfigURL), "/api")
+	return host + "/dashboard/incidents/" + incidentID
+}
 
 func init() {
 	core.RegisterIntegration(ZenDuty{})
@@ -79,11 +117,15 @@ func (z ZenDuty) ConfigSchema() core.IntegrationSchema {
 
 func (z ZenDuty) ValidateConfig(ctx *security.SecurityContext, values []core.IntegrationConfigValue, accountId string) []error {
 	apiKey := ""
+	rawURL := ""
 
 	// Extract config values
 	for _, config := range values {
-		if config.Name == ZenDutyConfigPassword {
+		switch config.Name {
+		case ZenDutyConfigPassword:
 			apiKey = config.Value
+		case ZenDutyConfigUrl:
+			rawURL = config.Value
 		}
 	}
 
@@ -93,7 +135,7 @@ func (z ZenDuty) ValidateConfig(ctx *security.SecurityContext, values []core.Int
 	}
 
 	// Test connection by listing teams
-	err := validateZenDutyConnection(apiKey)
+	err := validateZenDutyConnection(apiKey, rawURL)
 	if err != nil {
 		return []error{fmt.Errorf("zenduty authentication failed: %w", err)}
 	}
@@ -102,10 +144,10 @@ func (z ZenDuty) ValidateConfig(ctx *security.SecurityContext, values []core.Int
 }
 
 // validateZenDutyConnection tests the ZenDuty API connection using the provided API key.
-func validateZenDutyConnection(apiKey string) error {
+func validateZenDutyConnection(apiKey, rawURL string) error {
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	req, err := http.NewRequest("GET", ZenDutyDefaultURL+"/account/teams/", nil)
+	req, err := http.NewRequest("GET", NormalizeZenDutyURL(rawURL)+"/account/teams/", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -220,8 +262,9 @@ func (z ZenDuty) ListUsers(ctx context.Context, values []core.IntegrationConfigV
 	if apiKey == "" {
 		return nil, fmt.Errorf("zenduty: missing api key")
 	}
+	rawURL := core.ConfigValue(values, ZenDutyConfigUrl)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ZenDutyDefaultURL+"/account/users/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, NormalizeZenDutyURL(rawURL)+"/account/users/", nil)
 	if err != nil {
 		return nil, err
 	}

@@ -6,19 +6,25 @@ import SearchInput from '@ui/SearchInput';
 import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
+import { Modal } from '@ui/Modal';
+import { toast as snackbar } from '@ui/Toast';
 import Datetime from '@shared/format/Datetime';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { usePagination } from '@hooks/usePagination';
 import { hasWriteAccess } from '@lib/auth';
-import apiVm, { VmResource, VmScanStatus } from '@api1/vm';
+import apiVm, { VmFleetMetric, VmResource, VmScanStatus } from '@api1/vm';
 import { CellText, ScanStatusIndicator, SeverityCounts, useLatestRequest } from './common';
 import ScanVmDialog from './ScanVmDialog';
 import ScanAccountDialog from './ScanAccountDialog';
+import VmMetricsDialog from './VmMetricsDialog';
+import { VmMetricsCell } from './VmMetricsGauges';
+import { vmPrivateIp } from './vmMetricsData';
 import VmPackages from './VmPackages';
+import VmAlerts from './VmAlerts';
 import VmVulnerabilities from './VmVulnerabilities';
 import { ds } from '@utils/colors';
 
-const HEADERS = ['Name', 'Host / Resource ID', 'Operating System', 'Status', 'Packages', 'Open Vulnerabilities', 'Last Scan', ''];
+const HEADERS = ['Name', 'Host / Resource ID', 'Operating System', 'Status', 'Metrics', 'Packages', 'Open Vulnerabilities', 'Last Scan', ''];
 
 const TABLE_ID = 'VM_INVENTORY_TABLE';
 
@@ -57,11 +63,17 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
   const [appliedSearch, setAppliedSearch] = useState('');
   const [scanTarget, setScanTarget] = useState<VmResource | null>(null);
   const [showAccountScan, setShowAccountScan] = useState(false);
+  const [decommissionTarget, setDecommissionTarget] = useState<VmResource | null>(null);
+  const [updatingActive, setUpdatingActive] = useState(false);
   const [scopedResourceIds, setScopedResourceIds] = useState<string[] | null>(null);
+  const [fleetMetrics, setFleetMetrics] = useState<Record<string, VmFleetMetric>>({});
+  const [fleetLoading, setFleetLoading] = useState(false);
+  const [metricsTarget, setMetricsTarget] = useState<VmResource | null>(null);
   const { page, rowsPerPage, changePage, setPage } = usePagination();
   const beginVmsRequest = useLatestRequest();
   const beginEnrichmentRequest = useLatestRequest();
   const beginScopeRequest = useLatestRequest();
+  const beginFleetRequest = useLatestRequest();
 
   const canScan = hasWriteAccess(accountId);
 
@@ -157,6 +169,30 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
     fetchEnrichment();
   }, [fetchEnrichment]);
 
+  // The gauges: one batched call for the VMs on screen, refreshed while the page is open.
+  // A failed refresh keeps the last gauges instead of blanking them: stale for a minute is
+  // more useful than empty because one query timed out.
+  useEffect(() => {
+    if (!accountId || !vms.length) {
+      setFleetMetrics({});
+      return undefined;
+    }
+    const load = () => {
+      const isLatest = beginFleetRequest();
+      setFleetLoading(true);
+      apiVm
+        .getVmFleetMetrics({ accountId, vms })
+        .then((metrics) => isLatest() && setFleetMetrics(metrics))
+        .catch((error) => console.error('Failed to load VM metrics:', error))
+        .finally(() => {
+          if (isLatest()) setFleetLoading(false);
+        });
+    };
+    load();
+    const interval = setInterval(load, 60 * 1000);
+    return () => clearInterval(interval);
+  }, [accountId, vms, beginFleetRequest]);
+
   // While any VM is mid-scan, poll so "Scanning…" resolves to a fresh Last
   // Scan time or "Scan failed" without a manual reload — the RPC only acks
   // the start (see #38466). Capped at scanTimeout (server-side) + a margin,
@@ -201,18 +237,38 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
     setPage(0);
   };
 
+  const updateActive = (vm: VmResource, isActive: boolean, onDone?: () => void) => {
+    setUpdatingActive(true);
+    apiVm
+      .updateVmActive({ accountId, cloudResourceId: vm.id, isActive })
+      .then(() => {
+        snackbar.success(`${vm.name} ${isActive ? 'recommissioned. Its packages and findings return with the next scan' : 'decommissioned'}`);
+        onDone?.();
+        fetchVms();
+        fetchEnrichment();
+      })
+      .catch((error) => snackbar.error(error?.message || `Failed to ${isActive ? 'recommission' : 'decommission'} VM`))
+      .finally(() => setUpdatingActive(false));
+  };
+
   const tableData = vms.map((vm) => {
     const packages = packageCounts[vm.id];
     const severities = vulnCounts[vm.id];
+    const privateIp = vmPrivateIp(vm.meta);
     return [
       { component: <CellText text={vm.name} subtext={vm.type} />, drilldownQuery: vm },
       {
         component: (
-          <CellText text={vm.meta?.private_ip || vm.meta?.host || vm.resourse_id} subtext={vm.meta?.private_ip ? vm.resourse_id : undefined} mono />
+          <CellText
+            text={privateIp || vm.meta?.host || vm.resourse_id}
+            subtext={privateIp && privateIp !== vm.resourse_id ? vm.resourse_id : undefined}
+            mono
+          />
         ),
       },
       { component: <CellText text={osByVm[vm.id]} /> },
       { component: <Label tone={statusTone(vm.status)} size='sm' text={vm.status || 'Unknown'} /> },
+      { component: <VmMetricsCell vmName={vm.name} metric={fleetMetrics[vm.id]} loading={fleetLoading} onOpen={() => setMetricsTarget(vm)} /> },
       { component: <CellText text={packages ? String(packages.count) : 'Not scanned'} /> },
       { component: <SeverityCounts counts={severities} /> },
       {
@@ -225,9 +281,22 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
       },
       {
         component: canScan ? (
-          <Button id={`vm-scan-${vm.id}`} tone='secondary' size='sm' onClick={() => setScanTarget(vm)}>
-            Scan
-          </Button>
+          <Box sx={{ display: 'flex', gap: ds.space[2] }}>
+            {vm.is_active === false ? (
+              <Button id={`vm-recommission-${vm.id}`} tone='secondary' size='sm' disabled={updatingActive} onClick={() => updateActive(vm, true)}>
+                Recommission
+              </Button>
+            ) : (
+              <>
+                <Button id={`vm-scan-${vm.id}`} tone='secondary' size='sm' onClick={() => setScanTarget(vm)}>
+                  Scan
+                </Button>
+                <Button id={`vm-decommission-${vm.id}`} tone='secondary' size='sm' onClick={() => setDecommissionTarget(vm)}>
+                  Decommission
+                </Button>
+              </>
+            )}
+          </Box>
         ) : (
           <></>
         ),
@@ -303,12 +372,19 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
                   key: 'vm-row-packages',
                   componentFn: (_opt: any, vm: VmResource) => <VmPackages accountId={accountId} cloudResourceId={vm.id} embedded />,
                 },
+                {
+                  text: 'Events',
+                  value: 2,
+                  key: 'vm-row-alerts',
+                  componentFn: (_opt: any, vm: VmResource) => <VmAlerts accountId={accountId} cloudResourceId={vm.id} />,
+                },
               ],
             }}
           />
         </ListingLayout.Body>
       </ListingLayout>
 
+      <VmMetricsDialog accountId={accountId} vm={metricsTarget} onClose={() => setMetricsTarget(null)} />
       <ScanVmDialog
         open={Boolean(scanTarget)}
         accountId={accountId}
@@ -320,6 +396,19 @@ const VmInventory = ({ accountId, vulnId, scopeLabel, onClearScope }: VmInventor
           if (started) fetchEnrichment();
         }}
       />
+
+      <Modal
+        open={Boolean(decommissionTarget)}
+        handleClose={() => setDecommissionTarget(null)}
+        title='Decommission VM?'
+        confirmText='Decommission'
+        onConfirm={() => decommissionTarget && updateActive(decommissionTarget, false, () => setDecommissionTarget(null))}
+        loader={updatingActive}
+        backdropClickClose={false}
+      >
+        {decommissionTarget?.name} will be marked Inactive, and its packages and open vulnerabilities archived. Scans skip it from now on, even if it
+        is still reachable.
+      </Modal>
 
       <ScanAccountDialog
         open={showAccountScan}

@@ -198,10 +198,10 @@ var usageColumns = []string{
 	"provider", "model", "requested_provider", "requested_model", "responded_model",
 	"routing_reason", "routing_rule",
 	"method", "path", "streaming",
-	"status_code", "latency_ms", "request_id",
+	"status_code", "latency_ms", "ttft_ms", "request_id",
 	"input_tokens", "output_tokens", "total_tokens",
 	"cache_read_tokens", "cache_write_tokens", "service_tier",
-	"cost_usd",
+	"cost_usd", "cache_savings_usd",
 }
 
 // sanitize strips what Postgres refuses (NUL in text, the \u0000 escape in jsonb), since
@@ -293,10 +293,10 @@ func (s *dbSink) insert(evs []UsageEvent) error {
 			ev.Provider, ev.Model, ev.RequestedProvider, ev.RequestedModel, ev.RespondedModel,
 			ev.RoutingReason, ev.RoutingRule,
 			ev.Method, ev.Path, ev.Streaming,
-			ev.StatusCode, ev.LatencyMS, ev.RequestID,
+			ev.StatusCode, ev.LatencyMS, ev.TTFTMs, ev.RequestID,
 			ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
 			ev.CacheReadTokens, ev.CacheWriteTokens, ev.ServiceTier,
-			ev.CostUsd,
+			ev.CostUsd, ev.CacheSavingsUsd,
 		)
 	}
 	// Rebind $N -> the driver's placeholder style (no-op for Postgres, ? for

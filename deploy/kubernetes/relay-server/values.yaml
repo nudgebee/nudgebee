@@ -6,6 +6,10 @@ replicaCount: 1
 # Relay pods share direct-mode MCP sessions through Redis by default
 # (docs/mcp-sessions.md). Only an install without Redis should set
 # env.MCP_SESSION_STORE=memory, and then it must run a single replica.
+# The relay also tells other services' pods about the integrations it registers
+# over the Redis replica broadcast, which needs CACHE_PROVIDER=redis (set in the
+# shared nudgebee secret); with another provider those changes reach them only
+# at their cache expiry.
 
 # Ed25519 signing of requests forwarded to native k8s agents, so agents can
 # authorize UI-triggered workload mutations. Additive + backward-compatible

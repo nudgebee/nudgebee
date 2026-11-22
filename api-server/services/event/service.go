@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"nudgebee/services/account"
 	"nudgebee/services/account/adapter"
@@ -38,6 +39,7 @@ import (
 	"github.com/lib/pq"
 	"github.com/samber/lo"
 	"gopkg.in/yaml.v2"
+	"nudgebee/services/forecast/keys"
 )
 
 func init() {
@@ -485,7 +487,7 @@ func loadResolutionTarget(ctx *security.RequestContext, accountId, eventId strin
 }
 
 func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendationApplyRequest) (EventRecommendationApplyResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return EventRecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 
@@ -664,7 +666,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 			Resource:       cr,
 			ProviderConfig: query.ProviderConfig,
 		}
-	} else if *r.AggregationKey == "CPUThrottlingHigh" {
+	} else if isCPUThrottlingResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -706,13 +708,25 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					}
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// A CPU SLO forecast has no alert-labels table; it names the one
+					// container with a CPU limit in its labels, when there is one.
+					containerName = labelValue(r.Labels, "container")
+				}
+				if containerName == "" {
+					// An event's labels are fixed when it is first raised, so an alert
+					// raised before its container was known still has none; the workload
+					// inventory answers when exactly one container has a CPU limit.
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "cpu")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a CPU limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -722,7 +736,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"cpu_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -736,7 +750,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -746,7 +760,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -761,7 +775,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "CPUThrottlingHigh",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -779,7 +793,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		} else {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: unsupported service type- %s", *r.SubjectOwnerKind)
 		}
-	} else if *r.AggregationKey == "PodMemoryReachingLimit" {
+	} else if isMemoryLimitResolvable(*r.AggregationKey) {
 		if common.IsEmptyStringPointer(r.SubjectOwnerKind) || common.IsEmptyStringPointer(r.SubjectOwner) {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: kind or owner is not correct")
 		}
@@ -821,13 +835,22 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					}
 				}
 				if containerName == "" {
-					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty")
+					// A memory SLO forecast has no alert-labels table; it names the
+					// container it watches in its labels.
+					containerName = labelValue(r.Labels, "container")
+				}
+				if containerName == "" {
+					containerName = SingleLimitedContainer(common.StrVal(r.CloudAccountId), common.StrVal(r.SubjectNamespace),
+						common.StrVal(r.SubjectOwnerKind), common.StrVal(r.SubjectOwner), "memory")
+				}
+				if containerName == "" {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: container name cannot be empty; the workload has no single container with a memory limit")
 				}
 				recommendationRequest = adapter.ApplyRecommendationRequest{
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -837,7 +860,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":       r.SubjectOwner,
 								"namespace":  r.SubjectNamespace,
-								"kind":       r.SubjectOwnerKind,
+								"kind":       workloadKindName(r.SubjectOwnerKind),
 								"containers": []map[string]any{{"memory_limit": size, "container_name": containerName}},
 							},
 						}),
@@ -851,7 +874,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -861,7 +884,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 							"action_params": map[string]any{
 								"name":          r.SubjectOwner,
 								"namespace":     r.SubjectNamespace,
-								"kind":          r.SubjectOwnerKind,
+								"kind":          workloadKindName(r.SubjectOwnerKind),
 								"replica_count": increaseReplicas,
 							},
 						}),
@@ -876,7 +899,7 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 					Data: query.Data.(map[string]any),
 					Recommendation: models.Recommendation{
 						Category:       "EventResolution",
-						RuleName:       "PodMemoryReachingLimit",
+						RuleName:       *r.AggregationKey,
 						Id:             r.Id,
 						CloudAccountId: *r.CloudAccountId,
 						TenantId:       *r.Tenant,
@@ -1662,8 +1685,9 @@ func prepareRevert(ctx *security.RequestContext, alert models.Event, cr models.R
 // change that lands in between is still caught there.
 func CheckEventRollback(ctx *security.RequestContext, query EventRollbackCheckRequest) (EventRollbackCheckResponse, error) {
 	// Same access as the apply: the answer names changes on the workload, and only someone who
-	// may roll back is shown the dialog that asks.
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	// may roll back is shown the dialog that asks. A custom grant passes only when the action is
+	// classified as a write: a Read key never authorizes this (see security.actionGrant).
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return EventRollbackCheckResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 	r, cr, err := loadResolutionTarget(ctx, query.AccountId, query.EventId)
@@ -2276,10 +2300,20 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		"kind":      kind,
 	}
 	revertPaths := extractRevertPaths(r, undo)
+	if path := firstRedactedPath(revertPaths); path != "" {
+		return map[string]any{}, common.ErrorBadRequest(fmt.Sprintf(
+			"event resolution: this change set a value Nudgebee does not keep (%s), so it cannot be put back from the record. "+
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it", path))
+	}
 	if len(revertPaths) > 0 {
 		request["revert_paths"] = revertPaths
 	}
-	if oldYaml := extractDiffOldManifest(r); oldYaml != "" {
+	// A redacted manifest is never sent back: the legacy agent replaces the whole object with it,
+	// which would write markers into the workload and drop the annotations redaction removed
+	// (kubectl's last-applied copy is the merge base of the customer's next `kubectl apply`).
+	oldYaml := extractDiffOldManifest(r)
+	manifestRedacted := diffWasRedacted(r) || strings.Contains(oldYaml, redactionMarker)
+	if oldYaml != "" && !manifestRedacted {
 		var yamlMap map[string]any
 		if err := yaml.Unmarshal([]byte(oldYaml), &yamlMap); err != nil {
 			return map[string]any{}, common.ErrorBadRequest("event resolution: the recorded pre-change manifest is not valid YAML")
@@ -2287,6 +2321,10 @@ func getRevertRecommendationRequest(cr models.Resource, r models.Event, undo boo
 		request[strings.ToLower(kind)] = yamlMap
 	}
 	if len(revertPaths) == 0 && request[strings.ToLower(kind)] == nil {
+		if manifestRedacted {
+			return map[string]any{}, common.ErrorBadRequest("event resolution: this change's recorded manifest had secret values removed, so it cannot be put back from the record. " +
+				"Roll it back with `kubectl rollout undo` or the tool that deploys it")
+		}
 		return map[string]any{}, common.ErrorBadRequest("event resolution: cannot revert, this event has no recorded configuration change to undo")
 	}
 	return request, nil
@@ -2425,6 +2463,65 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 	return paths
 }
 
+// redactionMarker starts the value the k8s-collector stores in recorded change evidence in place
+// of a secret or an inline env value: "[redacted]" or "[redacted:<fingerprint>]". The marker is
+// not the value, so a revert must never write it: the field would be set to the marker itself.
+// It is matched as a substring, not a whole value: a credential inside a longer string (a
+// connection string's password) is replaced in place, leaving the rest of the string around it.
+const redactionMarker = "[redacted"
+
+// firstRedactedPath returns the path of the first revert entry whose value to write holds a
+// redaction marker anywhere (a whole env entry or container is one value), or "".
+func firstRedactedPath(revertPaths []any) string {
+	for _, p := range revertPaths {
+		entry, _ := p.(map[string]any)
+		if containsRedactionMarker(entry["old"]) {
+			path, _ := entry["path"].(string)
+			return path
+		}
+	}
+	return ""
+}
+
+func containsRedactionMarker(v any) bool {
+	switch t := v.(type) {
+	case string:
+		return strings.Contains(t, redactionMarker)
+	case map[string]any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range t {
+			if containsRedactionMarker(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// diffWasRedacted reports whether the k8s-collector rewrote a diff block of r when it redacted it
+// (it sets data.redacted). Such a block's manifests are no longer the object as it was.
+func diffWasRedacted(r models.Event) bool {
+	if r.Evidences == nil || !r.Evidences.IsArray() {
+		return false
+	}
+	for _, item := range r.Evidences.Array() {
+		evidence, _ := item.(map[string]any)
+		if evidenceType, _ := evidence["type"].(string); evidenceType != "diff" {
+			continue
+		}
+		data, _ := evidence["data"].(map[string]any)
+		if redacted, _ := data["redacted"].(bool); redacted {
+			return true
+		}
+	}
+	return false
+}
+
 // hasInProgressRecommendation looks for an existing InProgress resolution for
 // the same card (cardId) so a retry reuses its row instead of creating a
 // duplicate. Scoped by card_id — an event can have several cards each with
@@ -2435,7 +2532,9 @@ func extractRevertPaths(r models.Event, undo bool) []any {
 func hasInProgressRecommendation(existingRecommendations []models.EventResolution, cardId string) (bool, string) {
 	recommendationResolutionId := common.GenerateUUID()
 	for _, resolution := range existingRecommendations {
-		if resolution.Status != models.RecommendationResolutionStatusInProgress {
+		// A remediation run (CommandExecution) is InProgress while llm-server's command is out and carries
+		// no card_id: it is never a card's own in-flight fix to reuse and overwrite.
+		if resolution.Status != models.RecommendationResolutionStatusInProgress || resolution.Type == "CommandExecution" {
 			continue
 		}
 		obj, _ := resolution.Data.Object().(map[string]any)
@@ -2446,6 +2545,23 @@ func hasInProgressRecommendation(existingRecommendations []models.EventResolutio
 		}
 	}
 	return false, recommendationResolutionId
+}
+
+// staleWorkflowExecutionAge is how long an automation run may stay InProgress before it is given
+// up on. Workflow timeouts are per-definition, so this is a generous ceiling rather than the exact limit.
+const staleWorkflowExecutionAge = 24 * time.Hour
+
+// failStaleWorkflowExecutionResolutions fails automation runs that runbook-server never settled
+// (terminated, crashed before its final-status step, or out of retries), so they do not show
+// "In progress" on the alert forever.
+func failStaleWorkflowExecutionResolutions(ctx *security.RequestContext, dbms *database.DatabaseManager) error {
+	now := time.Now().UTC()
+	_, err := dbms.Db.Exec(`UPDATE event_resolution SET status = $1, updated_at = $2, status_message = $3
+		WHERE status = $4 AND type = $5 AND created_at < $6`,
+		models.RecommendationResolutionStatusFailed, now.Format(time.RFC3339), "automation run did not finish",
+		models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionTypeWorkflowExecution,
+		now.Add(-staleWorkflowExecutionAge))
+	return err
 }
 
 func UpdateResolutionStatus(ctx *security.RequestContext) error {
@@ -2459,10 +2575,17 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 		return err
 	}
 
-	// only check resolutions that are in progress and are user resolutions
+	if err := failStaleWorkflowExecutionResolutions(ctx, dbms); err != nil {
+		ctx.GetLogger().Error("error failing stale workflow execution resolutions", "error", err)
+	}
+
+	// only check resolutions that are in progress and are user resolutions. A remediation run
+	// (CommandExecution) is settled by llm-server, which sent it; it has no adapter here.
+	// An automation run (WorkflowExecution) is settled by runbook-server, so it is skipped too;
+	// failStaleWorkflowExecutionResolutions covers the runs that never reported back.
 	rows, err := dbms.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
-		FROM event_resolution WHERE status = $1 AND resolver_type = $2`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
+		FROM event_resolution WHERE status = $1 AND resolver_type = $2 AND type NOT IN ('CommandExecution', 'WorkflowExecution')`, models.RecommendationResolutionStatusInProgress, models.RecommendationResolutionResolverTypeUser)
 	if err != nil {
 		ctx.GetLogger().Error("error getting event resolutions", "error", err)
 		return err
@@ -3305,6 +3428,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// merge in repeatDeliveryUpdateSQL needs: a nil map marshals to null.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 		// The correction can miss on a repeat where the first delivery resolved it
 		// (the exporter pod was rescheduled and its row is gone). The delivery then
 		// still names the exporter pod, and writing that would move a corrected
@@ -3375,6 +3499,7 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		// rewritten by an enricher.
 		applySubjectFallbacks(&webhookEvent)
 		applyNodeSubjectCorrection(sc, dbms, tenantId, &webhookEvent)
+		applyVMSubject(sc, &webhookEvent)
 
 		if webhookEvent.CreatedAt == nil {
 			webhookEvent.CreatedAt = &start
@@ -3555,6 +3680,58 @@ func applyNodeSubjectCorrection(sc *security.RequestContext, dbms *database.Data
 	linkK8sCloudResourceId(sc, dbms, tenantId, webhookEvent)
 }
 
+// applyVMSubject links an alert on a VM account to the VM it is about. An alert
+// whose subject fell back to the raw `instance` label is renamed to the VM; one
+// that already names a service keeps that name and only gains the link.
+//
+// It also sets the subject owner, which is what the events list shows as the
+// application: the service the alert is about when its labels name one,
+// otherwise the VM itself (a disk, CPU or memory alert is about the host).
+func applyVMSubject(sc *security.RequestContext, webhookEvent *Event) {
+	if !vmSubjectLookupNeeded(webhookEvent) {
+		return
+	}
+	vm, ok := integrationcore.ResolveVMSubject(sc, webhookEvent.AccountId, integrationcore.VMSubjectInput{Labels: webhookEvent.Labels})
+	if !ok {
+		return
+	}
+	setVMSubjectFields(webhookEvent, vm)
+}
+
+// vmSubjectLookupNeeded is false when there is nothing for the VM lookup to add: the
+// event is already linked, already has an owner of its own (a Kubernetes workload,
+// say) and names no service in its labels. Skipping it keeps the per-event hot path
+// free of a query for those events. A service label still goes through the lookup,
+// which is what confirms the account is a VM account before the owner is set.
+func vmSubjectLookupNeeded(webhookEvent *Event) bool {
+	if webhookEvent.CloudResourceId == "" {
+		return true
+	}
+	if integrationcore.VMServiceName(webhookEvent.Labels) != "" {
+		return true
+	}
+	return webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == webhookEvent.CloudResourceId
+}
+
+// setVMSubjectFields applies a resolved VM to the event: the link, the subject
+// rename and the owner.
+func setVMSubjectFields(webhookEvent *Event, vm integrationcore.VMSubject) {
+	if webhookEvent.CloudResourceId == "" {
+		webhookEvent.CloudResourceId = vm.CloudResourceID
+		if strings.EqualFold(webhookEvent.SubjectType, "instance") {
+			webhookEvent.SubjectType = "vm"
+			webhookEvent.SubjectName = vm.Name
+		}
+	}
+	if service := integrationcore.VMServiceName(webhookEvent.Labels); service != "" {
+		webhookEvent.SubjectOwner = service
+		webhookEvent.SubjectOwnerKind = "service"
+	} else if webhookEvent.SubjectOwner == "" || webhookEvent.SubjectOwner == vm.CloudResourceID {
+		webhookEvent.SubjectOwner = vm.Name
+		webhookEvent.SubjectOwnerKind = "vm"
+	}
+}
+
 // runPlaybookEnrichment executes the event's playbook and applies every
 // post-playbook mutation to webhookEvent in place: it appends evidence cards,
 // merges aggregated-alert labels and links the cloud resource.
@@ -3618,6 +3795,7 @@ func runPlaybookEnrichment(sc *security.RequestContext, webhookEvent *Event, eve
 			SubjectNode:             webhookEvent.SubjectNode,
 			AggregationKey:          webhookEvent.AggregationKey,
 			ExistingEvidenceActions: existingEvidenceActions,
+			CloudResourceId:         webhookEvent.CloudResourceId,
 		})
 		if err != nil {
 			sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", webhookEvent.AggregationKey, "account_id", webhookEvent.AccountId, "event_id", webhookEvent.Fingerprint)
@@ -3938,6 +4116,9 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		subjectNode = *event.SubjectNode
 	}
 
+	// The playbook writes the labels it extracts into this same map, so the snapshot is taken first: a label
+	// a playbook adds is then in the patch the refresh writes back.
+	labelsBefore := maps.Clone(labels)
 	newEvidenceResponse, err := eventrule.ExecutePlaybook(eventSc, accountId, playbooks.PlaybookEvent{
 		EventId:     eventId,
 		Name:        playbookName,
@@ -3956,6 +4137,7 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		SubjectNamespace: subjectNamespace,
 		SubjectNode:      subjectNode,
 		AggregationKey:   *event.AggregationKey,
+		CloudResourceId:  common.StrVal(event.CloudResourceId),
 	})
 	if err != nil {
 		sc.GetLogger().Error("event: unable to process playbook for event", "error", err, "aggregation_key", *event.AggregationKey, "account_id", accountId, "event_id", event.Id)
@@ -4065,12 +4247,12 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		return err
 	}
 
-	if labelsUpdated {
-		labelsJson, err := common.MarshalJson(labels)
+	if patch := refreshedLabelsPatch(labelsBefore, labels); labelsUpdated && len(patch) > 0 {
+		labelsJson, err := common.MarshalJson(patch)
 		if err != nil {
 			return fmt.Errorf("failed to marshal updated labels: %w", err)
 		}
-		_, err = dbms.Db.Exec("UPDATE events SET evidences = $1, labels = $2, updated_at = $3 WHERE id = $4", evidencesJson, labelsJson, time.Now().UTC(), eventId)
+		_, err = dbms.Db.Exec(refreshLabelsUpdateSQL, evidencesJson, labelsJson, time.Now().UTC(), eventId)
 		if err != nil {
 			return fmt.Errorf("failed to update event: %w", err)
 		}
@@ -4082,6 +4264,28 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 	}
 
 	return nil
+}
+
+// refreshLabelsUpdateSQL writes a refresh's evidences and merges only the labels it changed into the row as it
+// is now. The labels were read before the playbooks ran, often minutes earlier; writing that whole map back
+// dropped every label set meanwhile, such as the remediation loop's resolve and re-fire labels.
+const refreshLabelsUpdateSQL = `UPDATE events SET evidences = $1,
+	labels = (CASE WHEN jsonb_typeof(labels) = 'object' THEN labels ELSE '{}'::jsonb END) || $2::jsonb,
+	updated_at = $3 WHERE id = $4`
+
+// refreshedLabelsPatch is the labels a refresh added or changed (after against before). Never the remediation
+// loop's own labels: they are written only by the loop, so a refresh never replaces them with a stale value.
+func refreshedLabelsPatch(before, after map[string]string) map[string]string {
+	patch := map[string]string{}
+	for k, v := range after {
+		if k == triage.LabelResolvedBy || k == triage.LabelRefire {
+			continue
+		}
+		if old, ok := before[k]; !ok || old != v {
+			patch[k] = v
+		}
+	}
+	return patch
 }
 
 // aggregatedAlertLabelDefs maps aggregation keys to the labels that should be
@@ -4849,7 +5053,7 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return models.Event{}, fmt.Errorf("event %s has no account association", request.EventId)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return models.Event{}, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 	if request.Urgency != "" {
@@ -5021,7 +5225,7 @@ func UpdateEventStatus(ctx *security.RequestContext, request UpdateEventStatusRe
 	if r.CloudAccountId == nil || *r.CloudAccountId == "" {
 		return nil, fmt.Errorf("event %s has no account association", request.EventID)
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(*r.CloudAccountId, security.SecurityAccessTypeUpdate) {
 		return nil, common.ErrorUnauthorized("access denied for account: " + *r.CloudAccountId)
 	}
 
@@ -5156,7 +5360,7 @@ func GetEventManualStatusChanges(ctx *security.RequestContext, eventIDs []string
 		// account the caller can't see — event_history carries no row-level
 		// scoping of its own, so this is the only check standing between an
 		// arbitrary event id and another account's "who closed this" data.
-		if !ctx.GetSecurityContext().HasAccountAccess(row.CloudAccountId, security.SecurityAccessTypeRead) {
+		if !ctx.GetSecurityContext().CanAccessAccount(row.CloudAccountId, security.SecurityAccessTypeRead) {
 			continue
 		}
 		status := stringFromJSON(row.NewValue)
@@ -5384,4 +5588,56 @@ func stampEvidencesWithSourceWorkflow(evidences []any, source *models.EvidenceSo
 		}
 		additionalInfo[evidenceSourceWorkflowKey] = stamp
 	}
+}
+
+// isCPUThrottlingResolvable reports whether an event takes the CPU throttling fixes
+// (resize the CPU limit, add replicas, restart): the CPUThrottlingHigh alert, and the
+// CPU SLO forecasts and breach alerts.
+func isCPUThrottlingResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "CPUThrottlingHigh", "CPUThrottlingPredicted", "CPUSaturationPredicted",
+		"CPUThrottlingSLOBreached", "CPUSaturationSLOBreached":
+		return true
+	}
+	return false
+}
+
+// isMemoryLimitResolvable reports whether an event takes the memory fixes (resize the
+// memory limit, add replicas, restart): the PodMemoryReachingLimit alert, and the memory
+// SLO forecasts and breach alerts.
+func isMemoryLimitResolvable(aggregationKey string) bool {
+	switch aggregationKey {
+	case "PodMemoryReachingLimit", keys.MemorySaturationPredicted, keys.MemorySaturationSLOBreached:
+		return true
+	}
+	return false
+}
+
+// workloadKindName is the Kubernetes kind name a workload action expects. Forecast
+// events store the kind lower-cased (it is part of their fingerprint); every other
+// caller of these actions sends "Deployment", "StatefulSet" or "DaemonSet".
+func workloadKindName(kind *string) string {
+	switch k := common.StrVal(kind); strings.ToLower(k) {
+	case "deployment":
+		return "Deployment"
+	case "statefulset":
+		return "StatefulSet"
+	case "daemonset":
+		return "DaemonSet"
+	default:
+		return k
+	}
+}
+
+// labelValue reads one string label from an event's labels JSON.
+func labelValue(labels *models.Json, key string) string {
+	if labels == nil || !labels.IsObject() {
+		return ""
+	}
+	m, ok := labels.Object().(map[string]any)
+	if !ok {
+		return ""
+	}
+	v, _ := m[key].(string)
+	return v
 }

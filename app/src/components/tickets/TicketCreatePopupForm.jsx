@@ -16,7 +16,7 @@ const isHttpUrl = (url) => typeof url === 'string' && /^https?:\/\//i.test(url);
 // removed from additional_fields so a duplicate can't shadow the typed slot
 // upstream. Returns { missingRequired } when required dynamic fields are empty.
 export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketData = {} } = {}) => {
-  const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata, reporter } = ticketState;
+  const { selectedConfig, selectedProject, selectedIssueType, ticketDetails, formData, selectedIssueTypeTicketMetadata } = ticketState;
   const fields = selectedIssueTypeTicketMetadata?.[0]?.fields ?? {};
 
   const isEmpty = (v) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
@@ -29,6 +29,36 @@ export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketDa
 
   const additionalFields = JSON.parse(JSON.stringify(formData ?? {}));
   delete additionalFields.assignee;
+
+  // _field_order/_field_labels are consumed only by the GitHub create handler
+  // (see githubFieldOrderKey/githubFieldLabelsKey in github_service.go) - other
+  // providers forward unrecognized additional_fields keys straight through to
+  // their API (e.g. Freshdesk's custom_fields), so sending these there gets
+  // rejected as an unknown field. Scope them to GitHub only.
+  if (selectedConfig?.tool === 'github') {
+    // GitHub issue-form templates carry a field Order (see Template.order in
+    // FetchGitHubIssueCreateMeta) so the created issue's body sections match
+    // the form's declared layout - additional_fields is otherwise a plain
+    // unordered object, so this is the only way that order survives the
+    // create request.
+    const fieldOrder = selectedIssueTypeTicketMetadata?.[0]?.order;
+    if (Array.isArray(fieldOrder) && fieldOrder.length > 0) {
+      additionalFields._field_order = fieldOrder;
+    }
+
+    // A GitHub form field's real label (e.g. "Reproduction steps") commonly
+    // differs from its short internal key (e.g. "reprod") - without this, the
+    // created issue's body heading can only be reconstructed from the key
+    // itself, which reads as a guess rather than the form's actual wording.
+    const fieldLabels = Object.fromEntries(
+      Object.entries(fields)
+        .filter(([, field]) => field?.name)
+        .map(([key, field]) => [key, field.name])
+    );
+    if (Object.keys(fieldLabels).length > 0) {
+      additionalFields._field_labels = fieldLabels;
+    }
+  }
 
   const severityKey = Object.keys(fields).find((key) => fields[key]?.group === 'severity') ?? 'priority';
   const severity = formData?.[severityKey];
@@ -55,7 +85,6 @@ export const buildCreateTicketPayload = (ticketState, { reference = {}, ticketDa
       ticket_type: selectedIssueType,
       integration_id: selectedConfig?.id,
       assignee: formData?.assignee,
-      reporter,
       project_key: selectedProject?.key,
       title: ticketDetails?.subject,
       description: ticketDetails?.description,

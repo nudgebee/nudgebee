@@ -146,6 +146,14 @@ describe('summarizeCpu', () => {
     // The usage query was not answered at all: that is not "no samples".
     expect(summarizeCpu({ usage: undefined, request: [0.1], limit: [0.5] })).toEqual([]);
   });
+
+  it('gives the server’s reason for an empty series instead of calling it no samples', () => {
+    expect(messages(summarizeCpu({ usage: [], request: [], limit: [] }, 'no metrics provider resolved for this account'))).toEqual([
+      'No CPU data: no metrics provider resolved for this account',
+    ]);
+    // A reason does not replace figures the source did return.
+    expect(messages(summarizeCpu({ usage: [0.02] }, 'stale reason'))).toEqual(['CPU peaked at 0.02 cores; no request or limit set']);
+  });
 });
 
 describe('summarizeQueryMetrics', () => {

@@ -6,7 +6,6 @@ import React, { useEffect, useState, useMemo } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { PromQLExtension } from '@prometheus-io/codemirror-promql';
 import { isAlertNameValid, safeJSONParse } from 'src/utils/common';
-import { hasFeatureAccess } from '@lib/auth';
 import CheckIcon from '@mui/icons-material/Check';
 import { Input } from '@ui/Input';
 import { Button as DsButton } from '@ui/Button';
@@ -19,7 +18,6 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import { Accordion } from '@ui/Accordion';
 import { ds } from 'src/utils/colors';
 import CustomStepper from '@shared/navigation/CustomStepper';
-import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
 import ReorderableList, { type DragHandleProps } from '@shared/ReorderableList';
@@ -85,7 +83,6 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
   const [expandedAccordions, setExpandedAccordions] = useState<Set<string>>(new Set());
   const [currentStep, setCurrentStep] = useState(1);
   const [stepErrors, setStepErrors] = useState<boolean[]>([false, false, false]);
-  const [functions, setFunctions] = useState([]);
   const [metricsProvider, setMetricsProvider] = useState<string>('');
   // Whether the account's metrics provider is connected through the in-cluster
   // agent or directly ('user'). A direct Prometheus has no PrometheusRule CR to
@@ -150,22 +147,6 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
 
   const submitButtonText = isCreateAlert ? 'Create Alert' : 'Update Alert';
   const backButtonText = 'Back';
-
-  useEffect(() => {
-    const fetchFunctions = async () => {
-      try {
-        const response = await apiAskNudgebee.listFunctions({ accountId });
-        setFunctions((response as any)?.res?.llm_functions || []);
-      } catch (error) {
-        console.error('Error fetching functions:', error);
-      }
-    };
-    hasFeatureAccess('LLM_FUNCTION').then((res) => {
-      if (res) {
-        fetchFunctions();
-      }
-    });
-  }, []);
 
   // Resolve the account's default metrics provider so a new alert presents the
   // matching query language (PromQL for Prometheus/Victoria, Datadog monitor query
@@ -288,25 +269,9 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
             .sort((a: any, b: any) => a.display_name.localeCompare(b.display_name))
             .map((n: any) => ({ label: n.display_name, value: n.name, group: 'Actions' }));
 
-          const functionOptions =
-            functions
-              .sort((a: any, b: any) => a.name.localeCompare(b.name))
-              .map((n: any) => ({ label: n.name, value: n.name, group: 'LLM Functions' })) || [];
-
-          const funcActions = functions.reduce((fu: Record<string, any>, func: any) => {
-            fu[func.name] = {
-              action_name: 'nubi_enricher',
-              display_name: func.name,
-              name: 'nubi_enricher',
-              description: func.description,
-            };
-            return fu;
-          }, {});
-
-          const mergedData = [...sortedActions, ...functionOptions];
-          setActions(mergedData);
-          setActionsMap({ ...mappedActions, ...funcActions });
-          return { actions: mergedData, actionsMap: mappedActions };
+          setActions(sortedActions);
+          setActionsMap(mappedActions);
+          return { actions: sortedActions, actionsMap: mappedActions };
         }
         return { actions: [], actionsMap: {} };
       })
@@ -364,17 +329,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
           const actionConfig = paramObj[actionName];
 
           // Find the corresponding action in available actions
-          let matchingAction = availableActions.find((action: any) => action.value === actionName || action.value === actionConfig.ui_identifier);
-          if (actionName == 'nubi_enricher' && functions.length) {
-            const func = functions.find((f: any) => f.name === actionConfig.ui_identifier) as any;
-            if (func) {
-              matchingAction = {
-                group: 'LLM Functions',
-                label: func.name,
-                value: func.name,
-              };
-            }
-          }
+          const matchingAction = availableActions.find((action: any) => action.value === actionName || action.value === actionConfig.ui_identifier);
 
           if (matchingAction) {
             // Create unique ID for this instance
@@ -750,7 +705,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
 
         setSelectedActions((prev) => [...prev, newAction]);
 
-        if (actionsMap[fullAction.value]?.params && selectedOption?.group !== 'LLM Functions') {
+        if (actionsMap[fullAction.value]?.params) {
           const newFormData = Object.entries(actionsMap[fullAction.value].params).reduce((acc, [paramName, paramConfig]: any) => {
             if (paramConfig.type === 'bool') {
               acc[paramName] = paramConfig.default ?? false;
@@ -766,17 +721,6 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
             ...prev,
             [newAction.id]: newFormData,
           }));
-        } else if (selectedOption?.group === 'LLM Functions' && functions.length) {
-          // For LLM functions, we don't need to set default params
-          const func = (functions.filter((f: any) => f.name == selectedOption.value)?.[0] as any) || null;
-          if (func) {
-            setFormData((prev: any) => ({
-              ...prev,
-              [newAction.id]: {
-                prompt: func.prompt,
-              },
-            }));
-          }
         }
       }
     }
@@ -1156,10 +1100,7 @@ const KubernetesCreateAlert: React.FC<KubernetesCreateAlertProps> = ({
                   <br />
                   2. Actions can be:
                   <br />
-                  <Box sx={{ pl: ds.space[2] }}>
-                    • list of functions.
-                    <br />• list of your custom prompt based functions.
-                  </Box>
+                  <Box sx={{ pl: ds.space[2] }}>• list of functions.</Box>
                 </Typography>
               </Box>
               {/* Top row: Dropdown on left, Count on right */}

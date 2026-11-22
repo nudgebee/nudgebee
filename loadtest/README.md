@@ -113,9 +113,12 @@ OpenAI-compatible model; that costs tokens.
 - `dropped_iterations` above 0 means k6 could not start iterations on schedule: either
   `MAX_VUS` is too low or the service is saturated. Latency tells you which.
 - Profiles and heap dumps: services-server, llm-server and llm/gateway serve pprof at
-  `/debug/pprof/`. Take one at peak load, e.g.
-  `kubectl -n nudgebee port-forward svc/services-server 8000` then
-  `go tool pprof http://localhost:8000/debug/pprof/profile?seconds=30`.
+  `/debug/pprof/`. services-server and llm-server require their service token there,
+  sent as `X-ACTION-TOKEN` (`ACTION_API_SERVER_TOKEN` or `LLM_SERVER_TOKEN` from the
+  `nudgebee` Secret), so fetch the profile first. Take one at peak load, e.g.
+  `kubectl -n nudgebee port-forward svc/services-server 8000`, then
+  `curl -fsS -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" -o cpu.pprof "http://localhost:8000/debug/pprof/profile?seconds=30"`
+  and `go tool pprof cpu.pprof`.
 
 ## Running a script locally
 

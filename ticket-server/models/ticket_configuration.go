@@ -35,14 +35,16 @@ type Project struct {
 }
 
 // TicketConfigOption is the non-secret subset of a ticketing integration the
-// create-ticket form needs to populate its config/project pickers. It
-// deliberately omits url/username/password/auth_type so the read-level
+// create-ticket form (and other read-level pickers) needs. url is plain
+// metadata (e.g. a self-hosted GitLab base URL), not a credential, so it's
+// safe here; username/password/auth_type stay omitted so the read-level
 // list endpoint never exposes credentials (see ListTicketConfigs / NB-32822).
 type TicketConfigOption struct {
 	ID       string    `json:"id"`
 	Name     string    `json:"name"`
 	Tool     string    `json:"tool"`
 	Status   string    `json:"status"`
+	URL      string    `json:"url"`
 	Projects []Project `json:"projects"`
 }
 

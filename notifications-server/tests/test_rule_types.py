@@ -516,3 +516,42 @@ def test_check_holds_low_findings_like_the_send_path(monkeypatch, request_body):
 )
 def test_check_rejects_bad_input(monkeypatch, request_body):
     assert _check(monkeypatch, [], request_body)["status_code"] == 400
+
+
+# ----------------------------- AI Gateway budget alerts (opt-in) -----------------------------
+
+
+def test_an_all_types_rule_never_picks_up_budget_alerts():
+    assert not _matches(_rule(source_mode=SOURCE_MODE_ALL), *_message("llm_budget"))
+
+
+def test_a_budget_alert_rule_matches_budget_alerts():
+    rule = _rule(source="llm_budget", source_mode=SOURCE_MODE_LIST, sources=["llm_budget"])
+    assert _matches(rule, *_message("llm_budget"))
+
+
+def test_budget_alerts_drop_when_the_tenant_has_no_rule_for_them(monkeypatch):
+    service = _policies(monkeypatch, [])
+    policy = asyncio.run(service.get_default_policy(TENANT, "llm_budget"))
+    assert policy["action"] == "drop"
+    outcome = resolve_outcome([], source="llm_budget", default_policy=policy)
+    assert outcome.targets == [] and not outcome.use_defaults
+
+
+def test_budget_alerts_keep_a_default_the_tenant_set_for_them(monkeypatch):
+    service = _policies(monkeypatch, [_row("llm_budget", "deliver_defaults"), _row("all", "drop")])
+    assert asyncio.run(service.get_default_policy(TENANT, "llm_budget"))["action"] == "deliver_defaults"
+
+
+def test_a_budget_alert_rule_without_channels_uses_the_default_channel(monkeypatch):
+    policy = asyncio.run(_policies(monkeypatch, []).get_default_policy(TENANT, "llm_budget"))
+    matched = [{"rule_id": "r1", "suppressed": False, "expires_at": None, "platform": None, "channels": []}]
+    outcome = resolve_outcome(matched, source="llm_budget", default_policy=policy)
+    assert outcome.response is None and outcome.use_defaults
+
+
+def test_a_budget_alert_rule_for_one_platform_leaves_the_others_silent(monkeypatch):
+    policy = asyncio.run(_policies(monkeypatch, []).get_default_policy(TENANT, "llm_budget"))
+    matched = [{"rule_id": "r1", "suppressed": False, "expires_at": None, "platform": "slack", "channels": ["#finops"]}]
+    outcome = resolve_outcome(matched, source="llm_budget", default_policy=policy)
+    assert [t["platform"] for t in outcome.targets] == ["slack"] and not outcome.use_defaults

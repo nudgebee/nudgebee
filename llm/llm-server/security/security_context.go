@@ -344,11 +344,11 @@ func (sc *SecurityContext) HasAccountAccess(accountId string, access SecurityAcc
 }
 
 // CanRunAI reports whether the person may run Nubi on the account: read access
-// to it, or a custom-role grant to run AI there (ai_misc Execute or Write).
+// to it, or a custom-role grant to run AI there (ai_misc Execute; Write does
+// not imply Execute).
 func (sc *SecurityContext) CanRunAI(accountId string) bool {
 	return sc.HasAccountAccess(accountId, SecurityAccessTypeRead) ||
-		sc.HasScopedPermission(accountId, "ai_misc", "Execute") ||
-		sc.HasScopedPermission(accountId, "ai_misc", "Write")
+		sc.HasScopedPermission(accountId, "ai_misc", "Execute")
 }
 
 // HasScopedRole reports whether the user holds `role` scoped to `entityId`

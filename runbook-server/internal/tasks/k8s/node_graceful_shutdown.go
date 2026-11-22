@@ -3,11 +3,9 @@ package k8s
 import (
 	"errors"
 	"fmt"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
 	"nudgebee/runbook/services/security"
-	"strings"
 )
 
 type NodeGracefulShutdownTask struct{}
@@ -101,25 +99,7 @@ func (t *NodeGracefulShutdownTask) executeKubectl(ctx *security.RequestContext, 
 	}
 
 	if respStr, ok := resp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil { // Handle unmarshal error
-			return nil, fmt.Errorf("failed to parse kubectl command response: %w", err)
-		}
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			// Some drain warnings go to stderr but are not fatal errors.
-			// However, if the command exit code was non-zero, relay usually returns an error or we check here.
-			// Relay structure isn't fully clear on exit codes vs stderr.
-			// Assuming non-empty stderr *might* be an error, but for drain it often outputs info to stderr.
-			// If relay returns err=nil, it generally means execution happened.
-			// We should ideally check exit code if available.
-			// For now, let's treat it as error only if it looks like a failure or we strictly assume clean stderr.
-			// Actually, many kubectl commands output to stderr.
-			// Let's rely on UnmarshalJson passing. If 'stderr' has "error:", fail.
-			if strings.Contains(strings.ToLower(stderr), "error:") {
-				return nil, errors.New(stderr)
-			}
-		}
-		return kubectlResp, nil
+		return interpretKubectlResponse(respStr)
 	}
 	return nil, errors.New("unexpected response from relay")
 }

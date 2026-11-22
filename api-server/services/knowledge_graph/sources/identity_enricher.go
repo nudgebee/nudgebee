@@ -172,8 +172,8 @@ func indexIdentityNodes(allNodes []*core.DbNode) map[identityKey]*core.DbNode {
 	return index
 }
 
-// buildCanonicalUserNodes creates one NudgebeeUser node per active user in the
-// tenant, keyed by users.id for edge-target lookup. The unique key's Name component
+// buildCanonicalUserNodes creates one NudgebeeUser node per active person in the
+// tenant (bee accounts are not people and get no node), keyed by users.id for edge-target lookup. The unique key's Name component
 // is the user's username (email) — unique per the `users_username_key` DB constraint,
 // so this never collides across users the way a display name could.
 func (e *IdentityEnricher) buildCanonicalUserNodes(dbms *database.DatabaseManager, tenantID string) ([]*core.DbNode, map[string]*core.DbNode, error) {
@@ -181,7 +181,7 @@ func (e *IdentityEnricher) buildCanonicalUserNodes(dbms *database.DatabaseManage
 		SELECT u.id::text, u.username::text, u.display_name
 		FROM users u
 		JOIN tenant_users tu ON tu.user = u.id
-		WHERE tu.tenant = $1 AND u.status = 'active'
+		WHERE tu.tenant = $1 AND u.status = 'active' AND u.kind = 'person'
 	`, tenantID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query tenant users: %w", err)

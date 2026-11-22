@@ -127,5 +127,5 @@ If the user invoked `/pr-comments fix` or asks to fix the comments:
 | `llm/rag-server/` | `cd llm/rag-server && make lint && make test` |
 | `ml-k8s-server/` | `cd ml-k8s-server && make lint && make test` |
 | `auto-pilot/` | `cd auto-pilot && poetry run black --check . && poetry run flake8 .` |
-| `notifications-server/` | `cd notifications-server && poetry run black --check . && poetry run flake8 .` |
+| `notifications-server/` | `cd notifications-server && uv run black --check . && uv run flake8 .` |
 | `app/` | `cd app && npm run lint2` |

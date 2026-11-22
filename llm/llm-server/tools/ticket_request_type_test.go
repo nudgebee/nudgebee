@@ -39,16 +39,6 @@ func TestTicketToolsClassifyByOperation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, c.want, got, "v2 %s", c.input)
 	}
-	v1 := map[string]core.ToolRequestType{
-		`{"command":"{\"operation_type\": \"search\", \"query\": \"project = X\"}"}`:                                          core.ToolRequestTypeRead,
-		`{"command":"{\"operation_type\": \"update\", \"ticket_id\": \"X-1\", \"field_name\": \"a\", \"new_value\": \"b\"}"}`: core.ToolRequestTypeUpdate,
-		`{"command":"{\"operation_type\": \"comment\", \"ticket_id\": \"X-1\", \"comment_text\": \"c\"}"}`:                    core.ToolRequestTypeCreate,
-	}
-	for input, want := range v1 {
-		got, err := TicketMaster{}.InferToolRequestType(ctx, "", input)
-		require.NoError(t, err)
-		assert.Equal(t, want, got, "v1 %s", input)
-	}
 }
 
 // One "yes" covers only that exact ticket change or automation, not the next.
@@ -57,7 +47,6 @@ func TestTicketAndAutomationApprovalsArePerCall(t *testing.T) {
 	b := `{"command":"{\"operation_type\":\"create_ticket\",\"title\":\"b\"}"}`
 	assert.NotEqual(t, TicketMasterV2{}.ConfirmationKey(a), TicketMasterV2{}.ConfirmationKey(b))
 	assert.Equal(t, TicketMasterV2{}.ConfirmationKey(a), TicketMasterV2{}.ConfirmationKey(a), "resume finds the same approval")
-	assert.NotEqual(t, TicketMaster{}.ConfirmationKey(a), TicketMaster{}.ConfirmationKey(b))
 	assert.NotEqual(t, WorkflowCreateTool{}.ConfirmationKey(`{"definition":{"name":"a"}}`), WorkflowCreateTool{}.ConfirmationKey(`{"definition":{"name":"b"}}`))
 
 	got, err := WorkflowCreateTool{}.InferToolRequestType(security.NewRequestContextForSuperAdmin(), "", `{"definition":{}}`)

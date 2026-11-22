@@ -4,24 +4,26 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"nudgebee/llm/memory"
 )
 
 func TestMemoryConfidence(t *testing.T) {
 	tests := []struct {
 		name     string
-		memType  MemoryType
+		memType  memory.MemoryType
 		expected float64
 	}{
-		{"user_preference highest", MemoryTypeUserPreference, 0.9},
-		{"pattern", MemoryTypePattern, 0.8},
-		{"workflow", MemoryTypeWorkflow, 0.8},
-		{"architectural_fact", MemoryTypeArchitecturalFact, 0.7},
-		{"config_insight", MemoryTypeConfigInsight, 0.7},
-		{"dependency_mapping", MemoryTypeDependencyMapping, 0.7},
-		{"troubleshooting", MemoryTypeTroubleshooting, 0.7},
-		{"investigation_result default", MemoryTypeInvestigationResult, 0.5},
-		{"unknown type falls to default", MemoryType("unknown"), 0.5},
-		{"empty string falls to default", MemoryType(""), 0.5},
+		{"user_preference highest", memory.MemoryTypeUserPreference, 0.9},
+		{"pattern", memory.MemoryTypePattern, 0.8},
+		{"workflow", memory.MemoryTypeWorkflow, 0.8},
+		{"architectural_fact", memory.MemoryTypeArchitecturalFact, 0.7},
+		{"config_insight", memory.MemoryTypeConfigInsight, 0.7},
+		{"dependency_mapping", memory.MemoryTypeDependencyMapping, 0.7},
+		{"troubleshooting", memory.MemoryTypeTroubleshooting, 0.7},
+		{"investigation_result default", memory.MemoryTypeInvestigationResult, 0.5},
+		{"unknown type falls to default", memory.MemoryType("unknown"), 0.5},
+		{"empty string falls to default", memory.MemoryType(""), 0.5},
 	}
 
 	for _, tc := range tests {
@@ -111,23 +113,23 @@ func TestIsRedundantWithConversationContext(t *testing.T) {
 func TestMemoryTypeValidate(t *testing.T) {
 	tests := []struct {
 		input    string
-		expected MemoryType
+		expected memory.MemoryType
 	}{
-		{"user_preference", MemoryTypeUserPreference},
-		{"pattern", MemoryTypePattern},
-		{"workflow", MemoryTypeWorkflow},
-		{"investigation_result", MemoryTypeInvestigationResult},
-		{"architectural_fact", MemoryTypeArchitecturalFact},
-		{"dependency_mapping", MemoryTypeDependencyMapping},
-		{"troubleshooting_guide", MemoryTypeTroubleshooting},
-		{"configuration_insight", MemoryTypeConfigInsight},
-		{"unknown_type", MemoryTypeInvestigationResult},
-		{"", MemoryTypeInvestigationResult},
+		{"user_preference", memory.MemoryTypeUserPreference},
+		{"pattern", memory.MemoryTypePattern},
+		{"workflow", memory.MemoryTypeWorkflow},
+		{"investigation_result", memory.MemoryTypeInvestigationResult},
+		{"architectural_fact", memory.MemoryTypeArchitecturalFact},
+		{"dependency_mapping", memory.MemoryTypeDependencyMapping},
+		{"troubleshooting_guide", memory.MemoryTypeTroubleshooting},
+		{"configuration_insight", memory.MemoryTypeConfigInsight},
+		{"unknown_type", memory.MemoryTypeInvestigationResult},
+		{"", memory.MemoryTypeInvestigationResult},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			result := MemoryType(tc.input).Validate()
+			result := memory.MemoryType(tc.input).Validate()
 			assert.Equal(t, tc.expected, result)
 		})
 	}

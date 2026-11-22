@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -487,6 +488,18 @@ func TestDelegateAgentTool_Metadata(t *testing.T) {
 	assert.Equal(t, []string{"prompt"}, schema.Required)
 }
 
+func TestDelegateAgentTool_RefusesTheChannelMessageTool(t *testing.T) {
+	tool := &delegateAgentTool{accountId: "test-account"}
+
+	response, err := tool.Call(toolcore.NbToolContext{AccountId: "test-account"}, toolcore.NBToolCallRequest{
+		Arguments: map[string]any{"prompt": "post the summary to #ops", "tools": []any{"IM_MESSAGE_SEND"}},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, response.Status)
+	assert.Contains(t, response.Data, "call im_message_send directly")
+}
+
 func TestResolveToolsForDelegate_DeduplicatesNames(t *testing.T) {
 	// With no tools registered, all should be unresolved
 	resolved, _, unresolved := resolveToolsForDelegate(nil, "fake-account-id", []string{"tool_a", "tool_a", "TOOL_A"})
@@ -717,7 +730,7 @@ func TestDelegateToolFiltering_AppliesCapabilities(t *testing.T) {
 // on the cheap Retrieval tier (scoped grunt work), not the orchestrator's Reasoning tier.
 func TestDynamicReActAgent_RunsOnCheapTier(t *testing.T) {
 	a := &dynamicReActAgent{name: DelegateAgentToolName}
-	assert.Equal(t, core.ModelTierRetrieval, a.GetModelCategory(),
+	assert.Equal(t, llmruntime.ModelTierRetrieval, a.GetModelCategory(),
 		"delegated sub-agents must run on the cheap Retrieval tier, not Reasoning")
 }
 

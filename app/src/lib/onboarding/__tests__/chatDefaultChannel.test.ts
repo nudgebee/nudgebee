@@ -40,7 +40,7 @@ describe('chatDefaultChannelByType', () => {
     });
   });
 
-  it('reads legacy messaging_platforms channels when no integration row exists', () => {
+  it('reads legacy messaging_platforms channels when no integration row exists, never for Teams', () => {
     expect(
       chatDefaultChannelByType(
         [],
@@ -50,7 +50,11 @@ describe('chatDefaultChannelByType', () => {
           { platform: 'ms_teams', channels: { team_id: 'T1', channels: [{ id: 'C1', name: 'General' }] } },
         ]
       )
-    ).toEqual({ slack: true, discord: false, ms_teams: true });
+    ).toEqual({ slack: true, discord: false });
+  });
+
+  it('never counts a legacy Microsoft Teams row', () => {
+    expect(chatDefaultChannelByType([], [{ platform: 'ms_teams', channels: { team_id: 'T1', channels: [{ id: 'C1' }] } }])).toEqual({});
   });
 
   it('lets an integration row win over a legacy row for the same platform', () => {

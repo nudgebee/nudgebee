@@ -98,6 +98,12 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 	return followUpRequest, nil
 }
 
+// ConfirmationDisplayInput is the command text an approval card shows for a
+// tool input.
+func ConfirmationDisplayInput(input string) string {
+	return confirmationDisplayInput(input)
+}
+
 // confirmationDisplayInput is the part of a tool input an approver reads: the
 // SQL of a query tool, else the raw input.
 func confirmationDisplayInput(input string) string {
@@ -478,6 +484,12 @@ func GenerateFollowup(ctx *security.RequestContext, query NBAgentRequest, follow
 	followupMessage, err := dao.SaveConversationMessage(uuid.NewString(), query.ConversationId, query.AccountId, query.UserId, MessageRoleAI, MessageTypeFollowup, followupRequest.Question, "", followupRequest.AgentName, followupRequest.AgentId, followupRequestConfig, string(followUpContextJson), "", "", ConversationStatusWaiting)
 	if err != nil {
 		return uuid.Nil, err
+	}
+	if runId := investigationRunOf(query.QueryConfig); runId != "" {
+		// A follow-up an investigation stage raises belongs to that run, like the stage's own message.
+		if err := dao.UpdateConversationMessageMetadata(followupMessage.String(), map[string]any{"investigation_run_id": runId}); err != nil {
+			ctx.GetLogger().Warn("followup: investigation run not recorded on the follow-up", "error", err)
+		}
 	}
 	err = dao.UpdateConversationMessage(query.MessageId, "", ConversationStatusWaiting)
 	if err != nil {

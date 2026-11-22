@@ -63,6 +63,51 @@ func TestTruncateQueryForAudit(t *testing.T) {
 	})
 }
 
+// A follow-up answer's audit keeps what was asked and approved, not the
+// credentials in it.
+func TestFollowupAuditStateMasksCredentials(t *testing.T) {
+	const secret = "Qv7rTx2mWp9z"
+	for _, command := range []string{
+		"PGPASSWORD=" + secret + " psql -h db.prod -U app -c 'VACUUM'",
+		"mysql -uroot -p" + secret + " -e 'SHOW TABLES'",
+		"kubectl 'exec' 'cache-0' '--' 'redis-cli' '-a' '" + secret + "' 'FLUSHALL'",
+		"curl -u admin:" + secret + " -X POST https://grafana.internal/api/admin/users",
+		"aws rds modify-db-instance --db-instance-identifier prod --master-user-password " + secret,
+	} {
+		t.Run(command, func(t *testing.T) {
+			info := &core.PendingFollowupInfo{
+				FollowupType:       "tool_confirmation",
+				IsToolConfirmation: true,
+				ToolName:           "execute_command",
+				Command:            command,
+				Query:              "reset the db, the url is postgres://app:" + secret + "@db.prod/app",
+			}
+			state := followupAuditState(info, "yes")
+			for key, value := range state {
+				assert.NotContains(t, value, secret, key)
+			}
+			assert.Contains(t, state["command"], "[REDACTED:")
+			assert.Equal(t, "execute_command", state["tool_name"])
+			assert.Equal(t, "approved", state["decision"])
+			assert.Contains(t, state["query"], "@db.prod/app")
+		})
+	}
+
+	t.Run("clarification answer", func(t *testing.T) {
+		state := followupAuditState(&core.PendingFollowupInfo{FollowupType: "text", Query: "which token?"}, "use GITHUB_TOKEN=ghp_"+strings.Repeat("a", 36))
+		assert.NotContains(t, state["response"], "ghp_aaaa")
+		assert.NotContains(t, state, "command", "only a tool confirmation records a command")
+	})
+
+	t.Run("a secret straddling the preview cap is masked whole", func(t *testing.T) {
+		query := strings.Repeat("x", maxAuditQueryPreviewRunes-12) + " PASSWORD=" + secret + " " + strings.Repeat("y", 2000)
+		state := followupAuditState(&core.PendingFollowupInfo{FollowupType: "text", Query: query}, "ok")
+		preview := state["query"].(string)
+		assert.True(t, strings.HasSuffix(preview, "…[truncated]"))
+		assert.NotContains(t, preview, secret[:2], "no unmasked prefix of the secret is kept")
+	})
+}
+
 func TestChatAuditApplies(t *testing.T) {
 	assert.True(t, chatAuditApplies(audit.EventTypeChatClarificationRespond, core.ConversationSourceUserInvestigation))
 	assert.False(t, chatAuditApplies(audit.EventTypeChatClarificationRespond, core.ConversationSourceInvestigation))

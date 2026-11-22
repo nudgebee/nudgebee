@@ -150,8 +150,23 @@ export function CloudCostSummary({ clusterSummary = {}, currencySymbol = '$' }: 
                 </Box>
               }
               sub={
+                // Net is a derived, always-known figure once this-month credits exist, so it must
+                // never read "No data" (SubCaption's zero→absent rule is wrong here). Currency renders
+                // a sub-$1 positive as "< $1"; an exact $0 (credits fully cover the bill) it renders as
+                // "-", so that case gets the explicit "< $1" the acceptance criteria ask for.
                 currentCredits > 0 ? (
-                  <SubCaption label='Net spend (MTD)' currency={currencySymbol} value={currentNetSpend > 0 ? currentNetSpend : null} />
+                  <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[1] }}>
+                    <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
+                      Net spend (MTD):
+                    </Typography>
+                    {currentNetSpend > 0 ? (
+                      <Currency prefix={currencySymbol} value={currentNetSpend} />
+                    ) : (
+                      <Typography component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
+                        {`< ${currencySymbol}1`}
+                      </Typography>
+                    )}
+                  </Box>
                 ) : undefined
               }
             />

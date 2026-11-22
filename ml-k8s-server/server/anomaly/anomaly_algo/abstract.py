@@ -196,7 +196,12 @@ METRIC_SPECS: Dict[AnomalyType, MetricSpec] = {
         default_threshold=0.5,  # seconds
         dbscan_eps=0.6,  # Medium-tight for latency
         dbscan_min_samples=5,
-        step="2m",
+        # 10m, not 2m: the key's rate window follows the step, so each sample is read
+        # once. At 2m this was the heaviest query the hourly job sends, holding 8M
+        # samples in memory for one workload, and it OOM-killed Prometheus (#43354).
+        # Replaying DB_SCAN on real cluster data (768 workload-hours) changed 2 verdicts, both
+        # one-to-three-point blips inside the workload's historic range.
+        step="10m",
         time_range="2m",
     ),
 }

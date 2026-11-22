@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -134,6 +135,7 @@ func isNotebookToolName(toolName string) bool {
 	lower := strings.ToLower(strings.TrimSpace(toolName))
 	switch lower {
 	case "update_notebook",
+		"update_notebook_v2",
 		"notebook",
 		"create_notebook",
 		"write_notebook",
@@ -240,7 +242,7 @@ func resolveOrchestratorThinkingLevel(model string) string {
 	if !ok {
 		return ""
 	}
-	baseline := GetLlmDefaultThinkingLevel(model)
+	baseline := llmruntime.GetLlmDefaultThinkingLevel(model)
 	if config.Config.LlmProviderThinkingLevel != "" {
 		baseline = config.Config.LlmProviderThinkingLevel
 	}
@@ -293,7 +295,7 @@ var capabilityRefusalMarkers = []string{
 }
 
 func reactPlannerStopWords(provider, model string) []string {
-	if IsOpenAIModelWithoutStopSupport(provider, model) {
+	if llmruntime.IsOpenAIModelWithoutStopSupport(provider, model) {
 		return nil
 	}
 	return []string{"<observation"}
@@ -651,7 +653,7 @@ func (o *NBReActPlanner3) llmCompressScratchpad(scratchpad string, maxChars int,
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(
-		context.WithValue(context.WithoutCancel(o.ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(context.WithoutCancel(o.ctx.GetContext()), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		getScratchpadSummaryTimeout(),
 	)
 	defer cancel()
@@ -665,7 +667,7 @@ func (o *NBReActPlanner3) llmCompressScratchpad(scratchpad string, maxChars int,
 	)
 
 	t0 := time.Now()
-	completion, err := GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		summaryCtx,
 		o.request.UserId,
 		o.request.AccountId,
@@ -678,7 +680,7 @@ func (o *NBReActPlanner3) llmCompressScratchpad(scratchpad string, maxChars int,
 		},
 		false,
 		llms.WithTemperature(0.0),
-		WithThinkingLevel(ThinkingLevelFastTask),
+		llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask),
 	)
 	latency := time.Since(t0).Seconds()
 
@@ -1325,6 +1327,20 @@ type conversationNotebookUpdater interface {
 	UpdateConversationNotebook(agentID, response, responseSummary string) error
 }
 
+// conversationNotebookStateUpdater writes the structured plan JSON of the
+// synthetic notebook row (update_notebook_v2, #41443).
+type conversationNotebookStateUpdater interface {
+	UpdateConversationNotebookState(agentID, state string) error
+}
+
+func updateConversationNotebookState(dao IConversationDao, agentID, state string) error {
+	updater, ok := dao.(conversationNotebookStateUpdater)
+	if !ok || agentID == "" {
+		return errors.New("conversation DAO does not support notebook state updates")
+	}
+	return updater.UpdateConversationNotebookState(agentID, state)
+}
+
 func updateConversationNotebook(dao IConversationDao, agentID, content, breadcrumb string) error {
 	updater, ok := dao.(conversationNotebookUpdater)
 	if !ok {
@@ -1570,6 +1586,12 @@ func (o *NBReActPlanner3) processFinalAnswer(output string) *NBAgentPlannerFinis
 			return nil
 		}
 	}
+	// The wrapper is already parsed; this drops notes left before the event
+	// summary heading inside <content> (#41809).
+	content, notes := splitFinalAnswer(content)
+	if notes != "" {
+		thought = strings.TrimSpace(thought + "\n\n" + notes)
+	}
 
 	return &NBAgentPlannerFinishAction{
 		Data: content,
@@ -1690,7 +1712,7 @@ func (o *NBReActPlanner3) Plan(
 	// contains prior tool invocations: new DisplayIDs will continue from
 	// where the previous session left off rather than restarting at E1.
 	if o.stepCount == 0 && len(intermediateSteps) > 0 {
-		o.stepCount = len(intermediateSteps)
+		o.stepCount = nextStepCountSeed(intermediateSteps)
 	}
 
 	agentName := o.nbAgent.GetName()
@@ -1734,23 +1756,23 @@ func (o *NBReActPlanner3) Plan(
 	isSummaryToolUsed := len(intermediateSteps) > 0 && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, o.summaryToolName)
 
 	// Determine cache scope and create context once per plan
-	cacheScope := CacheScopeConversation
+	cacheScope := llmruntime.CacheScopeConversation
 	if cacheProvider, ok := o.nbAgent.(NBAgentCacheScopeProvider); ok {
 		cacheScope = cacheProvider.GetCacheScope()
 	}
 	// ClientTools (Local Tools) vary per chat session and are injected into
 	// the cacheable tool list + system instructions, so they cannot share an
 	// Account-scope cache across sessions. Downgrade to Conversation scope.
-	if len(o.request.ClientTools) > 0 && cacheScope != CacheScopeConversation {
+	if len(o.request.ClientTools) > 0 && cacheScope != llmruntime.CacheScopeConversation {
 		o.ctx.GetLogger().Debug("reactagent3: downgrading cache scope to conversation due to client tools",
 			"agent", o.nbAgent.GetName(), "from", cacheScope)
-		cacheScope = CacheScopeConversation
+		cacheScope = llmruntime.CacheScopeConversation
 	}
 
 	agentCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(o.ctx.GetContext(), ContextKeyCacheScope, cacheScope),
-			ContextKeyCapabilities, o.request.Capabilities,
+			context.WithValue(o.ctx.GetContext(), llmruntime.ContextKeyCacheScope, cacheScope),
+			llmruntime.ContextKeyCapabilities, o.request.Capabilities,
 		),
 		o.ctx.GetSecurityContext(),
 		o.ctx.GetLogger(),
@@ -1835,8 +1857,8 @@ func (o *NBReActPlanner3) Plan(
 			}
 
 			callOptions := []llms.CallOption{llms.WithTemperature(0.0)}
-			provider := GetLLMProvider(o.ctx, o.request.AccountId, o.nbAgent.GetName(), true, o.request.ConversationId)
-			model := GetLLMModelName(o.ctx, o.request.AccountId, provider, o.nbAgent.GetName(), true, o.request.ConversationId)
+			provider := llmruntime.GetLLMProvider(o.ctx, o.request.AccountId, o.nbAgent.GetName(), true, o.request.ConversationId)
+			model := llmruntime.GetLLMModelName(o.ctx, o.request.AccountId, provider, o.nbAgent.GetName(), true, o.request.ConversationId)
 
 			// Depth is bought once per turn, where the plan is decided: the
 			// orchestrator's direction-setting calls (first reasoning call of
@@ -1846,7 +1868,7 @@ func (o *NBReActPlanner3) Plan(
 			// Executor sub-agents and mid-loop iterations keep the default.
 			if o.orchestratorDeepThinking(firstPlanCallOfTurn) {
 				if lvl := resolveOrchestratorThinkingLevel(model); lvl != "" {
-					callOptions = append(callOptions, WithThinkingLevel(lvl))
+					callOptions = append(callOptions, llmruntime.WithThinkingLevel(lvl))
 				}
 			}
 
@@ -1855,7 +1877,7 @@ func (o *NBReActPlanner3) Plan(
 			// matching react_4. Built-in agents do not implement this optional
 			// capability, so their orchestrator/model resolution remains unchanged.
 			if level := ResolveAgentThinkingLevel(o.nbAgent); level != "" {
-				callOptions = append(callOptions, WithThinkingLevel(level))
+				callOptions = append(callOptions, llmruntime.WithThinkingLevel(level))
 			}
 
 			if stopWords := reactPlannerStopWords(provider, model); len(stopWords) > 0 {
@@ -1863,7 +1885,7 @@ func (o *NBReActPlanner3) Plan(
 			}
 
 			llmCallStart := time.Now()
-			result, err := GenerateAndTrackLLMContent(agentCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, mcList, true, callOptions...)
+			result, err := llmruntime.GenerateAndTrackLLMContent(agentCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, mcList, true, callOptions...)
 			logger.Info("reactagent3: LLM call complete", "duration", time.Since(llmCallStart).String(), "total_plan_duration", time.Since(reactPlanStart).String())
 			if err != nil {
 				logger.Error("reactagent3: main llm call failed", "error", err)
@@ -1916,11 +1938,11 @@ func (o *NBReActPlanner3) Plan(
 
 		}
 
-		if finish != nil && (!isSummaryToolUsed || config.Config.ClaimCritiqueFeedbackEnabled) && o.refinementAttempts >= o.maxRefinementAttempts {
+		// A zero budget (Quick depth) is handled after the critique gate below,
+		// so it is only counted where a critique would have run.
+		if finish != nil && o.maxRefinementAttempts > 0 && (!isSummaryToolUsed || config.Config.ClaimCritiqueFeedbackEnabled) && o.refinementAttempts >= o.maxRefinementAttempts {
 			logger.Warn("reactagent3: max refinement attempts reached, accepting current answer", "attempts", o.refinementAttempts)
-			if o.maxRefinementAttempts > 0 {
-				captureClaimBudgetStop(o.ctx, o.request, "react3", o.nbAgent.GetName(), input, finish.Data, o.Notebook, intermediateSteps)
-			}
+			captureClaimBudgetStop(o.ctx, o.request, "react3", o.nbAgent.GetName(), input, finish.Data, o.Notebook, intermediateSteps)
 			MetricsCritiqueDecision(o.nbAgent.GetName(), "force_accept", o.refinementAttempts)
 			return nil, finish, nil
 		}
@@ -1949,6 +1971,13 @@ func (o *NBReActPlanner3) Plan(
 
 			if !critiqueAllowed {
 				logger.Info("reactagent3: skipping critique", "enableCritique", o.enableCritique, "isTopLevel", topLevel, "isInvestigation", isInvestigation, "noToolRefusal", noToolRefusal)
+				return nil, finish, nil
+			}
+			// Quick depth: the critique would have run, so count it as skipped
+			// rather than dropping the run from the critique numbers.
+			if o.maxRefinementAttempts == 0 {
+				logger.Info("reactagent3: skipping critique", "reason", "depth", "maxRefinements", 0)
+				MetricsCritiqueDecision(o.nbAgent.GetName(), "skipped_depth", 0)
 				return nil, finish, nil
 			}
 
@@ -1992,7 +2021,7 @@ func (o *NBReActPlanner3) Plan(
 			},
 		}
 
-		summaryResult, summaryErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+		summaryResult, summaryErr := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if summaryErr != nil || len(summaryResult.Choices) == 0 {
 			// The summarization retry also failed — often deterministically, since
 			// it re-embeds the same scratchpad (and thus the same offending
@@ -2006,10 +2035,10 @@ func (o *NBReActPlanner3) Plan(
 			if errToClassify == nil {
 				errToClassify = lastErr
 			}
-			if msg, blocked := egressBlockedMessage(errToClassify); blocked {
+			if msg, blocked := llmruntime.EgressBlockedMessage(errToClassify); blocked {
 				return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
 			}
-			if classified := classifyUserFacingLLMError(errToClassify); classified != nil {
+			if classified := llmruntime.ClassifyUserFacingLLMError(errToClassify); classified != nil {
 				return nil, nil, classified
 			}
 			return nil, &NBAgentPlannerFinishAction{
@@ -2027,7 +2056,7 @@ func (o *NBReActPlanner3) Plan(
 		// remediation hint, no value echo) rather than a generic internal
 		// error. The message contains BlockedMessageMarker, so the executor
 		// still treats this step as a non-answer (see executor.go).
-		if msg, blocked := egressBlockedMessage(lastErr); blocked {
+		if msg, blocked := llmruntime.EgressBlockedMessage(lastErr); blocked {
 			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
 		}
 		// Surface a clear cause for known failure modes (429/quota, oversized
@@ -2035,7 +2064,7 @@ func (o *NBReActPlanner3) Plan(
 		// the executor reports it as a failed turn with the clean message. Only
 		// fall back to the generic message for unclassified errors so we never
 		// leak raw provider internals.
-		if classified := classifyUserFacingLLMError(lastErr); classified != nil {
+		if classified := llmruntime.ClassifyUserFacingLLMError(lastErr); classified != nil {
 			return nil, nil, classified
 		}
 		return nil, &NBAgentPlannerFinishAction{
@@ -2062,17 +2091,17 @@ func (o *NBReActPlanner3) Plan(
 				Parts: []llms.ContentPart{llms.TextContent{Text: prompt}},
 			},
 		}
-		summaryResult, summaryErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+		summaryResult, summaryErr := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, summaryMessages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 		if summaryErr == nil && len(summaryResult.Choices) > 0 {
 			return nil, &NBAgentPlannerFinishAction{Data: summaryResult.Choices[0].Content}, nil
 		}
 		// Same rationale as the lastErr!=nil branch above: never fall back to the
 		// raw scratchpad (XmlExtractCDATA silently mis-extracts intermediateSteps[0]'s
 		// reasoning from it as if it were the final answer).
-		if msg, blocked := egressBlockedMessage(summaryErr); blocked {
+		if msg, blocked := llmruntime.EgressBlockedMessage(summaryErr); blocked {
 			return nil, &NBAgentPlannerFinishAction{Data: msg, Status: ConversationStatusFailed}, nil
 		}
-		if classified := classifyUserFacingLLMError(summaryErr); classified != nil {
+		if classified := llmruntime.ClassifyUserFacingLLMError(summaryErr); classified != nil {
 			return nil, nil, classified
 		}
 		return nil, &NBAgentPlannerFinishAction{
@@ -2144,7 +2173,7 @@ STRICT CONSTRAINTS:
 			Parts: []llms.ContentPart{llms.TextContent{Text: retryPromptRefined}},
 		})
 
-		retryResult, retryErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, retryMessages, true, llms.WithTemperature(0.0))
+		retryResult, retryErr := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, retryMessages, true, llms.WithTemperature(0.0))
 		if retryErr != nil {
 			logger.Warn("reactagent3: retry llm call failed", "error", retryErr, "attempt", retryCount+1)
 			retryCount++
@@ -2212,7 +2241,7 @@ func (o *NBReActPlanner3) handleNotebookOnlyTurn(
 		Parts: []llms.ContentPart{llms.TextContent{Text: notebookOnlyNudge(refining, forceFinal)}},
 	})
 
-	nudgeResult, nudgeErr := GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, nudgeMessages, true, llms.WithTemperature(0.0))
+	nudgeResult, nudgeErr := llmruntime.GenerateAndTrackLLMContent(o.ctx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.ParentAgentId, false, nudgeMessages, true, llms.WithTemperature(0.0))
 	if nudgeErr != nil || len(nudgeResult.Choices) == 0 || nudgeResult.Choices[0].Content == "" {
 		logger.Warn("reactagent3: notebook-only nudge llm call failed — falling back to summarization", "error", nudgeErr)
 		return nil, nil, ErrParseFailure
@@ -2304,7 +2333,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	// Critique is a reasoning-heavy sub-operation; tag the context so it
 	// resolves the Reasoning-tier model regardless of the host agent's category.
 	critiqueCtx := security.NewRequestContext(
-		context.WithValue(o.ctx.GetContext(), ContextKeyModelTier, ModelTierReasoning),
+		context.WithValue(o.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 		o.ctx.GetSecurityContext(),
 		o.ctx.GetLogger(),
 		o.ctx.GetTracer(),
@@ -2312,7 +2341,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 	)
 
 	critiqueMessages := []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}}}
-	critiqueResult, critiqueErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
+	critiqueResult, critiqueErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
 
 	if critiqueErr != nil {
 		logger.Error("reactagent3: critique llm call failed, accepting answer", "error", critiqueErr)
@@ -2335,7 +2364,7 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 				{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: instruction}}},
 				{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}},
 			}
-			retryCritique, retryErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
+			retryCritique, retryErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
 			if retryErr != nil {
 				continue
 			}
@@ -2454,8 +2483,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// ContextKeyPromptVariant the cache key uses keeps the prompt shape and its
 	// cache slot in lockstep. executorMode is untouched (only top-level turns get
 	// the lean variant, and a top-level turn is never an executor sub-agent).
-	promptVariant := promptVariantFromCtx(ctx)
-	if promptVariant == promptVariantLean {
+	promptVariant := llmruntime.PromptVariantFromCtx(ctx)
+	if promptVariant == llmruntime.PromptVariantLean {
 		notebookEnabled = false
 		hypothesisModeEnabled = false
 		orchestratorMode = false
@@ -2470,7 +2499,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// content and its cache slot never disagree. Mirrors the formatter's programmatic
 	// gate (executor_response_formatter.go), which prose-instruction alone could not
 	// reliably enforce.
-	isInvestigation := promptVariant != promptVariantLean
+	isInvestigation := promptVariant != llmruntime.PromptVariantLean
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -2532,13 +2561,11 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// this prompt path attach the combined AccountContext + AccountPrompt to
 	// their own LLM calls explicitly.
 
-	agentAdditionalPrompt, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, agent.GetName())
-	if agentAdditionalPrompt != "" {
-		additionalAdditionalPrompt := fmt.Sprintf(`
-		<additional_agent_prompt>
-		%s
-		</additional_agent_prompt>`, agentAdditionalPrompt)
-		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: additionalAdditionalPrompt})
+	// Always-on text (always-load skills) is resolved once per agent run by the
+	// executor; extensions now carry tools only (#40899).
+	_, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, agent.GetName())
+	if block := AgentInstructionsBlock(request); block != "" {
+		messageFormatters = append(messageFormatters, LiteralSystemMessage{Content: block})
 	}
 
 	if len(configuredTools) > 0 {
@@ -2555,6 +2582,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// injected when the menu lives in the human message (KB pre-step path)
 	// rather than the system prompt (legacy path).
 	tools = FilterAndInjectDefaultTools(request.AccountId, agent, agentPrompt+request.SkillListsMenu, tools, request.Capabilities, request.KnowledgePolicy)
+	tools = strictCheckTools(ctx, agent, request, tools)
 
 	// Agent prompt as system message so it falls within the cacheable prefix
 	// for Global/Account cache scopes. Dynamic parts (history, context, input, scratchpad) stay as human message.
@@ -2603,6 +2631,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 {{if .is_top_level}}
 {{.memory_context_block}}
 {{.channel_context_block}}
+{{.user_style_block}}
 {{end}}
 <question>{{.input}}</question>
 
@@ -2624,11 +2653,14 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"skill_lists_menu",
 		"memory_context_block",
 		"channel_context_block",
+		"user_style_block",
 		"is_top_level",
 		"orchestrator_mode",
 	}))
 
 	tools = FilterTools(tools, request.Capabilities)
+	// After default-tool injection, so injected tools are filtered too.
+	tools = ToolsForPrompt(ctx, request.AccountId, tools)
 
 	tmpl := prompts.NewChatPromptTemplate(messageFormatters)
 
@@ -2662,11 +2694,12 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	}
 
 	evidenceIndex := ""
-	var memoryContextBlock, channelContextBlock string
+	var memoryContextBlock, channelContextBlock, userStyleBlock string
 	if isTopLevel {
 		evidenceIndex = fetchEvidenceIndex(ctx, request)
 		memoryContextBlock = renderMemoryContextBlock(request.MemoryContext)
 		channelContextBlock = renderChannelContextBlock(request.ChannelContext)
+		userStyleBlock = renderUserStyleBlock(request.UserStyle)
 	}
 
 	tmpl.PartialVariables = map[string]any{
@@ -2705,6 +2738,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"skill_lists_menu":      request.SkillListsMenu,
 		"memory_context_block":  memoryContextBlock,
 		"channel_context_block": channelContextBlock,
+		"user_style_block":      userStyleBlock,
 	}
 	return tmpl, tools, nil
 }
@@ -2721,7 +2755,7 @@ func react3BasePromptName(agent NBAgent) string {
 
 // NewReActAgent3 initializes a new instance of the react_3 planner.
 func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgent NBAgent, systemMessage string, extraMessages []prompts.MessageFormatter, initialNotebook string) (*NBReActPlanner3, error) {
-	model, err := GetLlmModel(ctx, nbAgent.GetName(), request.AccountId, request.ConversationId)
+	model, err := llmruntime.GetLlmModel(ctx, nbAgent.GetName(), request.AccountId, request.ConversationId)
 	if err != nil {
 		return nil, err
 	}
@@ -2746,7 +2780,7 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 	// Lean turn: read the same ContextKeyPromptVariant the prompt build and cache
 	// key use, so the runtime notebook/hypothesis gating stays consistent with the
 	// prompt actually sent this turn.
-	leanMode := promptVariantFromCtx(ctx) == promptVariantLean
+	leanMode := llmruntime.PromptVariantFromCtx(ctx) == llmruntime.PromptVariantLean
 
 	return &NBReActPlanner3{
 		ctx:                             ctx,
@@ -2757,7 +2791,7 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		summaryToolName:                 summaryToolName,
 		retryConfig:                     retryConfig,
 		refinementAttempts:              0,
-		maxRefinementAttempts:           2,
+		maxRefinementAttempts:           depthRefinementBudget(ctx, 2),
 		maxConsecutiveNotebookOnlyTurns: 2,
 		tools:                           tools,
 		enableCritique:                  request.EnableCritique,

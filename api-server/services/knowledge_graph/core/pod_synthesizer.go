@@ -45,12 +45,18 @@ func NewPodSynthesizer(db *database.DatabaseManager, logger *slog.Logger) *PodSy
 // owner is a ReplicaSet, Runner, or other unsupported kind still get a
 // synth Pod entity and a Pod→Node RUNS_ON edge; they just don't get a
 // MANAGES edge (logged at debug).
+//
+// Membership follows what sources/k8s declares, so a kind added there belongs
+// here too: Rollout joined when the K8s source started building Workload nodes
+// for Argo Rollouts (#42134), which is what made its pods' MANAGES edge
+// resolvable rather than dangling.
 var supportedManagesKinds = map[string]bool{
 	"Deployment":  true,
 	"StatefulSet": true,
 	"DaemonSet":   true,
 	"Job":         true,
 	"CronJob":     true,
+	"Rollout":     true,
 }
 
 // SupportedManagesKinds returns the workload kinds a synthesized Pod can name
@@ -265,6 +271,16 @@ func (p *PodSynthesizer) NeighborsForPod(tenantID, podID string) (*DbNode, []*Db
 	}
 
 	return pod, neighbors, edges, nil
+}
+
+// podSearchApplies reports whether a SearchNodes call may return synthesized
+// Pods: the node-type filter permits Pods, the source is k8s or unset, and no
+// role is asked for. A Pod can never carry a role (it is not a role target and
+// no role has Pod as its typed equivalent), and the Pod query does not read the
+// roles filter, so without the last rule every roles search also returned the
+// matching namespace's Pods.
+func podSearchApplies(params SearchNodesParams) bool {
+	return includesPod(params.NodeTypes) && (params.Source == "" || params.Source == "k8s") && len(params.Roles) == 0
 }
 
 // SearchPods executes the k8s_pods slice of a SearchNodes call.

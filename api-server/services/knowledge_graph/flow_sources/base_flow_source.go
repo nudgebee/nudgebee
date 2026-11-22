@@ -206,6 +206,24 @@ func (b *BaseFlowSource) LogMetrics() {
 		"nodes_not_matched", b.metrics.NodesNotMatched,
 		"errors", b.metrics.ErrorCount,
 		"duration_seconds", b.metrics.BuildDuration.Seconds())
+	b.logGuardRejections()
+}
+
+// logGuardRejections emits one Info summary of the namespace-guard rejections
+// this run's matcher made, so production has evidence of how often the guard
+// fires. Silent when nothing was rejected.
+func (b *BaseFlowSource) logGuardRejections() {
+	if b.nodeMatcher == nil {
+		return
+	}
+	count, sample := b.nodeMatcher.GuardRejectionSummary()
+	if count == 0 {
+		return
+	}
+	b.logger.Info("namespace guard rejected node matches",
+		"source", b.name,
+		"rejections", count,
+		"sample_observed_to_candidate_namespace", sample)
 }
 
 // TrackBuildTime tracks the build duration

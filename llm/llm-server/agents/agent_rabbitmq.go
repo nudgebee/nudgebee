@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -307,6 +308,6 @@ func (l RabbitMQAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
-func (l RabbitMQAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (l RabbitMQAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }

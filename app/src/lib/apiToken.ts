@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import type { JWT } from 'next-auth/jwt';
 import { encodeSessionJWT } from '@lib/internal';
 import { getUserAuthByTokenSha256, updateUserAccountAccessed } from '@lib/UserService';
+import { isBeeAccount } from '@lib/userKind';
 import { roleBelongsToTenant } from '@lib/userPermissionMapper';
 import cache from '@lib/cache';
 
@@ -217,6 +218,11 @@ export async function authenticateApiToken(rawToken: string): Promise<ApiTokenAu
   }
   if (userAccount.status !== 'active' || userAccount.user.status !== 'active') {
     console.warn('[apiToken] token or user is not active', userAccount.id);
+    return null;
+  }
+  // A bee account acts only through the runs it is given, never with a key.
+  if (isBeeAccount(userAccount.user)) {
+    console.warn('[apiToken] key belongs to a bee account', userAccount.id);
     return null;
   }
   // A gateway key authenticates LLM traffic only. Accepting it here would hand

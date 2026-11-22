@@ -61,6 +61,14 @@ func NewBaseSource(sourceName string) BaseSource {
 // Default implementation uses the 6-part format:
 // {source}:{account}:{location}:{NodeType}:{hierarchy}:{name}
 // Sources can override this method to implement custom unique key generation logic
+//
+// UserAccount is the one exception to keying on properties["name"]: a person's
+// display name is editable (in GitLab/GitHub/PagerDuty's own profile UI) and is
+// not unique, so keying on it meant two people sharing a display name collapsed
+// into one node with blended edges, and a rename re-keyed a node into a second
+// one (#41505, #37011). Those nodes key on properties["username"] — the login /
+// external user id, which is unique per integration and which Identity Sync
+// already treats as the person's stable handle.
 func (b *BaseSource) GenerateUniqueKey(node *core.DbNode) string {
 	if node == nil {
 		return ""
@@ -69,10 +77,26 @@ func (b *BaseSource) GenerateUniqueKey(node *core.DbNode) string {
 	// Create key components with defaults
 	keyComponents := core.NewUniqueKeyComponents(b.sourceName, node.NodeType)
 
-	// Extract name from properties
-	if nameVal, ok := node.Properties["name"]; ok {
+	// Extract the key's name component: the stable login for identities (see the
+	// doc comment), the display name for everything else.
+	nameProperty := "name"
+	if node.NodeType == core.NodeTypeUserAccount {
+		nameProperty = "username"
+	}
+	if nameVal, ok := node.Properties[nameProperty]; ok {
 		if nameStr, ok := nameVal.(string); ok {
 			keyComponents.Name = nameStr
+		}
+	}
+
+	// A UserAccount with no username still needs a key: fall back to the display
+	// name rather than dropping through to the node id, which is derived from the
+	// key itself and would change on every build.
+	if keyComponents.Name == "" && nameProperty != "name" {
+		if nameVal, ok := node.Properties["name"]; ok {
+			if nameStr, ok := nameVal.(string); ok {
+				keyComponents.Name = nameStr
+			}
 		}
 	}
 

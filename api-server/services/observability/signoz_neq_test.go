@@ -52,7 +52,7 @@ func TestSignozLeaf_NeverEmitsNotEquals(t *testing.T) {
 func TestSignozLeaf_NeqBecomesSingleValueNotIn(t *testing.T) {
 	clause, err := signozLeaf("k8s.namespace.name", Nq, "nb-e2e")
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"key": "k8s.namespace.name"}, clause.Key)
+	assert.Equal(t, map[string]string{"key": "k8s.namespace.name", "type": "resource", "dataType": "string"}, clause.Key)
 	assert.Equal(t, "nin", clause.Op)
 	assert.Equal(t, []any{"nb-e2e"}, clause.Value)
 
@@ -73,4 +73,40 @@ func TestSignozLeaf_NeqBecomesSingleValueNotIn(t *testing.T) {
 		assert.Equal(t, "nin", clause.Op)
 		assert.Equal(t, []any{"x"}, clause.Value)
 	})
+}
+
+// Keys our own mapping produces are OTel resource attributes and must be sent
+// typed: an untyped key that SigNoz also knows as a log attribute (k8s event logs
+// carry k8s.namespace.name) resolves to the log attribute and misses the rows
+// that hold it as a resource attribute. Columns and unmapped keys stay untyped.
+func TestSignozLeaf_TypesResourceKeys(t *testing.T) {
+	typed := map[string]string{"type": "resource", "dataType": "string"}
+	resourceKeys := append([]string{signozNamespaceKey, signozPodKey, "service.name", "k8s.container.name",
+		"k8s.node.name", "k8s.cluster.name", "host.name"}, signozWorkloadKeys...)
+	for _, key := range resourceKeys {
+		clause, err := signozLeaf(key, Eq, "x")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"key": key, "type": typed["type"], "dataType": typed["dataType"]}, clause.Key, key)
+	}
+	for _, key := range []string{"body", signozSeverityKey, "user.tier", "trace_id"} {
+		value := any("x")
+		if key == signozSeverityKey {
+			value = "ERROR"
+		}
+		clause, err := signozLeaf(key, Eq, value)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"key": key}, clause.Key, key)
+	}
+
+	// The workload query the logs action sends reaches SigNoz with both keys typed.
+	terms, err := signozDNF(query.QueryWhereClause{And: []query.QueryWhereClause{
+		bin("k8s.deployment.name", Eq, "checkout"), bin(signozNamespaceKey, Eq, "shop"),
+	}})
+	require.NoError(t, err)
+	require.Len(t, terms, 1)
+	require.Len(t, terms[0], 2)
+	for _, clause := range terms[0] {
+		assert.Equal(t, "resource", clause.Key["type"], clause.Key["key"])
+		assert.Equal(t, "string", clause.Key["dataType"], clause.Key["key"])
+	}
 }

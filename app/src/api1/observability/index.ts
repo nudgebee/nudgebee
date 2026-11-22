@@ -260,7 +260,7 @@ const observability = {
   },
 
   // `metricProvider` pins the provider, same reason as metricsLabelList above.
-  async metricsLabelValueList(accountId: string, labelName: string, request: Record<string, string>, options?: { metricProvider?: string }) {
+  async metricsLabelValueList(accountId: string, labelName: string, request: Record<string, any>, options?: { metricProvider?: string }) {
     if (accountId === 'demo') return null;
     const METRICS_LABEL_VALUE_LIST = `
     query MetricsLabelValueList($accountId: String!, $labelName: String!, $request: jsonb, $metricProvider: String) {

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"nudgebee/services/common"
@@ -17,6 +18,11 @@ import (
 
 type ActionRequestAction struct {
 	Name string `json:"name"`
+	// Permission is the action's classified "<module>:<Class>" grant key, set by
+	// the app gateway (rpcGateway forwardAction). Empty for unclassified actions
+	// and for callers other than the gateway; those are checked against the
+	// gateway's classification by name (security.ActionKey).
+	Permission string `json:"permission"`
 }
 
 type ActionRequestQuery struct {
@@ -92,6 +98,12 @@ func buildContextFromPayload(c *gin.Context, h *ActionRequest, tracer *trace.Tra
 			return nil, err
 		}
 	}
+	// The tenant-admin constructor returns nil when it cannot load the tenant's
+	// accounts. Refuse here, once, rather than let a handler run with no identity.
+	if securityContext == nil {
+		logger.Error("security context unavailable", "tenant_id", tenantId)
+		return nil, errors.New("security context unavailable")
+	}
 
 	// Extract super-admin roles from allowed-roles. Full and readonly are
 	// extracted distinctly so destructive gates can require exact super_admin
@@ -108,7 +120,9 @@ func buildContextFromPayload(c *gin.Context, h *ActionRequest, tracer *trace.Tra
 
 	// trace_id/span_id are stamped by NewRequestContext from ctx.
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId)
-	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
+	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetActionPermission(security.ActionKey(h.Action.Name, h.Action.Permission))
+	return rc, nil
 }
 
 func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {

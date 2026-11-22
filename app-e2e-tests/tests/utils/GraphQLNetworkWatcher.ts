@@ -2,6 +2,7 @@ import { Page, Response } from "@playwright/test";
 import axios from "axios";
 import * as dotenv from "dotenv";
 import { readFileSync } from "fs";
+import { postAlertInThread } from "../../notifications/SlackThreads";
 import { TENANT_FILE_PATH } from "./paths";
 
 dotenv.config();
@@ -83,11 +84,6 @@ async function sendSlackAlert(
   workflowUrl?: string
 ): Promise<void> {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-
-  if (!webhookUrl) {
-    console.warn("[GraphQLWatcher] SLACK_WEBHOOK_URL not configured");
-    return;
-  }
 
   const uniqueFailures = Array.from(
     new Map(failures.map(f => [f.operationName, f])).values()
@@ -191,6 +187,17 @@ async function sendSlackAlert(
       },
     ],
   };
+
+  // Into the run's "other alerts" thread when a bot is configured; the webhook otherwise.
+  if (await postAlertInThread("other", payload)) {
+    console.log(`[GraphQLWatcher] Slack alert sent in thread (${isInstant ? "instant" : "final"})`);
+    return;
+  }
+
+  if (!webhookUrl) {
+    console.warn("[GraphQLWatcher] SLACK_WEBHOOK_URL not configured");
+    return;
+  }
 
   try {
     await axios.post(webhookUrl, payload, { timeout: 5000 });

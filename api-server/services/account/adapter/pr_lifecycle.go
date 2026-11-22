@@ -61,6 +61,10 @@ type prMetadata struct {
 	// request so llm-server can resolve account-scoped state (conversation,
 	// workspace, budget) instead of rejecting the request for missing account.
 	AccountID string `json:"account_id"`
+	// ProviderConfig names the integration the user picked; lookups try it first.
+	ProviderConfig struct {
+		Name string `json:"name"`
+	} `json:"provider_config"`
 }
 
 // CheckAndFollowupOpenPRs polls resolution tables for open agent PRs and triggers followup
@@ -1549,96 +1553,56 @@ func resolvePRState(ctx *security.RequestContext, dbms *database.DatabaseManager
 	if strings.EqualFold(meta.Provider, "gitlab") {
 		integrationType = "gitlab"
 	}
-	cfg, err := loadGitIntegrationConfig(dbms, tenantID, integrationType)
+	integrations, err := loadGitIntegrationConfigs(ctx.GetLogger(), dbms, tenantID, integrationType, meta.ProviderConfig.Name)
 	if err != nil {
 		ctx.GetLogger().Warn("pr_lifecycle: cannot verify PR state — no integration config",
 			"pr_url", meta.PRURL, "provider", integrationType, "error", err)
 		return observedPRState{}, false
 	}
-	if integrationType == "gitlab" {
-		return resolveGitLabMRState(ctx, meta, cfg)
-	}
-	return resolveGitHubPRState(ctx, meta, cfg)
-}
-
-// loadGitIntegrationConfig returns the decrypted integration_config_values
-// (keyed by config name: url, username, password, auth_type, …) for the
-// tenant's first enabled integration of the given type. Keyed by integration
-// type, not by provider name, because that is all the followup path knows —
-// prMetadata carries "github"/"gitlab", never the integration's own name.
-func loadGitIntegrationConfig(dbms *database.DatabaseManager, tenantID, integrationType string) (map[string]string, error) {
-	if tenantID == "" {
-		return nil, fmt.Errorf("tenant ID is empty")
-	}
-	var integrationID string
-	if err := dbms.Db.QueryRowx(`
-		SELECT i.id::text FROM integrations i
-		WHERE i.tenant_id = $1 AND i.type = $2 AND i.status = 'enabled'
-		LIMIT 1`, tenantID, integrationType).Scan(&integrationID); err != nil {
-		return nil, fmt.Errorf("no enabled %s integration for tenant %s: %w", integrationType, tenantID, err)
-	}
-	rows, err := dbms.Db.Queryx(`
-		SELECT name::text, value::text, is_encrypted
-		FROM integration_config_values WHERE integration_id = $1`, integrationID)
-	if err != nil {
-		return nil, fmt.Errorf("querying integration_config_values (%s): %w", integrationID, err)
-	}
-	defer func() { _ = rows.Close() }()
-	configs := make(map[string]string)
-	for rows.Next() {
-		var name, value string
-		var encrypted bool
-		if err := rows.Scan(&name, &value, &encrypted); err != nil {
-			return nil, err
+	for _, integration := range integrations {
+		var cannotSee bool
+		if integrationType == "gitlab" {
+			state, known, cannotSee = resolveGitLabMRState(ctx, meta, integration.Values)
+		} else {
+			state, known, cannotSee = resolveGitHubPRState(ctx, meta, integration.Values)
 		}
-		if encrypted && value != "" {
-			decrypted, derr := common.Decrypt(value)
-			if derr != nil {
-				return nil, fmt.Errorf("decrypt config %q: %w", name, derr)
-			}
-			value = decrypted
+		if known || !cannotSee {
+			return state, known
 		}
-		configs[name] = value
 	}
-	return configs, rows.Err()
+	return observedPRState{}, false
 }
 
 // resolveGitHubPRState does GET /repos/{org}/{repo}/pulls/{n} and reads state +
 // merged_at. Matches the existing GetRecommendationResolutionStatus path: the
 // public api.github.com host (GHE PR-status is not supported there either), and
 // an installation token minted from the App installation id for auth_type
-// "application".
-func resolveGitHubPRState(ctx *security.RequestContext, meta prMetadata, cfg map[string]string) (observedPRState, bool) {
+// "application". cannotSee reports that this integration's credential cannot
+// see the PR, so another integration may.
+func resolveGitHubPRState(ctx *security.RequestContext, meta prMetadata, cfg map[string]string) (state observedPRState, known, cannotSee bool) {
 	org, repo, number := prCoordinatesFromMeta(meta)
 	if org == "" || repo == "" || number == "" {
-		return observedPRState{}, false
+		return observedPRState{}, false, false
 	}
-	token := cfg["password"]
-	if cfg["auth_type"] == "application" {
-		// password is the GitHub App installation id, not a usable API token.
-		tokCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 30*time.Second)
-		appToken, terr := common.GetGithubAppInstallationToken(tokCtx, token)
-		cancel()
-		if terr != nil {
-			ctx.GetLogger().Warn("pr_lifecycle: cannot verify PR state — GitHub App token failed",
-				"pr_url", meta.PRURL, "error", terr)
-			return observedPRState{}, false
-		}
-		token = appToken
+	token, err := githubAPIToken(ctx.GetContext(), cfg)
+	if err != nil {
+		ctx.GetLogger().Warn("pr_lifecycle: cannot verify PR state — GitHub App token failed",
+			"pr_url", meta.PRURL, "error", err)
+		return observedPRState{}, false, true
 	}
 	body, status, ok := httpGetJSON(ctx,
-		fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s", org, repo, number),
+		fmt.Sprintf("%s/repos/%s/%s/pulls/%s", githubAPIBase, org, repo, number),
 		map[string]string{"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"})
 	if !ok || status != 200 {
 		ctx.GetLogger().Warn("pr_lifecycle: PR state lookup did not return 200", "pr_url", meta.PRURL, "status", status)
-		return observedPRState{}, false
+		return observedPRState{}, false, credentialCannotSee(status)
 	}
-	return githubPRStateFromBody(body), true
+	return githubPRStateFromBody(body), true, false
 }
 
 // resolveGitLabMRState does GET /projects/{path}/merge_requests/{iid} and maps
 // the GitLab MR state (opened / closed / merged / locked) onto observedPRState.
-func resolveGitLabMRState(ctx *security.RequestContext, meta prMetadata, cfg map[string]string) (observedPRState, bool) {
+func resolveGitLabMRState(ctx *security.RequestContext, meta prMetadata, cfg map[string]string) (state observedPRState, known, cannotSee bool) {
 	base := cfg["url"]
 	if base == "" {
 		base = "https://gitlab.com"
@@ -1646,7 +1610,7 @@ func resolveGitLabMRState(ctx *security.RequestContext, meta prMetadata, cfg map
 	projectPath, mrIID, err := parseGitLabMRURL(meta.PRURL, base)
 	if err != nil {
 		ctx.GetLogger().Warn("pr_lifecycle: cannot verify MR state — unparseable MR URL", "mr_url", meta.PRURL, "error", err)
-		return observedPRState{}, false
+		return observedPRState{}, false, false
 	}
 	encodedPath := strings.ReplaceAll(projectPath, "/", "%2F")
 	body, status, ok := httpGetJSON(ctx,
@@ -1654,9 +1618,9 @@ func resolveGitLabMRState(ctx *security.RequestContext, meta prMetadata, cfg map
 		map[string]string{"PRIVATE-TOKEN": cfg["password"]})
 	if !ok || status != 200 {
 		ctx.GetLogger().Warn("pr_lifecycle: MR state lookup did not return 200", "mr_url", meta.PRURL, "status", status)
-		return observedPRState{}, false
+		return observedPRState{}, false, credentialCannotSee(status)
 	}
-	return gitlabMRStateFromBody(body), true
+	return gitlabMRStateFromBody(body), true, false
 }
 
 // githubPRStateFromBody / gitlabMRStateFromBody are the pure response→state maps,

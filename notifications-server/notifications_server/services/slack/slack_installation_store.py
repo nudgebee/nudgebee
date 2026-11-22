@@ -18,7 +18,7 @@ from slack_sdk.oauth.installation_store.installation_store import InstallationSt
 
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.models.models import MessagingPlatform
-from notifications_server.services.messaging_installations import upsert_messaging_integration
+from notifications_server.services.messaging_installations import TEAM_URL_FIELD, upsert_messaging_integration
 from notifications_server.utils.encode_utils import gen_id
 
 LOG = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ class SlackInstallationStore(InstallationStore):
         config = {
             "bot_token": installation.token,
             "team_name": installation.team_name,
+            TEAM_URL_FIELD: getattr(installation, "team_url", None),
             "bot_id": installation.bot_id,
             "app_id": installation.app_id,
             "client_id": self.client_id,

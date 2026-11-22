@@ -84,10 +84,14 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 	// GITLAB_TOKEN (+ GITLAB_HOST for self-hosted) come from the tenant's gitlab
 	// integration. Shared with the shell tool's injection path so both agree on
 	// how a config becomes glab credentials.
-	auth, err := BuildGitlabAuth(nbRequestContext.ToolConfig)
-	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("gitlab: unable to build auth", "error", err.Error())
-		return core.NBToolResponse{}, fmt.Errorf("failed to resolve GitLab credentials: %w", err)
+	auth := &CloudAuthResult{Env: scmProxyEnv(nbRequestContext, nil, &nbRequestContext.ToolConfig)}
+	if !scmProxyEnabled() {
+		var err error
+		auth, err = BuildGitlabAuth(nbRequestContext.ToolConfig)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Error("gitlab: unable to build auth", "error", err.Error())
+			return core.NBToolResponse{}, fmt.Errorf("failed to resolve GitLab credentials: %w", err)
+		}
 	}
 
 	command = expandEscapedNewlines(command)
@@ -102,7 +106,8 @@ func (m GitlabCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	// Use the encapsulated lazy creation/execution logic
 	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+	execCommand, execEnv := withPipelineStatus(command, env)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, execCommand, execEnv)
 
 	// The command reaches a real shell unfiltered, so a stray `printenv` (or
 	// `glab config get token`) would otherwise echo the PAT back into the

@@ -4033,6 +4033,12 @@ func (s *KnowledgeGraphService) SaveNodes(nodes []*KnowledgeGraphNode) error {
 		deduplicatedNodes = append(deduplicatedNodes, node)
 	}
 
+	// This upsert overwrites properties too, so it must layer user-set node
+	// roles on exactly as core.SaveNodes does, or a run of it would strip them.
+	if err := applyUserNodeRoles(s.dbManager, deduplicatedNodes); err != nil {
+		return fmt.Errorf("failed to apply node roles: %w", err)
+	}
+
 	// Prepare data for bulk insert
 	cols := []string{"id", "created_at", "updated_at", "properties", "cloud_account_id", "tenant_id", "unique_key"}
 	values := make([][]any, len(deduplicatedNodes))
@@ -4077,6 +4083,28 @@ func (s *KnowledgeGraphService) SaveNodes(nodes []*KnowledgeGraphNode) error {
 	}
 
 	slog.Info("Successfully saved nodes to knowledge graph", "count", len(deduplicatedNodes))
+	return nil
+}
+
+// applyUserNodeRoles layers each node's user-set role (kg_node_roles) onto its
+// properties. The upsert above matches on the unique key, so the row it updates
+// keeps the id derived from that key (core.NodeIDFor), not node.ID, which may
+// be a fresh random id; roles are keyed by the stored id.
+func applyUserNodeRoles(db *database.DatabaseManager, nodes []*KnowledgeGraphNode) error {
+	dbNodes := make([]*kgcore.DbNode, len(nodes))
+	for i, n := range nodes {
+		dbNodes[i] = &kgcore.DbNode{
+			ID:         kgcore.NodeIDFor(n.UniqueKey, n.TenantID, n.CloudAccountID),
+			TenantID:   n.TenantID,
+			Properties: n.Properties,
+		}
+	}
+	if err := kgcore.ApplyStoredUserRoles(db.Db, dbNodes); err != nil {
+		return err
+	}
+	for i, n := range nodes {
+		n.Properties = dbNodes[i].Properties
+	}
 	return nil
 }
 

@@ -53,6 +53,7 @@ type AuthHooksRegistry = {
   onUnknownOAuthSignIn: OnUnknownOAuthSignIn;
   headerMenuExtras: HeaderMenuExtra[];
   userManagementFilters: UserManagementFilter[];
+  navSections?: NavSection[];
 };
 
 const _g = globalThis as unknown as { __nbAuthHooks?: AuthHooksRegistry };
@@ -66,6 +67,7 @@ if (!_g.__nbAuthHooks) {
     onUnknownOAuthSignIn: async () => false,
     headerMenuExtras: [],
     userManagementFilters: [],
+    navSections: [],
   };
 }
 const _hooks = _g.__nbAuthHooks!;
@@ -206,6 +208,63 @@ export function headerMenuExtras(): HeaderMenuExtra[] {
 export function registerUserManagementFilter(item: UserManagementFilter): void {
   if (_hooks.userManagementFilters.some((e) => e.fragment === item.fragment)) return;
   _hooks.userManagementFilters.push(item);
+}
+
+// A top-level section of the side navigation added by an extension, with its
+// sub-items. The layout shows it only when its feature flag is on, before the
+// section whose id is `before` (or last).
+export type NavSubItem = {
+  text: string;
+  path: string;
+  id: string;
+  icon?: unknown;
+  // Route patterns (router.pathname) the sub-item counts as active on; without
+  // them, any route under its path.
+  activePaths?: string[];
+  // The module whose :Read a grants-only user needs (the layout greys it out otherwise).
+  module?: string;
+};
+// The top bar's title (and back button) for a route of the section, as the built-in
+// pages declare theirs in Header1's headerItems. `route` is a router.pathname.
+export type NavHeader = {
+  route: string;
+  name: string;
+  icon?: unknown;
+  showBackButton?: boolean;
+};
+export type NavSection = {
+  text: string;
+  path: string;
+  id: string;
+  icon?: unknown;
+  feature?: string;
+  before?: string;
+  module?: string;
+  subItems: NavSubItem[];
+  headers?: NavHeader[];
+  // Counts shown beside sub-items, by sub-item id; read at most once a minute, or at
+  // once after refreshNavCounts().
+  loadCounts?: () => Promise<Record<string, number>>;
+};
+
+export function registerNavSection(section: NavSection): void {
+  _hooks.navSections ??= [];
+  if (_hooks.navSections.some((e) => e.id === section.id)) {
+    return;
+  }
+  _hooks.navSections.push(section);
+}
+
+export function navSections(): NavSection[] {
+  return _hooks.navSections ?? [];
+}
+
+// Asks the layout to read the sections' counts again (after what they count changed).
+export const NAV_COUNTS_EVENT = 'nb:nav-counts-changed';
+export function refreshNavCounts(): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(NAV_COUNTS_EVENT));
+  }
 }
 
 export function userManagementFilters(session: SessionLike): UserManagementFilter[] {

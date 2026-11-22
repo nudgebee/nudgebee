@@ -322,7 +322,7 @@ func TestSplunkEnterpriseLogSource_QueryLogs(t *testing.T) {
 	var gotSearch, gotExecMode, gotOutputMode, gotEarliest string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/servicesNS/-/search/search/v2/jobs", r.URL.Path)
+		assert.Equal(t, "/servicesNS/-/search/search/jobs", r.URL.Path)
 		assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
 		require.NoError(t, r.ParseForm())
 

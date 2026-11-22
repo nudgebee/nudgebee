@@ -46,6 +46,32 @@ func InvalidateIntegrationCache() {
 	query.InvalidateTraceIntegrationCache()
 }
 
+func init() {
+	common.OnReplicaBroadcast(common.ChangeIntegration, common.ReplicaHandler{
+		OnKeys: dropIntegrationCacheForAccounts,
+		OnAll: func() {
+			integrationByTypeCache.Lock()
+			defer integrationByTypeCache.Unlock()
+			integrationByTypeCache.entries = make(map[string]integrationCacheEntry)
+		},
+	})
+}
+
+// dropIntegrationCacheForAccounts drops the accounts' cached integrations on
+// this replica; the cache is keyed account:type:tenant.
+func dropIntegrationCacheForAccounts(accountIds []string) {
+	integrationByTypeCache.Lock()
+	defer integrationByTypeCache.Unlock()
+	for key := range integrationByTypeCache.entries {
+		for _, accountId := range accountIds {
+			if strings.HasPrefix(key, accountId+":") {
+				delete(integrationByTypeCache.entries, key)
+				break
+			}
+		}
+	}
+}
+
 type IntegrationStatus string
 
 const (
@@ -572,6 +598,8 @@ func CreateIntegrationConfig(
 			return IntegrationDto{}, errors.New("integrations: integration not found or access denied")
 		}
 
+		// A changed config value resets the MCP health verdict in the
+		// database (integration_config_values trigger, V1025, #40994).
 		_, err = tx.Exec(`
 			UPDATE integrations
 			SET name = $1, labels = $2, updated_at = $3, updated_by = $4
@@ -638,6 +666,21 @@ func CreateIntegrationConfig(
 		if _, err = tx.Exec(`DELETE FROM integrations_cloud_accounts WHERE integration_id = $1`, configId); err != nil {
 			return IntegrationDto{}, fmt.Errorf("failed to unlink accounts: %w", err)
 		}
+	}
+
+	// A dual-mode row switched out of vm_agent must still refresh the forager's
+	// datasource list, or the forager keeps serving the old datasource and its
+	// credentials. Read the stored mode before the values below overwrite it.
+	wasProxy := false
+	if isUpdate && IsProxyCapableType(intgerationType) {
+		var prevMode string
+		if modeErr := tx.QueryRow(`
+			SELECT value FROM integration_config_values
+			WHERE integration_id = $1 AND name = 'connection_mode'
+		`, configId).Scan(&prevMode); modeErr != nil && !errors.Is(modeErr, sql.ErrNoRows) {
+			return IntegrationDto{}, fmt.Errorf("failed to read previous connection_mode: %w", modeErr)
+		}
+		wasProxy = IsProxyIntegration(intgerationType, []IntegrationConfigValue{{Name: "connection_mode", Value: prevMode}})
 	}
 
 	parameters := []string{DefaultLogProvider, DefaultMetricsProvider, DefaultTraceProvider, DefaultLLMProvider}
@@ -831,50 +874,8 @@ func CreateIntegrationConfig(
 			// concurrent saves over overlapping accounts must take them in the
 			// same order or Postgres deadlocks one of them.
 			for _, accId := range slices.Sorted(maps.Keys(perAccountValues)) {
-				accValue := perAccountValues[accId]
-				if accValue == "true" {
-					// upsert true
-					_, err = tx.Exec(fmt.Sprintf(`
-						INSERT INTO integrations_cloud_accounts (
-							integration_id, cloud_account_id, tenant_id, link_role, %s
-						)
-						VALUES ($1,$2,$3,'own',true)
-						ON CONFLICT (integration_id, cloud_account_id, tenant_id, link_role)
-						DO UPDATE SET %s=EXCLUDED.%s`,
-						column, column, column),
-						configId,
-						accId,
-						ctx.GetSecurityContext().GetTenantId(),
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to upsert %s=true: %w", column, err)
-					}
-
-					// reset others
-					_, err = tx.Exec(fmt.Sprintf(`
-						UPDATE integrations_cloud_accounts
-						SET %s=false
-						WHERE cloud_account_id=$1 AND integration_id != $2`,
-						column),
-						accId,
-						configId,
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to reset others for %s: %w", column, err)
-					}
-				} else {
-					// explicitly set to false
-					_, err = tx.Exec(fmt.Sprintf(`
-						UPDATE integrations_cloud_accounts
-						SET %s=false
-						WHERE integration_id=$1 AND cloud_account_id=$2`,
-						column),
-						configId,
-						accId,
-					)
-					if err != nil {
-						return IntegrationDto{}, fmt.Errorf("failed to update %s=false: %w", column, err)
-					}
+				if err = writeAccountDefault(tx, ctx.GetSecurityContext().GetTenantId(), configId, accId, column, perAccountValues[accId] == "true"); err != nil {
+					return IntegrationDto{}, err
 				}
 			}
 		}
@@ -1017,8 +1018,8 @@ func CreateIntegrationConfig(
 		}
 	}
 
-	// Trigger proxy config push if this is a proxy integration
-	if IsProxyIntegration(intgerationType, integrationConfigValues) {
+	// Trigger proxy config push if this is, or just stopped being, a proxy integration
+	if wasProxy || IsProxyIntegration(intgerationType, integrationConfigValues) {
 		for _, accId := range accountIds {
 			TriggerProxyConfigPush(accId)
 		}
@@ -1626,7 +1627,7 @@ func DeleteIntegrationConfig(
 	// Check if this is a proxy integration by querying its config values
 	var affectedAccountIDs []string
 	isProxy := false
-	if IsProxyIntegrationType(integrationType) {
+	if IsProxyCapableType(integrationType) {
 		// Fetch config values to determine if this is a proxy integration
 		configRows, qErr := tx.Queryx(`
 			SELECT name::text, value::text FROM integration_config_values WHERE integration_id = $1
@@ -1767,6 +1768,9 @@ func DeleteIntegrationConfig(
 						"integration_id", intID, "error", execErr)
 					return execErr
 				}
+				if execErr := deleteToolApprovalRulesForIntegration(ctx, tx, tenantId, intID); execErr != nil {
+					return execErr
+				}
 				if _, execErr := tx.Exec(`DELETE FROM integrations WHERE id = $1`, intID); execErr != nil {
 					slog.Error("integrations: failed to delete linked datasource",
 						"integration_id", intID, "error", execErr)
@@ -1785,6 +1789,10 @@ func DeleteIntegrationConfig(
     `, integrationId)
 	if err != nil {
 		slog.Error("integrations: failed to delete from integration_config_values", "error", err)
+		return err
+	}
+
+	if err = deleteToolApprovalRulesForIntegration(ctx, tx, tenantId, integrationId); err != nil {
 		return err
 	}
 
@@ -1984,6 +1992,8 @@ func UpdateIntegrationConfigStatus(
 		}
 	}
 
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
 	_, err = tx.Exec(`
         UPDATE integrations set status = $2
         WHERE id = $1
@@ -2291,7 +2301,7 @@ func DiagnoseIntegrationConnectionForAccount(ctx *security.RequestContext, integ
 	if accountID == "" {
 		return errors.New("integrations: account_id is required")
 	}
-	if !ctx.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 		return errors.New("integrations: connection test is not permitted")
 	}
 	return testIntegrationConnection(ctx, integrationID, accountID, true)
@@ -2512,6 +2522,11 @@ func GetIntegrationByConfigNameValues(
 		// Use BuildInClause to safely interpolate values into the query string
 		// instead of using parameterized queries ($1, $2, $3) which trigger
 		// lib/pq unnamed prepared statements that collide under concurrent goroutines.
+		//
+		// Ordered so that, when two links hold the default (a UI save racing a
+		// k8s collector heartbeat, which the next heartbeat undoes), the answer is
+		// the user's choice every time: one set from the UI (user_set_defaults),
+		// then a user-sourced integration, then a fixed tie-break.
 		rows, err = dbms.Db.Queryx(fmt.Sprintf(`
 			SELECT i.id, i.name, i.source, i.type
 			FROM integrations i
@@ -2521,8 +2536,9 @@ func GetIntegrationByConfigNameValues(
 			AND ica.%s = %s
 			AND i.tenant_id = %s
 			AND i.status != 'disabled'
+			ORDER BY ('%s' = ANY(ica.user_set_defaults)) DESC, (i.source = 'user') DESC, i.id
 			LIMIT 1
-		`, dbms.BuildInClause(accountId), column, dbms.BuildInClause(configValue), dbms.BuildInClause(context.GetSecurityContext().GetTenantId())))
+		`, dbms.BuildInClause(accountId), column, dbms.BuildInClause(configValue), dbms.BuildInClause(context.GetSecurityContext().GetTenantId()), column))
 	} else {
 		rows, err = dbms.Db.Queryx(fmt.Sprintf(`
 			SELECT i.id, i.name, i.source, i.type
@@ -2714,7 +2730,8 @@ func GetIntegrationByTypePreferringDefault(
 	// this can never serve the differently-ordered row the shared lookup cached.
 	cacheKey := accountId + ":" + integrationType + ":" +
 		context.GetSecurityContext().GetTenantId() + ":default=" + defaultColumn
-	if value, ok := cachedIntegrationByType(cacheKey); ok {
+	cacheable := !IsMsTeamsOwnedType(integrationType)
+	if value, ok := cachedIntegrationByType(cacheKey); cacheable && ok {
 		return value, nil
 	}
 
@@ -2760,7 +2777,9 @@ func GetIntegrationByTypePreferringDefault(
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	storeIntegrationByType(cacheKey, result)
+	if cacheable {
+		storeIntegrationByType(cacheKey, result)
+	}
 	return result, nil
 }
 
@@ -2769,10 +2788,12 @@ func GetIntegrationByType(
 	accountId string,
 	integrationType string,
 ) (*IntegrationDto, error) {
-	// Check cache first
+	// Check cache first. notifications-server writes the Microsoft Teams types,
+	// so a cached answer for them could outlive the row.
 	cacheKey := accountId + ":" + integrationType + ":" + context.GetSecurityContext().GetTenantId()
+	cacheable := !IsMsTeamsOwnedType(integrationType)
 	integrationByTypeCache.RLock()
-	if entry, ok := integrationByTypeCache.entries[cacheKey]; ok {
+	if entry, ok := integrationByTypeCache.entries[cacheKey]; cacheable && ok {
 		if time.Now().Before(entry.expiresAt) {
 			integrationByTypeCache.RUnlock()
 			return entry.value, nil
@@ -2832,12 +2853,14 @@ func GetIntegrationByType(
 	}
 
 	// Cache the result (including nil)
-	integrationByTypeCache.Lock()
-	integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
-		value:     result,
-		expiresAt: time.Now().Add(integrationCacheTTL),
+	if cacheable {
+		integrationByTypeCache.Lock()
+		integrationByTypeCache.entries[cacheKey] = integrationCacheEntry{
+			value:     result,
+			expiresAt: time.Now().Add(integrationCacheTTL),
+		}
+		integrationByTypeCache.Unlock()
 	}
-	integrationByTypeCache.Unlock()
 
 	return result, nil
 }
@@ -2954,6 +2977,39 @@ func AgentIntegrationState(
 		return false, false, err
 	}
 	return configured, usable, nil
+}
+
+// AgentStatusFlagOn reports whether the account's agent reports key as true in its
+// connection_status. A key an older agent never sends reads as false. Read from the
+// row, not the 15-minute agent details cache, so a change counts at the agent's next
+// heartbeat.
+func AgentStatusFlagOn(context *security.RequestContext, accountId, key string) (bool, error) {
+	if context == nil || context.GetSecurityContext() == nil {
+		return false, errors.New("integrations: request context and security context are required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+
+	const query = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent a
+			JOIN cloud_accounts ca ON ca.id = a.cloud_account_id
+			WHERE a.cloud_account_id = $1
+			  AND ca.tenant = $2
+			  AND a.type != 'proxy'
+			  AND a.connection_status ->> $3 = 'true'
+		)`
+	var on bool
+	if err = dbms.Db.QueryRowx(query, accountId, context.GetSecurityContext().GetTenantId(), key).Scan(&on); err != nil {
+		context.GetLogger().Error("integrations: failed to read agent status flag",
+			"account_id", accountId, "key", key, "error", err)
+		return false, err
+	}
+	return on, nil
 }
 
 // GetIntegrationConfigValueByName returns the value of a single config entry

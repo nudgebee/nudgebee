@@ -59,11 +59,14 @@ describe('NextAuth jwt: workspace switch needs membership', () => {
   it('still lets a super admin in read-only where they are not a member', async () => {
     // Super admin is off unless the deployment turns it on.
     process.env.SUPER_ADMIN_ENABLED = 'true';
-    notAMember();
-    const token = await jwt({ token: signedIn({ isSuperAdmin: true }), trigger: 'update', session: { tenantId: 't2' } });
-    expect(token.tenant).toEqual({ id: 't2', name: 'Other' });
-    expect(token.roles).toEqual(['tenant_admin_readonly']);
-    delete process.env.SUPER_ADMIN_ENABLED;
+    try {
+      notAMember();
+      const token = await jwt({ token: signedIn({ isSuperAdmin: true }), trigger: 'update', session: { tenantId: 't2' } });
+      expect(token.tenant).toEqual({ id: 't2', name: 'Other' });
+      expect(token.roles).toEqual(['tenant_admin_readonly']);
+    } finally {
+      delete process.env.SUPER_ADMIN_ENABLED;
+    }
   });
 
   it('switches a member with their roles in the workspace', async () => {

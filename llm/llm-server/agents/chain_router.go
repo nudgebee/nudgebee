@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -270,14 +271,6 @@ func isK8sOrchestratorVariant(name string) bool {
 	return false
 }
 
-// getTicketAgentName returns the appropriate ticket agent name based on the feature flag.
-func getTicketAgentName() string {
-	if config.Config.TicketV2Enabled {
-		return TicketsV2AgentName
-	}
-	return TicketsAgentName
-}
-
 func getAgent(ctx *security.RequestContext, agent string, accountId string) (core.NBAgent, bool) {
 	var agentName string
 	switch strings.ToLower(agent) {
@@ -309,9 +302,7 @@ func getAgent(ctx *security.RequestContext, agent string, accountId string) (cor
 		agentName = EventsAgentName
 	case FinOpsAgentName, "finopschain", "finopsagent", "cost", "spend":
 		agentName = FinOpsAgentName
-	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", TicketsAgentName:
-		agentName = getTicketAgentName()
-	case TicketsV2AgentName:
+	case "ticket", "jira", "bugs", "issues", "ticketagent", "ticketmaster", "create_ticket", "ticket_create", "tickets", TicketsV2AgentName:
 		agentName = TicketsV2AgentName
 	case core.RouterAgentName:
 		agentName = core.RouterAgentName
@@ -388,6 +379,14 @@ func InferAgent(ctx *security.RequestContext, userId string, accountId string, c
 	chainName := chainRes.Response[0]
 	chain, ok := getAgent(ctx, chainName, accountId)
 	if !ok {
+		// An @-mentioned agent this account can't use (not shared with it, or no
+		// such agent) is reported rather than answered by the help agent.
+		if name, _ := common.ParseAgentMention(query); name != "" && name == chainName {
+			if _, isHelp := chain.(HelpAgent); !isHelp {
+				ctx.GetLogger().Info("router: mentioned agent not available on account", "agent", name)
+				return nil, &UnavailableAgentError{AgentName: name}
+			}
+		}
 		ctx.GetLogger().Error("Unable to identify agent", "chain", chainName)
 		return nil, errors.New("llm: unable to identify intent. My expertise is focused on Kubernetes, Helm, Events, Logs, Metrics, Recommendations, Software Development. Could you please provide more details or rephrase your question so I can better assist you?")
 	}
@@ -395,9 +394,24 @@ func InferAgent(ctx *security.RequestContext, userId string, accountId string, c
 	return chain, err
 }
 
+// UnavailableAgentError is returned when a query @-mentions an agent the account can't use.
+type UnavailableAgentError struct {
+	AgentName string
+}
+
+func (e *UnavailableAgentError) Error() string {
+	return fmt.Sprintf("@%s isn't available on this account.", e.AgentName)
+}
+
+// InferAgentOrHelp falls back to the help agent when no agent is inferred,
+// except for an UnavailableAgentError, which is returned so the caller can tell the user.
 func InferAgentOrHelp(ctx *security.RequestContext, userId string, accountId string, conversationId string, query string, configs ...core.ConversationSessionRequestConfig) (core.NBAgent, error) {
 	agent, err := InferAgent(ctx, userId, accountId, conversationId, query, configs...)
 	if err != nil {
+		var unavailable *UnavailableAgentError
+		if errors.As(err, &unavailable) {
+			return nil, err
+		}
 		return HelpAgent{}, nil
 	}
 
@@ -469,10 +483,10 @@ func (l HelpAgent) Execute(ctx *security.RequestContext, request core.NBAgentReq
 	}
 
 	routerPromptMessage := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemtMessages),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemtMessages)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, routerPromptMessage, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, routerPromptMessage, true)
 	if err != nil {
 		ctx.GetLogger().Error("helper: unable to generate content", "error", err)
 		return core.NBAgentResponse{}, err

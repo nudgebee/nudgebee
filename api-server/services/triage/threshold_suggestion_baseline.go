@@ -430,7 +430,13 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 			s.Reason = s.baseReason + " No value outside that range would still have fired on the last 7 days of data, so there is no new value to offer. Review the alert definition rather than the number."
 			return s, true
 		}
-		s.SuggestedThreshold = roundTo(outside, 2)
+		// Judged on the value that would be served, which is rounded.
+		outside = roundTo(outside, 2)
+		if missed, highest := clearsEveryFiring(decomp.firingSorted, outside, isGT); missed {
+			s.Reason = s.baseReason + " " + clearsEveryFiringReason(outside, highest, decomp, isGT)
+			return s, true
+		}
+		s.SuggestedThreshold = outside
 		s.Method = method + "-chronic"
 		s.EstimatedReduction = estimateReduction(full, theta, s.SuggestedThreshold, isGT)
 		s.RecommendationType = "tune_threshold"
@@ -499,6 +505,17 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 		}
 		s.baseReason = fmt.Sprintf("Normal (off-alert) band reaches the threshold: baseline p%s=%.2f vs threshold %.2f.",
 			tailLabel(isGT), bandEdge, theta)
+		// The band edge came from samples taken while the alert was NOT firing. When it lies beyond
+		// everything the alert actually fired on, those samples are not the alert's normal behaviour
+		// — a ratio whose denominator dropped to zero reads as a million while the real firings sit
+		// near 1 — and a threshold set there would keep only those outliers.
+		if missed, highest := clearsEveryFiring(decomp.firingSorted, s.SuggestedThreshold, isGT); missed {
+			s.RecommendationType = "review_alert"
+			s.Reason = s.baseReason + " " + clearsEveryFiringReason(s.SuggestedThreshold, highest, decomp, isGT)
+			s.SuggestedThreshold = theta
+			s.EstimatedReduction = 0
+			return s, true
+		}
 		s.Reason = fmt.Sprintf("%s Re-baseline to %.2f (baseline median=%.2f, MAD=%.2f).", s.baseReason, s.SuggestedThreshold, bMed, bMad)
 		s.Confidence = computeConfidence(decomp.baselineSorted, theta, s.SuggestedThreshold, alertQuality)
 		// Coverage is no longer a verdict, but it still bounds how much the baseline can be trusted:
@@ -557,6 +574,39 @@ func diagnoseWithBaseline(alertDef *AlertDefinition, mh *MetricHistory, interval
 			tailLabel(isGT), bandEdge, theta)
 		return s, true
 	}
+}
+
+// clearsEveryFiring reports whether a candidate threshold would not have fired on any sample taken
+// while the alert was firing, and returns the most extreme of those samples. Such a value does not
+// tune the alert: it removes every firing it had and keeps only what lies beyond it.
+func clearsEveryFiring(firingSorted []float64, candidate float64, isGT bool) (bool, float64) {
+	if len(firingSorted) == 0 {
+		return false, 0
+	}
+	if isGT {
+		highest := firingSorted[len(firingSorted)-1]
+		return candidate >= highest, highest
+	}
+	lowest := firingSorted[0]
+	return candidate <= lowest, lowest
+}
+
+// clearsEveryFiringReason explains a refused candidate. When the off-alert tail itself lies beyond
+// every firing, the samples that set the candidate are named as the likely cause.
+func clearsEveryFiringReason(candidate, extreme float64, d baselineDecomposition, isGT bool) string {
+	edge, tail := "highest", percentile(d.baselineSorted, 95)
+	beyond := tail > extreme
+	if !isGT {
+		edge, tail = "lowest", percentile(d.baselineSorted, 5)
+		beyond = tail < extreme
+	}
+	reason := fmt.Sprintf("A threshold of %.4g would not have fired on any of the %d samples taken while the alert was firing (%s %.4g), so it would switch the alert off rather than tune it.",
+		candidate, d.Firing.Count, edge, extreme)
+	if beyond {
+		reason += fmt.Sprintf(" The off-alert values that set it (p%s=%.4g) lie beyond everything the alert fired on, which usually means the alert's query produces outliers — for example a ratio whose denominator drops to zero.",
+			tailLabel(isGT), tail)
+	}
+	return reason + " No new value is offered: review the alert definition rather than the number."
 }
 
 func tailLabel(isGT bool) string {

@@ -2,11 +2,14 @@ package scan_orchestrator
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 
 	"github.com/robfig/cron/v3"
@@ -51,6 +54,18 @@ func EvaluateHeartbeat(ctx *security.RequestContext, accountID, tenantID string)
 	if accountID == "" || tenantID == "" {
 		logger.Warn("scan_orchestrator: heartbeat evaluation rejected, empty account_id or tenant_id")
 		return HeartbeatResult{Evaluated: false, Reason: "missing account_id or tenant_id"}
+	}
+
+	// The agent keeps sending telemetry after its account is disabled, and every
+	// scan this queues writes recommendations that re-open archived rows.
+	active, err := accountIsActive(accountID, tenantID)
+	if err != nil {
+		logger.Error("scan_orchestrator: heartbeat evaluation: read account status", "error", err)
+		return HeartbeatResult{Evaluated: false, Reason: "account status read failed"}
+	}
+	if !active {
+		logger.Debug("scan_orchestrator: heartbeat evaluation skipped, account not active")
+		return HeartbeatResult{Evaluated: false, Reason: "account not active"}
 	}
 
 	jobs, err := fetchScheduleJobs(ScanAccount{AccountID: accountID, TenantID: tenantID})
@@ -101,6 +116,24 @@ func EvaluateHeartbeat(ctx *security.RequestContext, accountID, tenantID string)
 
 	logger.Info("scan_orchestrator: heartbeat evaluation queued", "missed", missed)
 	return HeartbeatResult{Evaluated: true, Queued: missed}
+}
+
+// accountIsActive reports whether the tenant's cloud account has status
+// 'active'. An account with no row in the tenant is not active.
+func accountIsActive(accountID, tenantID string) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("account status: db: %w", err)
+	}
+	var status string
+	err = dbms.Db.Get(&status, `SELECT status FROM cloud_accounts WHERE id = $1 AND tenant = $2`, accountID, tenantID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("account status: %w", err)
+	}
+	return status == "active", nil
 }
 
 // missedScanners returns the scanner names that need to run based on

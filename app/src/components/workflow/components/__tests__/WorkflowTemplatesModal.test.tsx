@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import WorkflowTemplatesModal from '../WorkflowTemplatesModal';
 
 jest.mock('@api1/workflow', () => ({
@@ -7,11 +7,22 @@ jest.mock('@api1/workflow', () => ({
   default: { listTemplates: jest.fn() },
 }));
 
+const mockPush = jest.fn();
 jest.mock('next/router', () => ({
-  useRouter: () => ({ push: jest.fn(), query: {} }),
+  useRouter: () => ({ push: mockPush, query: {} }),
+}));
+
+jest.mock('@api1/integrations', () => ({
+  __esModule: true,
+  default: { listIntegrations: jest.fn().mockResolvedValue({ data: { data: { integrations_list: { rows: [] } } } }) },
+}));
+
+jest.mock('../../hooks/useAccountOptions', () => ({
+  useAccountOptions: () => ({ options: [{ label: 'prod-cluster', value: 'acct-1', group: 'k8s' }], isLoading: false }),
 }));
 
 import apiWorkflow from '@api1/workflow';
+import apiIntegrations from '@api1/integrations';
 
 const mockList = (apiWorkflow as any).listTemplates as jest.Mock;
 
@@ -205,5 +216,107 @@ describe('WorkflowTemplatesModal event recommendations', () => {
     expect(mockList).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Recommended for this event')).not.toBeInTheDocument();
     expect(screen.queryByText(/No templates matched this event/)).not.toBeInTheDocument();
+  });
+});
+
+describe('WorkflowTemplatesModal template values', () => {
+  const RIGHT_SIZING = {
+    id: '9',
+    name: 'K8s Right-Sizing with Approval',
+    description: '',
+    category: 'kubernetes',
+    tags: { labels: [] },
+    definition: {
+      version: 'v1',
+      inputs: [
+        { id: 'approval_channel', type: 'string' },
+        { id: 'account_id', type: 'string' },
+      ],
+      triggers: [{ type: 'manual' }],
+      tasks: [],
+    },
+    template_variables: [
+      {
+        id: 'slack_channel',
+        input_ref: 'approval_channel',
+        display_name: 'Approval Channel',
+        help_text: 'Slack channel for approvals',
+        required: true,
+      },
+      { id: 'k8s_account', input_ref: 'account_id', display_name: 'Kubernetes Account', type: 'account', required: false },
+    ],
+  };
+
+  beforeEach(() => {
+    mockList.mockReset();
+    mockPush.mockReset();
+    sessionStorage.clear();
+  });
+
+  it('asks for the template values before opening the builder', async () => {
+    mockList.mockResolvedValue(respond([RIGHT_SIZING]));
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Template' }));
+
+    expect(await screen.findByText('Slack channel for approvals')).toBeInTheDocument();
+    expect(mockPush).not.toHaveBeenCalled();
+    const submit = screen.getByRole('button', { name: 'Use template' });
+    expect(submit).toBeDisabled();
+
+    fireEvent.change(screen.getByTestId('wf-template-value-approval_channel'), { target: { value: 'C0123456789' } });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    const stored = JSON.parse(sessionStorage.getItem('templateWorkflow') || '{}');
+    expect(stored.definition.inputs).toEqual([
+      { id: 'approval_channel', type: 'string', default: 'C0123456789' },
+      { id: 'account_id', type: 'string', default: 'acct-1' },
+    ]);
+    expect(mockPush).toHaveBeenCalledWith('/automation/new?accountId=acct-1&loadFromTemplate=true');
+  });
+
+  const WAR_ROOM = {
+    ...RIGHT_SIZING,
+    id: '10',
+    name: 'War Room Bootstrapper',
+    definition: { version: 'v1', inputs: [], triggers: [{ type: 'webhook', params: { filter: '{{ true }}' } }], tasks: [] },
+    template_variables: [],
+  };
+
+  it('keeps the webhook integration required when the account has one', async () => {
+    (apiIntegrations as any).listIntegrations.mockResolvedValueOnce({
+      data: { data: { integrations_list: { rows: [{ name: 'gh-hook', type: 'workflow_webhook' }] } } },
+    });
+    mockList.mockResolvedValue(respond([WAR_ROOM]));
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Template' }));
+
+    await waitFor(() => expect((apiIntegrations as any).listIntegrations).toHaveBeenCalled());
+    await act(async () => {});
+    expect(await screen.findByText('Webhook Integration')).toBeInTheDocument();
+    expect(screen.queryByText(/no webhook integration yet/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use template' })).toBeDisabled();
+  });
+
+  it('does not block a webhook template when the account has no webhook integration', async () => {
+    mockList.mockResolvedValue(respond([WAR_ROOM]));
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Template' }));
+
+    expect(await screen.findByText(/no webhook integration yet/)).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Use template' });
+    expect(submit).toBeEnabled();
+    fireEvent.click(submit);
+
+    const stored = JSON.parse(sessionStorage.getItem('templateWorkflow') || '{}');
+    expect(stored.definition.triggers).toEqual([{ type: 'webhook', params: { filter: '{{ true }}' } }]);
+    expect(mockPush).toHaveBeenCalledWith('/automation/new?accountId=acct-1&loadFromTemplate=true');
+  });
+
+  it('goes straight to the builder when the template needs no values', async () => {
+    mockList.mockResolvedValue(respond([EC2]));
+    renderModal();
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Template' }));
+    expect(mockPush).toHaveBeenCalledWith('/automation/new?accountId=acct-1&loadFromTemplate=true');
   });
 });

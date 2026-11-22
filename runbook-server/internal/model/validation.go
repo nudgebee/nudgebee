@@ -208,6 +208,9 @@ func validateWorkflowDefinitionStructLevel(sl validator.StructLevel) {
 
 	idSet := make(map[string]struct{})
 	for i, t := range def.Tasks {
+		if strings.HasPrefix(t.ID, ReservedTaskIDPrefix) {
+			sl.ReportError(t.ID, "tasks", "Tasks", "reserved_task_id", t.ID)
+		}
 		if _, exists := idSet[t.ID]; exists {
 			sl.ReportError(t.ID, "tasks", "Tasks", "duplicate_task_id", t.ID)
 		} else {

@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, Locator, test, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { checkIntegrationWithCache } from "../../utils/IntegrationStatusCache";
@@ -193,7 +194,7 @@ export class AWSLocators extends CommonLocators {
   async checkAWSIntegration(): Promise<boolean> {
     console.log("Checking AWS integration status via Admin > Integrations...");
 
-    await this.adminBtn.click();
+    await clickSidenavRail(this.adminBtn);
 
     const navigated = await this.page.waitForURL(/user-management/, { timeout: 15000 })
       .then(() => true)

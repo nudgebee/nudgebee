@@ -188,3 +188,24 @@ func TestPropagateSwitchBranchState_EmptyChildOutput(t *testing.T) {
 		assert.True(t, done[branch])
 	}
 }
+
+func TestScopeInlineDeps(t *testing.T) {
+	renamed := map[string]string{"leaf-a": "route-leaf-a", "leaf-b": "route-leaf-b"}
+	parentDone := map[string]bool{"fetch": true}
+	assert.Equal(t, []string{"route-leaf-a"},
+		scopeInlineDeps([]string{"route", "leaf-a", "fetch"}, renamed, "route", "route", parentDone),
+		"the switch and finished parent tasks are satisfied; siblings get renamed IDs")
+	assert.Equal(t, []string{"later"},
+		scopeInlineDeps([]string{"route", "later"}, renamed, "route", "route", parentDone),
+		"an unfinished outside task is kept so the missing-dependency check still names it")
+	assert.Nil(t, scopeInlineDeps([]string{"route"}, renamed, "route", "route", parentDone))
+}
+
+func TestScopeInlineDeps_BranchDoneAndNested(t *testing.T) {
+	assert.Nil(t, scopeInlineDeps([]string{"a1"}, nil, "sw2", "sw2", map[string]bool{}, map[string]bool{"a1": true}),
+		"a finished switch branch is satisfied")
+	assert.Nil(t, scopeInlineDeps([]string{"sw2"}, nil, "sw1-sw2", "sw2", nil), "nested switch is named by its original ID")
+	assert.Equal(t, []string{"other"}, scopeInlineDeps([]string{"other"}, nil, "sw1-sw2", "sw2", nil))
+	assert.Equal(t, []string{"cleanup"}, scopeInlineDeps([]string{"cleanup"}, nil, "db-cleanup", "db-cleanup", nil),
+		"an unrelated step whose ID is a suffix of the switch ID is kept")
+}

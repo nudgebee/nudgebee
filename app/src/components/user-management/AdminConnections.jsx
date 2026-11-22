@@ -13,6 +13,7 @@ import apiKubernetes from '@api1/kubernetes';
 import apiHome from '@api1/home';
 import { isCloudProvider, isSelfHostedProvider } from '@components/overview/providers';
 import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
+import { logsServedBy, CLICKHOUSE_LOGS_CHECK } from '@utils/logsServedBy';
 
 // The "Connections" sub-view of the admin landing tab. Every connected account,
 // grouped by its cloud provider into one accordion each — AWS / Azure / GCP /
@@ -66,10 +67,18 @@ const agentReportedProvider = (cs, agentActive, key) => {
 // agentHealth.jsx builds isLogs/Prometheus/TracesConnected). `configured` (a
 // provider exists at all) separates "set up but currently down" (provider +
 // Disconnected) from "never set up" (offer + Add) — only the latter gets + Add.
+//
+// Logs go through logsServedBy, which also knows logs served by the agent's ClickHouse.
 const resolveSignal = (cs, agentActive, signal) => {
   const ps = cs?.providerStatus?.[signal.key];
-  const viaIntegration = ps?.integration_id ? ps : null;
   const provider = ps?.provider || agentReportedProvider(cs, agentActive, signal.key);
+  if (signal.key === 'logs') {
+    const logs = logsServedBy(cs);
+    const connected = logs.by === 'integration' ? logs.connected : agentActive && logs.connected;
+    // The ClickHouse logs check says the logs table is present, not that logs arrive.
+    return { configured: !!provider, connected, provider, ...(logs.by === 'clickhouse' && { check: CLICKHOUSE_LOGS_CHECK }) };
+  }
+  const viaIntegration = ps?.integration_id ? ps : null;
   const connected = viaIntegration ? !!viaIntegration.connected : agentActive && !!cs?.[signal.flag];
   return { configured: !!provider, connected, provider };
 };
@@ -144,7 +153,7 @@ const SignalCell = ({ signal, agentActive, onAdd }) => {
           size='sm'
           tone={signal.connected ? 'healthy' : 'failed'}
           label={signal.provider}
-          subtext={signal.connected ? undefined : 'Disconnected'}
+          subtext={signal.connected ? signal.check : 'Disconnected'}
         />
       );
     }

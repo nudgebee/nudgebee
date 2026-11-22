@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"io"
+	"net/url"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +27,9 @@ func resolveNotificationSessionId(response NBAgentResponse, agentRequest NBAgent
 
 // renderFollowupQuestion converts the followup question to Slack mrkdwn. Only
 // Slack needs this; Teams/Google-Chat render GitHub markdown natively.
-func renderFollowupQuestion(question string, sessionId string) string {
+func renderFollowupQuestion(question string, sessionId string, accountId string) string {
 	if isSlackRequest(NBAgentRequest{SessionId: sessionId}) {
-		return convertMarkdownToSlackMarkdown(question)
+		return convertMarkdownToSlackMarkdown(question, chatCitationPageURL(accountId, sessionId))
 	}
 	return question
 }
@@ -35,11 +37,53 @@ func renderFollowupQuestion(question string, sessionId string) string {
 // renderFinalResponse is renderFollowupQuestion's counterpart for the "final"
 // response text - same gate, same reasoning: only Slack needs mrkdwn
 // conversion, Teams/Google-Chat render GitHub markdown closer to natively.
-func renderFinalResponse(response string, sessionId string) string {
+func renderFinalResponse(response string, sessionId string, accountId string) string {
 	if isSlackRequest(NBAgentRequest{SessionId: sessionId}) {
-		return convertMarkdownToSlackMarkdown(response)
+		return convertMarkdownToSlackMarkdown(response, chatCitationPageURL(accountId, sessionId))
 	}
 	return response
+}
+
+// chatCitationPageURL is the app's chat page for this conversation, where a
+// step citation in a Slack reply links to. Slack only links absolute http(s)
+// URLs, so it is "" when the app's address is not configured as one.
+func chatCitationPageURL(accountId string, sessionId string) string {
+	base := strings.TrimRight(config.Config.BaseUrl, "/")
+	if accountId == "" || sessionId == "" || (!strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://")) {
+		return ""
+	}
+	return base + "/ask-nudgebee?" + url.Values{"accountId": {accountId}, "session_id": {sessionId}}.Encode()
+}
+
+// Remediation loop hooks (#40734), filled by the api package, which draws an alert's Slack thread from its state; nil
+// leaves everything as before. AfterConversationTurn runs after every turn of a conversation ends (an approval raised
+// or answered is a turn ending); AfterWaitingClosed after NudgeBee closes a waiting prompt unanswered (lapsed or
+// superseded); RemediationApprovalDetails gives what a plan step's approval card shows besides its question (the
+// alert's investigation being newer than its plan), for an approval asked in an alert's Slack thread.
+var (
+	AfterConversationTurn      func(ctx *security.RequestContext, request NBAgentRequest)
+	AfterWaitingClosed         func(ctx *security.RequestContext, accountId, conversationId string)
+	RemediationApprovalDetails func(ctx *security.RequestContext, request NBAgentRequest, followup FollowupRequest) map[string]any
+)
+
+// runStepConfirmationPrefix starts the confirmation key of a remediation plan step's approval (run_step:<plan
+// version>:<step>:<action>), a tool only the remediation loop offers.
+const runStepConfirmationPrefix = "run_step:"
+
+// withRemediationApproval adds, for a plan step's approval only, what notifications-server needs to draw it as the
+// step's approval card: its type and key, and the details the api package gives. Every other follow-up is sent
+// exactly as before.
+func withRemediationApproval(ctx *security.RequestContext, request NBAgentRequest, followup FollowupRequest, data map[string]any) {
+	if !strings.HasPrefix(followup.ConfirmationKey, runStepConfirmationPrefix) {
+		return
+	}
+	data["followupType"] = string(followup.FollowupType)
+	data["confirmationKey"] = followup.ConfirmationKey
+	if RemediationApprovalDetails != nil {
+		if details := RemediationApprovalDetails(ctx, request, followup); len(details) > 0 {
+			data["remediation"] = details
+		}
+	}
 }
 
 func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NBAgentRequest, response NBAgentResponse, err error) {
@@ -66,6 +110,10 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 		// for why the caller needs this alongside a SessionId it may be reusing
 		// across many distinct questions.
 		notificationRequest["reply_ref"] = agentRequest.ReplyRef
+	}
+	if agentRequest.AskerRef != "" {
+		// Echoed back exactly as received — see ConversationApiRequest.AskerRef.
+		notificationRequest["asker_ref"] = agentRequest.AskerRef
 	}
 
 	switch {
@@ -96,8 +144,9 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 		if response.MessageId != "" {
 			followupData["message_id"] = response.MessageId
 		}
+		withRemediationApproval(ctx, agentRequest, response.FollowupRequest, followupData)
 		if q, ok := followupData["question"].(string); ok {
-			followupData["question"] = renderFollowupQuestion(q, sessionId)
+			followupData["question"] = renderFollowupQuestion(q, sessionId, agentRequest.AccountId)
 		}
 		jsonBytes, err := common.MarshalJson(followupData)
 		if err != nil {
@@ -110,7 +159,7 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 	default:
 		notificationRequest["type"] = "final"
 		if len(response.Response) > 0 {
-			notificationRequest["response"] = renderFinalResponse(response.Response[0], sessionId)
+			notificationRequest["response"] = renderFinalResponse(response.Response[0], sessionId, agentRequest.AccountId)
 		} else {
 			notificationRequest["response"] = ""
 		}

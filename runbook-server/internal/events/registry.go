@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/runbook/internal/gonjasafe"
 	"nudgebee/runbook/internal/model"
 
-	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/exec"
 )
 
@@ -53,7 +53,7 @@ func (r *EventRegistry) Refresh(ctx context.Context) error {
 	for _, rule := range rules {
 		var query *exec.Template
 		if rule.Filter != "" {
-			q, err := gonja.FromString(rule.Filter)
+			q, err := gonjasafe.FromString(rule.Filter)
 			if err != nil {
 				r.logger.Error("failed to compile gonja filter", "workflow_id", rule.WorkflowID, "filter", rule.Filter, "error", err)
 				continue
@@ -162,7 +162,7 @@ func (r *EventRegistry) evaluateRules(candidates []CompiledRule, accountID strin
 // CompileFilter compiles a filter the same way Refresh does, so callers outside the
 // registry report the same syntax errors the live evaluator would.
 func CompileFilter(filter string) (*exec.Template, error) {
-	return gonja.FromString(filter)
+	return gonjasafe.FromString(filter)
 }
 
 // EvaluateFilter renders a compiled filter against a payload. A nil query means

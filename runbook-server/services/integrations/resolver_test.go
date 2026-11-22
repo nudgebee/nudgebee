@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -18,16 +19,165 @@ func TestResolveIntegrationID_EmptyValue(t *testing.T) {
 	assert.Equal(t, "", got)
 }
 
-func TestResolveIntegrationID_UUIDPassthrough(t *testing.T) {
-	resetTestState(t)
-	ctx := tenantContext("tenant-x")
+const (
+	uuidQueryPattern      = `SELECT name, type FROM integrations WHERE id = \$1 AND tenant_id = \$2`
+	otherKindQueryPattern = `SELECT type, status FROM integrations WHERE tenant_id = \$1 AND LOWER\(name\) = LOWER\(\$2\)`
+	availableQueryPattern = `SELECT name, status FROM integrations WHERE tenant_id = \$1 AND type = ANY\(\$2\) ORDER BY name LIMIT 20`
+)
 
+func TestResolveIntegrationID_UUIDOfExpectedKind(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-uuid-1"
 	const id = "613674b5-9891-4996-be63-74f0eaaeb534"
-	got, err := ResolveIntegrationID(ctx, id, []string{"jira"})
+
+	sharedMock.ExpectQuery(uuidQueryPattern).
+		WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}).AddRow("prod-jira", "jira"))
+
+	got, err := ResolveIntegrationID(tenantContext(tenantId), id, []string{"jira", "github"})
 	assert.NoError(t, err)
 	assert.Equal(t, id, got)
-	// Crucially, no sqlmock expectation was registered — UUIDs must skip the DB.
 	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+// A webhook integration handed to a ticket step used to pass straight through and fail inside
+// the ticket call; it is now refused with the kind it actually is.
+func TestResolveIntegrationID_UUIDOfWrongKind(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-uuid-2"
+	const id = "11111111-2222-3333-4444-555555555555"
+
+	sharedMock.ExpectQuery(uuidQueryPattern).
+		WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}).AddRow("incident-webhook", "workflow_webhook"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), id, []string{"servicenow"})
+	assert.EqualError(t, err, "integration 'incident-webhook' is a workflow_webhook integration; this step needs a servicenow integration")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_UUIDMissing_NoneOfKindConnected(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-uuid-3"
+	const id = "22222222-3333-4444-5555-666666666666"
+
+	sharedMock.ExpectQuery(uuidQueryPattern).WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, id, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}))
+	sharedMock.ExpectQuery(availableQueryPattern).WithArgs(tenantId, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status"}))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), id, []string{"jira", "servicenow", "github"})
+	assert.EqualError(t, err, "this account has no jira, servicenow or github integration connected")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_UUIDMissing_ListsWhatTheAccountHas(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-uuid-4"
+	const id = "33333333-4444-5555-6666-777777777777"
+
+	sharedMock.ExpectQuery(uuidQueryPattern).WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, id, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}))
+	sharedMock.ExpectQuery(availableQueryPattern).WithArgs(tenantId, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status"}).AddRow("orders-db", "enabled").AddRow("users-db", "enabled"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), id, []string{"postgresql", "mysql"})
+	assert.EqualError(t, err, "integration '"+id+"' not found on this account; postgresql or mysql integrations it has: orders-db, users-db")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_UUIDWithoutExpectedTypes(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-uuid-5"
+	const id = "44444444-5555-6666-7777-888888888888"
+
+	sharedMock.ExpectQuery(uuidQueryPattern).WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}).AddRow("anything", "slack"))
+	got, err := ResolveIntegrationID(tenantContext(tenantId), id, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, id, got)
+
+	sharedMock.ExpectQuery(uuidQueryPattern).WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}))
+	_, err = ResolveIntegrationID(tenantContext(tenantId), id, nil)
+	assert.EqualError(t, err, "integration '"+id+"' not found on this account")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_NameOfWrongKind(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-name-kind"
+
+	sharedMock.ExpectQuery(resolverQueryPattern).
+		WithArgs(tenantId, "team-mcp", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, "team-mcp", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}).AddRow("mcp", "enabled"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), "team-mcp", []string{"servicenow"})
+	assert.EqualError(t, err, "integration 'team-mcp' is a mcp integration; this step needs a servicenow integration")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_NameOfDisabledIntegration(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-name-disabled"
+
+	sharedMock.ExpectQuery(resolverQueryPattern).
+		WithArgs(tenantId, "prod-jira", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, "prod-jira", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}).AddRow("jira", "disabled"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), "prod-jira", []string{"jira"})
+	assert.EqualError(t, err, "integration 'prod-jira' is disabled; enable it under Integrations")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestResolveIntegrationID_OnlyDisabledOfTheKind(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-only-disabled"
+
+	sharedMock.ExpectQuery(resolverQueryPattern).
+		WithArgs(tenantId, "jira", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, "jira", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}))
+	sharedMock.ExpectQuery(availableQueryPattern).WithArgs(tenantId, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status"}).AddRow("old-jira", "disabled"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), "jira", []string{"jira"})
+	assert.EqualError(t, err, "integration 'jira' not found on this account; its jira integrations are disabled: old-jira — enable one under Integrations")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+// A database error while explaining the failure is returned as an error, not as "none connected".
+func TestResolveIntegrationID_LookupErrorIsNotReportedAsMissing(t *testing.T) {
+	resetTestState(t)
+	tenantId := "tenant-db-error"
+	const id = "55555555-6666-7777-8888-999999999999"
+
+	sharedMock.ExpectQuery(uuidQueryPattern).WithArgs(id, tenantId).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "type"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, id, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}))
+	sharedMock.ExpectQuery(availableQueryPattern).WithArgs(tenantId, sqlmock.AnyArg()).
+		WillReturnError(errors.New("connection reset"))
+
+	_, err := ResolveIntegrationID(tenantContext(tenantId), id, []string{"jira"})
+	assert.EqualError(t, err, "failed to list jira integrations: connection reset")
+	assert.NoError(t, sharedMock.ExpectationsWereMet())
+}
+
+func TestKindList(t *testing.T) {
+	assert.Equal(t, "", kindList(nil))
+	assert.Equal(t, "jira", kindList([]string{"jira"}))
+	assert.Equal(t, "jira or github", kindList([]string{"jira", "github"}))
+	assert.Equal(t, "jira, github or gitlab", kindList([]string{"jira", "github", "gitlab"}))
 }
 
 func TestResolveIntegrationID_NameResolves(t *testing.T) {
@@ -54,6 +204,10 @@ func TestResolveIntegrationID_NameNotFound(t *testing.T) {
 	sharedMock.ExpectQuery(resolverQueryPattern).
 		WithArgs(tenantId, "missing", sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	sharedMock.ExpectQuery(otherKindQueryPattern).WithArgs(tenantId, "missing", sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"type", "status"}))
+	sharedMock.ExpectQuery(availableQueryPattern).WithArgs(tenantId, sqlmock.AnyArg()).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "status"}).AddRow("prod-jira", "enabled"))
 
 	ctx := tenantContext(tenantId)
 	_, err := ResolveIntegrationID(ctx, "missing", []string{"jira"})

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +24,7 @@ func TestWebhookSubjectExtractor_InterfaceCompliance(t *testing.T) {
 	assert.Equal(t, WebhookSubjectExtractorAgentName, a.GetName())
 	assert.Contains(t, a.GetNameAliases(), WebhookSubjectExtractorAgentName)
 	assert.Equal(t, core.AgentPlannerTypeClassification, a.GetPlannerType())
-	assert.Equal(t, core.CacheScopeAccount, a.GetCacheScope())
+	assert.Equal(t, llmruntime.CacheScopeAccount, a.GetCacheScope())
 	assert.Nil(t, a.GetSupportedTools(nil), "classifier must expose no tools")
 }
 

@@ -217,6 +217,7 @@ func (s *IntegrationTestSuite) addRequestHeaders(req *http.Request) {
 	req.Header.Set("X-Tenant-ID", testTenantID)
 	req.Header.Set("X-Account-ID", testAccountID)
 	req.Header.Set("X-User-ID", testUserID)
+	req.Header.Set("X-ACTION-TOKEN", config.Config.WorkflowServerToken)
 }
 
 func (s *IntegrationTestSuite) resolveTemporalWorkflowID(reqCtx context.Context, workflowDefinitionID, runID string) (string, error) {

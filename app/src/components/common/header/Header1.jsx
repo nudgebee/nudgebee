@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { headerMenuExtras } from '@lib/authHooks';
+import { headerMenuExtras, navSections } from '@lib/authHooks';
 import Box from '@mui/material/Box';
 import { Typography } from '@mui/material';
 import DOMPurify from 'dompurify';
@@ -109,6 +109,9 @@ const GlobalBanner = ({ title, html, testId, ...bannerProps }) => (
     />
   </Box>
 );
+
+// The bar's message is an HTML string (it carries a link); a menu item takes its text.
+const htmlToText = (html) => new DOMParser().parseFromString(html, 'text/html').body.textContent || '';
 
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
@@ -517,6 +520,19 @@ const Header1 = ({ showBorder = false }) => {
         showActiveCluster: false,
       },
     ];
+    // Routes of sections an extension registers (registerNavSection) carry their own title.
+    for (const section of navSections()) {
+      for (const h of section.headers ?? []) {
+        baseOptions.push({
+          name: h.name,
+          route: h.route,
+          icon: h.icon,
+          showActiveCluster: false,
+          clusterDetailButton: false,
+          showBackButton: !!h.showBackButton,
+        });
+      }
+    }
     return baseOptions;
   }, [selectedCluster]);
 
@@ -733,6 +749,26 @@ const Header1 = ({ showBorder = false }) => {
     apiUser.setK8sAgentSnackbarDismissed(selectedCluster?.value, true);
   };
 
+  // The alert page is opened during an incident, so a notice that says nothing about the alert
+  // is listed behind the bell there instead of sitting above it. The agent-disconnected banner
+  // is not one of them: it says the evidence on the page may be stale.
+  const onAlertPage = router.pathname === '/investigate';
+  const quietNotices = onAlertPage
+    ? [
+        snackbarOpen &&
+          !snackbarCritical && {
+            label: snackbarTitle,
+            description: htmlToText(snackbarMsg),
+            onSelect: () => window.open(AGENT_UPGRADE_DOCS_URL, '_blank', 'noopener,noreferrer'),
+          },
+        showReloadNotification && {
+          label: 'New version deployed',
+          description: reloadMsg,
+          onSelect: () => window.location.reload(),
+        },
+      ].filter(Boolean)
+    : [];
+
   const handleClusterData = (clusterOption) => {
     if (clusterOption.length == 0 && !isAlertOpen.current) {
       isAlertOpen.current = true;
@@ -749,7 +785,7 @@ const Header1 = ({ showBorder = false }) => {
       {serviceNowModalMounted && (
         <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
       )}
-      {snackbarOpen && (
+      {snackbarOpen && (snackbarCritical || !onAlertPage) && (
         <GlobalBanner
           tone={snackbarCritical ? 'critical' : 'warning'}
           dismissible={!snackbarCritical}
@@ -758,7 +794,7 @@ const Header1 = ({ showBorder = false }) => {
           html={snackbarMsg}
         />
       )}
-      {showReloadNotification && (
+      {showReloadNotification && !onAlertPage && (
         <GlobalBanner tone='warning' dismissible onDismiss={() => setShowReloadNotification(false)} title='New version deployed' html={reloadMsg} />
       )}
 
@@ -881,7 +917,7 @@ const Header1 = ({ showBorder = false }) => {
                       {
                         label: 'Teams',
                         icon: <MsTeamsIcon width={18} height={18} />,
-                        onSelect: () => window.open('/api/integrations/ms-teams/install', '_blank', 'noopener'),
+                        onSelect: () => router.push('/accounts/account-form?cloudProvider=msteams'),
                       },
                       {
                         label: 'Google Chat',
@@ -1053,18 +1089,49 @@ const Header1 = ({ showBorder = false }) => {
                     )}
                   </Box>
                 )}
-                {!setupLocked && (
-                  <DsButton
-                    composition='icon-only'
-                    tone='secondary'
-                    size='md'
-                    tooltip='Coming Soon'
-                    tooltipPlacement='bottom'
-                    tooltipDisableFlip
-                    aria-label='Notifications'
-                    icon={<SafeIcon alt='Notification Icon' src={NotificationOutlineIconDark} />}
-                  />
-                )}
+                {!setupLocked &&
+                  (quietNotices.length > 0 ? (
+                    <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+                      <DropdownMenu
+                        align='end'
+                        trigger={
+                          <DsButton
+                            composition='icon-only'
+                            tone='secondary'
+                            size='md'
+                            tooltip='Notifications'
+                            tooltipPlacement='bottom'
+                            tooltipDisableFlip
+                            aria-label='Notifications'
+                            data-testid='header-notices-trigger'
+                            icon={<SafeIcon alt='Notification Icon' src={NotificationOutlineIconDark} />}
+                          />
+                        }
+                        items={quietNotices}
+                      />
+                      <Box aria-hidden sx={{ position: 'absolute', top: '-6px', right: '-6px', pointerEvents: 'none' }}>
+                        <Chip
+                          variant='count'
+                          size='micro'
+                          tone='warning'
+                          solid
+                          count={quietNotices.length}
+                          sx={{ boxShadow: '0 0 0 1.5px var(--ds-background-100)' }}
+                        />
+                      </Box>
+                    </Box>
+                  ) : (
+                    <DsButton
+                      composition='icon-only'
+                      tone='secondary'
+                      size='md'
+                      tooltip='Coming Soon'
+                      tooltipPlacement='bottom'
+                      tooltipDisableFlip
+                      aria-label='Notifications'
+                      icon={<SafeIcon alt='Notification Icon' src={NotificationOutlineIconDark} />}
+                    />
+                  ))}
                 <Box className='headerHelpMenu'>
                   <DropdownMenu
                     align='end'

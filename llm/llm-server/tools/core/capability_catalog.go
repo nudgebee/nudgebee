@@ -171,7 +171,6 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"server_command_executor":           CapabilityScopePassThrough,
 	"signoz_log_execute":                CapabilityScopePassThrough,
 	"splunk_metrics_query":              CapabilityScopePassThrough,
-	"ticket_master":                     CapabilityScopePassThrough,
 	"traces_execute":                    CapabilityScopePassThrough,
 	"traces_execute_chronosphere":       CapabilityScopePassThrough,
 	"traces_execute_default":            CapabilityScopePassThrough,
@@ -189,13 +188,19 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"metrics_list":                      CapabilityScopeNarrow,
 	"nudgebee_docs_search":              CapabilityScopeNarrow,
 	"remediation_generate":              CapabilityScopeNarrow,
-	"search_docs":                       CapabilityScopeNarrow,
-	"search_metrics":                    CapabilityScopeNarrow,
-	"search_skills":                     CapabilityScopeNarrow,
-	"service_dependency_graph_execute":  CapabilityScopeNarrow,
-	"trigger_cis_scan":                  CapabilityScopeNarrow,
-	"trigger_image_scan":                CapabilityScopeNarrow,
-	"workflow_search":                   CapabilityScopeNarrow,
+	// The alert's plan (#40734): plan version, step number, an action enum, and a command that must be the
+	// step's own; a plan object run through generation's validator; minutes and a reason.
+	"get_remediation_plan":             CapabilityScopeNarrow,
+	"propose_fix":                      CapabilityScopeNarrow,
+	"run_step":                         CapabilityScopeNarrow,
+	"schedule_recheck":                 CapabilityScopeNarrow,
+	"search_docs":                      CapabilityScopeNarrow,
+	"search_metrics":                   CapabilityScopeNarrow,
+	"search_skills":                    CapabilityScopeNarrow,
+	"service_dependency_graph_execute": CapabilityScopeNarrow,
+	"trigger_cis_scan":                 CapabilityScopeNarrow,
+	"trigger_image_scan":               CapabilityScopeNarrow,
+	"workflow_search":                  CapabilityScopeNarrow,
 
 	// Datadog / New Relic *_execute tools: the free-text field only filters one fixed read
 	// endpoint, so narrow is arguable, but the input shape is a single free-text field and
@@ -224,7 +229,9 @@ var capabilityScopeTable = map[string]CapabilityScope{
 
 	// Typed agent tools: ids, enums and filters only, fixed actions or fixed read queries.
 	"aggregate_events":                        CapabilityScopeNarrow,
+	"analyze_metric_series":                   CapabilityScopeNarrow,
 	"cloud_resource_search_execute":           CapabilityScopeNarrow,
+	"metric_forecast":                         CapabilityScopeNarrow,
 	"dryrun_triage_rule":                      CapabilityScopeNarrow,
 	"get_event_by_id":                         CapabilityScopeNarrow,
 	"get_event_classification":                CapabilityScopeNarrow,
@@ -234,6 +241,7 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"get_event_triage_explanation":            CapabilityScopeNarrow,
 	"get_triage_rule_events":                  CapabilityScopeNarrow,
 	"get_triage_rules":                        CapabilityScopeNarrow,
+	"im_message_send":                         CapabilityScopeNarrow,
 	"kg_get_node":                             CapabilityScopeNarrow,
 	"list_events":                             CapabilityScopeNarrow,
 	"list_threshold_suggestions":              CapabilityScopeNarrow,
@@ -260,6 +268,7 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"spend_summary":                           CapabilityScopeNarrow,
 	"think":                                   CapabilityScopeNarrow,
 	"update_notebook":                         CapabilityScopeNarrow,
+	"update_notebook_v2":                      CapabilityScopeNarrow, // tool_notebook_v2.go: typed steps (id/kind/status enums), no outbound calls
 	"vm_list_execute":                         CapabilityScopeNarrow,
 	"watch_cancel":                            CapabilityScopeNarrow,
 	"watch_list":                              CapabilityScopeNarrow,
@@ -324,7 +333,6 @@ var capabilityScopeTable = map[string]CapabilityScope{
 	"server":                     CapabilityScopePassThrough,
 	"signoz_logs":                CapabilityScopePassThrough,
 	"splunk_enterprise_metrics":  CapabilityScopePassThrough,
-	"tickets":                    CapabilityScopePassThrough,
 	"tickets_v2":                 CapabilityScopePassThrough,
 	"traces":                     CapabilityScopePassThrough,
 	"ask_clarification":          CapabilityScopeNarrow,
@@ -565,6 +573,9 @@ func doRunbookTasksRequest(ctx *security.RequestContext, accountId, tenantId, us
 	if userId != "" {
 		req.Header.Set("X-User-ID", userId)
 	}
+	if config.Config.WorkflowServerToken != "" {
+		req.Header.Set("X-ACTION-TOKEN", config.Config.WorkflowServerToken)
+	}
 
 	resp, err := common.HttpClient().Do(req)
 	if err != nil {
@@ -580,27 +591,6 @@ func doRunbookTasksRequest(ctx *security.RequestContext, accountId, tenantId, us
 		return nil, fmt.Errorf("runbook server returned error (status %d): %s", resp.StatusCode, string(respBytes))
 	}
 	return respBytes, nil
-}
-
-// UnclassifiedCapabilities returns the names of every capability the live
-// catalog reports that capabilityScopeTable does not yet cover. This is the
-// visible signal for classification drift between this checked-in table and
-// what's actually registered in either service — surface it (a startup log
-// line, a metric, a periodic check) rather than letting new capabilities
-// sit invisibly unclassified. Deliberately does not attempt to guess a
-// classification for them; see the package doc comment for why.
-func UnclassifiedCapabilities(ctx *security.RequestContext, accountId string) ([]string, error) {
-	catalog, err := GetCapabilityCatalog(ctx, accountId)
-	if err != nil {
-		return nil, err
-	}
-	var unclassified []string
-	for _, entry := range catalog {
-		if entry.Scope == CapabilityScopeUnclassified {
-			unclassified = append(unclassified, entry.Name)
-		}
-	}
-	return unclassified, nil
 }
 
 // SyncCapabilityCatalog writes the live, classified capability catalog into

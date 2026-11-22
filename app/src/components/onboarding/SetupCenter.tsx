@@ -237,14 +237,13 @@ const DEDICATED_ACCOUNT_MODALS: Record<string, React.ComponentType<any>> = {
 };
 
 /**
- * Slack and Microsoft Teams connect via a single "open this OAuth URL"
- * action (`account-form.jsx`'s own `installUrl` for each) — no form, so no
- * modal to show at all. `openIntegration` special-cases these two routes
- * before ever touching `integrationModal` state; see its own comment.
+ * Slack connects via a single "open this OAuth URL" action
+ * (`account-form.jsx`'s own `installUrl`) — no form, so no modal to show at
+ * all. `openIntegration` special-cases it before ever touching
+ * `integrationModal` state; see its own comment.
  */
 const CHAT_OAUTH_INSTALL_URLS: Record<string, string> = {
   SLACK: '/api/integrations/slack/install',
-  MSTEAMS: '/api/integrations/ms-teams/install',
 };
 
 /**
@@ -817,7 +816,11 @@ const ItemRow = ({
                   data-testid={`setup-add-${item.id}`}
                   onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
                 >
-                  {connected ? 'Add more' : 'Add'}
+                  {/* "Add" promises a one-click add, which is true right up until the
+                      picker is actually open — at that point the provider tiles are
+                      already the way to add one, and this button's only job left is to
+                      collapse them back (#41900). */}
+                  {!direct && showPicker ? 'Hide options' : connected ? 'Add more' : 'Add'}
                 </Button>
               </Box>
             )}
@@ -944,7 +947,8 @@ const ItemRow = ({
               data-testid={`setup-add-${item.id}`}
               onClick={() => (direct ? onSelect(item.providers[0].route) : onTogglePicker(item.id))}
             >
-              {connected ? 'Add more' : 'Add'}
+              {/* See the other "Add" button's comment above — same rule (#41900). */}
+              {!direct && showPicker ? 'Hide options' : connected ? 'Add more' : 'Add'}
             </Button>
           </Box>
         )}
@@ -1196,15 +1200,18 @@ const PanelBody = ({
 
   const scorable = panel.items.filter((i) => !i.planned);
   const anyItemPending = panel.items.some((i) => i.state === 'partial');
-  // `connectedBy` names every provider with a real, non-disabled account row —
-  // a K8s cluster still waiting on its agent is in there too. The badge says
-  // "connected", so it only counts once the item's own state agrees: a row
-  // that exists but is still `partial` must not read as finished here, even
-  // though the glyph beside it already (correctly) shows the spinner.
+  // `connectedBy` names every provider *type* with a real, non-disabled
+  // account row — a K8s cluster still waiting on its agent is in there too,
+  // and so is a second AWS account that's still mid-sync. The badge says
+  // "connected", so it must count accounts whose own row state is `done`,
+  // not provider types that merely have a row — `item.accounts` (one entry
+  // per real account, each carrying its own `rowState`) is what can tell
+  // "exists" from "done" apart; `connectedBy.length` can't.
+  const doneAccountsCount = panel.id === 'accounts' ? panel.items[0]?.accounts?.filter((a) => a.state === 'done').length ?? 0 : 0;
   const countLabel =
     panel.id === 'accounts'
-      ? panel.items[0]?.state === 'done' && panel.items[0].connectedBy.length
-        ? `${panel.items[0].connectedBy.length} connected`
+      ? doneAccountsCount > 0
+        ? `${doneAccountsCount} connected`
         : ''
       : scorable.length > 0
       ? `${scorable.filter((i) => i.state === 'done').length} of ${scorable.length}`
@@ -1514,6 +1521,18 @@ const SetupCenter = () => {
     refreshGate();
   }, [refreshReadinessInputs, refreshGate]);
 
+  // Some connections have no in-app moment to hook a refresh onto at all —
+  // an Alertmanager webhook's first test alert, or a cloud account's first
+  // cost sync, both happen entirely outside this tab, on whatever schedule
+  // the other system fires on. Nothing short of polling can catch those the
+  // instant they happen; refetching whenever the user comes back to this tab
+  // is the cheap version of the same idea `openDefaultChannelSetup` already
+  // uses for its own one popup, generalised to the whole page (#41892).
+  React.useEffect(() => {
+    window.addEventListener('focus', refreshReadinessInputs);
+    return () => window.removeEventListener('focus', refreshReadinessInputs);
+  }, [refreshReadinessInputs]);
+
   // Accounts a knowledge base can actually be created under — real (non-demo)
   // rows only. Reuses the account list this page already fetched for
   // readiness rather than triggering a second listAccounts request.
@@ -1634,6 +1653,17 @@ const SetupCenter = () => {
     }
   }, []);
 
+  // The dialog polls agent health on its own, entirely separate from this
+  // page's own readiness fetch — closing it after it reports "connected"
+  // used to leave the account chip showing stale `partial` state until a
+  // full reload (#41892). Always refresh on close, not only once connected:
+  // the dialog has no success signal to key off either way, same reasoning
+  // as `openIntegration`'s chat OAuth popup handling above.
+  const closeK8sAgentInstall = React.useCallback(() => {
+    setK8sAgentInstallAccount(null);
+    refreshReadinessInputs();
+  }, [refreshReadinessInputs]);
+
   const closeIntegrationModal = React.useCallback(
     (saved?: boolean) => {
       setIntegrationModal(null);
@@ -1661,12 +1691,18 @@ const SetupCenter = () => {
         handleAddKnowledgeBase();
         return;
       }
-      // Slack and Teams have no form of their own to show — connecting is a
-      // single "open this OAuth URL, wait for the popup to close" action
-      // (see chatOAuthInstall.ts's own doc comment for why only these two).
-      // There's nothing to put in the modal slot; just start it, and refresh
-      // once the popup closes the same way the real Integrations page does —
-      // it has no success/failure signal either, only the close itself.
+      // A Teams team is connected from Teams itself (the bot's link), so this
+      // opens the page that says how, as the default-channel step does below.
+      if (route === 'MSTEAMS') {
+        window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+        return;
+      }
+      // Slack has no form of its own to show — connecting is a single "open
+      // this OAuth URL, wait for the popup to close" action (see
+      // chatOAuthInstall.ts's own doc comment). There's nothing to put in the
+      // modal slot; just start it, and refresh once the popup closes the same
+      // way the real Integrations page does — it has no success/failure signal
+      // either, only the close itself.
       const chatInstallUrl = CHAT_OAUTH_INSTALL_URLS[route];
       if (chatInstallUrl) {
         openChatOAuthInstall(route.toLowerCase(), chatInstallUrl, () => closeIntegrationModal(true));
@@ -1682,30 +1718,13 @@ const SetupCenter = () => {
   // ("Map Channel", or Google Chat's "Set default") — the channel lists and
   // team pickers live there, not in a form Setup can open. New tab for the
   // same reason as the Google Chat hand-off below; readiness refreshes when
-  // this tab regains focus, so the step clears without a reload. Each
-  // registry route is already that page's `?cloudProvider=` value.
-  // One pending listener at most, and none left behind after unmount — a
-  // second click before refocusing must not queue a second refetch.
-  const refocusRefreshRef = React.useRef<(() => void) | null>(null);
-  React.useEffect(
-    () => () => {
-      if (refocusRefreshRef.current) window.removeEventListener('focus', refocusRefreshRef.current);
-    },
-    []
-  );
-  const openDefaultChannelSetup = React.useCallback(
-    (route: string) => {
-      window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
-      if (refocusRefreshRef.current) return;
-      const onFocus = () => {
-        refocusRefreshRef.current = null;
-        refreshReadinessInputs();
-      };
-      refocusRefreshRef.current = onFocus;
-      window.addEventListener('focus', onFocus, { once: true });
-    },
-    [refreshReadinessInputs]
-  );
+  // this tab regains focus (the page-wide focus listener above, #41892), so
+  // the step clears without a reload and without this needing its own
+  // one-shot listener — it used to carry one before that existed, which
+  // double-fetched on return once both were registered.
+  const openDefaultChannelSetup = React.useCallback((route: string) => {
+    window.open(`/accounts/account-form?cloudProvider=${route.toLowerCase()}`, '_blank', 'noopener');
+  }, []);
 
   const togglePanel = React.useCallback((id: string) => setExpandedPanel((prev) => (prev === id ? '' : id)), []);
   const toggleWhy = React.useCallback((id: string) => setOpenWhy((prev) => ({ ...prev, [id]: !prev[id] })), []);
@@ -1829,8 +1848,10 @@ const SetupCenter = () => {
 
         {/* Module chips. Changing them changes what is required, never what is
             shown — an item no selected module needs fades rather than
-            disappearing, so nobody is quietly cut off from a capability. */}
-        {canWrite && (
+            disappearing, so nobody is quietly cut off from a capability.
+            Gated on `!isFreshTenant`: with zero accounts there is nothing
+            below yet for the filter to apply to. */}
+        {canWrite && !isFreshTenant && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', flexWrap: 'wrap', mt: 'var(--ds-space-3)' }}>
             <Typography
               sx={{
@@ -2082,7 +2103,7 @@ const SetupCenter = () => {
                   disabled={!canGoToDashboard}
                   data-testid='setup-go-to-dashboard'
                   trailingAccent={<ArrowForwardIcon />}
-                  onClick={() => router.push('/home')}
+                  onClick={() => router.push('/ask-nudgebee')}
                 >
                   Go to dashboard
                 </Button>
@@ -2173,7 +2194,7 @@ const SetupCenter = () => {
       {accountModal === 'GCP' && <AddGcpAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
       {accountModal === 'AZURE' && <AddAzureAccountModal open onClose={closeAccountModal} onAccountCreated={refreshReadiness} />}
       {accountModal === 'SELFHOSTED' && <AddSelfHostedAccountModal open onClose={closeSelfHostedAccountModal} />}
-      <K8sAgentInstallDialog open={!!k8sAgentInstallAccount} onClose={() => setK8sAgentInstallAccount(null)} account={k8sAgentInstallAccount} />
+      <K8sAgentInstallDialog open={!!k8sAgentInstallAccount} onClose={closeK8sAgentInstall} account={k8sAgentInstallAccount} />
 
       {/* Only shown when Add on Skills has more than one account to choose
           from — a single eligible account skips straight to the create form. */}

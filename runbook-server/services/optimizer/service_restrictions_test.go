@@ -1,13 +1,17 @@
 package optimizer
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"nudgebee/runbook/internal/model"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/mocks"
+	"go.temporal.io/sdk/temporal"
 )
 
 func TestCheckRestrictions(t *testing.T) {
@@ -93,4 +97,24 @@ func TestCheckRestrictions(t *testing.T) {
 
 func stringPtr(s string) *string {
 	return &s
+}
+
+// A schedule that is already registered is skipped, not saved again or counted as failed.
+func TestSyncSchedulesSkipsAlreadyRegistered(t *testing.T) {
+	repo := new(MockOptimizerRepository)
+	repo.On("GetActiveAutoOptimizes", mock.Anything).Return([]model.AutoOptimize{{ID: uuid.New(), ScheduleTime: "0 * * * *"}}, nil)
+	schedules := &mocks.ScheduleClient{}
+	schedules.On("Create", mock.Anything, mock.Anything).Return(nil, temporal.ErrScheduleAlreadyRunning)
+	tc := &mocks.Client{}
+	tc.On("ScheduleClient").Return(schedules)
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	svc := &optimizerService{dao: repo, temporalClient: tc}
+	assert.NoError(t, svc.SyncSchedules(context.Background()))
+	assert.Contains(t, logs.String(), "skipped=1 failed=0")
+	repo.AssertNotCalled(t, "SaveAutoOptimize", mock.Anything, mock.Anything)
 }

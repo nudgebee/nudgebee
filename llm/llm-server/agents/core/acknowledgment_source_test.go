@@ -9,17 +9,17 @@ import (
 
 func TestIsUserConversationSource(t *testing.T) {
 	// Live user chats — someone is watching for the ack.
-	assert.True(t, isUserConversationSource(ConversationSourceUserInvestigation))
-	assert.True(t, isUserConversationSource(ConversationSourceUserInvestigationCLI))
+	assert.True(t, IsUserConversationSource(ConversationSourceUserInvestigation))
+	assert.True(t, IsUserConversationSource(ConversationSourceUserInvestigationCLI))
 
 	// System/automated — no user watching a chat for the acknowledgment.
-	assert.False(t, isUserConversationSource(ConversationSourceInvestigation))
-	assert.False(t, isUserConversationSource(ConversationSourceAutomation))
-	assert.False(t, isUserConversationSource(ConversationSourceInstantNotification))
-	assert.False(t, isUserConversationSource(ConversationSourceWorkflowBuilder))
-	assert.False(t, isUserConversationSource(ConversationSourceOptimize))
-	assert.False(t, isUserConversationSource(ConversationSourcePrometheusQuery))
-	assert.False(t, isUserConversationSource(""))
+	assert.False(t, IsUserConversationSource(ConversationSourceInvestigation))
+	assert.False(t, IsUserConversationSource(ConversationSourceAutomation))
+	assert.False(t, IsUserConversationSource(ConversationSourceInstantNotification))
+	assert.False(t, IsUserConversationSource(ConversationSourceWorkflowBuilder))
+	assert.False(t, IsUserConversationSource(ConversationSourceOptimize))
+	assert.False(t, IsUserConversationSource(ConversationSourcePrometheusQuery))
+	assert.False(t, IsUserConversationSource(""))
 }
 
 func TestUseStaticAcknowledgment(t *testing.T) {

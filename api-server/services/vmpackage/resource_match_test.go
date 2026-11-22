@@ -119,6 +119,9 @@ func TestResolveByIdentity_CreatesWhenMissing(t *testing.T) {
 	mock.ExpectQuery("SELECT id::text FROM cloud_resourses").
 		WithArgs("target-account", "tenant-1", "AWS", "i-0aab26d051729d673").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("nb_decommissioned").
+		WithArgs("target-account", "tenant-1", "AWS", "i-0aab26d051729d673").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT INTO public.cloud_resourses").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("SELECT id::text FROM cloud_resourses").
@@ -135,6 +138,25 @@ func TestResolveByIdentity_CreatesWhenMissing(t *testing.T) {
 		cloudInstanceIdentity{Provider: "aws", InstanceID: "i-0aab26d051729d673", Region: "us-east-1"}, "172.31.0.11")
 	require.NoError(t, err)
 	assert.Equal(t, "resource-new", res.CloudResourceID)
+}
+
+// An operator-decommissioned row must be reported, not re-created: the insert
+// would collide with it and the host would fall back to a duplicate placeholder.
+func TestResolveByIdentity_ReportsDecommissionedRow(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectQuery("SELECT id::text FROM cloud_resourses").
+		WithArgs("target-account", "tenant-1", "AWS", "i-0aab26d051729d673").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("nb_decommissioned").
+		WithArgs("target-account", "tenant-1", "AWS", "i-0aab26d051729d673").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("resource-old"))
+
+	res, err := resolveByIdentity(mockDBManager, "target-account", "own-account", "tenant-1",
+		cloudInstanceIdentity{Provider: "aws", InstanceID: "i-0aab26d051729d673", Region: "us-east-1"}, "172.31.0.11")
+	require.NoError(t, err)
+	assert.True(t, res.Decommissioned)
+	assert.Equal(t, "resource-old", res.CloudResourceID)
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestFindExistingResourceByMAC_FallsThroughToAzure(t *testing.T) {

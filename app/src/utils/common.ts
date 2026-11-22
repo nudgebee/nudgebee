@@ -283,8 +283,11 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'CHRONOSPHERE':
       label = 'Chronosphere';
       break;
+    case 'ORION':
+      label = 'SolarWinds Platform (Orion)';
+      break;
     case 'OTEL':
-      label = 'Otel';
+      label = 'OpenTelemetry';
       break;
     case 'AZURE_MONITOR_WEBHOOK':
       label = 'Azure Monitor Webhook';
@@ -312,6 +315,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
       break;
     case 'SOLARWINDS_WEBHOOK':
       label = 'SolarWinds Webhook';
+      break;
+    case 'ORION_WEBHOOK':
+      label = 'SolarWinds Platform (Orion) Webhook';
       break;
     case 'WORKFLOW_WEBHOOK':
       label = 'Automation Webhook';
@@ -575,18 +581,6 @@ export const isAlertNameValid = (name: string) => {
 export const isEmailValid = (value: string) => {
   const nameRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+.[a-zA-Z]{2,4}$/;
   return nameRegex.test(value);
-};
-
-export const isLLMFunctionNameValid = (value: string) => {
-  const functionNameRegex = /^[a-z][a-z0-9_-]*[a-z0-9]$/;
-  return functionNameRegex.test(value) && value.length >= 2 && value.length <= 30;
-};
-
-export const isVariableNameValid = (value: string) => {
-  // Variable names can only contain letters, numbers, and underscores
-  // No hyphens or spaces allowed
-  const variableNameRegex = /^[a-zA-Z]\w*$/;
-  return variableNameRegex.test(value) && value.length >= 1 && value.length <= 50;
 };
 
 export const isK8sAccountNameValid = (value: string) => {
@@ -907,6 +901,8 @@ const UPPERCASE_ACRONYMS = new Set([
   'iam',
   'mfa',
   'aws',
+  'gcp',
+  'gke',
   'api',
   'cpu',
   'gpu',
@@ -919,11 +915,19 @@ const UPPERCASE_ACRONYMS = new Set([
   'elb',
   'alb',
   'nlb',
+  'clb',
+  'lb',
   's3',
   'sqs',
   'sns',
   'ecs',
+  'ecr',
+  'efs',
   'eks',
+  'es',
+  'msk',
+  'ses',
+  'ssm',
   'acm',
   'waf',
   'kms',
@@ -945,6 +949,13 @@ const UPPERCASE_ACRONYMS = new Set([
   'cd',
   'llm',
   'mcp',
+  'vmss',
+  'aks',
+  'nsg',
+  'nic',
+  'cdn',
+  'kv',
+  'cfn',
 ]);
 
 /**
@@ -1008,6 +1019,8 @@ export const cloudServiceLabel = (service?: string | null): string => {
   const friendly = GCP_SERVICE_LABELS[host] ?? convertStringCase(host.replace('.googleapis.com', ''));
   return `${friendly} (${convertStringCase(resource)})`;
 };
+
+export const capitalize = (str: string): string => (str ? str.charAt(0).toUpperCase() + str.slice(1).toLowerCase() : str);
 
 export const toKebabCase = (str: string) => {
   return str

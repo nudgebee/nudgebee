@@ -440,6 +440,7 @@ def retag_legacy_modules() -> Dict[str, Any]:
 
     Returns a summary dict for logging / operator inspection.
     """
+    from rag.core import replica_broadcast
     from rag.core.cache import get_collection_list_cache
     from rag.core.metadata_cache import get_metadata_cache
     from rag.qdrant.client import get_qdrant_client, list_collections_optimized
@@ -475,6 +476,7 @@ def retag_legacy_modules() -> Dict[str, Any]:
     if summary["migrated"]:
         get_collection_list_cache().invalidate()
         get_metadata_cache().invalidate()
+        replica_broadcast.replica_broadcast_all(replica_broadcast.CHANGE_RAG_COLLECTIONS)
 
     logger.info(
         "retag_migration: complete — scanned=%d migrated=%d skipped=%d errors=%d",

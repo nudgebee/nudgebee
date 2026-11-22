@@ -125,4 +125,6 @@ jobs:
         # did not match the regex was simply skipped, with nothing to say so.
         # requireTestDSN already gates on the database being present, and
         # REQUIRE_DB_TESTS above turns a missing one into a failure here.
-        run: go test ./internal/storage/ -v
+        # internal/ee/ is absent from the OSS snapshot (.oss-exclude), so it is
+        # only added when present.
+        run: go test ./internal/storage/ $([ -d internal/ee/bee ] && echo ./internal/ee/bee/) -v

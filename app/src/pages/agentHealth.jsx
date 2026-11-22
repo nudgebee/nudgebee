@@ -33,6 +33,7 @@ import ToggleGroup from '@ui/ToggleGroup';
 import Tooltip from '@ui/Tooltip';
 import { describeCron, nextCronRunAfter } from '@utils/cron';
 import { docsUrl } from '@lib/externalUrls';
+import { logsServedBy, CLICKHOUSE_LOGS_CHECK } from '@utils/logsServedBy';
 
 const HEADERS_CLOUD = ['Status', 'Last Connected', 'Cloud', 'Account'];
 const HEADERS_PROXY = ['Status', 'Last Connected'];
@@ -98,7 +99,8 @@ export const buildDisconnectedServices = (connectionStatus, providerStatus) => {
   if (!connectionStatus?.alertManagerConnection) {
     disconnected.push('Alert Manager');
   }
-  if (!integrationServed(providerStatus, 'logs') && !connectionStatus?.logsConnection) {
+  const logs = logsServedBy(connectionStatus, providerStatus);
+  if (logs.by !== 'integration' && !logs.connected) {
     disconnected.push('Logs');
   }
   if (!connectionStatus?.nodeAgentConnection) {
@@ -352,17 +354,22 @@ const AgentHealth = () => {
             disconnectedService.push(...buildDisconnectedServices(connectionStatus, connectionStatus?.providerStatus));
 
             setCfStack(null);
+            // The agent names its Loki as its logs provider whatever serves the logs; when
+            // its ClickHouse does, the ClickHouse logs check is what says they work.
+            const logsServed = logsServedBy(acc.connection_status);
+            const logsFromClickHouse = logsServed.by === 'clickhouse';
             setAgentFeatures({
               isRelayConnected: (isAgentActive && acc.connection_status?.relayConnection) ?? false,
               isPrometheusConnected: (isAgentActive && acc.connection_status?.prometheusConnection) ?? false,
               prometheusUrl: acc.connection_status?.prometheusUrl ?? '',
               isAlertManagerConnected: (isAgentActive && acc.connection_status?.alertManagerConnection) ?? false,
-              isLogsManagerConnected: (isAgentActive && acc.connection_status?.logsConnection) ?? false,
+              isLogsManagerConnected: (isAgentActive && (logsFromClickHouse ? logsServed.connected : acc.connection_status?.logsConnection)) ?? false,
+              logsFromClickHouse,
               isTracesManagerConnected: (isAgentActive && acc.connection_status?.tracesEnabled) ?? false,
               traceProvider: acc.connection_status?.traceProvider ?? '',
               tracesUrl: acc.connection_status?.tracesUrl ?? '',
-              logsProvider: acc.connection_status?.logsConnectionProvider ?? '',
-              logsProviderUrl: acc.connection_status?.logProviderUrl ?? '',
+              logsProvider: (logsFromClickHouse ? logsServed.entry.provider : acc.connection_status?.logsConnectionProvider) ?? '',
+              logsProviderUrl: (logsFromClickHouse ? '' : acc.connection_status?.logProviderUrl) ?? '',
               isOpenCostConnected: (isAgentActive && acc.connection_status?.opencostConnection) ?? false,
               // opencostServerSide is stamped by the backend spend sync when OpenCost is collected
               // server-side (post-migration default, agent OpenCost off) — surface that rather than
@@ -375,7 +382,7 @@ const AgentHealth = () => {
               prometheusRetentionTime: acc.connection_status?.prometheusRetentionTime ?? 0,
               prometheusError: acc.connection_status?.prometheusConnectionError ?? '',
               alertManagerError: acc.connection_status?.alertManagerConnectionError ?? '',
-              logsError: acc.connection_status?.logsConnectionError ?? '',
+              logsError: (logsFromClickHouse ? logsServed.error : acc.connection_status?.logsConnectionError) ?? '',
               tracesError: acc.connection_status?.tracesConnectionError ?? '',
               opencostError: acc.connection_status?.opencostConnectionError ?? '',
               nodeAgentError: acc.connection_status?.nodeAgentConnectionError ?? '',
@@ -672,6 +679,7 @@ const AgentHealth = () => {
     const entry = providerStatus?.[key];
     const viaIntegration = integrationServed(providerStatus, key);
     const provider = entry?.provider || agentReportedProvider(key);
+    const clickhouseLogs = key === 'logs' && agentFeatures.logsFromClickHouse;
     // Both sources of "as of when", picked by whoever answered the status: the cron's probe
     // time for an integration, the agent's own report time for a signal it serves. A signal
     // with no provider at all reports neither — nothing was checked.
@@ -683,10 +691,12 @@ const AgentHealth = () => {
       // own flag for it. `source` is what says which of the two answered, and `lastChecked`
       // dates whichever it was.
       connected: viaIntegration ? !!viaIntegration.connected : agentSignalConnected(key),
+      // The ClickHouse logs check says the logs table is present, not that logs arrive.
+      connectedText: clickhouseLogs ? CLICKHOUSE_LOGS_CHECK : 'Connected',
       configured: !!provider,
-      source: viaIntegration ? `Integration "${viaIntegration.integration_name}"` : provider ? 'Agent' : '',
+      source: viaIntegration ? `Integration "${viaIntegration.integration_name}"` : clickhouseLogs ? 'Agent (ClickHouse)' : provider ? 'Agent' : '',
       lastChecked: viaIntegration ? providerStatus?.checkedAt : provider ? agentFeatures.healthCheckedAt : '',
-      error: entry?.error || '',
+      error: (clickhouseLogs ? agentFeatures.logsError : entry?.error) || '',
       // Advisory, and separate from `error` — the signal works, something else
       // about its integration does not.
       note: entry?.note || '',
@@ -738,7 +748,10 @@ const AgentHealth = () => {
       state: integrationServed(providerStatus, 'logs') ? 'integration' : agentFeatures.isLogsManagerConnected ? 'connected' : 'disconnected',
       endpoint: agentFeatures.logsProviderUrl,
       error: agentFeatures.logsError,
-      details: agentFeatures.logsProvider ? [{ label: 'Provider', value: agentFeatures.logsProvider }] : [],
+      details: [
+        ...(agentFeatures.logsProvider ? [{ label: 'Provider', value: agentFeatures.logsProvider }] : []),
+        ...(agentFeatures.logsFromClickHouse ? [{ label: 'Check', value: CLICKHOUSE_LOGS_CHECK }] : []),
+      ],
     },
     {
       key: 'traces',
@@ -1476,7 +1489,7 @@ const AgentHealth = () => {
                         {signal.label}
                       </Typography>
                       {signal.configured ? (
-                        <Label dot tone={signal.connected ? 'success' : 'critical'} text={signal.connected ? 'Connected' : 'Disconnected'} />
+                        <Label dot tone={signal.connected ? 'success' : 'critical'} text={signal.connected ? signal.connectedText : 'Disconnected'} />
                       ) : (
                         <Label tone='neutral' text='Not configured' />
                       )}

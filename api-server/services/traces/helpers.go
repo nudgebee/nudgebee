@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -19,6 +20,14 @@ import (
 // emitted no spans of its own, which is very often an in-cluster service that
 // simply isn't instrumented, and it is resolved by the caller's DNS search path
 // like any other.
+//
+// "net_peer" is opaque unless TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED is
+// on. Then it is not, for the same reason as http_client: a net.peer.name is a
+// hostname the caller resolved, so a bare single-label name follows the caller's
+// DNS search path (rule 4 below), while dotted names and IPs still go through
+// rule 3; from a node-level caller, which has no search path, it stays opaque
+// (rule 1). Database peers that also carry net.peer.name are then typed
+// db_connection by detectDependencyType, so they stay opaque.
 var namespaceOpaqueDependencyTypes = map[string]bool{
 	"messaging_system": true,
 	"net_peer":         true,
@@ -49,7 +58,10 @@ var namespaceOpaqueDependencyTypes = map[string]bool{
 //     pod in "nudgebee" therefore means nudgebee/notification-server — it can
 //     never mean another namespace's copy, even if that is the only one observed.
 //     Adopting that other copy is precisely the cross-namespace edge this
-//     function exists to prevent.
+//     function exists to prevent. With the bare-peer flag on, loopback and
+//     cloud-metadata names are the exception (isSpecialBareHost): the pod
+//     resolves them without its search path, so they never name an in-cluster
+//     service.
 //
 // Returns the namespace and the Kind the endpoint should be identified by.
 func (t *TraceServiceMapBuilder) resolveEndpointNamespace(
@@ -66,7 +78,14 @@ func (t *TraceServiceMapBuilder) resolveEndpointNamespace(
 
 	// 1. Namespace-opaque targets. An observed service in the peer's own namespace
 	//    still wins, so a service that merely looks external is not misfiled.
-	if namespaceOpaqueDependencyTypes[depType] && !observedInPeerNamespace {
+	opaque := namespaceOpaqueDependencyTypes[depType]
+	if t.barePeerNamespace && depType == "net_peer" {
+		// net_peer follows the caller's search path, which a node-level caller
+		// (host network, kubelet) does not have: from the node sentinel it stays
+		// opaque, so its link and its application are the same ExternalService.
+		opaque = peerNamespace == workloadNamespaceSentinelNode
+	}
+	if opaque && !observedInPeerNamespace {
 		return "", "ExternalService"
 	}
 
@@ -86,6 +105,11 @@ func (t *TraceServiceMapBuilder) resolveEndpointNamespace(
 		return "", "ExternalService"
 	}
 
+	// Loopback / metadata names are not subject to the search path either.
+	if t.barePeerNamespace && isSpecialBareHost(name) {
+		return "", "ExternalService"
+	}
+
 	// 4. Bare single-label name: the caller's own namespace, always.
 	if peerNamespace != "" {
 		return peerNamespace, applicationKindFor(peerNamespace)
@@ -94,6 +118,44 @@ func (t *TraceServiceMapBuilder) resolveEndpointNamespace(
 		return sole.sole, applicationKindFor(sole.sole)
 	}
 	return "", "Service"
+}
+
+// specialBareHosts are single-label names a pod resolves without consulting its
+// namespace search path: loopback, and the cloud metadata server (GCE's bare
+// "metadata"). Stamping the caller's namespace onto one would invent an
+// in-cluster service for the pod itself or for the cloud provider.
+var specialBareHosts = map[string]bool{
+	"localhost": true,
+	"metadata":  true,
+}
+
+// isSpecialBareHost reports whether a dotless target name is a loopback or
+// metadata host, or an IP literal (an IPv6 address such as "::1" has no dot).
+// An http.host may carry a port, so it is stripped first.
+func isSpecialBareHost(name string) bool {
+	host := strings.ToLower(name)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return specialBareHosts[host] || net.ParseIP(host) != nil
+}
+
+// dependencyTargetKind is the single decision of which application a
+// dependency endpoint is. buildServiceLinks mints the link id from it and
+// application creation (addUnobservedNamespacedTargets,
+// createExternalServiceApplications) mints the application id from it, so a
+// link can never point at an id no application carries — the service map draws
+// a phantom node for every such id. An endpoint resolveEndpointNamespace placed
+// in a namespace is that namespace's application, even when it emitted no spans;
+// only a namespace-less one tracked as external is an ExternalService.
+func dependencyTargetKind(namespace string, external bool) string {
+	if namespace != "" {
+		return applicationKindFor(namespace)
+	}
+	if external {
+		return "ExternalService"
+	}
+	return "Service"
 }
 
 // buildServiceLinks creates Link objects for a service's dependencies
@@ -145,14 +207,10 @@ func (t *TraceServiceMapBuilder) buildServiceLinks(dependencyMap map[string]*Ser
 		// same-named service from an unrelated namespace onto this link.
 		//
 		// Kind must agree with how the peer's own application is built
-		// (applicationKindFor), or a consumer keying on Kind+Namespace+Name will
+		// (dependencyTargetKind), or a consumer keying on Kind+Namespace+Name will
 		// miss the application and fall back to minting an external service.
-		targetKind := applicationKindFor(targetNamespace)
-		if targetNamespace == "" {
-			if _, isExternal := externalServices[targetName]; isExternal {
-				targetKind = "ExternalService"
-			}
-		}
+		_, isExternal := externalServices[targetName]
+		targetKind := dependencyTargetKind(targetNamespace, isExternal)
 
 		link := UpstreamLink{
 			Id:             fmt.Sprintf("%s:%s:%s", targetNamespace, targetKind, targetName),
@@ -650,6 +708,17 @@ func (t *TraceServiceMapBuilder) detectDependencyType(span TraceSpan, attrs *Spa
 		if _, hasMessagingDest := span.SpanAttributes["messaging.destination"]; hasMessagingDest {
 			return "messaging_system"
 		}
+		// With the bare-peer flag on, database attributes come before
+		// net.peer.name: OTel DB-client spans carry both, and a database peer
+		// must stay namespace-opaque while a plain net_peer host follows the
+		// caller's DNS search path.
+		if t.barePeerNamespace {
+			_, hasDbHost := span.SpanAttributes["db.host"]
+			_, hasDbSystem := span.SpanAttributes["db.system"]
+			if hasDbHost || hasDbSystem {
+				return "db_connection"
+			}
+		}
 		// If net.peer.name exists, this is likely an external dependency
 		if _, hasNetPeer := span.SpanAttributes["net.peer.name"]; hasNetPeer {
 			return "net_peer"
@@ -677,10 +746,18 @@ func (t *TraceServiceMapBuilder) detectDependencyType(span TraceSpan, attrs *Spa
 			strings.Contains(target, ".com") ||
 			strings.Contains(target, ".net") ||
 			strings.Contains(target, ".org") ||
-			strings.Contains(target, ".io") ||
-			strings.HasPrefix(target, "redis-") ||
+			strings.Contains(target, ".io") {
+			return "net_peer"
+		}
+		if strings.HasPrefix(target, "redis-") ||
 			strings.HasPrefix(target, "postgres-") ||
 			strings.HasPrefix(target, "mysql-") {
+			// With the bare-peer flag on, a bare net_peer name follows the
+			// caller's search path, so database-named peers are typed like DB
+			// spans that carry db.system and stay namespace-opaque.
+			if t.barePeerNamespace {
+				return "db_connection"
+			}
 			return "net_peer"
 		}
 

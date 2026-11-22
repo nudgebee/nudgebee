@@ -9,11 +9,14 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/llms/classify"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -378,6 +381,8 @@ type ClarifyingQuestion struct {
 	Options  []string `json:"options"`
 	// Kind marks a question whose answer is settled in code. See clarifyKindChatChannel.
 	Kind string `json:"kind,omitempty"`
+	// Recipient is the person a chat-user question is about, as the request names them.
+	Recipient string `json:"recipient,omitempty"`
 }
 
 type WorkflowBuilderState struct {
@@ -407,6 +412,10 @@ type WorkflowBuilderState struct {
 	// ChatChannelRetriedAt is the position, counted from 1, of the channel question that has
 	// already been asked a second time; 0 when none has.
 	ChatChannelRetriedAt int `json:"chat_channel_retried_at,omitempty"`
+	// ChatUsers maps each name a Slack DM recipient was called by, normalised, to their member id.
+	ChatUsers map[string]string `json:"chat_users,omitempty"`
+	// ChatUserRetriedAt is ChatChannelRetriedAt for chat-user questions.
+	ChatUserRetriedAt int `json:"chat_user_retried_at,omitempty"`
 }
 
 func init() {
@@ -463,6 +472,8 @@ type WorkflowBuilderAgent struct {
 	// chatChannelLister, when set, lists the Slack channels in place of the notification service.
 	// Tests set it; it is nil everywhere else.
 	chatChannelLister func(ctx *security.RequestContext) ([]chatChannel, bool)
+	// chatUserLister is chatChannelLister for the workspace's members.
+	chatUserLister func(ctx *security.RequestContext) ([]chatUser, bool)
 
 	// validatedSnapshot is the definition as it stood when validate last passed, empty when the
 	// last validate failed or none has run. A build ends at finalize only for this definition.
@@ -529,8 +540,8 @@ func (a *WorkflowBuilderAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
-func (a *WorkflowBuilderAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierReasoning
+func (a *WorkflowBuilderAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierReasoning
 }
 
 // PostProcessResponse is a pass-through. The builder produces its terminal output
@@ -613,7 +624,7 @@ Do not generalise from it to the other four types.
 ## TRIGGER TYPES:
 - "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
 - "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
-- "webhook" - Requires params: {"integration_name": "string (a workflow_webhook integration name)", "secret": "string (optional)", "filter": "jinja2 (optional, must render to literal \"true\" or \"1\")"}. Filter sees {{ webhook_payload }} at root. Tasks read request body via {{ Inputs.webhook_payload }}.
+- "webhook" - Requires params: {"integration_name": "string (a workflow_webhook integration name)", "secret": "string (optional)", "filter": "jinja2 (optional, must render to literal \"true\" or \"1\")"}. Filter sees {{ webhook_payload }} at root. Tasks read the raw body via {{ Inputs.webhook_payload }} and parsed JSON fields via {{ Inputs.webhook_json.<field> }}.
 - "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2", "on": "lifecycle phase (optional, default event.created)"}.
     - The filter sees the event at ROOT: {{ event.<field> }}. Tasks read the same event via {{ Inputs.event.<field> }}. NEVER use {{ Inputs.event }} inside the filter — the filter context has no "Inputs".
     - AVAILABLE event.<field> (these are the ONLY top-level fields; do NOT invent others — there is no event.reason and no event.message):
@@ -630,14 +641,14 @@ Do not generalise from it to the other four types.
     - LLM ANALYSIS / RCA is NOT a field on the event. To include AI analysis, add an "llm.event_investigate" task and reference ITS output — do not read event.labels for a "reason"/"analysis".
     - "on" (lifecycle phase) selects WHEN the workflow fires: event.created (default), event.triaged, event.updated, investigation.completed (use this when the task needs the LLM RCA, which is only ready by then), event.resolved, event.closed.
     - BEFORE building an event trigger, call get_event_trigger_schema to confirm the live fields, the real label keys for this account, and a sample event.
-- "optimization" - All params optional (empty = match every recommendation). Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
+- "optimization" - Needs AT LEAST ONE non-empty filter (categories, rule_names, clusters or filter); an unfiltered optimization trigger is rejected. Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
 
 ## INPUT STRUCTURE:
 {
   "id": "string (required)",
   "description": "string (optional)",
   "type": "string (optional)",        // e.g., "string", "json", "number", "boolean"
-  "default": any (optional),
+  "default": any (optional),          // a plain value, used as written and never rendered: no {{ }} templates
   "required": bool (optional)
 }
 
@@ -682,7 +693,7 @@ Do not generalise from it to the other four types.
 10. Schedule trigger MUST have "cron" param. Optional "overlap_policy" must be one of Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther. Optional "catchup_window" MUST use Go time.ParseDuration units (ns|us|ms|s|m|h) — day units like "7d" are NOT supported (use "168h" for 7 days); compound durations like "1h30m" ARE allowed
 11. Webhook trigger MUST have "integration_name" param
 12. Event trigger MUST have AT LEAST ONE of "event_type" OR "filter". "event_type" may be a string or array of strings
-13. Optimization trigger: all params are optional (categories[], rule_names[], clusters[], filter). Empty params means "match every recommendation". Array params must contain strings only
+13. Optimization trigger MUST have AT LEAST ONE non-empty filter: categories[], rule_names[], clusters[] or filter. Empty params are rejected. Array params must contain strings only
 `
 }
 
@@ -756,7 +767,7 @@ func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request
 // existing workflow ("also fetch comments and summarise") are recognised as edits rather than being
 // funnelled into failure diagnosis.
 //
-// The decision goes through the common classification API (core.Classify), so its model or backend
+// The decision goes through the common classification API (classify.Classify), so its model or backend
 // can change without touching this code; the fallback below stays here.
 //
 // Conservative defaults: on classifier error or an unparseable answer it returns EDIT when a
@@ -769,7 +780,7 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 	}
 
 	call, task := turnIntentClassification(request, hasWorkflow)
-	decision, err := core.Classify(ctx, call, task, request.Query)
+	decision, err := classify.Classify(ctx, call, task, request.Query)
 	if err != nil {
 		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
 		return fallback
@@ -778,10 +789,10 @@ func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, 
 	return parseTurnIntent(decision.Label(), hasWorkflow)
 }
 
-// turnIntentClassification builds the turn-intent decision for core.Classify: the call stays on the
+// turnIntentClassification builds the turn-intent decision for classify.Classify: the call stays on the
 // retrieval tier (today's model; moving it to the classification tier is a later switch), and the
 // options' descriptions are short because the full rules are in the instructions.
-func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (core.ClassificationCall, core.ClassificationTask) {
+func turnIntentClassification(request core.NBAgentRequest, hasWorkflow bool) (classify.ClassificationCall, classify.ClassificationTask) {
 	instructions := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
 
 ANSWER — the user wants information, an explanation, or a diagnosis with NO change requested. Examples:
@@ -814,19 +825,19 @@ Rules:
   no question about why, is a request to repair it: EDIT.
 - If genuinely ambiguous between ANSWER and a change, prefer the change (EDIT if an automation is
   open, otherwise CREATE).`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
-	call := core.ClassificationCall{
+	call := classify.ClassificationCall{
 		UserId:         request.UserId,
 		AccountId:      request.AccountId,
 		ConversationId: request.ConversationId,
 		MessageId:      request.MessageId,
 		AgentId:        request.AgentId,
-		Tier:           core.ModelTierRetrieval,
+		Tier:           llmruntime.ModelTierRetrieval,
 		TrackContent:   true,
 	}
-	task := core.ClassificationTask{
+	task := classify.ClassificationTask{
 		Name:         "workflow_turn_intent",
 		Instructions: instructions,
-		Options: []core.ClassificationOption{
+		Options: []classify.ClassificationOption{
 			{Label: string(turnIntentAnswer), Description: "The user wants information, an explanation, a diagnosis or status, with no change requested."},
 			{Label: string(turnIntentEdit), Description: "The user wants to change or repair the automation that is open."},
 			{Label: string(turnIntentCreate), Description: "The user wants to build a new automation from scratch."},
@@ -838,7 +849,7 @@ Rules:
 // parseTurnIntent maps the classifier's label to a turnIntent. It downgrades EDIT to CREATE when no
 // workflow is loaded (nothing to edit), and turns an empty label — an invalid answer — into the
 // hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE), never silently ANSWER.
-// core.Classify only ever returns an exact label or "", so the substring matching below is lenient
+// classify.Classify only ever returns an exact label or "", so the substring matching below is lenient
 // beyond what it needs to be; it is kept for the existing table of raw answers.
 func parseTurnIntent(answer string, hasWorkflow bool) turnIntent {
 	up := strings.ToUpper(strings.TrimSpace(answer))
@@ -880,6 +891,7 @@ func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, requ
 			if json.Unmarshal(wfResp, &wf) == nil {
 				// Load so list_tasks / get_task in the read-only loop can inspect the definition.
 				a.state.WorkingWorkflow = wf
+				definitionContext += a.readOnlyCheckResults(ctx, wf)
 			}
 		} else {
 			ctx.GetLogger().Warn("workflow_builder: read-only could not fetch workflow, answering from question only", "workflow_id", workflowId, "error", err)
@@ -919,6 +931,7 @@ AVAILABLE TOOLS (use ONLY these; never init_workflow / add_task / modify_task / 
 
 INSTRUCTIONS:
 - Dry-run / test requests ("dry run this", "test it", "does this work", "run it safely"): if the automation contains only side-effect-free tasks (e.g. core.print, read-only queries), call dry_run, then report the overall result and, for any failing task, its id + error. If it contains tasks with external side effects (notifications, mutating CLI commands, scripts, tickets), do NOT run it — explain that a dry-run executes those effects for real and ask the user to confirm. Do NOT claim the automation "has no dry-run mode". Dry-run never modifies the saved automation definition.
+- If CHECK RESULTS are listed above, lead your answer with them: each one stops the automation from working even when it is active, so name it first and say what to connect or change — then mention status, trigger or runs.
 - Failure questions ("why did it fail", "what is this error"): gather evidence first — list_executions(status="FAILED"), then get_execution on the most recent failed run; or dry_run to reproduce. Quote the actual error, name the failing task, and explain the cause. Do NOT propose or apply a fix unless the user explicitly asks to fix it.
 - Explain/summarize questions: describe the trigger, tasks, and flow from the definition above.
 - Capability/greeting questions: briefly say you can build, modify, explain, diagnose, and dry-run automations.
@@ -1024,7 +1037,13 @@ func (a *WorkflowBuilderAgent) handleIntentAndPlan(ctx *security.RequestContext,
 			ClarifyingAnswers:   make([]string, len(questions)),
 			ClarifyingIndex:     0,
 		}
-		return a.buildClarificationResponse(request, questions[0])
+		// A DM recipient the workspace knows is settled here and not asked about.
+		a.settleChatUserQuestions(ctx)
+		a.skipAnsweredQuestions()
+		if a.state.ClarifyingIndex < len(questions) {
+			return a.buildClarificationResponse(request, a.state.ClarifyingQuestions[a.state.ClarifyingIndex])
+		}
+		return a.generatePlanAndAskApproval(ctx, request, intent, a.buildClarificationContext())
 	}
 
 	// No clarification needed — proceed directly to plan generation
@@ -1187,7 +1206,8 @@ QUESTION STYLE:
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
-- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the workflow uses {{ Configs.slack_channel }} as a placeholder.
+- Slack channel: if the automation posts to Slack, the request names no channel, and no key under AVAILABLE CONFIGS holds the channel to use, ask where to post — as a question with "kind": "chat_channel" and an empty options list. Never propose channel names yourself: the user types the channel and it is checked against the workspace. If the user skips, the step that posts uses {{ Configs.slack_channel }} as a placeholder in its params, never as an input's default.
+- Slack direct message: if the automation sends a Slack direct message to a person, always ask who gets it — as a question with "kind": "chat_user", an empty options list, and "recipient" set to the person exactly as the request names them (empty when it names nobody). Never propose people or Slack IDs yourself: the name is looked up in the workspace, and the question is shown only when that lookup does not find exactly one person. If the user skips, the step that sends uses {{ Configs.slack_user_id }} as a placeholder in its params, never as an input's default.
 - Any other resource value that is not enumerated in the context above: do not ask about it here. Defer to {{ Configs.<key> }} or workflow Inputs.
 
 WHEN TO RETURN ZERO QUESTIONS:
@@ -1205,6 +1225,12 @@ OUTPUT FORMAT (JSON only, no other text):
     {
       "question": "Which Slack channel should this post to?",
       "kind": "chat_channel",
+      "options": []
+    },
+    {
+      "question": "Who should get the direct message?",
+      "kind": "chat_user",
+      "recipient": "Jane Doe",
       "options": []
     }
   ]
@@ -1281,7 +1307,7 @@ func parseClarifyingQuestionsJSON(content string, maxQuestions int) ([]Clarifyin
 	// name it offered would be invented. The user types the channel and code checks it.
 	for i := range result.Questions {
 		result.Questions[i].Kind = normalizeQuestionKind(result.Questions[i].Kind)
-		if result.Questions[i].Kind == clarifyKindChatChannel {
+		if result.Questions[i].Kind == clarifyKindChatChannel || result.Questions[i].Kind == clarifyKindChatUser {
 			result.Questions[i].Options = nil
 		}
 	}
@@ -1320,20 +1346,20 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 	systemPrompt := getClarificationSystemPrompt(envContext, configsContext, intent)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
 	// Use lite model for speed
 	clarifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("clarification LLM call failed: %w", err)
 	}
@@ -1364,20 +1390,20 @@ func (a *WorkflowBuilderAgent) generateEditClarifyingQuestions(ctx *security.Req
 	systemPrompt := getEditClarificationSystemPrompt(envContext, configsContext, workflowDefinition)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
 	// Lite/fast model — this is a yes/ask classification, same as the create-mode clarification.
 	clarifyCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("edit clarification LLM call failed: %w", err)
 	}
@@ -1409,6 +1435,14 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 		}
 		answer = resolved
 	}
+	if idx < len(a.state.ClarifyingQuestions) && a.state.ClarifyingQuestions[idx].Kind == clarifyKindChatUser &&
+		answer != "" && !strings.EqualFold(answer, "Skip") {
+		resolved, askAgain := a.resolveChatUserAnswer(ctx, request, answer)
+		if askAgain != nil {
+			return *askAgain, nil
+		}
+		answer = resolved
+	}
 
 	// Store the answer (unless skipped)
 	if idx < len(a.state.ClarifyingAnswers) && !strings.EqualFold(answer, "Skip") {
@@ -1417,6 +1451,7 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 
 	// Move to next question
 	a.state.ClarifyingIndex++
+	a.skipAnsweredQuestions()
 
 	if a.state.ClarifyingIndex < len(a.state.ClarifyingQuestions) {
 		// More questions to ask
@@ -1435,6 +1470,14 @@ func (a *WorkflowBuilderAgent) handleClarificationResponse(ctx *security.Request
 		return a.runEditToolLoop(ctx, originalRequest, clarificationContext)
 	}
 	return a.generatePlanAndAskApproval(ctx, originalRequest, a.state.Intent, clarificationContext)
+}
+
+// skipAnsweredQuestions moves past questions already answered in code before they were asked.
+func (a *WorkflowBuilderAgent) skipAnsweredQuestions() {
+	for a.state.ClarifyingIndex < len(a.state.ClarifyingQuestions) && a.state.ClarifyingIndex < len(a.state.ClarifyingAnswers) &&
+		a.state.ClarifyingAnswers[a.state.ClarifyingIndex] != "" {
+		a.state.ClarifyingIndex++
+	}
 }
 
 // buildClarificationResponse formats a clarifying question as a FollowupRequest with structured option data.
@@ -1534,7 +1577,7 @@ INSTRUCTIONS:
 CRITICAL RULES:
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} (capital T, bracket notation)
 - TEMPLATES ARE JINJA2 ONLY — NEVER JMESPath/JSONPath: Inside {{ }} only Jinja2 is valid: dotted access, ['key'] subscript, integer index [0], slices [0:3], and | filters. The projection/wildcard forms [*], [?...], .. and @ are JMESPath/JSONPath and are NOT Jinja2 — the validator rejects them with: invalid expression ... near "*". To collect one field across a LIST of objects, do NOT write {{ Tasks['t'].output.result[*].metadata.name }}. Instead add an upstream scripting.run_script (python) task that builds the derived value (e.g. the joined pod names) and reference its scalar output: {{ Tasks['extract-names'].output.data }}. A {{ }} expression must resolve to a single scalar/string, never a projected list.
-- Integration IDs: {{ Configs.<type>_integration_id }} (e.g., {{ Configs.slack_integration_id }})
+- Integration IDs: set integration_id to the integration's exact name from ACCOUNT ENVIRONMENT (e.g., "prod-jira"); the server resolves the name. If no integration of the kind a task needs is listed, do not invent one or use a {{ Configs.* }} placeholder.
 - Integer values: use 5, NOT 5.0
 - Only use task types that get_task_schema returns — do NOT invent types
 - Task IDs in depends_on must match actual task IDs you've added
@@ -1548,10 +1591,10 @@ CRITICAL RULES:
   - For severity use event.computed_priority (P0|P1|P2|P3) or event.computed_score (0-100), NOT a guessed label like event.labels.nb_triage. Add {{ event.nb_status == 'OPEN' }} to skip duplicates.
   - For AI analysis/RCA, add an llm.event_investigate task and reference its output — there is no event.labels analysis/reason field.
   - event_type must be a REAL registered type (confirm via get_event_trigger_schema); do not invent values like "incident.resolved" or "db.connection.spike".
-- Optimization trigger: all params optional (categories[], rule_names[], clusters[], filter). Empty = match every recommendation
+- Optimization trigger: needs at least one non-empty filter (categories[], rule_names[], clusters[] or filter). Empty params are rejected
 - TRIGGER PAYLOAD ACCESS IN TASKS:
   - Manual/Schedule: user inputs → {{ Inputs.<key> }}
-  - Webhook: request body → {{ Inputs.webhook_payload }}
+  - Webhook: raw body (string) → {{ Inputs.webhook_payload }}; parsed JSON fields → {{ Inputs.webhook_json.<field> }}
   - Event: full event → {{ Inputs.event.<field> }} (e.g. {{ Inputs.event.cluster }}, {{ Inputs.event.priority }})
   - Optimization: recommendation → {{ Inputs.event.<field> }} (e.g. {{ Inputs.event.category }}, {{ Inputs.event.cluster }}, {{ Inputs.event.estimated_savings }})
 - SAFE OUTPUT ACCESS: When referencing output of tasks that may be SKIPPED, use default filters:
@@ -1678,7 +1721,7 @@ RULES:
 - EVENT TRIGGERS: if the change touches an event trigger or its filter, CALL get_event_trigger_schema first. The filter sees event.<field> at ROOT (never Inputs.event). There is NO event.reason / event.message (use title/description/labels.alertname); event.cluster is a NAME not a UUID; for severity use event.computed_priority/computed_score (+ {{ event.nb_status == 'OPEN' }} to skip duplicates), not a guessed label; for AI analysis add an llm.event_investigate task; never invent event_type or label keys.
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} — check get_task_schema output_schema for the correct field name.
 - TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
-- Integration IDs: {{ Configs.<type>_integration_id }}. Integer values: use 5, NOT 5.0.
+- Integration IDs: the integration's exact name from ACCOUNT ENVIRONMENT, never a {{ Configs.* }} placeholder. Integer values: use 5, NOT 5.0.
 - SCRIPTING DATA INJECTION: pass task output to scripts via the "env" parameter — never embed {{ }} inside the script string. Read it via os.environ in the script. Always set "language" explicitly (omitting it defaults to bash).
 - scripting.run_script with parser_type "json": stdout MUST be valid JSON — wrap Python in try/except and print JSON on error.
 - Template filters use underscores: "to_json" (NOT "tojson"), "from_json" (NOT "fromjson").
@@ -2100,17 +2143,32 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 			IsTerminal: true,
 		}, nil
 	}
-	workflowJSON = rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels)
+	workflowJSON = rewriteChatUsersJSON(rewriteChatChannelsJSON(resolvedJSON, a.state.ChatChannels), a.state.ChatUsers)
 
 	refs := extractConfigReferences(workflowJSON)
-	if len(refs) == 0 {
-		return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
+
+	var existing map[string]bool
+	if len(refs) > 0 {
+		var err error
+		existing, err = fetchExistingConfigKeys(ctx, a.accountId)
+		if err != nil {
+			// Graceful degradation: config API unreachable — return workflow as-is.
+			ctx.GetLogger().Warn("workflow_builder: config API unreachable, skipping missing config check", "error", err)
+			return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
+		}
 	}
 
-	existing, err := fetchExistingConfigKeys(ctx, a.accountId)
-	if err != nil {
-		// Graceful degradation: config API unreachable — return workflow as-is.
-		ctx.GetLogger().Warn("workflow_builder: config API unreachable, skipping missing config check", "error", err)
+	// A step whose integration is empty or points at a config that does not exist cannot do its
+	// job, and an INACTIVE save with "create config X" sends the person after the wrong fix when
+	// what is missing is the integration itself (#42204). Refuse and say what to connect.
+	if gaps := a.integrationGaps(ctx, workflowJSON, func(key string) bool { return existing[key] }); len(gaps) > 0 {
+		return core.NBAgentResponse{
+			Response:   []string{a.integrationGapMessage(ctx, gaps)},
+			IsTerminal: true,
+		}, nil
+	}
+
+	if len(refs) == 0 {
 		return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
 	}
 
@@ -2688,11 +2746,11 @@ Output: {
 Return ONLY the JSON object.`, taskTypeNames, envContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -2779,7 +2837,7 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 	}
 
 	return "\nACCOUNT ENVIRONMENT (configured integrations and cloud accounts on this account):\n" + strings.Join(parts, "\n") +
-		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and use {{ Configs.<name>_integration_id }} to reference it." +
+		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and set integration_id to that integration's exact name." +
 		accountIDRule +
 		"\nIf a task REQUIRES an integration NOT listed above, warn the user that it is not currently configured." +
 		currentContext
@@ -2932,9 +2990,9 @@ it is silently discarded. E.g. a webhook trigger is
 {"type": "webhook", "integration_name": "my-hook"}.
 - "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
-- "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
+- "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the raw body via {{ Inputs.webhook_payload }} and parsed JSON fields via {{ Inputs.webhook_json.<field> }}.
 - "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2); optional "on" lifecycle phase (default event.created). Filter context: {{ event.<field> }} at root (NOT Inputs.event). Real fields: event_type, source, title, description, category, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, nb_status (OPEN|DUPLICATE|SUPPRESSED|...), computed_priority (P0-P3, may be absent), computed_score (0-100, may be absent), subject_type/name/namespace/node, cluster (a NAME, not a UUID), fingerprint, cloud_resource_id, labels (free-form alert labels — keys are source-specific, get them from get_event_trigger_schema). NO event.reason/event.message. For severity use computed_priority/computed_score (+ nb_status=='OPEN'); for AI analysis add an llm.event_investigate task. Tasks read the event via {{ Inputs.event.<field> }}.
-- "optimization" → Fires on new K8s/cost optimization recommendations. All params optional (empty = match every recommendation). Optional: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
+- "optimization" → Fires on new K8s/cost optimization recommendations. Needs at least one non-empty filter (empty params are rejected). Pick from: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
 
 COMMON TASK TYPES — WHEN TO USE EACH:
 
@@ -2954,6 +3012,7 @@ AI & INVESTIGATION:
 
 NOTIFICATIONS (REQUIRES: a matching notification integration configured on the account):
 - notifications.im → Send messages to configured IM provider. Params: provider ("slack"|"teams"), channel (string), message (string). Optional: message_thread_id, template, team_id. Output: { channel, message_id, team, provider }
+- notifications.dm → Send a Slack direct message to one person. Params: provider ("slack"), user_id (the person's Slack member ID, e.g. U012AB3CD — never a display name; take it from CLARIFICATION ANSWERS, else {{ Configs.slack_user_id }}), message (string). Output: { user_id, channel_id, message_id, provider }
 - notifications.read_thread → Read thread replies/reactions. Params: provider ("slack"), channel_id, thread_ts. Output (directly on output, NOT output.data): { success, messages[], has_responses, has_reactions, reply_count, error, channel_id, thread_ts }. Each message has: ts, text, user, reactions[], is_parent.
 
 KUBERNETES (REQUIRES: K8s cloud account configured):
@@ -2966,10 +3025,10 @@ CLOUD CLI (REQUIRES: cloud account of matching provider type):
 
 SOURCE CONTROL (REQUIRES: matching SCM integration configured):
 - scm.github.cli → Execute GitHub CLI (gh) commands with auto-authenticated token.
-  Params: integration_id (use {{ Configs.github_integration_id }}), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
+  Params: integration_id (the GitHub integration's name from ACCOUNT ENVIRONMENT), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
 
 DATABASES (REQUIRES: matching database integration configured):
-- dbms.query → Run SQL queries. Params: integration_id (use {{ Configs.<name>_integration_id }}), dbms_type, command (SQL). Output: query result
+- dbms.query → Run SQL queries. Params: integration_id (the database integration's name from ACCOUNT ENVIRONMENT), dbms_type, command (SQL). Output: query result
 
 TICKETING (REQUIRES: a ticketing integration configured):
 - tickets.create → Create tickets. Params: ticket details. Output: created ticket
@@ -3104,7 +3163,7 @@ AVAILABLE CONFIGS ON THIS ACCOUNT (use {{ Configs.<key> }} to reference these in
 // references differ. It used to say both take {{ Configs.* }}, which the build
 // and edit prompts forbid for account_id — plans then carried config references
 // the builder had to undo.
-const planIntegrationAndAccountRule = "- For integration_id fields: use {{ Configs.<type>_integration_id }} (e.g., {{ Configs.jira_integration_id }}), an account-level stored value that resolves at runtime. " +
+const planIntegrationAndAccountRule = "- For integration_id fields: the integration's exact name from the ACCOUNT ENVIRONMENT (e.g., prod-jira), never a {{ Configs.* }} placeholder. " +
 	"account_id is different: a literal account UUID from the ACCOUNT ENVIRONMENT, or omitted for the automation's own account — never a {{ Configs.* }} reference. NEVER use fake UUIDs."
 
 func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, request core.NBAgentRequest, intent string, clarificationContext string) (string, error) {
@@ -3140,7 +3199,7 @@ PLAN FORMAT — Fill in every section. Be specific, not vague.
    - If schedule: exact cron expression (5-field UTC) + overlap_policy + (if needed) catchup_window (Go duration syntax, units ns|us|ms|s|m|h ONLY — "7d" NOT supported, use "168h"; compound "1h30m" OK)
    - If webhook: integration_name + optional filter (must render "true"/"1") + optional secret
    - If event: event_type (string or array) AND/OR filter (at least one required); call out which event fields ({{ event.priority }}, {{ event.cluster }}, etc.) the filter uses
-   - If optimization: any of categories[]/rule_names[]/clusters[]/filter (all optional; empty = match every recommendation). Use enum values verbatim from the planning context.
+   - If optimization: any of categories[]/rule_names[]/clusters[]/filter (at least one non-empty; empty params are rejected). Use enum values verbatim from the planning context.
 
 **3. Inputs:** (skip if none)
    - For each: id, type (string/number/boolean/json), default value, whether required
@@ -3207,7 +3266,7 @@ RULES:
 PREREQUISITES:
 - If a task requires an integration NOT listed in ACCOUNT ENVIRONMENT, warn: "⚠️ Requires <integration type> — not currently configured on this account."
 - Match the customer's actual stack — if their log provider is loki, write LogQL queries. If datadog, use Datadog query syntax. Etc.
-- When the user references an integration by name, match it to the configured integrations and use the correct {{ Configs.<name>_integration_id }}.
+- When the user references an integration by name, match it to the configured integrations and use that integration's exact name as integration_id.
 
 APPROVAL GATES (proactive — suggest even if the user didn't ask):
 - Suggest a core.approval task BEFORE any destructive or high-impact operation:
@@ -3232,11 +3291,11 @@ SAFETY:
 NOTE: In all user-facing text, refer to these as "automations" (not "workflows"). The product uses the term "Automation".`, intent, clarificationContext, taskTypesInfo, configsInfo, envContext, planningContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -3295,11 +3354,11 @@ RULES:
 - Do NOT generate JSON`, intent, previousPlan, feedback, taskTypesInfo, configsInfo, envContext, planningContext)
 
 	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, systemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Original request: %s\n\nPlease update the plan based on my feedback: %s", request.Query, feedback)),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -3321,7 +3380,7 @@ func getWorkflowToolDescriptions() string {
 	tools := []workflowToolDef{
 		{
 			Name:        "init_workflow",
-			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params. Automation-level settings the plan asks for (timeout, retry_policy, hooks, output, set_execution_tags, tags) are also set here, as extra keys — no other tool sets them; to change one after tasks exist, call init_workflow again with just the settings.",
+			Description: "Initialize a new automation with name, triggers, and optional inputs. Call this first when creating a new automation. Valid trigger types: manual, schedule, webhook, event, optimization (see TRIGGER STRUCTURE and TRIGGER TYPES for the params each one needs). A trigger has exactly two keys you write: \"type\" and \"params\". Every setting goes inside \"params\" — a setting at the trigger's top level is rejected. Only \"manual\" needs no params. Automation-level settings the plan asks for (timeout, retry_policy, hooks, output, set_execution_tags, tags) are also set here, as extra keys — no other tool sets them; to change one after tasks exist, call init_workflow again with just the settings. Inputs change the same way: call init_workflow again with just \"inputs\", and each one replaces the input with the same id or is added; inputs you leave out are kept.",
 			Params:      `{"name": "string", "triggers": [{"type": "schedule", "params": {"cron": "0 9 * * *", "overlap_policy": "Skip"}}], "inputs": [{"id": "ns", "type": "string", "default": "nudgebee"}]}`,
 		},
 		{
@@ -3410,11 +3469,25 @@ func (a *WorkflowBuilderAgent) toolInitWorkflow(ctx *security.RequestContext, ar
 	if a.state.WorkingWorkflow != nil {
 		if def, ok := a.state.WorkingWorkflow["definition"].(map[string]interface{}); ok {
 			if tasks, ok := def["tasks"].([]interface{}); ok && len(tasks) > 0 {
-				// Settings are the one thing a second call may change. No other tool sets them,
-				// so a setting that validate rejects could not otherwise be corrected without
+				// Settings and inputs are what a second call may change. No other tool sets them,
+				// so one that validate rejects could not otherwise be corrected without
 				// discarding the tasks.
-				if set := a.applyAutomationSettings(args); len(set) > 0 {
-					return fmt.Sprintf("Automation settings updated: %s. The name, triggers, inputs and %d task(s) were left as they are.", strings.Join(set, ", "), len(tasks))
+				var inputIds []string
+				if raw, given := args["inputs"]; given {
+					if inputIds = mergeInputs(def, raw); len(inputIds) == 0 {
+						return `Error: "inputs" must be a list of inputs, each with an "id". Nothing was changed.`
+					}
+				}
+				set := a.applyAutomationSettings(args)
+				otherInputs := "inputs"
+				if len(inputIds) > 0 {
+					otherInputs = "other inputs"
+				}
+				for _, id := range inputIds {
+					set = append(set, "input "+id)
+				}
+				if len(set) > 0 {
+					return fmt.Sprintf("Automation settings updated: %s. The name, triggers, %s and %d task(s) were left as they are.", strings.Join(set, ", "), otherInputs, len(tasks))
 				}
 				return fmt.Sprintf("Warning: automation already has %d task(s). Use modify_task/add_task/delete_task to change it, or call finalize to complete it. Re-initializing would discard all existing tasks.", len(tasks))
 			}
@@ -3475,6 +3548,43 @@ var (
 	initWorkflowDefinitionSettings = []string{"hooks", "output", "set_execution_tags", "retry_policy", "timeout"}
 	initWorkflowTopLevelSettings   = []string{"tags", "status"}
 )
+
+// mergeInputs puts each input in raw into the definition, in place of the input with the same id
+// or as a new one, and returns their ids. Inputs raw does not name are kept. Unless raw is a list
+// of inputs that all have an id, nothing changes and no ids are returned.
+func mergeInputs(definition map[string]interface{}, raw interface{}) []string {
+	given, _ := raw.([]interface{})
+	for _, item := range given {
+		input, _ := item.(map[string]interface{})
+		if id, _ := input["id"].(string); id == "" {
+			return nil
+		}
+	}
+	inputs, _ := definition["inputs"].([]interface{})
+	var ids []string
+	for _, item := range given {
+		input := item.(map[string]interface{})
+		id := input["id"].(string)
+		replaced := false
+		for i, existing := range inputs {
+			if existingInput, _ := existing.(map[string]interface{}); existingInput["id"] == id {
+				inputs[i] = input
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			inputs = append(inputs, input)
+		}
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) > 0 {
+		definition["inputs"] = inputs
+	}
+	return ids
+}
 
 // applyAutomationSettings copies the automation-level settings present in args onto the working
 // automation, as given, and returns the keys it set.
@@ -4623,6 +4733,11 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 	// A channel the user named in a clarifying answer is written by name; put its id in place.
 	rewriteChatChannels(a.state.WorkingWorkflow, a.state.ChatChannels)
 
+	// A Slack DM to a name fails every run with "User not found": put the member id in place or fail.
+	if issues := a.settleChatUserIds(ctx); len(issues) > 0 {
+		return chatUserLintMessage(issues)
+	}
+
 	// Local account lint: a cloud-CLI task with no resolvable account saves as an automation
 	// that looks live and runs against nothing. The server accepts both shapes (#35391).
 	if accountIssues := a.lintCloudAccountIds(ctx, a.state.WorkingWorkflow); len(accountIssues) > 0 {
@@ -4636,6 +4751,17 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 	validateResp, err := tools.DoRunbookRequest("POST", "workflows/validate", a.state.WorkingWorkflow, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		errMsg := common.SanitizeErrorMessage(err.Error())
+
+		if strings.Contains(errMsg, "an input default is used as written") {
+			return fmt.Sprintf("Validation FAILED: %s\n\nOnly init_workflow changes inputs: call it with just \"inputs\", giving each named input no default and \"required\": false. Then, with set_task_params, make the step that reads the input fall back to the template, as in {{ Inputs.<id> or Configs.<key> }}, so a caller can still override it. Call validate again.", errMsg)
+		}
+
+		// The account has no integration of the kind a step needs. No edit fixes that, and the
+		// obvious workarounds — a {{ Configs.* }} placeholder or an integration of another kind —
+		// produce an automation that cannot run (#42204).
+		if strings.Contains(errMsg, "integration connected") {
+			return fmt.Sprintf("Validation FAILED: %s\n\nThis account has no integration of the kind this step needs, so the step cannot work. Do not replace it with a {{ Configs.* }} placeholder or an integration of another kind. Stop building and give your final answer: tell the user which integration to connect under Integrations, then to ask again.", errMsg)
+		}
 
 		// Structural errors (missing depends_on, unknown task types, bad params) are always hard failures.
 		// These indicate real bugs in the workflow definition that must be fixed.
@@ -5106,6 +5232,16 @@ const observationHistoryWindow = 3
 // either way: its own reasoning rides in the assistant turns, which are never trimmed.
 const trimmedObservationHeadBytes = 1000
 
+// staleObservationTrimBatchBytes is how much trimming has to save before it runs. Rewriting an
+// observation changes the prompt from that message on, and the provider's prompt cache only covers
+// what comes before the first change — so trimming the one observation that just left the window on
+// every step kept the cached prefix at roughly the system prompt, under Gemini's ~16k-token floor,
+// and builder steps cached nothing (#39972). Letting stale observations pile up to this many
+// trimmable bytes and then trimming them all at once keeps the history append-only between
+// batches. ~14k tokens of stale payload at most: simulated builds cost 10–40% less input than
+// trimming every step, and grow far less than never trimming.
+const staleObservationTrimBatchBytes = 48000
+
 // loopObservation records where a tool observation landed in the tool-loop message history and
 // what it contained, so trimStaleObservations can rewrite that message in place later.
 type loopObservation struct {
@@ -5116,11 +5252,22 @@ type loopObservation struct {
 }
 
 // trimStaleObservations shrinks every observation that has fallen out of the recent window to a
-// head snippet, rewriting its message in place. Trimming is one-way and idempotent — an already
-// trimmed observation is skipped — so the whole loop costs one pass per observation. Any
-// anti-thrash nudge appended to a trimmed observation goes with it; the nudge was a signal for the
-// iteration it was delivered on, and the live ones are all inside the window.
+// head snippet, rewriting its message in place — but only once that saves at least
+// staleObservationTrimBatchBytes, so the history changes in rare batches rather than on every step.
+// Trimming is one-way and idempotent — an already trimmed observation is skipped — so the whole
+// loop costs one pass per observation. Any anti-thrash nudge appended to a trimmed observation goes
+// with it; the nudge was a signal for the iteration it was delivered on. Between batches an old
+// nudge can sit outside the window untrimmed — it was true when sent and still reads as history.
 func trimStaleObservations(messages []llms.MessageContent, observations []loopObservation) {
+	saving := 0
+	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
+		if o := observations[i]; !o.trimmed && len(o.body) > trimmedObservationHeadBytes {
+			saving += len(o.body) - trimmedObservationHeadBytes
+		}
+	}
+	if saving < staleObservationTrimBatchBytes {
+		return
+	}
 	for i := 0; i < len(observations)-observationHistoryWindow; i++ {
 		o := &observations[i]
 		if o.trimmed {
@@ -5219,10 +5366,10 @@ func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, reques
 	}
 	thinkingLevel := ""
 	if lowReasoning {
-		thinkingLevel = lowReasoningLevel(core.GetLLMModelName(ctx, request.AccountId, "", a.GetName(), true, request.ConversationId))
+		thinkingLevel = lowReasoningLevel(llmruntime.GetLLMModelName(ctx, request.AccountId, "", a.GetName(), true, request.ConversationId))
 	}
 	// Cap max tokens at 8192 — a single tool call or final answer never needs more.
-	return core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords(toolLoopStopWords), llms.WithMaxTokens(8192), core.WithThinkingLevel(thinkingLevel))
+	return llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, false, llms.WithTemperature(0.0), llms.WithStopWords(toolLoopStopWords), llms.WithMaxTokens(8192), llmruntime.WithThinkingLevel(thinkingLevel))
 }
 
 // lowReasoningLevel is the reasoning level to ask of model for a step that needs little
@@ -5230,14 +5377,14 @@ func (a *WorkflowBuilderAgent) toolLoopTurn(ctx *security.RequestContext, reques
 // model that does not reason by default for "low" would switch reasoning on and make the step
 // slower, not faster.
 func lowReasoningLevel(model string) string {
-	level := core.GetLlmDefaultThinkingLevel(model)
+	level := llmruntime.GetLlmDefaultThinkingLevel(model)
 	// The operator's override replaces the default of a model that has one.
 	if level != "" && config.Config.LlmProviderThinkingLevel != "" {
 		level = config.Config.LlmProviderThinkingLevel
 	}
 	switch strings.ToLower(level) {
-	case core.ThinkingLevelMedium, core.ThinkingLevelHigh:
-		return core.ThinkingLevelLow
+	case llmruntime.ThinkingLevelMedium, llmruntime.ThinkingLevelHigh:
+		return llmruntime.ThinkingLevelLow
 	}
 	return ""
 }
@@ -5267,7 +5414,7 @@ type toolLoopOptions struct {
 	//
 	// Only a build may set it. Every part of a new automation is set through tools — name,
 	// triggers, inputs and settings by init_workflow, tasks by the task tools — but no tool
-	// changes the triggers, inputs, settings or name of an existing one, so an edit still makes
+	// changes the triggers, settings or name of an existing one, so an edit still makes
 	// those changes in its closing answer.
 	commitOnFinalize bool
 
@@ -5326,7 +5473,7 @@ RULES:
 - Call finalize to return the completed workflow — put the JSON inside <content>.`, systemPrompt, toolDescriptions)
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, fullSystemPrompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, fullSystemPrompt)),
 		llms.TextParts(llms.ChatMessageTypeHuman, userMessage),
 	}
 

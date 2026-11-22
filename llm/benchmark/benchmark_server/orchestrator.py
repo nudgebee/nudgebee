@@ -45,6 +45,7 @@ from benchmark_server.utils.run_manager import (
 )
 
 from llm.agents.common.fixtures import find_test_cases, load_test_case
+from llm.agents.common import fixture_lock
 from llm.agents.common.lifecycle import run_before_test, run_after_test
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,9 @@ class TestResult:
 
     test_id: str
     test_index: int
-    status: str  # pass, fail, error, waiting
+    status: (
+        str  # pass, fail, error, waiting, busy (fixture held by another run; retried)
+    )
     duration: float = 0.0
     error: str = ""
 
@@ -256,33 +259,68 @@ def execute_single_test(
         logger.info("[%s] Benchmark stopped by user, skipping", test_id)
         return TestResult(test_id=test_id, test_index=global_index, status="stopped")
 
+    # Another run executing this fixture would delete or overwrite its
+    # resources mid-test; take the fixture's lock or come back to it later.
+    lock_holder = ""
+    if fixture_lock.needs_lock(test_case):
+        lock_holder = fixture_lock.holder_for(run_id)
+        if not fixture_lock.try_acquire(test_case, lock_holder):
+            logger.info("[%s] Fixture in use by another run, retrying later", test_id)
+            return TestResult(test_id=test_id, test_index=global_index, status="busy")
+
     # Mark as running in DB
     if run_id:
-        store_test_result(
-            run_id,
-            {
-                "test_id": test_id,
-                "test_index": global_index,
-                "status": "running",
-                "query": test_case.get("user_prompt", "")[:200],
-                "expected_answer": _flatten_ground_truth(
-                    test_case.get("expected_output", "")
-                ),
-                "tags": test_case.get("tags", []),
-                # Stash what the reconciler needs to run after_test if IT ends up
-                # finalizing this test (handed-off non-terminal path).
-                "teardown_ctx": (
-                    {
-                        "after_test": test_case.get("after_test", ""),
-                        "__path__": test_case.get("__path__", ""),
-                        "__id__": test_id,
-                        "teardown_timeout": test_case.get("teardown_timeout"),
-                    }
-                    if test_case.get("after_test")
-                    else None
-                ),
-            },
-        )
+        try:
+            _store_running(run_id, test_case, test_id, global_index, lock_holder)
+        except Exception:
+            if lock_holder:
+                fixture_lock.release(test_case, lock_holder)
+            raise
+
+    return _execute_locked(test_case, session, config, start_time, lock_holder)
+
+
+def _store_running(run_id, test_case, test_id, global_index, lock_holder) -> None:
+    """Mark the test running, with what the reconciler needs to tear it down."""
+    teardown_ctx = None
+    if test_case.get("after_test") or lock_holder:
+        teardown_ctx = {
+            "after_test": test_case.get("after_test", ""),
+            "__path__": test_case.get("__path__", ""),
+            "__id__": test_id,
+            "teardown_timeout": test_case.get("teardown_timeout"),
+            "lock_holder": lock_holder,
+        }
+    store_test_result(
+        run_id,
+        {
+            "test_id": test_id,
+            "test_index": global_index,
+            "status": "running",
+            "query": test_case.get("user_prompt", "")[:200],
+            "expected_answer": _flatten_ground_truth(
+                test_case.get("expected_output", "")
+            ),
+            "tags": test_case.get("tags", []),
+            # Stash what the reconciler needs to run after_test and release
+            # the fixture lock if IT ends up finalizing this test
+            # (handed-off non-terminal path).
+            "teardown_ctx": teardown_ctx,
+        },
+    )
+
+
+def _execute_locked(
+    test_case: Dict[str, Any],
+    session: SessionState,
+    config: Dict[str, Any],
+    start_time: float,
+    lock_holder: str,
+) -> TestResult:
+    """The test's lifecycle, run while this run holds the fixture (if it needs one)."""
+    test_id = test_case.get("__id__", "unknown")
+    global_index = test_case.get("__global_index__", 0)
+    run_id = session.run_id
 
     # --- Full lifecycle with guaranteed cleanup ---
     skip_cleanup = False
@@ -390,6 +428,10 @@ def execute_single_test(
                     )
                 except Exception:
                     pass  # best-effort
+        # A handed-off test keeps the fixture until the reconciler tears it
+        # down and releases it (run_manager._run_after_test_teardown).
+        if lock_holder and not skip_cleanup:
+            fixture_lock.release(test_case, lock_holder)
 
 
 def _run_test_core(
@@ -914,6 +956,53 @@ def _store_error(
 # ---------------------------------------------------------------------------
 
 
+# A fixture another run holds is retried every BUSY_RETRY_SEC, and skipped
+# once it has been busy for FIXTURE_BUSY_GIVE_UP_SEC.
+BUSY_RETRY_SEC = int(os.getenv("BENCHMARK_FIXTURE_BUSY_RETRY_SEC", "30"))
+FIXTURE_BUSY_GIVE_UP_SEC = int(os.getenv("BENCHMARK_FIXTURE_BUSY_GIVE_UP_SEC", "1200"))
+
+
+def _wait_before_retry(run_id: str) -> bool:
+    """Sleep BUSY_RETRY_SEC; False if the run was stopped meanwhile."""
+    deadline = time.time() + BUSY_RETRY_SEC
+    while time.time() < deadline:
+        if run_id and not should_proceed(run_id):
+            return False
+        time.sleep(min(5, max(0, deadline - time.time())))
+    return not (run_id and not should_proceed(run_id))
+
+
+def _store_busy_skip(
+    run_id: str, test_case: Dict[str, Any], waited: float
+) -> TestResult:
+    """Record a test whose fixture another run held the whole time as skipped."""
+    test_id = test_case.get("__id__", "unknown")
+    global_index = test_case.get("__global_index__", 0)
+    message = (
+        f"Skipped: fixture in use by another benchmark run for {int(waited // 60)} min"
+    )
+    logger.warning("[%s] %s", test_id, message)
+    if run_id:
+        store_test_result(
+            run_id,
+            {
+                "test_id": test_id,
+                "test_index": global_index,
+                "status": "skipped",
+                "query": test_case.get("user_prompt", "")[:200],
+                "expected_answer": _flatten_ground_truth(
+                    test_case.get("expected_output", "")
+                ),
+                "error_message": message,
+                "error_category": "fixture_busy",
+                "tags": test_case.get("tags", []),
+            },
+        )
+    return TestResult(
+        test_id=test_id, test_index=global_index, status="skipped", error=message
+    )
+
+
 class TestOrchestrator:
     """Custom test orchestrator — replaces pytest for benchmark execution.
 
@@ -1031,6 +1120,16 @@ class TestOrchestrator:
                     )
                 continue
             test_cases.append(tc)
+
+        # Fixture locks keep concurrent runs off each other's resources; a run
+        # that can't take them must not run unprotected.
+        if any(fixture_lock.needs_lock(tc) for tc in test_cases):
+            try:
+                fixture_lock.check_access()
+            except fixture_lock.LockAccessError as e:
+                logger.error("%s", e)
+                add_error(run_id, str(e))
+                return False
 
         total = len(test_cases)
         logger.info(
@@ -1246,23 +1345,78 @@ class TestOrchestrator:
         self, test_cases, session, config, total
     ) -> List[TestResult]:
         """Execute tests one at a time."""
-        results = []
-        for i, tc in enumerate(test_cases):
-            if session.run_id and not should_proceed(session.run_id):
-                logger.info("Benchmark stopped by user after %d tests", i)
-                break
-
-            update_progress(session.run_id, i, total, tc.get("user_prompt", "")[:200])
-            result = execute_single_test(tc, session, config)
-            results.append(result)
-            update_progress(session.run_id, i + 1, total, "")
-
-        return results
+        return self._execute_with_requeue(
+            test_cases, session, total, self._sequential_round, config
+        )
 
     def _execute_parallel(self, test_cases, session, config, total) -> List[TestResult]:
         """Execute tests in parallel using thread pool."""
-        results = []
-        completed = 0
+        return self._execute_with_requeue(
+            test_cases, session, total, self._parallel_round, config
+        )
+
+    def _execute_with_requeue(
+        self, test_cases, session, total, run_round, config
+    ) -> List[TestResult]:
+        """Run every test, putting off the ones whose fixture another run holds.
+
+        A busy fixture goes again after the rest of its round, every
+        BUSY_RETRY_SEC, until FIXTURE_BUSY_GIVE_UP_SEC after it was first found
+        busy; then it is recorded as skipped, never as failed, since the agent
+        never ran.
+        """
+        results: List[TestResult] = []
+        progress = {"done": 0}
+        busy_since: Dict[str, float] = {}
+        pending = list(test_cases)
+        while pending:
+            busy = []
+            for tc, result in run_round(pending, session, config, total, progress):
+                if result.status == "busy":
+                    busy.append(tc)
+                    busy_since.setdefault(result.test_id, time.time())
+                else:
+                    results.append(result)
+            pending = []
+            for tc in busy:
+                waited = time.time() - busy_since[tc.get("__id__", "unknown")]
+                if waited < FIXTURE_BUSY_GIVE_UP_SEC:
+                    pending.append(tc)
+                    continue
+                results.append(_store_busy_skip(session.run_id, tc, waited))
+                progress["done"] += 1
+                update_progress(session.run_id, progress["done"], total, "")
+            if pending and not _wait_before_retry(session.run_id):
+                break
+        return results
+
+    def _sequential_round(self, test_cases, session, config, total, progress):
+        """One pass over test_cases, one test at a time."""
+        out = []
+        for tc in test_cases:
+            if session.run_id and not should_proceed(session.run_id):
+                logger.info(
+                    "Benchmark stopped by user after %d tests", progress["done"]
+                )
+                break
+
+            update_progress(
+                session.run_id,
+                progress["done"],
+                total,
+                tc.get("user_prompt", "")[:200],
+            )
+            result = execute_single_test(tc, session, config)
+            out.append((tc, result))
+            if result.status != "busy":
+                progress["done"] += 1
+                update_progress(session.run_id, progress["done"], total, "")
+
+        return out
+
+    def _parallel_round(self, test_cases, session, config, total, progress):
+        """One pass over test_cases on the thread pool."""
+        out = []
 
         with ThreadPoolExecutor(max_workers=self.parallel_workers) as executor:
             future_to_tc = {}
@@ -1277,7 +1431,9 @@ class TestOrchestrator:
                 test_id = tc.get("__id__", "unknown")
                 try:
                     result = future.result(timeout=1800)  # 30 min max per test
-                    results.append(result)
+                    out.append((tc, result))
+                    if result.status == "busy":
+                        continue
                 except TimeoutError:
                     logger.error(
                         "[%s] Worker timed out after 1800s — running after_test cleanup",
@@ -1290,6 +1446,10 @@ class TestOrchestrator:
                         logger.warning(
                             "[%s] Cleanup after timeout also failed", test_id
                         )
+                    if fixture_lock.needs_lock(tc):
+                        fixture_lock.release(
+                            tc, fixture_lock.holder_for(session.run_id)
+                        )
                     _store_error(
                         session.run_id,
                         tc,
@@ -1298,12 +1458,15 @@ class TestOrchestrator:
                         "worker_timeout",
                         1800.0,
                     )
-                    results.append(
-                        TestResult(
-                            test_id=test_id,
-                            test_index=tc.get("__global_index__", 0),
-                            status="error",
-                            error="Test execution timed out after 1800s",
+                    out.append(
+                        (
+                            tc,
+                            TestResult(
+                                test_id=test_id,
+                                test_index=tc.get("__global_index__", 0),
+                                status="error",
+                                error="Test execution timed out after 1800s",
+                            ),
                         )
                     )
                 except Exception as e:
@@ -1316,19 +1479,22 @@ class TestOrchestrator:
                         "test_error",
                         0.0,
                     )
-                    results.append(
-                        TestResult(
-                            test_id=test_id,
-                            test_index=tc.get("__global_index__", 0),
-                            status="error",
-                            error=str(e),
+                    out.append(
+                        (
+                            tc,
+                            TestResult(
+                                test_id=test_id,
+                                test_index=tc.get("__global_index__", 0),
+                                status="error",
+                                error=str(e),
+                            ),
                         )
                     )
 
-                completed += 1
-                update_progress(session.run_id, completed, total, "")
+                progress["done"] += 1
+                update_progress(session.run_id, progress["done"], total, "")
 
-        return results
+        return out
 
     def _finalize(
         self, session: Optional[SessionState], run_id: str, agent_path: Path = None

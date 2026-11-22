@@ -3,9 +3,10 @@ package api
 import (
 	"errors"
 	"log/slog"
+
 	"nudgebee/llm/common"
+	"nudgebee/llm/knowledge"
 	"nudgebee/llm/security"
-	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -30,14 +31,14 @@ type createAgentRagRequest struct {
 
 func ragQuery(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	// Check if user has access to account
 	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeRead) &&
 		!granted(context.GetSecurityContext(), payload["account_id"].(string), moduleAiKbs, "Read", "Write") {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -48,13 +49,13 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 	queryRequest := ragQueryRequest{}
 	err := common.DecodeMapToStruct(payload, &queryRequest)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	err = common.ValidateStruct(queryRequest)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
@@ -62,11 +63,11 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 		queryRequest.Limit = 3
 	}
 
-	resp := toolcore.QueryRAG(context.GetSecurityContext().GetUserId(), queryRequest.AccountId, queryRequest.Query, queryRequest.Module, queryRequest.Limit, uuid.NewString(), uuid.NewString(), uuid.NewString(), false)
+	resp := knowledge.QueryRAG(context.GetSecurityContext().GetUserId(), queryRequest.AccountId, queryRequest.Query, queryRequest.Module, queryRequest.Limit, uuid.NewString(), uuid.NewString(), uuid.NewString(), false)
 
 	// Check if response is empty
 	if len(resp) == 0 {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("rag: unable to query rag")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("rag: unable to query rag")}))
 		return
 	}
 
@@ -76,7 +77,7 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 		documents = append(documents, result.Document)
 	}
 
-	c.JSON(200, buildApiResponse(map[string]any{
+	c.JSON(200, BuildApiResponse(map[string]any{
 		"data":  documents,
 		"limit": queryRequest.Limit,
 	}, nil))
@@ -84,14 +85,14 @@ func ragQuery(c *gin.Context, context *security.RequestContext, payload map[stri
 
 func createAgentRagData(c *gin.Context, context *security.RequestContext, payload map[string]any) {
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
+		c.JSON(400, BuildApiResponse(nil, []error{errors.New("agents: invalid payload, account_id is required")}))
 		return
 	}
 
 	// Check if user has create access to account
 	if !context.GetSecurityContext().HasAccountAccess(payload["account_id"].(string), security.SecurityAccessTypeCreate) &&
 		!grantedWrite(context.GetSecurityContext(), payload["account_id"].(string), moduleAiKbs) {
-		c.JSON(403, buildApiResponse(nil, []error{
+		c.JSON(403, BuildApiResponse(nil, []error{
 			common.Error{
 				Message: errorUserAccessMessage,
 			},
@@ -105,28 +106,28 @@ func createAgentRagData(c *gin.Context, context *security.RequestContext, payloa
 
 	err := common.DecodeMapToStruct(payload, &createRequest)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	// Validate required fields
 	err = common.ValidateStruct(createRequest)
 	if err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
 	// Call the core function
-	agentRag, err := toolcore.CreateAgentRag(context, createRequest.AccountId, createRequest.Agent,
+	agentRag, err := knowledge.CreateAgentRag(context, createRequest.AccountId, createRequest.Agent,
 		createRequest.Data, createRequest.Format, createRequest.FileName)
 
 	if err != nil {
 		slog.Error("rag: failed to create agent rag", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{err}))
+		c.JSON(400, BuildApiResponse(nil, []error{err}))
 		return
 	}
 
-	c.JSON(200, buildApiResponse(agentRag, nil))
+	c.JSON(200, BuildApiResponse(agentRag, nil))
 }
 
 func handleRagApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
@@ -137,7 +138,7 @@ func handleRagApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		err := c.ShouldBindJSON(&actionRequest)
 		if err != nil {
 			slog.Error(errorBindingMessage, "error", err)
-			c.JSON(400, buildApiResponse(nil, []error{
+			c.JSON(400, BuildApiResponse(nil, []error{
 				common.Error{
 					Message: "api: " + err.Error(),
 				},
@@ -146,13 +147,13 @@ func handleRagApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		if actionRequest.Action.Name == "" {
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, action.name is required")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("tools: invalid payload, action.name is required")}))
 			return
 		}
 
-		context, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
+		context, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.With())
 		if err != nil {
-			c.JSON(401, buildApiResponse(nil, []error{err}))
+			c.JSON(401, BuildApiResponse(nil, []error{err}))
 			return
 		}
 
@@ -169,7 +170,7 @@ func handleRagApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 			common.MetricsApiRequestsTotal("rag_create")
 			createAgentRagData(c, context, payload)
 		default:
-			c.JSON(400, buildApiResponse(nil, []error{errors.New("rags: invalid payload, unsupported action")}))
+			c.JSON(400, BuildApiResponse(nil, []error{errors.New("rags: invalid payload, unsupported action")}))
 		}
 	})
 

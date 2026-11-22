@@ -40,6 +40,21 @@ const GCP_SEVERITY_OPTIONS = ['DEFAULT', 'DEBUG', 'INFO', 'NOTICE', 'WARNING', '
   value: s,
 }));
 
+const SEVERITY_CLAUSE_RE = /^\s*severity="([^"]*)"\s*(?:AND\s+)?/i;
+
+function readSeverity(query: string): string {
+  const match = query.match(SEVERITY_CLAUSE_RE);
+  return match ? match[1] : '';
+}
+
+function writeSeverity(query: string, severity: string): string {
+  const rest = query.replace(SEVERITY_CLAUSE_RE, '').trimStart();
+  if (!severity) {
+    return rest;
+  }
+  return rest ? `severity="${severity}" AND ${rest}` : `severity="${severity}"`;
+}
+
 function getDefaultQuery(provider: string): string {
   switch (provider) {
     case 'Azure':
@@ -58,7 +73,6 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
   const [selectedLogGroup, setSelectedLogGroup] = useState<any>(null);
   const [logGroupsLoading, setLogGroupsLoading] = useState(false);
   const [query, setQuery] = useState(getDefaultQuery(provider));
-  const [gcpSeverity, setGcpSeverity] = useState('');
 
   const [azureWorkspaces, setAzureWorkspaces] = useState<any[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<any>(null);
@@ -155,11 +169,8 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
     if (provider === 'Azure' && selectedWorkspace) {
       params.resourceId = selectedWorkspace.resourse_id || '';
     }
-    if (provider === 'GCP' && gcpSeverity) {
-      params.query = gcpSeverity ? `severity="${gcpSeverity}"${query ? ' AND ' + query : ''}` : query;
-    }
     onChange(params);
-  }, [provider, query, selectedRegion, selectedLogGroup, selectedWorkspace, gcpSeverity, onChange]);
+  }, [provider, query, selectedRegion, selectedLogGroup, selectedWorkspace, onChange]);
 
   useEffect(() => {
     emitChange();
@@ -206,9 +217,9 @@ export function useCloudLogsQueryPanel({ provider, accountId, onChange, initialR
         <FilterDropdown
           id='cloud-logs-gcp-severity'
           label='Severity'
-          value={GCP_SEVERITY_OPTIONS.find((o) => o.value === gcpSeverity) ?? null}
+          value={GCP_SEVERITY_OPTIONS.find((o) => o.value === readSeverity(query)) ?? null}
           options={GCP_SEVERITY_OPTIONS}
-          onSelect={(_e: any, item: any) => setGcpSeverity(item?.value || '')}
+          onSelect={(_e: any, item: any) => setQuery((q) => writeSeverity(q, item?.value || ''))}
         />
         {regions.length > 1 && (
           <FilterDropdown

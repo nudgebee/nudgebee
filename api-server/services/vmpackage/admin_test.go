@@ -57,3 +57,56 @@ func TestRetireOrphanedVMScanArtifacts_SkipsWhenStillTargeted(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestRetireVM_RetiresResourcePackagesAndFindings(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE cloud_resourses SET is_active = false, status = 'Inactive'").
+		WithArgs("res-1", "acct-1", "tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE vm_package SET is_active = false").
+		WithArgs("tenant-1", "res-1").
+		WillReturnResult(sqlmock.NewResult(0, 40))
+	mock.ExpectExec("UPDATE recommendation SET status = 'Archive'").
+		WithArgs("tenant-1", "acct-1", "res-1", recommendationRuleName, recommendationCategory).
+		WillReturnResult(sqlmock.NewResult(0, 7))
+	mock.ExpectCommit()
+
+	_, err := mockDBManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		return nil, retireVM(tx, "tenant-1", "acct-1", "res-1")
+	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// A row that is not a VM of this account must roll back before touching the
+// package and finding tables.
+func TestRetireVM_UnknownVMTouchesNothingElse(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE cloud_resourses SET is_active = false").
+		WithArgs("res-1", "acct-1", "tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	_, err := mockDBManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		return nil, retireVM(tx, "tenant-1", "acct-1", "res-1")
+	})
+	require.Error(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReactivateVM_FlipsRowOnly(t *testing.T) {
+	mock := withMockDB(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE cloud_resourses SET is_active = true, status = 'Active'").
+		WithArgs("res-1", "acct-1", "tenant-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	_, err := mockDBManager.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		return nil, reactivateVM(tx, "tenant-1", "acct-1", "res-1")
+	})
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

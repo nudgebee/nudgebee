@@ -217,8 +217,9 @@ func TestMessagesForEventIgnoresEarlierFirings(t *testing.T) {
 	})
 }
 
-// Every automatic stage must scope recovery to the event; only RCA, whose
-// attempts own their session, may pass an empty event id.
+// Every automatic stage must scope recovery to the event and to its run (the
+// run is zero with the remediation loop off); only RCA, whose attempts own their
+// session, may pass an empty event id and no run.
 func TestAutomaticStageRecoveryIsScopedToEvent(t *testing.T) {
 	source, err := os.ReadFile("event_analyzer.go")
 	require.NoError(t, err)
@@ -227,11 +228,11 @@ func TestAutomaticStageRecoveryIsScopedToEvent(t *testing.T) {
 	require.Len(t, calls, 4)
 	unscoped := 0
 	for _, c := range calls {
-		if regexp.MustCompile(`, ""\)$`).Match(c) {
+		if regexp.MustCompile(`, "", events\.EventRun\{\}\)$`).Match(c) {
 			unscoped++
 			assert.Contains(t, string(c), "rcaAgent.GetName()", "only the RCA lookup may skip event scoping")
 		} else {
-			assert.Contains(t, string(c), "request.EventId)", "automatic stages must pass the event id")
+			assert.Contains(t, string(c), "request.EventId, request.run)", "automatic stages must pass the event id and the run")
 		}
 	}
 	assert.Equal(t, 1, unscoped)

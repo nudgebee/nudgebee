@@ -73,14 +73,7 @@ func CacheCreateNamespace(namespace string, options ...CacheNamespaceOption) {
 
 	if cacheManager == nil {
 		if config.Config.CacheProvider == "redis" {
-			redisClient := redis.NewClient(&redis.Options{
-				Addr:     fmt.Sprintf("%s:%d", config.Config.CacheRedisServerHost, config.Config.CacheRedisServerPort),
-				Username: config.Config.CacheRedisUserName,
-				Password: config.Config.CacheRedisUserPassword,
-			})
-			redisStore := redis_store.NewRedis(redisClient)
-			cacheManager = cache.New[any](redisStore)
-			cacheClient = redisClient
+			initRedisCacheLocked()
 		} else {
 			defaultConfig := bigcache_store.DefaultConfig(time.Duration(config.Config.CacheExpirationMinutes) * time.Minute)
 			if cacheNamespaceOptions.Expiration > 0 {
@@ -328,4 +321,50 @@ func CacheListKeys(namespace string) ([]string, error) {
 	}
 
 	return keys, nil
+}
+
+// initRedisCacheLocked creates the shared Redis client and cache manager.
+// Caller must hold syncCacheManagers.
+func initRedisCacheLocked() {
+	redisClient := redis.NewClient(&redis.Options{
+		Addr:     fmt.Sprintf("%s:%d", config.Config.CacheRedisServerHost, config.Config.CacheRedisServerPort),
+		Username: config.Config.CacheRedisUserName,
+		Password: config.Config.CacheRedisUserPassword,
+	})
+	redisStore := redis_store.NewRedis(redisClient)
+	cacheManager = cache.New[any](redisStore)
+	cacheClient = redisClient
+}
+
+// cacheRedisClient returns the shared Redis client, creating it when no cache
+// namespace has been registered yet. Nil when the provider is not Redis.
+func cacheRedisClient() *redis.Client {
+	syncCacheManagers.Lock()
+	defer syncCacheManagers.Unlock()
+	if config.Config.CacheProvider != "redis" {
+		return nil
+	}
+	if cacheManager == nil {
+		initRedisCacheLocked()
+	}
+	redisClient, _ := cacheClient.(*redis.Client)
+	return redisClient
+}
+
+// cachePublishTimeout bounds a publish: callers run it inline right after a
+// write, while the request that made the write is still waiting. Dev measured
+// PUBLISH at p50 0.2 ms, p99 ~100 ms (2026-10-23), so this only cuts off a
+// degraded Redis.
+const cachePublishTimeout = 500 * time.Millisecond
+
+// CachePublish sends message to every subscriber of channel across replicas.
+// A no-op when the provider is not Redis: in-memory installs are single-process.
+func CachePublish(channel string, message string) error {
+	redisClient := cacheRedisClient()
+	if redisClient == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cachePublishTimeout)
+	defer cancel()
+	return redisClient.Publish(ctx, channel, message).Err()
 }

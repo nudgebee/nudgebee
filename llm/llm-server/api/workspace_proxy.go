@@ -81,6 +81,9 @@ func handleWorkspaceApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter)
 
 	// Tool Execution
 	group.POST("/execute", func(c *gin.Context) { handleWorkspaceExecute(c, tracer, meter) })
+
+	// nbctl in the workspace (NUDGEBEE_ENDPOINT=<llm-server>/api/v1/workspace/nbctl)
+	group.POST("/nbctl/api/graphql", func(c *gin.Context) { handleWorkspaceNbctlGraphQL(c, tracer, meter) })
 }
 
 func handleWorkspaceFiles(c *gin.Context, tracer trace.Tracer, meter metric.Meter) {
@@ -166,7 +169,7 @@ func extractWorkspacePayloadAndContext(c *gin.Context, tracer trace.Tracer, mete
 			}
 			return nil, nil, "", errors.New("missing " + config.Config.LlmServerTokenHeader)
 		}
-		ctx, err = buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+		ctx, err = BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 		payload = actionRequest.Input
 		if rawRequest, ok := payload["request"]; ok {
 			if castedRequest, castOk := rawRequest.(map[string]any); castOk {
@@ -246,13 +249,17 @@ func authorizeWorkspaceRequest(c *gin.Context, requestedAccountId string, tracer
 	if err != nil {
 		return nil, fmt.Errorf("invalid token grants: %w", err)
 	}
-	if claims.TargetAccountId != "" && !sc.HasAccountAccess(claims.TargetAccountId, security.SecurityAccessTypeRead) {
+	ctx := security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter)
+	if claims.Grants.GrantScoped {
+		ctx = security.WithGrantScopedRun(ctx)
+	}
+	if claims.TargetAccountId != "" && !security.ToolPathTargetReadable(ctx, claims.TargetAccountId) {
 		return nil, fmt.Errorf("token does not permit its target")
 	}
 	if claims.TargetAccountId != "" {
 		c.Set("workspace_allowed_target", claims.TargetAccountId)
 	}
-	return security.NewRequestContext(c.Request.Context(), sc, slog.Default(), tracer, meter), nil
+	return ctx, nil
 }
 
 func handleWorkspaceListFilesWithPayload(c *gin.Context, payload map[string]any, ctx *security.RequestContext) {
@@ -546,9 +553,9 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 		status = audit.EventStatusFailure
 	}
 	// The audit keeps the command, not the credentials in it: a connection
-	// string, PGPASSWORD=... or token="..." is masked the way tool output is.
+	// string, PGPASSWORD=..., --token x, mysql -px or token="..." is masked.
 	// The relay still runs the command as given.
-	command := egressfilter.RedactSecrets(req.Command)
+	command := redactAuditCommand(req.Command)
 	return &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     targetAccountId,
 		TenantId:      tenantId,
@@ -573,14 +580,16 @@ func workspaceExecuteAudit(ctx *security.RequestContext, req WorkspaceExecuteReq
 }
 
 // redactAuditArguments masks credential values in a command's arguments as
-// its command line is masked. They are masked as JSON text so a value under a
-// secret-named key ("password": "...") is caught too. If the masked text no
-// longer parses, the arguments are left out rather than stored unmasked.
+// its command line is masked. Each string value is masked as a command line
+// first (an argument can be one: "--token abc"), then the whole set as JSON
+// text so a value under a secret-named key ("password": "...") is caught too.
+// If the masked text no longer parses, the arguments are left out rather than
+// stored unmasked. args is not modified.
 func redactAuditArguments(args map[string]any) map[string]any {
 	if len(args) == 0 {
 		return args
 	}
-	raw, err := json.Marshal(args)
+	raw, err := json.Marshal(redactCommandLineStrings(args))
 	if err != nil {
 		return nil
 	}
@@ -589,6 +598,35 @@ func redactAuditArguments(args map[string]any) map[string]any {
 		return nil
 	}
 	return masked
+}
+
+// redactCommandLineStrings returns a copy of v with every string in it masked
+// by egressfilter.RedactCommandLine.
+func redactCommandLineStrings(v any) any {
+	switch t := v.(type) {
+	case string:
+		return egressfilter.RedactCommandLine(t)
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, child := range t {
+			out[k] = redactCommandLineStrings(child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, child := range t {
+			out[i] = redactCommandLineStrings(child)
+		}
+		return out
+	case []string:
+		out := make([]string, len(t))
+		for i, child := range t {
+			out[i] = egressfilter.RedactCommandLine(child)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequest, defaultContext string) (string, bool, error) {
@@ -605,7 +643,7 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 	}
 	subcommand := argv[configIndex+1]
 	if subcommand != "current-context" && subcommand != "get-contexts" && subcommand != "get-clusters" && subcommand != "view" {
-		return "", true, fmt.Errorf("kubectl config %s is unavailable: workspace kubeconfig is virtual and read-only", subcommand)
+		return "", true, fmt.Errorf("kubectl config %s is unavailable: workspace kubeconfig is virtual and read-only. To run a command on another cluster, add --context <name> to it", subcommand)
 	}
 	contexts, err := tools.ListKubernetesTargets(ctx, req.AccountId)
 	if err != nil {
@@ -655,14 +693,20 @@ func virtualKubectlConfig(ctx *security.RequestContext, req WorkspaceExecuteRequ
 			}
 			return strings.Join(names, "\n") + trailingNewline(names), true, nil
 		}
+		// STATUS and LAST-SEEN are not kubectl columns: they say whether the
+		// cluster's Nudgebee agent is connected, so commands are not sent to
+		// clusters that cannot answer.
+		connections := tools.ClusterConnectionsFor(contexts)
 		var b strings.Builder
-		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   NAMESPACE\n")
+		b.WriteString("CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
 		for _, target := range aliases {
 			marker := " "
 			if strings.EqualFold(target.Name, current) {
 				marker = "*"
 			}
-			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   \n", marker, target.Name, target.Name)
+			connection, known := connections[tools.KubernetesTargetAccountID(target.Config)]
+			status, lastSeen := tools.ClusterStatusColumns(connection, known)
+			fmt.Fprintf(&b, "%s         %s   %s   nubi-user   %s   %s\n", marker, target.Name, target.Name, status, lastSeen)
 		}
 		return b.String(), true, nil
 	}

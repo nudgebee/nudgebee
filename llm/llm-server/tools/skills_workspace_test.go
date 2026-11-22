@@ -14,8 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -70,12 +73,12 @@ func TestKnowledgeLongLineContinuationAndIntegrityScan(t *testing.T) {
 	_, err = fmt.Sscanf(first[strings.Index(first, "start_byte="):], "start_byte=%d", &cursor)
 	require.NoError(t, err)
 	secondReader := &countingKnowledgeReader{Reader: strings.NewReader(body)}
-	second, err := readKnowledgeLinesFromByte(secondReader, version, "", 1, cursor, core.KnowledgePurposeReference)
+	second, err := readKnowledgeLinesFromByte(secondReader, version, "", 1, cursor, knowledge.KnowledgePurposeReference)
 	require.NoError(t, err)
 	require.Equal(t, len(body), secondReader.bytes)
 	require.Contains(t, second, "FINAL-RESTRICTION")
 	require.Contains(t, second, "Next step")
-	_, err = readKnowledgeLinesFromByte(strings.NewReader(body+"changed"), version, "", 1, cursor, core.KnowledgePurposeReference)
+	_, err = readKnowledgeLinesFromByte(strings.NewReader(body+"changed"), version, "", 1, cursor, knowledge.KnowledgePurposeReference)
 	require.ErrorContains(t, err, "changed")
 }
 
@@ -152,8 +155,8 @@ func TestKnowledgeWorkspaceToolRoundTrip(t *testing.T) {
 	defer ws.Close()
 	config.Config.LlmServerWorkspaceLocalUrl = ws.URL
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv", MessageId: t.Name()}
-	c := core.KnowledgeCandidate{ID: "knowledge:large", Title: "Article", ReferenceID: "https://source/article", Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(body))}
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
+	c := knowledge.KnowledgeCandidate{ID: "knowledge:large", Title: "Article", ReferenceID: "https://source/article", Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(body))}
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
 	call := func() core.NBToolResponse {
 		resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": c.ID, "keyword": "FINAL-CANARY"}})
 		require.NoError(t, err)
@@ -164,8 +167,8 @@ func TestKnowledgeWorkspaceToolRoundTrip(t *testing.T) {
 	require.Contains(t, fmt.Sprint(first.Data), "FINAL-CANARY")
 	require.Len(t, first.References, 2)
 	// The reference carries the page from its start, not the keyword's numbered read window.
-	require.Equal(t, body[:min(len(body), core.MaxKnowledgeReferenceBytes)], first.References[0].Snippet)
-	cached, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.ID)
+	require.Equal(t, body[:min(len(body), knowledge.MaxKnowledgeReferenceBytes)], first.References[0].Snippet)
+	cached, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.ID)
 	require.True(t, ok)
 	require.Empty(t, cached.Content)
 	require.NotEmpty(t, cached.Path)
@@ -207,16 +210,16 @@ func TestKnowledgeWorkspaceToolRoundTrip(t *testing.T) {
 
 func TestKnowledgeIdenticalExcerptsRetainDistinctHandles(t *testing.T) {
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "c", MessageId: "m"}
-	docs := core.RAGSearchResults{}
+	docs := knowledge.RAGSearchResults{}
 	for _, id := range []string{"one", "two"} {
-		docs = append(docs, core.RAGSearchResult{Document: "same excerpt", Metadata: map[string]any{"collection": "docs", "url": "same", "retrieval_id": id, "content_sha256": strings.Repeat("a", 64), "kb_id": "external-owner"}})
+		docs = append(docs, knowledge.RAGSearchResult{Document: "same excerpt", Metadata: map[string]any{"collection": "docs", "url": "same", "retrieval_id": id, "content_sha256": strings.Repeat("a", 64), "kb_id": "external-owner"}})
 	}
 	menu := strings.Join(cacheSearchKnowledgeCandidates(ctx, docs), "\n")
 	ids := regexp.MustCompile(`id="(knowledge:[^"]+)"`).FindAllStringSubmatch(menu, -1)
 	require.Len(t, ids, 2)
 	require.NotEqual(t, ids[0][1], ids[1][1])
 	for _, id := range ids {
-		candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id[1])
+		candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id[1])
 		require.True(t, ok)
 		require.Empty(t, candidate.KBID)
 	}
@@ -229,8 +232,8 @@ func TestKnowledgeSmallManualHandleRejectsChangedVersion(t *testing.T) {
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
-	c := core.KnowledgeCandidate{ID: "knowledge:manual", KBID: "manual", Version: "old", FileSHA256: strings.Repeat("a", 64), Content: "old body"}
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
+	c := knowledge.KnowledgeCandidate{ID: "knowledge:manual", KBID: "manual", Version: "old", FileSHA256: strings.Repeat("a", 64), Content: "old body"}
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
 	mock.ExpectQuery(`SELECT id, name, COALESCE`).WithArgs(ctx.AccountId, "manual", c.ID).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "kb_type", "integration_id", "md5", "bytes", "note_category", "data_format"}).AddRow("manual", "Manual", "manual", nil, "new", 8, "sop", ""))
 	resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": c.ID}})
 	require.NoError(t, err)
@@ -252,9 +255,9 @@ func TestKnowledgeLocalServices(t *testing.T) {
 	config.Config.RAGServerUrl = ragURL
 	config.Config.LlmServerWorkspaceLocalUrl = workspaceURL
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "knowledge-local-e2e", MessageId: t.Name()}
-	docs := core.QueryRAG("user", ctx.AccountId, "QUASAR escalation", ragKBModule, 1, ctx.ConversationId, ctx.MessageId, "", false)
+	docs := knowledge.QueryRAG("user", ctx.AccountId, "QUASAR escalation", ragKBModule, 1, ctx.ConversationId, ctx.MessageId, "", false)
 	require.Len(t, docs, 1)
-	require.LessOrEqual(t, len(docs[0].Document), core.KnowledgeExcerptBytes)
+	require.LessOrEqual(t, len(docs[0].Document), knowledge.KnowledgeExcerptBytes)
 	menu := strings.Join(cacheSearchKnowledgeCandidates(ctx, docs), "\n")
 	id := regexp.MustCompile(`knowledge:[a-f0-9]+`).FindString(menu)
 	require.NotEmpty(t, id)
@@ -264,7 +267,7 @@ func TestKnowledgeLocalServices(t *testing.T) {
 	require.Contains(t, resp.Data, "PAY-ESC-2")
 	require.Less(t, len(fmt.Sprint(resp.Data)), knowledgeReadBytes)
 	require.Len(t, resp.References, 2)
-	cached, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
+	cached, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
 	require.True(t, ok)
 	require.Empty(t, cached.Content)
 	again, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": id, "start_line": 150001}})
@@ -284,7 +287,7 @@ func TestKnowledgeFailedUploadDoesNotPublishHandle(t *testing.T) {
 	t.Cleanup(func() { config.Config.RAGServerUrl = old })
 	temp := t.TempDir()
 	t.Setenv("TMPDIR", temp)
-	body := strings.Repeat("x", core.KnowledgeExcerptBytes+1)
+	body := strings.Repeat("x", knowledge.KnowledgeExcerptBytes+1)
 	version := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-SHA256", version)
@@ -292,7 +295,7 @@ func TestKnowledgeFailedUploadDoesNotPublishHandle(t *testing.T) {
 	}))
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL + "/"
-	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(body))}
+	c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(body))}
 	err := materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, failedKnowledgeWorkspace{}, &c)
 	require.ErrorContains(t, err, "upload unavailable")
 	require.Empty(t, c.Path)
@@ -309,7 +312,7 @@ func TestKnowledgeManualChunkMaterialization(t *testing.T) {
 			db, mock := skillFetchingDB(t)
 			defer func() { _ = db.Close() }()
 			body := strings.Repeat("reference Ω\n", 30000) + "FINAL-MANUAL-CANARY"
-			c := core.KnowledgeCandidate{KBID: "manual", Collection: "kb_manual", Version: "db-version", Bytes: int64(len(body))}
+			c := knowledge.KnowledgeCandidate{KBID: "manual", Collection: "kb_manual", Version: "db-version", Bytes: int64(len(body))}
 			ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv"}
 			runes := []rune(body)
 			const chunk = 256 * 1024
@@ -346,11 +349,38 @@ func TestKnowledgeManualChunkMaterialization(t *testing.T) {
 type knowledgeUploadCapture struct {
 	workspace.WorkspaceManager
 	bytes int64
+	path  string
 }
 
 func (w *knowledgeUploadCapture) CallAPIOrLazyCreate(_ *security.RequestContext, _ string, _ string, _ string, _ map[string]string, body any) ([]byte, error) {
 	w.bytes = int64(len(body.(map[string]string)["content"]))
+	w.path = body.(map[string]string)["path"]
 	return nil, nil
+}
+
+// A large skill is saved as SKILL.md in its own folder, where copying the
+// skill for its scripts writes the same file; other knowledge, and a skill
+// whose name can't be a folder name, keep the hashed knowledge/ path.
+func TestKnowledgeLargeSkillGoesToItsFolder(t *testing.T) {
+	body := strings.Repeat("step\n", 2000)
+	for title, want := range map[string]string{
+		"PromQL Helper": "skills/promql-helper/SKILL.md",
+		"..":            "knowledge/",
+		"":              "knowledge/",
+	} {
+		t.Run(title, func(t *testing.T) {
+			db, mock := skillFetchingDB(t)
+			defer func() { _ = db.Close() }()
+			c := knowledge.KnowledgeCandidate{KBID: "manual", Title: title, Collection: "kb_manual", Version: "v", Bytes: int64(len(body))}
+			ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv"}
+			mock.ExpectQuery(`SELECT substring`).WithArgs(ctx.AccountId, c.KBID, 1, 256*1024, c.Version).WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow(body))
+			mock.ExpectQuery(`SELECT substring`).WithArgs(ctx.AccountId, c.KBID, 256*1024+1, 256*1024, c.Version).WillReturnRows(sqlmock.NewRows([]string{"data"}).AddRow(""))
+			wm := &knowledgeUploadCapture{}
+			require.NoError(t, materializeKnowledge(ctx, wm, &c))
+			require.True(t, strings.HasPrefix(wm.path, want), wm.path)
+			require.Equal(t, wm.path, c.Path)
+		})
+	}
 }
 
 func TestKnowledgeWorkspaceRefreshesManualPurpose(t *testing.T) {
@@ -368,14 +398,14 @@ func TestKnowledgeWorkspaceRefreshesManualPurpose(t *testing.T) {
 	db, mock := skillFetchingDB(t)
 	defer func() { _ = db.Close() }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: t.Name(), ConversationId: "conv", MessageId: "msg"}
-	c := core.KnowledgeCandidate{ID: "knowledge:purpose", KBID: "manual", Version: "same-body", Path: "knowledge/existing.txt", FileSHA256: digest, Purpose: core.KnowledgePurposeReference}
-	require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
+	c := knowledge.KnowledgeCandidate{ID: "knowledge:purpose", KBID: "manual", Version: "same-body", Path: "knowledge/existing.txt", FileSHA256: digest, Purpose: knowledge.KnowledgePurposeReference}
+	require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
 	for _, category := range []string{"sop", "fact"} {
 		mock.ExpectQuery(`SELECT id, name, COALESCE`).WithArgs(ctx.AccountId, "manual", c.ID).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "kb_type", "integration_id", "md5", "bytes", "note_category", "data_format"}).AddRow("manual", "Manual", "manual", nil, "same-body", len(body), category, ""))
 		resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": c.ID}})
 		require.NoError(t, err)
 		require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status)
-		guidance := core.KnowledgePurposeGuidance(core.KnowledgePurpose("manual", category))
+		guidance := knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurpose("manual", category))
 		require.Contains(t, resp.Data, guidance)
 		require.Len(t, resp.References, 2)
 		require.Contains(t, resp.References[1].Description, guidance)
@@ -386,7 +416,7 @@ func TestKnowledgeWorkspaceRefreshesManualPurpose(t *testing.T) {
 func TestKnowledgeProcedureReadsPastHundredLinesWithinByteBudget(t *testing.T) {
 	body := strings.Repeat("step\n", 110) + "Scope: SQL only; no metrics delegation.\n"
 	version := fmt.Sprintf("%x", sha256.Sum256([]byte(body)))
-	text, err := readKnowledgeLinesForPurpose(strings.NewReader(body), version, "", 1, core.KnowledgePurposeProcedure)
+	text, err := readKnowledgeLinesForPurpose(strings.NewReader(body), version, "", 1, knowledge.KnowledgePurposeProcedure)
 	require.NoError(t, err)
 	require.Contains(t, text, "Scope: SQL only")
 	require.NotContains(t, text, "Read output limited")
@@ -394,7 +424,7 @@ func TestKnowledgeProcedureReadsPastHundredLinesWithinByteBudget(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, reference, "Scope: SQL only")
 	large := strings.Repeat("a longer procedure step\n", 2000)
-	text, err = readKnowledgeLinesForPurpose(strings.NewReader(large), fmt.Sprintf("%x", sha256.Sum256([]byte(large))), "", 1, core.KnowledgePurposeProcedure)
+	text, err = readKnowledgeLinesForPurpose(strings.NewReader(large), fmt.Sprintf("%x", sha256.Sum256([]byte(large))), "", 1, knowledge.KnowledgePurposeProcedure)
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(text), knowledgeReadBytes)
 	require.Contains(t, text, "Read output limited")
@@ -420,11 +450,11 @@ func TestKnowledgePDFNamedLoadPreservesPurpose(t *testing.T) {
 			resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": "PDF guide"}})
 			require.NoError(t, err)
 			require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status, fmt.Sprint(resp.Data))
-			require.Contains(t, fmt.Sprint(resp.Data), core.KnowledgePurposeGuidance(core.KnowledgePurpose("manual", category)))
+			require.Contains(t, fmt.Sprint(resp.Data), knowledge.KnowledgePurposeGuidance(knowledge.KnowledgePurpose("manual", category)))
 			id := regexp.MustCompile(`knowledge:[a-f0-9]+`).FindString(fmt.Sprint(resp.Data))
-			candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
+			candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
 			require.True(t, ok)
-			require.Equal(t, core.KnowledgePurpose("manual", category), candidate.Purpose)
+			require.Equal(t, knowledge.KnowledgePurpose("manual", category), candidate.Purpose)
 			require.Empty(t, candidate.KBID)
 			require.Equal(t, "page-6", candidate.DocumentID)
 			require.NoError(t, mock.ExpectationsWereMet())
@@ -466,7 +496,7 @@ func TestKnowledgeWholePageReplacesTheChunkSizeAndHash(t *testing.T) {
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL + "/"
 	chunkSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(chunk)))
-	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: chunkSHA, Bytes: int64(len(chunk)), ExcerptOnly: true}
+	c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: chunkSHA, Bytes: int64(len(chunk)), ExcerptOnly: true}
 	wm := &knowledgeUploadCapture{}
 	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, wm, &c))
 
@@ -482,7 +512,7 @@ func TestKnowledgeWholePageReplacesTheChunkSizeAndHash(t *testing.T) {
 	require.Contains(t, text, "step one")
 
 	// A re-validation of the handle stays chunk-level and does not ask for the page.
-	validation, err := core.OpenKnowledgeDocument(context.Background(), "account", c, true)
+	validation, err := knowledge.OpenKnowledgeDocument(context.Background(), "account", c, true)
 	require.NoError(t, err)
 	_ = validation.Close()
 	require.Equal(t, false, requests[len(requests)-1]["whole_document"])
@@ -496,7 +526,7 @@ func TestKnowledgeSmallWholePageIsReturnedInline(t *testing.T) {
 	server := ragDocumentServer(t, chunk, page, true, &requests)
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL + "/"
-	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: fmt.Sprintf("%x", sha256.Sum256([]byte(chunk))), Bytes: int64(len(chunk))}
+	c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: fmt.Sprintf("%x", sha256.Sum256([]byte(chunk))), Bytes: int64(len(chunk))}
 	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c))
 	require.Equal(t, page, c.Content)
 	require.Equal(t, int64(len(page)), c.Bytes)
@@ -512,7 +542,7 @@ func TestKnowledgeFallsBackToTheChunkWhenTheServerCannotRebuildThePage(t *testin
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL + "/"
 	version := fmt.Sprintf("%x", sha256.Sum256([]byte(chunk)))
-	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(chunk))}
+	c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: version, Bytes: int64(len(chunk))}
 	require.NoError(t, materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c))
 	require.Equal(t, chunk, c.Content)
 	require.Equal(t, int64(len(chunk)), c.Bytes)
@@ -531,7 +561,7 @@ func TestKnowledgeRejectsAWholePageThatDoesNotMatchItsDeclaredHash(t *testing.T)
 	}))
 	defer server.Close()
 	config.Config.RAGServerUrl = server.URL + "/"
-	c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
+	c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
 	err := materializeKnowledge(core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "account", ConversationId: "conv"}, &knowledgeUploadCapture{}, &c)
 	require.ErrorContains(t, err, "content version mismatch")
 }
@@ -541,7 +571,7 @@ func TestKnowledgeRejectsAMalformedWholePageResponse(t *testing.T) {
 	t.Cleanup(func() { config.Config.RAGServerUrl = old })
 	for name, declared := range map[string]string{
 		"missing size":   "",
-		"oversized page": fmt.Sprint(core.MaxKnowledgeDocumentBytes + 1),
+		"oversized page": fmt.Sprint(knowledge.MaxKnowledgeDocumentBytes + 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -554,8 +584,8 @@ func TestKnowledgeRejectsAMalformedWholePageResponse(t *testing.T) {
 			}))
 			defer server.Close()
 			config.Config.RAGServerUrl = server.URL + "/"
-			c := core.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
-			_, err := core.OpenKnowledgeDocument(context.Background(), "account", c, false)
+			c := knowledge.KnowledgeCandidate{Collection: "docs", DocumentID: "point", Version: strings.Repeat("a", 64), Bytes: 400}
+			_, err := knowledge.OpenKnowledgeDocument(context.Background(), "account", c, false)
 			require.ErrorContains(t, err, "whole-document response")
 		})
 	}

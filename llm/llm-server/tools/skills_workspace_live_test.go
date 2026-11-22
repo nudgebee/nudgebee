@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -42,19 +45,19 @@ func TestKnowledgeExistingWorkspaceLive(t *testing.T) {
 		require.Contains(t, fmt.Sprint(resp.Data), "QUASAR")
 		t.Logf("manual load passed, response bytes=%d", len(fmt.Sprint(resp.Data)))
 	})
-	docs := core.QueryRAG(ctx.UserId, ctx.AccountId, "Confluence Create Ticket Action runbook", ragKBModule, 5, ctx.ConversationId, ctx.MessageId, "", false)
+	docs := knowledge.QueryRAG(ctx.UserId, ctx.AccountId, "Confluence Create Ticket Action runbook", ragKBModule, 5, ctx.ConversationId, ctx.MessageId, "", false)
 	require.NotEmpty(t, docs)
 	for _, doc := range docs {
-		menu := strings.Join(cacheSearchKnowledgeCandidates(ctx, core.RAGSearchResults{doc}), "\n")
+		menu := strings.Join(cacheSearchKnowledgeCandidates(ctx, knowledge.RAGSearchResults{doc}), "\n")
 		id := regexp.MustCompile(`knowledge:[a-f0-9]+`).FindString(menu)
-		candidate, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
-		if !ok || candidate.KBID != "" || candidate.Bytes <= core.KnowledgeExcerptBytes {
+		candidate, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
+		if !ok || candidate.KBID != "" || candidate.Bytes <= knowledge.KnowledgeExcerptBytes {
 			continue
 		}
 		resp, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": id}})
 		require.NoError(t, err)
 		require.Equal(t, core.NBToolResponseStatusSuccess, resp.Status, fmt.Sprint(resp.Data))
-		saved, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
+		saved, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, id)
 		require.True(t, ok)
 		require.NotEmpty(t, saved.Path)
 		defer func() { require.NoError(t, wm.DeleteFile(ctx.Ctx, ctx.AccountId, ctx.ConversationId, saved.Path)) }()
@@ -87,8 +90,8 @@ func TestKnowledgeLargeExistingWorkspaceLive(t *testing.T) {
 			t.Errorf("test workspace cleanup: %v", err)
 		}
 	})
-	require.ErrorContains(t, materializeKnowledge(ctx, wm, &core.KnowledgeCandidate{Bytes: core.MaxKnowledgeDocumentBytes + 1}), "32 MiB transfer limit")
-	for _, size := range []int{3600019, core.MaxKnowledgeDocumentBytes} {
+	require.ErrorContains(t, materializeKnowledge(ctx, wm, &knowledge.KnowledgeCandidate{Bytes: knowledge.MaxKnowledgeDocumentBytes + 1}), "32 MiB transfer limit")
+	for _, size := range []int{3600019, knowledge.MaxKnowledgeDocumentBytes} {
 		tail := "FINAL-CANARY-73629\n"
 		padding := size - len(tail)
 		body := strings.Repeat("界🙂\n", padding/8) + strings.Repeat("x", padding%8) + tail
@@ -108,14 +111,14 @@ func TestKnowledgeLargeExistingWorkspaceLive(t *testing.T) {
 		}))
 		defer source.Close()
 		config.Config.RAGServerUrl = source.URL + "/"
-		c := core.KnowledgeCandidate{ID: core.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, digest), Collection: "fixture", DocumentID: "point", Version: digest, Bytes: int64(len(body)), Title: "Large fixture", ReferenceID: "fixture-source"}
-		require.NoError(t, core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
+		c := knowledge.KnowledgeCandidate{ID: knowledge.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, digest), Collection: "fixture", DocumentID: "point", Version: digest, Bytes: int64(len(body)), Title: "Large fixture", ReferenceID: "fixture-source"}
+		require.NoError(t, knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c))
 		response, err := (LoadSkillsTool{}).Call(ctx, core.NBToolCallRequest{Arguments: map[string]any{"skill_name": c.ID, "keyword": "FINAL-CANARY"}})
 		require.NoError(t, err)
 		require.Equal(t, core.NBToolResponseStatusSuccess, response.Status, fmt.Sprint(response.Data))
 		require.Contains(t, fmt.Sprint(response.Data), "FINAL-CANARY-73629")
 		require.Less(t, len(fmt.Sprint(response.Data)), knowledgeReadBytes)
-		cached, ok := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.ID)
+		cached, ok := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.ID)
 		require.True(t, ok)
 		require.Empty(t, cached.Content)
 		require.Len(t, response.References, 2)

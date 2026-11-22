@@ -247,7 +247,82 @@ func extractAWSAlertDefinition(ctx context.Context, db *sqlx.DB, ev models.Event
 	// Extract ComparisonOperator, Period, EvaluationPeriods from evidences
 	extractAWSEvidenceFields(ctx, db, ev.Id, alertDef)
 
+	// A pushed alarm carries the threshold and period it fired with, but not its
+	// operator or evaluation periods. Those come from the alarm's synced rule.
+	if alertDef.Operator == "" && labels["aws_event_type"] == awsAlarmStateChangeType {
+		if err := fillFromSyncedAlarm(ctx, db, ev, alertDef); err != nil {
+			return nil, err
+		}
+	}
+
 	return alertDef, nil
+}
+
+// awsAlarmStateChangeType is the aws_event_type label of an alarm the push
+// delivered; a polled alarm has no such label.
+const awsAlarmStateChangeType = "CloudWatch Alarm State Change"
+
+// syncedAlarm is the part of a synced CloudWatch alarm (event_rules.expr, the
+// alarm as DescribeAlarms returned it) that alert tuning reads.
+type syncedAlarm struct {
+	AlarmArn           string   `json:"AlarmArn"`
+	ComparisonOperator string   `json:"ComparisonOperator"`
+	Threshold          *float64 `json:"Threshold"`
+	EvaluationPeriods  *int     `json:"EvaluationPeriods"`
+	Period             *int     `json:"Period"`
+}
+
+// fillFromSyncedAlarm completes a pushed alarm's definition from its synced rule.
+// Rules are keyed by alarm name and refreshed daily, so a rule can hold another
+// region's alarm of the same name, or a definition changed since the sync. A
+// suggestion computed from either would be applied to the wrong alarm, so the
+// rule is used only when its stored alarm has the event's ARN and the threshold
+// the alarm fired with.
+func fillFromSyncedAlarm(ctx context.Context, db *sqlx.DB, ev models.Event, alertDef *AlertDefinition) error {
+	if ev.CloudAccountId == nil || alertDef.AlarmName == "" || alertDef.AlarmARN == "" {
+		return fmt.Errorf("%w: pushed alarm without account, name or ARN", errRuleNotFound)
+	}
+	var exprs []string
+	if err := db.SelectContext(ctx, &exprs, `
+		SELECT expr FROM event_rules
+		WHERE account_id = $1 AND alert = $2 AND source = 'AWS_CloudWatch_Alarm' AND COALESCE(expr, '') <> ''`,
+		*ev.CloudAccountId, alertDef.AlarmName); err != nil {
+		return ruleLookupError("alarm "+alertDef.AlarmName, err)
+	}
+	return applySyncedAlarm(exprs, alertDef)
+}
+
+// applySyncedAlarm takes the operator and evaluation periods (and the period,
+// when the event has none) from the stored alarm that is provably the event's.
+func applySyncedAlarm(exprs []string, alertDef *AlertDefinition) error {
+	for _, expr := range exprs {
+		var alarm syncedAlarm
+		if json.Unmarshal([]byte(expr), &alarm) != nil || alarm.AlarmArn != alertDef.AlarmARN {
+			continue
+		}
+		if alarm.Threshold == nil || !sameThreshold(*alarm.Threshold, alertDef.CurrentThreshold) {
+			return fmt.Errorf("%w: synced alarm %s has a different threshold than the firing", errThresholdUnreadable, alertDef.AlarmARN)
+		}
+		if alarm.ComparisonOperator == "" {
+			return fmt.Errorf("%w: synced alarm %s has no comparison operator", errThresholdUnreadable, alertDef.AlarmARN)
+		}
+		alertDef.Operator = alarm.ComparisonOperator
+		if alarm.EvaluationPeriods != nil {
+			alertDef.EvaluationPeriods = *alarm.EvaluationPeriods
+		}
+		if alertDef.Period == 0 && alarm.Period != nil {
+			alertDef.Period = *alarm.Period
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: no synced alarm with ARN %s", errRuleNotFound, alertDef.AlarmARN)
+}
+
+// sameThreshold compares a stored threshold with a fired one. They reach us
+// through different formats (the rule's label is "80.000000", the push sends 80),
+// so equality is numeric with a relative tolerance.
+func sameThreshold(a, b float64) bool {
+	return math.Abs(a-b) <= 1e-9*math.Max(1, math.Max(math.Abs(a), math.Abs(b)))
 }
 
 // extractAWSEvidenceFields parses the raw CloudWatch alarm JSON from evidences[0].
@@ -1815,10 +1890,6 @@ func collectStoredMetricValues(ctx context.Context, db *sqlx.DB, fingerprint, ac
 			}
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil
-	}
-
 	if err := rows.Err(); err != nil {
 		slog.WarnContext(ctx, "error iterating stored metric value rows", "error", err)
 	}

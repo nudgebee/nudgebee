@@ -215,3 +215,26 @@ func integrationRepoURLs(ctx *security.RequestContext, accountId string) []strin
 	}
 	return repoURLs
 }
+
+// SameRepo reports whether a and b name the same repository: the same path, and the same host when both state one.
+// A scheme-less "host/org/repo" is read with the other reference's host (and the common hosts) as known hosts.
+func SameRepo(a, b string) bool {
+	hosts := map[string]bool{"github.com": true, "gitlab.com": true}
+	for _, s := range []string{a, b} {
+		if ref, ok := parseRepoRef(s, nil); ok && ref.host != "" {
+			hosts[ref.host] = true
+		}
+	}
+	ra, okA := parseRepoRef(a, hosts)
+	rb, okB := parseRepoRef(b, hosts)
+	if !okA || !okB || ra.path != rb.path {
+		return false
+	}
+	return ra.host == "" || rb.host == "" || ra.host == rb.host
+}
+
+// IntegrationRepo is the repository of the account's connected git integrations that repo names (as the integration
+// lists it), or "" when it names none or more than one.
+func IntegrationRepo(ctx *security.RequestContext, accountId, repo string) string {
+	return IntegrationRepoNamedBy(ctx, accountId, []string{repo})
+}

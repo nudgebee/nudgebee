@@ -1,4 +1,5 @@
 import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { eventSearchClause } from '@lib/eventSearch';
 import {
   getEndOfDay,
   getEndOfMonth,
@@ -524,6 +525,20 @@ query CloudAccECSSummary(
       cm_net cm_gross cm_credits
       lm_net lm_gross lm_credits
       yr_net yr_gross
+    }
+  }
+}
+`;
+
+const GET_CLOUD_RESOURCE_IDENTITY = `
+query GetCloudResourceIdentity($where: CloudResourcesWhereRequest) {
+  cloud_resource_v2(where: $where, limit: 1) {
+    rows {
+      resource_id
+      arn
+      type
+      region
+      service_name
     }
   }
 }
@@ -1058,10 +1073,11 @@ const apiCloudAccount = {
 
       const andClauses: any[] = [{ starts_at: { _gte: startDate.toISOString() } }, { starts_at: { _lte: endDate.toISOString() } }];
 
-      if (query?.messageSearch?.trim()) {
+      const searchClause = eventSearchClause(query?.messageSearch);
+      if (searchClause) {
         // Pushed into `_and` so it composes with any existing exact-match
         // `title` filter set by a drilldown query rather than overwriting it.
-        andClauses.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+        andClauses.push(searchClause);
       }
 
       filterParams['_and'] = andClauses;
@@ -1106,6 +1122,10 @@ const apiCloudAccount = {
       if (data.resourceType) {
         where.resource_type = { _eq: data.resourceType };
       }
+      // Without a region the server queries us-east-1.
+      if (data.regionName) {
+        where.region_name = { _eq: data.regionName };
+      }
       if (data.startDate && data.endDate) {
         where['timestamp'] = {
           _gte: data.startDate.toISOString(),
@@ -1118,6 +1138,14 @@ const apiCloudAccount = {
       console.log('failed to fetch cloud resource metric-', error);
       throw error;
     }
+  },
+  // The provider-side identity of one cloud_resourses row, by its UUID.
+  getCloudResourceIdentity: async function (accountId: string, id: string) {
+    if (accountId === 'demo') return null;
+    const response = await queryGraphQL(GET_CLOUD_RESOURCE_IDENTITY, 'GetCloudResourceIdentity', {
+      where: { account: { _eq: accountId }, id: { _eq: id } },
+    });
+    return response?.data?.data?.cloud_resource_v2?.rows?.[0] || null;
   },
   // Fast database query for cloud metrics - reads from cloud_resource_metrics table via v2 action
   // instead of calling cloud provider APIs (Azure Monitor/CloudWatch) in real-time.

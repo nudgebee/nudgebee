@@ -30,6 +30,7 @@
       "labels": {},
       "query_attributes": {
         "name": "worker-ec2",
+        "region": "us-east-1",
         "subtype": "compute-instance"
       },
       "ontology_attributes": {

@@ -86,8 +86,8 @@ export class MetricsQueryLocators {
     return (await this.providerSwitcher.innerText().catch(() => "")).trim();
   }
 
-  // Metrics show no data until one is chosen and submitted; returns the metric selected, or null when the picker offers none.
-  async selectFirstMetric(): Promise<string | null> {
+  // Metrics show no data until one is chosen and submitted; picks the `index`-th metric the picker offers and returns its name, or null when there is none.
+  async selectOfferedMetric(index = 0): Promise<string | null> {
     const picker = this.page.getByRole("button", { name: /select a metric/i }).first();
     // Waited for because the reload above leaves the tab mounting; a one-shot check reported "none offered" on a page that was just slow.
     const present = await picker
@@ -117,34 +117,20 @@ export class MetricsQueryLocators {
       await picker.click();
     }
 
-    // Option rows are plain boxes in a hand-rolled virtual list, not role=option, so anchor on the panel that holds the search box.
-    const search = this.page.getByPlaceholder(/search/i).last();
-    const popover = this.page.locator(".MuiPaper-root").filter({ has: search }).last();
-    const options = popover.locator("div").filter({ hasText: /^[A-Za-z_:][\w:]*$/ });
-
+    // ds/FilterDropdown renders each metric as role=option inside the open panel.
+    const options = this.page.locator('[role="option"]:visible');
     // An empty list is handled by the count check below, so a timeout here is not an error.
     await options.first().waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
-
-    // Always search "up": every Prometheus scrapes it and it answers fast, while the first listed metric is arbitrary and can stall the run.
-    const searchBox = popover.locator("input").first();
-    // A popover without a search box just keeps its full list.
-    if (await searchBox.isVisible().catch(() => false)) {
-      await searchBox.fill("up");
-      // No match is handled by the count check below.
-      await options.first().waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
-    }
-
-    if ((await options.count()) === 0) {
+    const offered = (await options.allInnerTexts().catch(() => [])).map((t) => t.trim()).filter(Boolean);
+    const name = offered[index];
+    if (!name) {
+      console.log(`[QueryMetrics] metric picker offered ${offered.length} metric(s), none at position ${index}`);
       await this.page.keyboard.press("Escape");
       return null;
     }
-    // The search also lists metrics containing "up" (backup_*), so take the exact match and fall back to the first row.
-    const exactUp = options.filter({ hasText: /^up$/ });
-    const option = (await exactUp.count()) > 0 ? exactUp.first() : options.first();
 
-    // An unreadable name is returned empty and the spec reports it as "none offered".
-    const name = (await option.innerText().catch(() => "")).trim();
-    await option.click();
+    // Clicked straight from the list, nothing typed into the search.
+    await options.filter({ hasText: new RegExp(`^\\s*${escapeForRegex(name)}\\s*$`) }).first().click();
     // The label input is disabled until a metric is committed, so it becoming enabled proves the selection landed.
     await expect(this.page.getByPlaceholder(/Type label name/i).first()).toBeEnabled({ timeout: 30000 });
     return name;
@@ -197,61 +183,76 @@ export class MetricsQueryLocators {
 // Reads the operator list the builder offers for a given label, live.
 export async function readOfferedOperators(locators: MonitoringTabLocator, label: string): Promise<string[]> {
   const input = locators.LogQueryBuilderInput;
-  await input.click();
-  await input.fill("");
-  await input.pressSequentially(label, { delay: 20 });
+  await openLabelChips(locators);
+  await pickFromSuggestions(locators, label);
 
-  // Typing the full label sometimes accepts it on its own, so select it only if the list still offers it.
-  if (await suggestionsInclude(locators, label)) await pickFromSuggestions(locators, label);
-
-  // An empty list reads as no operators, which the spec reports as a mismatch.
+  // The operator list renders a tick after the label pick, so wait for the operator step and its list before reading it.
+  await expect(input).toHaveAttribute("placeholder", /operator/i, { timeout: 15000 }).catch(() => {});
+  await locators.LogQuerySuggestions.first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
+  // An empty list reads as no operators, which the spec reports as a failure.
   const operators = await locators.LogQuerySuggestions.allTextContents().catch(() => []);
-  await input.page().keyboard.press("Escape");
+  // Leaves the builder back at the label step for the next chip.
+  await input.clear();
   return operators.map((o) => o.trim()).filter(Boolean);
 }
 
-// A first attempt can miss while the builder is still settling (seen once in CI), so one retry from a cleared input is allowed; two misses still report false.
+// A first attempt can miss while the builder is still settling (seen once in CI), so one retry is allowed; two misses still report false.
+// `typedValue` only for values no chip can hold (a regex pattern, a value that must not exist); every other part is clicked from the chips.
 export async function addMetricFilterChip(
   locators: MonitoringTabLocator,
   label: string,
   operatorLabel: string,
-  value: string
+  value: string,
+  { typedValue = false }: { typedValue?: boolean } = {}
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= 2; attempt++) {
-    if (await tryAddMetricFilterChip(locators, label, operatorLabel, value)) return true;
+    if (await tryAddMetricFilterChip(locators, label, operatorLabel, value, typedValue)) return true;
     await locators.LogQueryBuilderInput.page().keyboard.press("Escape");
   }
   return false;
 }
 
-// Builds one label filter chip. Unlike the logs builder, typing the full label advances straight to the operator list, and the input placeholder tells each stage.
+// Clicks the empty builder input so it lists its label chips (the guided-click flow opens them on focus only).
+// Blurred first, because the input keeps focus after a chip is committed and a click on a focused input opens nothing.
+async function openLabelChips(locators: MonitoringTabLocator): Promise<void> {
+  const input = locators.LogQueryBuilderInput;
+  // A half-built chip (e.g. "label " left after reading operators) keeps the builder past the label step; emptying the input is the builder's own reset.
+  if ((await input.inputValue().catch(() => "")) !== "") await input.clear();
+  await expect(input).toHaveAttribute("placeholder", /label name/i, { timeout: 15000 });
+  await input.blur().catch(() => {});
+  await input.click();
+}
+
+// Builds one label filter chip the way a user does: click the input, then click the label, operator and value chips it offers.
 async function tryAddMetricFilterChip(
   locators: MonitoringTabLocator,
   label: string,
   operatorLabel: string,
-  value: string
+  value: string,
+  typedValue: boolean
 ): Promise<boolean> {
   const input = locators.LogQueryBuilderInput;
   const page = input.page();
 
   try {
-    await input.click();
-    // Cleared then typed key by key, because fill() with an unchanged value fires no input event and the autocomplete never reopens.
-    await input.fill("");
-    await input.pressSequentially(label, { delay: 20 });
-
-    // Whether the label still needs selecting depends on state, so look at what the list offers instead of assuming.
-    if (await suggestionsInclude(locators, label)) {
-      await pickFromSuggestions(locators, label);
-    }
+    await openLabelChips(locators);
+    if (!(await pickFromSuggestions(locators, label))) return false;
 
     // The operator is matched on exact trimmed text, because a contains match on "=" would also hit "!=" and "=~".
     if (!(await pickFromSuggestions(locators, operatorLabel))) return false;
 
-    // The value is committed with Enter, because live data may not be offered as a suggestion.
     await expect(input).toHaveAttribute("placeholder", /value/i, { timeout: 15000 });
-    await input.fill(value);
-    await page.keyboard.press("Enter");
+    if (typedValue) {
+      // The input is disabled while the label's values load (loadingValues), and keys sent then are dropped.
+      await expect(input).toBeEnabled({ timeout: 30000 });
+      // The input already holds "label op ", so the value is appended, at a human pace.
+      await input.pressSequentially(value, { delay: 100 });
+      // Enter on a partial text picks the first suggestion instead, so commit only once the whole value is in.
+      await expect(input).toHaveValue(new RegExp(`${escapeForRegex(value)}$`), { timeout: 10000 });
+      await page.keyboard.press("Enter");
+    } else if (!(await pickFromSuggestions(locators, value))) {
+      return false;
+    }
 
     // The chip is committed once the input asks for a label again.
     await expect(input).toHaveAttribute("placeholder", /label name/i, { timeout: 15000 });
@@ -300,15 +301,6 @@ export async function pickFromSuggestions(locators: MonitoringTabLocator, wanted
   // Clicked by its text, not its position: the list re-renders while it loads, so an index goes stale and the click retries on a detached row.
   await locators.LogQuerySuggestions.filter({ hasText: new RegExp("^\\s*" + escapeForRegex(wanted) + "\\s*$") }).first().click();
   return true;
-}
-
-// Whether the open suggestion list offers `wanted`; used to decide if the label still needs selecting.
-export async function suggestionsInclude(locators: MonitoringTabLocator, wanted: string): Promise<boolean> {
-  // An empty list simply means the answer is false.
-  await locators.LogQuerySuggestions.first().waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
-  // No suggestions read as an empty list.
-  const texts = await locators.LogQuerySuggestions.allTextContents().catch(() => []);
-  return texts.some((t) => t.trim() === wanted);
 }
 
 // Removes the one chip for `label`, found by the "Remove <label> " prefix of its dismiss button.

@@ -588,6 +588,24 @@ func (t *SubmitAnalysisTool) Execute(ctx context.Context, input map[string]any) 
 		params.ConfidenceScore = "Low"
 	}
 
+	// comment_responses is passed through raw (see below), so nothing else checks
+	// its shape. Models sometimes send the array JSON-encoded as a string; the PR
+	// followup agent's typed parse then failed on the whole payload, the run
+	// recorded nothing, and the PR was re-run every cycle on unchanged input
+	// (#39995). Decode it here, and reject anything that is not an array so the
+	// planner resends it.
+	var commentResponses []any
+	if raw, ok := input["comment_responses"]; ok && raw != nil {
+		decoded, err := decodeCommentResponses(raw)
+		if err != nil {
+			return core.CreateErrorResponse(
+				fmt.Sprintf("Invalid comment_responses: %v", err),
+				`comment_responses must be a JSON array of objects, not a string. Re-call submit_analysis with e.g. "comment_responses": [{"comment_id": 123, "action": "fixed", "reply": "...", "should_reply": true}]`,
+			)
+		}
+		commentResponses = decoded
+	}
+
 	// Flexible validation: Support Explore mode, ErrorRCA mode, CodeFixer mode, and PR Followup mode.
 	_, hasCommentResponses := input["comment_responses"]
 	isExploreMode := ModeFromContext(ctx) == "explore"
@@ -702,12 +720,9 @@ func (t *SubmitAnalysisTool) Execute(ctx context.Context, input map[string]any) 
 		result["verification_passed"] = *params.VerificationPassed
 	}
 
-	// Pass through extra fields from raw input that callers may need
-	// (e.g., comment_responses from PRFollowupAgent)
-	for _, key := range []string{"comment_responses"} {
-		if v, ok := input[key]; ok && v != nil {
-			result[key] = v
-		}
+	// Pass through comment_responses for PRFollowupAgent, decoded above.
+	if commentResponses != nil {
+		result["comment_responses"] = commentResponses
 	}
 
 	// Create appropriate observation message based on mode
@@ -925,6 +940,26 @@ func getString(v any) string {
 		return s
 	}
 	return ""
+}
+
+// decodeCommentResponses returns comment_responses as a JSON array, decoding it
+// first when the model sent the array JSON-encoded as a string.
+func decodeCommentResponses(raw any) ([]any, error) {
+	var encoded []byte
+	if s, ok := raw.(string); ok {
+		encoded = []byte(strings.TrimSpace(s))
+	} else {
+		b, err := json.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decodeCommentResponses: re-marshal: %w", err)
+		}
+		encoded = b
+	}
+	var out []any
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil, fmt.Errorf("decodeCommentResponses: not a JSON array: %w", err)
+	}
+	return out, nil
 }
 
 // normalizeFilePath removes temporary clone directory prefixes from file paths

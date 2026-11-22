@@ -64,6 +64,7 @@
         "arn": "arn:aws:iam::123456789012:role/admin-role",
         "aws_account_number": "123456789012",
         "name": "admin-role",
+        "region": "global",
         "service_name": "AWSIAM",
         "subtype": "IAMRole",
         "trust_policy": "{}"
@@ -106,6 +107,7 @@
         "arn": "arn:aws:iam::123456789012:role/app-role",
         "aws_account_number": "123456789012",
         "name": "app-role",
+        "region": "global",
         "service_name": "AWSIAM",
         "subtype": "IAMRole",
         "trust_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/admin-role\"}}],\"Version\":\"2012-10-17\"}"
@@ -183,7 +185,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-plan"
+        "name": "my-plan",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -220,7 +223,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-vault"
+        "name": "my-vault",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -263,7 +267,8 @@
       "query_attributes": {
         "engine": "redis",
         "instance_type": "cache.t3.micro",
-        "name": "app-cache"
+        "name": "app-cache",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "endpoint": "app-cache.abc.cache.amazonaws.com",
@@ -456,6 +461,7 @@
       },
       "query_attributes": {
         "name": "app-ec2",
+        "region": "us-east-1",
         "subnet_id": "subnet-1",
         "subtype": "compute-instance",
         "vpc_id": "vpc-1"
@@ -533,6 +539,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-table",
+        "region": "us-east-1",
         "subtype": "table"
       },
       "ontology_attributes": {
@@ -576,6 +583,7 @@
       "query_attributes": {
         "engine": "postgres",
         "name": "mydb",
+        "region": "us-east-1",
         "subtype": "db",
         "vpc_id": "vpc-1"
       },
@@ -614,7 +622,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-key"
+        "name": "app-key",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -661,6 +670,7 @@
       "query_attributes": {
         "load_balancer_type": "application",
         "name": "app-alb",
+        "region": "us-east-1",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-1"
@@ -701,7 +711,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "/aws/rds/instance/mydb/postgresql"
+        "name": "/aws/rds/instance/mydb/postgresql",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -815,7 +826,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-msk"
+        "name": "app-msk",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -855,7 +867,8 @@
       "labels": {},
       "query_attributes": {
         "name": "dlq",
-        "queue_type": "sqs"
+        "queue_type": "sqs",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -896,7 +909,8 @@
       "labels": {},
       "query_attributes": {
         "name": "main-queue",
-        "queue_type": "sqs"
+        "queue_type": "sqs",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -936,6 +950,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-igw",
+        "region": "us-east-1",
         "vpc_id": "vpc-1"
       },
       "ontology_attributes": {
@@ -978,6 +993,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-nat",
+        "region": "us-east-1",
         "vpc_id": "vpc-1"
       },
       "ontology_attributes": {
@@ -1020,6 +1036,7 @@
       "labels": {},
       "query_attributes": {
         "name": "legacy-nat",
+        "region": "us-east-1",
         "vpc_id": "vpc-1"
       },
       "ontology_attributes": {
@@ -1065,6 +1082,7 @@
       "query_attributes": {
         "name": "app-eni",
         "private_ip_address": "10.0.1.20",
+        "region": "us-east-1",
         "status": "",
         "subnet_id": "subnet-1",
         "vpc_id": "vpc-1"
@@ -1112,7 +1130,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-vpce"
+        "name": "app-vpce",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1152,7 +1171,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-eip"
+        "name": "app-eip",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1226,6 +1246,7 @@
       "query_attributes": {
         "is_main": false,
         "name": "rtb-1",
+        "region": "us-east-1",
         "route_table_id": "rtb-1",
         "vpc_id": "vpc-1"
       },
@@ -1263,6 +1284,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-sg",
+        "region": "us-east-1",
         "vpc_id": "vpc-1"
       },
       "ontology_attributes": {
@@ -1303,6 +1325,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-func",
+        "region": "us-east-1",
         "runtime": "python3.12"
       },
       "ontology_attributes": {
@@ -1349,6 +1372,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-bucket",
+        "region": "us-east-1",
         "subtype": "storage"
       },
       "ontology_attributes": {
@@ -1395,6 +1419,7 @@
       "query_attributes": {
         "encrypted": true,
         "name": "app-efs",
+        "region": "us-east-1",
         "size_in_bytes": 1024,
         "subtype": "filesystem"
       },
@@ -1438,6 +1463,7 @@
       "labels": {},
       "query_attributes": {
         "name": "main-subnet",
+        "region": "us-east-1",
         "subnet_id": "subnet-1",
         "vpc_id": "vpc-1"
       },
@@ -1477,7 +1503,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-topic"
+        "name": "app-topic",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1515,7 +1542,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "odd-topic"
+        "name": "odd-topic",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1553,7 +1581,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "app-rtb"
+        "name": "app-rtb",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1590,7 +1619,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "main-vpc"
+        "name": "main-vpc",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1626,7 +1656,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "svc1"
+        "name": "svc1",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "name": "svc1"

@@ -287,6 +287,12 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 					if _, err := kgService.MarkStaleExternalServiceNodesInactive(); err != nil {
 						ctx.GetLogger().Error("cron: kg stale external-service node sweep failed", "error", err)
 					}
+					// Deactivate stale VM service-map nodes the same way — see
+					// MarkStaleVMServiceNodesInactive for why this flow source
+					// needs its own sweep (no other source retires these).
+					if _, err := kgService.MarkStaleVMServiceNodesInactive(); err != nil {
+						ctx.GetLogger().Error("cron: kg stale VM service node sweep failed", "error", err)
+					}
 				}
 				nb.CleanupData(ctx)
 			}()

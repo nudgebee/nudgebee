@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/query"
+	"nudgebee/services/security"
 	"os"
 	"testing"
 	"time"
@@ -357,6 +358,23 @@ func TestSignozFilterItemsToWhereClause(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, flattened, 1)
 		assert.Equal(t, "service.name", flattened[0].Key["key"])
+	})
+
+	t.Run("map form with []map[string]any items", func(t *testing.T) {
+		// The shape an in-process caller builds with a Go literal; decoding into
+		// signozLogsParams.Query (any) keeps the typed slice.
+		q := map[string]any{"op": "AND", "items": []map[string]any{
+			signozFilterItem("k8s.deployment.name", "=", "checkout"),
+			signozFilterItem("k8s.namespace.name", "=", "shop"),
+		}}
+		where, err := signozFilterItemsToWhereClause(q)
+		require.NoError(t, err)
+		flattened, err := FlattenSignozQuery(where)
+		require.NoError(t, err)
+		require.Len(t, flattened, 2)
+		assert.Equal(t, "k8s.deployment.name", flattened[0].Key["key"])
+		assert.Equal(t, "checkout", flattened[0].Value)
+		assert.Equal(t, "k8s.namespace.name", flattened[1].Key["key"])
 	})
 
 	t.Run("[]map[string]any form", func(t *testing.T) {
@@ -768,4 +786,33 @@ func TestBuildLogsActionResponse_NoWindowWhenLinesAreUndated(t *testing.T) {
 	resp := buildLogsActionResponse([]OutputLog{{Message: "boom"}}, "", map[string]any{}, 3, nil, nil, nil)
 
 	assert.NotContains(t, resp.AdditionalInfo, "log_window_start")
+}
+
+// signoz_logs_enricher auto-runs only for an event carrying the alert's own SigNoz
+// log query; a workload event's logs come from the generic logs action. Before,
+// it auto-ran for every workload event and failed each time.
+func TestSignozLogsActionCanAutoExecute(t *testing.T) {
+	provider := "signoz"
+	orig := signozDefaultLogProvider
+	signozDefaultLogProvider = func(*security.RequestContext, string, string, string, string) (*DefaultProviderResponse, error) {
+		return &DefaultProviderResponse{Provider: provider}, nil
+	}
+	t.Cleanup(func() { signozDefaultLogProvider = orig })
+
+	ctxFor := func(labels map[string]string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(), playbooks.PlaybookEvent{
+			SubjectType: "deployment", SubjectName: "checkout", SubjectNamespace: "shop", Labels: labels,
+		})
+	}
+	action := &signozLogsAction{}
+
+	assert.False(t, action.CanAutoExecute(ctxFor(nil)), "workload event without relatedLogsParams")
+	assert.False(t, action.CanAutoExecute(ctxFor(map[string]string{"pod": "checkout-abc", "namespace": "shop", "service_name": "checkout"})),
+		"pod / service labels alone belong to the generic logs action")
+
+	related := map[string]string{"relatedLogsParams": `{"compositeQuery":{}}`}
+	assert.True(t, action.CanAutoExecute(ctxFor(related)), "event carrying the alert's own log query")
+
+	provider = "loki"
+	assert.False(t, action.CanAutoExecute(ctxFor(related)), "default log provider is not SigNoz")
 }

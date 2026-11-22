@@ -7,6 +7,7 @@ import (
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
+	"slices"
 	"strings"
 	"time"
 )
@@ -79,12 +80,11 @@ func GetVersions(ctx *security.RequestContext) (map[string]string, error) {
 }
 
 const (
-	// How long a Microsoft Teams card's buttons stay valid, and so how long its
-	// sent_notifications row is kept.
-	teamsCardRetentionDays = 7
-	cleanupBatchSize       = 10000
-	cleanupMaxPerRun       = 100000
-	cleanupMaxBatches      = cleanupMaxPerRun / cleanupBatchSize // 10 batches
+	cleanupBatchSize  = 10000
+	cleanupMaxPerRun  = 100000
+	cleanupMaxBatches = cleanupMaxPerRun / cleanupBatchSize // 10 batches
+	// A Teams card's buttons work for 7 days (notifications-server card_actions.MAX_AGE_SECONDS).
+	teamsCardButtonDays = 7
 )
 
 type dataCleanupJob struct {
@@ -92,9 +92,17 @@ type dataCleanupJob struct {
 	Metastore database.DatabaseManagerType
 	Query     string
 	Batched   bool // when true, execute in 10K batches up to 100K per cron run
+	// MaxBatches overrides cleanupMaxBatches for batched jobs whose daily inflow
+	// is close to 100K, so a backlog would otherwise never drain.
+	MaxBatches int
 }
 
 func CleanupData(ctx *security.RequestContext, job ...string) {
+	// Only the inactive-resources sweep needs to know; skip the lookup otherwise.
+	hasRelationships := false
+	if len(job) == 0 || slices.Contains(job, "cloud_resources_inactive") {
+		hasRelationships = metastoreTableExists(ctx, "cloud_resource_relationships")
+	}
 	cleanupJobs :=
 		[]dataCleanupJob{
 			{
@@ -123,6 +131,10 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Query:     fmt.Sprintf(`alter table nudgebee.agent_audit_log_shard on cluster 'default' delete WHERE created_at < now() - interval %d day`, config.Config.NBRetentionDaysAgentConnectLogs),
 			},
 			{
+				// Events cascade-delete to event_classification, but
+				// event_bulk_operations(classification_id) has no ON DELETE, so one
+				// event behind a bulk operation fails the whole batch every run.
+				// Skip those events (applies to events_high too).
 				Name:      "events_normal",
 				Metastore: database.Metastore,
 				Batched:   true,
@@ -132,6 +144,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 						AND e.priority IN ('DEBUG', 'INFO', 'LOW', 'MEDIUM')
 						AND NOT EXISTS (SELECT 1 FROM event_log_analysis ela WHERE ela.event_id = e.id)
 						AND NOT EXISTS (SELECT 1 FROM llm_conversation_feedback lcf WHERE lcf.session_id = e.id::text AND lcf.module = 'investigate')
+						AND NOT EXISTS (
+							SELECT 1 FROM event_classification ec
+							JOIN event_bulk_operations ebo ON ebo.classification_id = ec.id
+							WHERE ec.event_id = e.id
+						)
 					LIMIT %d
 				) DELETE FROM events WHERE id IN (SELECT id FROM to_del)`, config.Config.NBRetentionDaysEventsNormal, cleanupBatchSize),
 			},
@@ -150,6 +167,11 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 						AND e.priority IN ('HIGH')
 						AND NOT EXISTS (SELECT 1 FROM event_log_analysis ela WHERE ela.event_id = e.id)
 						AND NOT EXISTS (SELECT 1 FROM llm_conversation_feedback lcf WHERE lcf.session_id = e.id::text AND lcf.module = 'investigate')
+						AND NOT EXISTS (
+							SELECT 1 FROM event_classification ec
+							JOIN event_bulk_operations ebo ON ebo.classification_id = ec.id
+							WHERE ec.event_id = e.id
+						)
 					LIMIT %d
 				) DELETE FROM events WHERE id IN (SELECT id FROM to_del)`, config.Config.NBRetentionDaysEventsCritical, cleanupBatchSize),
 			},
@@ -159,14 +181,18 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Query:     fmt.Sprintf(`alter table nudgebee.events_shard on cluster 'default' delete WHERE created_at < now() - interval %d day and priority in ('HIGH')`, config.Config.NBRetentionDaysEventsCritical),
 			},
 			{
-				// A row holding a Microsoft Teams card with buttons is what a click on
-				// the card updates, so it is kept while the buttons are valid: 7 days
-				// (MAX_AGE_SECONDS in notifications-server's ms_teams/card_actions.py).
+				// Delivery history: one row per attempt to send a notification. A Teams
+				// card's row is kept while its buttons work, whatever the retention.
 				Name:      "notifications_sent",
 				Metastore: database.Metastore,
-				Query: fmt.Sprintf(`DELETE FROM sent_notifications WHERE created_at < now() - interval '%d days'
-					AND (teams_message_id IS NULL OR created_at < now() - interval '%d days')`,
-					config.Config.NBRetentionDaysCronEvents, teamsCardRetentionDays),
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM sent_notifications
+					WHERE created_at < now() - interval '%d days'
+					  AND (teams_metadata IS NULL OR created_at < now() - interval '%d days')
+					LIMIT %d
+				) DELETE FROM sent_notifications WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysSentNotifications, teamsCardButtonDays, cleanupBatchSize),
 			},
 			{
 				// Rows carry the full candidate set per search, so this table
@@ -369,6 +395,121 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				) DELETE FROM event_incoming_webhooks WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysEventIncomingWebhooks, cleanupBatchSize),
 			},
+			{
+				// Event resolutions whose parent event was purged by event retention.
+				// event_resolution lacks an FK constraint to events, so this sweep
+				// reclaims orphaned records.
+				Name:      "event_resolutions_orphaned",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT er.id FROM event_resolution er
+					WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = er.event_id)
+					LIMIT %d
+				) DELETE FROM event_resolution WHERE id IN (SELECT id FROM to_del)`,
+					cleanupBatchSize),
+			},
+			{
+				// Granular telemetry metric points accumulated by collectors, OpenCost,
+				// and ETL. Dashboards and anomaly rules only query recent windows (24h-30d).
+				// ~50K rows/day age past retention, so the default 100K cap drains a large backlog
+				// only ~50K/day net; 50 batches (500K) clears it in days instead of months.
+				Name:       "cloud_resource_metrics",
+				Metastore:  database.Metastore,
+				Batched:    true,
+				MaxBatches: 50,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM cloud_resource_metrics
+					WHERE timestamp < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM cloud_resource_metrics WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysCloudResourceMetrics, cleanupBatchSize),
+			},
+			{
+				// Inactive or deleted resources that are past retention and have no
+				// references in spends, events, metrics, application mappings, attributes,
+				// recommendations, relationships, or query logs.
+				//
+				// Guards:
+				// - spends, events, metrics, mappings: preserve historical telemetry and app groups.
+				// - recommendation: prevents cascade-deleting recommendations on inactive resources,
+				//   which would otherwise hit RESTRICT on recommendation_resolution(recommendation_id)
+				//   and abort the batch.
+				// - cloud_resource_relationships (source_id & destination_id) and dw_queries:
+				//   guards against NO ACTION / RESTRICT foreign key violations. The
+				//   relationships table is legacy and missing on newer installs; see relationshipGuards.
+				// - k8s_pods, k8s_workloads, k8s_nodes, insight, workload_criticality: no FK, so
+				//   deleting would leave dangling resource id links. k8s rows age out via the
+				//   k8s_* sweeps above, after which the resource becomes eligible on a later run.
+				// 50 batches (500K) clears a multi-million-row backlog in days instead of weeks.
+				Name:       "cloud_resources_inactive",
+				Metastore:  database.Metastore,
+				Batched:    true,
+				MaxBatches: 50,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT cr.id FROM cloud_resourses cr
+					WHERE (cr.is_active = false OR cr.status IN ('Deleted', 'Inactive'))
+					  AND cr.updated_at < now() - interval '%d days'
+					  AND NOT EXISTS (SELECT 1 FROM spends s WHERE s.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM events e WHERE e.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_metrics crm WHERE crm.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM application_group_mapping agm WHERE agm.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_attributes cra WHERE cra.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM recommendation r WHERE r.resource_id = cr.id)
+					  %s
+					  AND NOT EXISTS (SELECT 1 FROM dw_queries dwq WHERE dwq.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_pods kp WHERE kp.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_workloads kw WHERE kw.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM k8s_nodes kn WHERE kn.cloud_resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM insight i WHERE i.resource_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM workload_criticality wc WHERE wc.cloud_resource_id = cr.id)
+					LIMIT %d
+				) DELETE FROM cloud_resourses WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysInactiveCloudResources, relationshipGuards(hasRelationships), cleanupBatchSize),
+			},
+			{
+				// Pod/workload CPU and memory profiling dumps (JSONB profile payloads).
+				Name:      "application_profile",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM application_profile
+					WHERE created_at < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM application_profile WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysApplicationProfiles, cleanupBatchSize),
+			},
+			{
+				// One row per anomaly detection; no table references anomaly, and readers
+				// (UI list, anomaly_execute tool) look back at most a month. Metric anomalies
+				// link to their event by fingerprint and have a NULL anomaly_status.
+				// Cloud-spend anomalies stay OPEN while the spend stays high and their event's
+				// finding_id is the row id, so an OPEN row is kept regardless of age: deleting
+				// it would leave its event FIRING forever and re-open a duplicate.
+				Name:      "anomaly",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM anomaly
+					WHERE created_at < now() - interval '%d days'
+					  AND anomaly_status IS DISTINCT FROM 'OPEN'
+					LIMIT %d
+				) DELETE FROM anomaly WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysAnomalies, cleanupBatchSize),
+			},
+			{
+				// Periodic SLO measurements. slo_report only references slo_config, and
+				// nothing references slo_report.
+				Name:      "slo_report",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM slo_report
+					WHERE created_at < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM slo_report WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysSloReports, cleanupBatchSize),
+			},
 		}
 
 	jobsToRemove := []dataCleanupJob{}
@@ -391,7 +532,7 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 		case database.Metastore:
 			var err error
 			if cj.Batched {
-				err = executeBatchedMetastoreJob(ctx, cj.Name, cj.Query)
+				err = executeBatchedMetastoreJob(ctx, cj.Name, cj.Query, cj.MaxBatches)
 			} else {
 				err = executeMetastoreJob(ctx, cj.Name, cj.Query)
 			}
@@ -405,6 +546,33 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 			}
 		}
 	}
+}
+
+// relationshipGuards keeps resources that a cloud_resource_relationships row points at.
+// The table is legacy: installs created without it (test, fresh installs) skip the
+// guard, which is safe there because no foreign key to it exists.
+func relationshipGuards(tableExists bool) string {
+	if !tableExists {
+		return ""
+	}
+	return `AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.source_id = cr.id)
+					  AND NOT EXISTS (SELECT 1 FROM cloud_resource_relationships crr WHERE crr.destination_id = cr.id)`
+}
+
+// metastoreTableExists reports whether a metastore table exists. When it cannot tell,
+// it answers true, so a guard that depends on the table is kept.
+func metastoreTableExists(ctx *security.RequestContext, table string) bool {
+	databaseManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("nb: cannot check table, assuming it exists", "error", err, "table", table)
+		return true
+	}
+	var exists bool
+	if err := databaseManager.Db.QueryRowContext(ctx.GetContext(), "SELECT to_regclass($1::text) IS NOT NULL", table).Scan(&exists); err != nil {
+		ctx.GetLogger().Warn("nb: cannot check table, assuming it exists", "error", err, "table", table)
+		return true
+	}
+	return exists
 }
 
 func executeMetastoreJob(ctx *security.RequestContext, jobName, query string) error {
@@ -427,15 +595,18 @@ func executeMetastoreJob(ctx *security.RequestContext, jobName, query string) er
 	return nil
 }
 
-func executeBatchedMetastoreJob(ctx *security.RequestContext, jobName, query string) error {
+func executeBatchedMetastoreJob(ctx *security.RequestContext, jobName, query string, maxBatches int) error {
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		ctx.GetLogger().Error("nb: failed to get database manager", "error", err, "job", jobName)
 		return err
 	}
 
+	if maxBatches <= 0 {
+		maxBatches = cleanupMaxBatches
+	}
 	var totalDeleted int64
-	for batch := 1; batch <= cleanupMaxBatches; batch++ {
+	for batch := 1; batch <= maxBatches; batch++ {
 		// Honor context cancellation/deadline between batches so a caller-imposed
 		// timeout actually bounds the run (e.g. the detached cron goroutines wrap
 		// this in a context.WithTimeout). Harmless for callers whose context never

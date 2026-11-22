@@ -64,7 +64,7 @@ func onEventAccount(nbCtx core.NbToolContext, eventID string, call func(core.NbT
 		return call(nbCtx)
 	}
 	sc := nbCtx.Ctx.GetSecurityContext()
-	if sc == nil || !sc.HasAccountAccess(owner, security.SecurityAccessTypeRead) {
+	if sc == nil || !security.ToolPathAccountAccess(nbCtx.Ctx, owner, "events", security.SecurityAccessTypeRead) {
 		return call(nbCtx)
 	}
 	// Only move when the step can say where it ran.

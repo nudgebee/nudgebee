@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -42,7 +43,7 @@ func (m GithubCliTool) Description() string {
 		**Usage:**
 
 		* **Prioritize this tool:** Whenever you need to interact with GitHub resources or perform GitHub operations, use this tool.
-		* **Input:** Provide a valid, 'gh' command as input. Include necessary flags like --repo owner/repo when needed.
+		* **Input:** Provide a valid, 'gh' command as input. Always pass --repo owner/repo: gh cannot infer the repository from a local clone here.
 		* **Output:** The tool will return the raw output of the executed 'gh' command.
 
 		**Examples:**
@@ -84,6 +85,11 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	command := strings.TrimSpace(input.Command)
 
+	if scmProxyEnabled() {
+		env := scmProxyEnv(nbRequestContext, &nbRequestContext.ToolConfig, nil)
+		return m.execute(nbRequestContext, expandEscapedNewlines(command), env)
+	}
+
 	// Extract auth_type, url, and password from tool config
 	authType := ""
 	apiUrl := ""
@@ -114,7 +120,7 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		} else {
 			installationID := int64(0)
 			if _, err := fmt.Sscanf(password, "%d", &installationID); err != nil {
-				return core.NBToolResponse{}, fmt.Errorf("invalid installation_id in password field: %w", err)
+				return core.NBToolResponse{}, errors.New("invalid installation_id in password field: not a number")
 			}
 
 			token, err := utils.GetGithubAppInstallationToken(nbRequestContext.Ctx.GetContext(), apiUrl, installationID)
@@ -128,17 +134,22 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 
 	command = expandEscapedNewlines(command)
 
-	wm := workspace.NewWorkspaceManager()
-
 	// Prepare env with GITHUB_TOKEN
 	env := map[string]string{
 		"GITHUB_TOKEN": githubToken,
 	}
+	return m.execute(nbRequestContext, command, env)
+}
+
+// execute runs a gh command in the conversation's workspace with env.
+func (m GithubCliTool) execute(nbRequestContext core.NbToolContext, command string, env map[string]string) (core.NBToolResponse, error) {
+	wm := workspace.NewWorkspaceManager()
 	env[workspace.ENV_NB_TOOL_CONFIG_NAME] = nbRequestContext.ToolConfig.Name
 
 	// Use the encapsulated lazy creation/execution logic
 	// Use nbRequestContext.AccountId as it is guaranteed to be populated from the session
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
+	execCommand, execEnv := withPipelineStatus(command, env)
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, execCommand, execEnv)
 
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("github: unable to execute shell script", "error", err.Error(), "command", command)
@@ -157,11 +168,19 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		response = strings.Join(processedLines, "\n")
 	}
 
-	return core.NBToolResponse{
+	return githubReply(nbRequestContext, response), nil
+}
+
+// githubReply judges a gh reply that exited 0 by its fields: a JSON object with
+// a non-empty top-level "error"/"errors" (a `gh api graphql` failure prints one
+// and still exits 0). Plain text and JSON arrays are never judged. Counted only
+// until github_execute is listed in LlmServerToolReportedFailureEnforceTools.
+func githubReply(nbCtx core.NbToolContext, response string) core.NBToolResponse {
+	return withReportedFailure(nbCtx, ToolExecuteGithubCliCommand, core.NBToolResponse{
 		Data:   response,
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
-	}, nil
+	}, core.FailureRules{})
 }
 
 // githubErrorHint returns an actionable recovery hint for the two gh CLI

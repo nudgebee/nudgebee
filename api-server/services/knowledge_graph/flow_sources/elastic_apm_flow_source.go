@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,7 +27,7 @@ import (
 // cluster's services into this account. A caller with no resolvable pod is
 // skipped and counted, not invented.
 //
-// Gated off by default (KG_ELASTIC_APM_FLOW_SOURCE_ENABLED). When enabled it runs
+// On by default; KG_ELASTIC_APM_FLOW_SOURCE_ENABLED=false turns it off. It runs
 // for every connected K8s account whose Elasticsearch integration declares the
 // elastic_apm trace schema, reading that account's configured trace index — the
 // same declaration and index the Traces tab uses, so the two never disagree about
@@ -76,10 +77,20 @@ func init() {
 	)
 }
 
-// NewElasticAPMFlowSource constructs the source; disabled unless
-// KG_ELASTIC_APM_FLOW_SOURCE_ENABLED is "true".
+// NewElasticAPMFlowSource constructs the source. Enabled unless
+// KG_ELASTIC_APM_FLOW_SOURCE_ENABLED reads as false: an account only reaches
+// Elasticsearch once it has an integration declaring the elastic_apm trace schema,
+// so the source is a no-op for everyone else and needs no opt-in. The env var
+// remains the kill switch.
+//
+// Being a kill switch inverts the typo risk the opt-in flags in this package carry:
+// a value they cannot parse leaves their source off, which costs nothing, while an
+// unparsed value here would leave this source on and ignore an operator trying to
+// stop it. So every spelling Go reads as false disables it ("false", "FALSE", "0",
+// "f"), not only the literal word; unset means enabled.
 func NewElasticAPMFlowSource(logger *slog.Logger) *ElasticAPMFlowSource {
-	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv(elasticAPMEnvEnabled)), "true")
+	parsed, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(elasticAPMEnvEnabled)))
+	enabled := err != nil || parsed
 	return &ElasticAPMFlowSource{
 		BaseFlowSource: NewBaseFlowSource(elasticAPMSourceName, core.FlowSourceCategoryTracing, enabled, logger),
 	}

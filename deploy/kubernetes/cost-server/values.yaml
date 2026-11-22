@@ -40,7 +40,12 @@ secretName: 'nudgebee'
 # Prometheus-API shim) instead of relay-server's /prometheus facade. Requires
 # SERVICE_API_SERVER_URL and ACTION_API_SERVER_TOKEN (both already provided by
 # the shared `nudgebee` secret).
-useObservabilityMetrics: false
+#
+# On by default, and decided per cluster: only clusters whose metrics come from
+# a directly connected integration (e.g. Azure Managed Prometheus) — which the
+# relay path cannot reach, leaving them with no cost data — use the
+# services-server path. Agent-served clusters keep the relay passthrough.
+useObservabilityMetrics: true
 
 # Per cluster, the engine caches one upstream costmodel.Accesses and holds the
 # PromQL allocation result (~1.5k pod rows) in memory; memory grows with the number

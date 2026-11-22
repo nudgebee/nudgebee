@@ -37,9 +37,9 @@ func (fakeConversationDao) SaveCompletedConversationAgentCall(
 func TestDoActionToolNotFound(t *testing.T) {
 	const toolNotFoundMessage = "Tool not found"
 
-	prevDao := conversationDao
+	prevDao := PeekConversationDao()
 	SetConversationDao(fakeConversationDao{})
-	t.Cleanup(func() { conversationDao = prevDao })
+	t.Cleanup(func() { SetConversationDao(prevDao) })
 
 	executor := &plannerExecutor{
 		ctx:   security.NewRequestContextForSuperAdmin(),

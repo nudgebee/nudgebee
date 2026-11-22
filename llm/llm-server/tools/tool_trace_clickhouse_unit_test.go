@@ -53,6 +53,18 @@ func TestTracesViewSchemaColumns(t *testing.T) {
 	}
 }
 
+// TestTracesViewResourceReadsURLFull guards that traces_view derives resource the way the agent's
+// materialized column and services-server's query.TraceResourceExpr do: http.url first (node-agent's
+// templated path), then url.full without its query string for OTel SDKs that send only url.full.
+func TestTracesViewResourceReadsURLFull(t *testing.T) {
+	httpURL := strings.Index(tracesViewClickhouseFormat, "when SpanAttributes['http.url'] != '' then SpanAttributes['http.url']")
+	urlFull := strings.Index(tracesViewClickhouseFormat, "else cutQueryStringAndFragment(SpanAttributes['url.full']) end as resource")
+
+	require.GreaterOrEqual(t, httpURL, 0)
+	require.GreaterOrEqual(t, urlFull, 0)
+	assert.Less(t, httpURL, urlFull)
+}
+
 // TestSerializeClickhouseTraceResponse_RawTable guards the core fix: when services-server returns
 // the raw result table (aggregations, custom projections, scalar counts, span listings), the
 // agent-facing payload carries the real columns/values instead of the zeroed span schema that the

@@ -17,6 +17,7 @@ import (
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
+	"nudgebee/llm/watch"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -586,4 +587,36 @@ func TestWorkflowTriggerConfirmationSurvivesAFailedLookup(t *testing.T) {
 		WorkflowTriggerTool{accountId: "acct-down"}.ConfirmationQuestion(`{"id":"wf-1"}`))
 	// A tool built without an account (not through the factory) does no lookup.
 	assert.Equal(t, "Run the automation with ID wf-1?", WorkflowTriggerTool{}.ConfirmationQuestion(`{"id":" wf-1 "}`))
+}
+
+// An automation_run watch (#42459) ends when the run ends, or parks on an approval; a failed run says the step it
+// stopped at.
+func TestAutomationRunObservation(t *testing.T) {
+	type task = struct {
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	running := automationRunObservation(executionDetails{Status: "RUNNING", Tasks: []task{{"cloud.k8s.cli", "COMPLETED"}, {"cloud.k8s.cli", "RUNNING"}}})
+	assert.False(t, running.Ended)
+	done := automationRunObservation(executionDetails{Status: "COMPLETED"})
+	assert.True(t, done.Ended)
+	assert.Empty(t, done.Step)
+	failed := automationRunObservation(executionDetails{Status: "FAILED", Error: "ssh refused",
+		Tasks: []task{{"cloud.k8s.cli", "COMPLETED"}, {"cloud.vm.cli", "FAILED"}, {"core.notify", "SKIPPED"}}})
+	assert.True(t, failed.Ended)
+	assert.Equal(t, "2 of 3", failed.Step)
+	parked := automationRunObservation(executionDetails{Status: "RUNNING", Tasks: []task{{approvalTaskType, "SCHEDULED"}}})
+	assert.True(t, parked.Ended)
+	assert.True(t, parked.WaitingApproval)
+
+	b, _ := json.Marshal(done)
+	assert.Regexp(t, AutomationRunEndedPattern, string(b), "the watch's predicate matches an ended run")
+	b, _ = json.Marshal(running)
+	assert.NotRegexp(t, AutomationRunEndedPattern, string(b))
+
+	src := automationRunSource{}
+	assert.NoError(t, src.ValidateConfig(json.RawMessage(`{"workflow_id":"wf-1","execution_id":"ex-1"}`)))
+	assert.Error(t, src.ValidateConfig(json.RawMessage(`{"workflow_id":"wf-1"}`)))
+	_, registered := watch.GetSource(watch.SourceKindAutomationRun)
+	assert.True(t, registered)
 }

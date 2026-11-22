@@ -233,10 +233,17 @@ func (s *SolarWindsMetricSource) FetchMetricsQuery(ctx *security.RequestContext,
 		if note := swSumInflationNote(p.q); note != "" && qr.Note == "" {
 			qr.Note = note
 		}
+		if qr.pagesCapped {
+			qr.Note = esJoinNotes(qr.Note, swPageCapNote)
+		}
 		results.Results = append(results.Results, qr)
 	}
 	return results, nil
 }
+
+// swPageCapNote is the Note for a query whose measurements ran past swMaxPages.
+var swPageCapNote = fmt.Sprintf("SolarWinds returned more than %d pages; only the first %d were read, "+
+	"so some series are missing. Narrow the filters.", swMaxPages, swMaxPages)
 
 // swMeasurementQueryFromRequest reads the measurement parameters from the free-form
 // request map.
@@ -495,7 +502,7 @@ func (s *SolarWindsMetricSource) fetchOneMetricQuery(ctx *security.RequestContex
 // one SWO reported, else the closest pair of timestamps -- for the time-weighted
 // division and the `count` conversion.
 func swFetchQueryResult(apiToken, baseURL, path, queryKey, metricName string, q swMeasurementQuery, instant bool) (QueryResult, error) {
-	groupings, bucketSeconds, err := fetchAllMeasurements(apiToken, baseURL, path, q)
+	groupings, bucketSeconds, capped, err := fetchAllMeasurements(apiToken, baseURL, path, q)
 	if err != nil {
 		return QueryResult{}, err
 	}
@@ -507,6 +514,7 @@ func swFetchQueryResult(apiToken, baseURL, path, queryKey, metricName string, q 
 	}
 	qr := swGroupingsToQueryResult(groupings, queryKey, metricName, instant)
 	qr.bucketSeconds = bucketSeconds
+	qr.pagesCapped = capped
 	return qr, nil
 }
 
@@ -591,6 +599,7 @@ func swTimeWeightedSum(apiToken, baseURL, path, queryKey, metricName string, q s
 		return QueryResult{}, fmt.Errorf("SolarWinds answered the values in %ds buckets and the sample counts in %ds buckets, so no time-weighted total can be given",
 			values.bucketSeconds, counts.bucketSeconds)
 	}
+	values.pagesCapped = values.pagesCapped || counts.pagesCapped
 	results := []QueryResult{values}
 	swDivideBySamplesPerBucket(results, []QueryResult{counts})
 	return results[0], nil
@@ -954,21 +963,23 @@ const (
 
 // fetchAllMeasurements paginates GET /v1/metrics/{path} and returns all groupings
 // and the bucket width SWO reported (0 when absent), capped at swMaxPages for safety.
-func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) ([]swMeasurementGrouping, int64, error) {
+// The bool is true when the cap stopped it with a next page still to read.
+func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) ([]swMeasurementGrouping, int64, bool, error) {
 	params := swBuildMeasurementParams(q)
 	pageSize := swMeasurementsPageSize
 	params["pageSize"] = strconv.Itoa(pageSize)
 
 	var all []swMeasurementGrouping
 	var bucketSeconds int64
+	capped := true // cleared when a page says there is no next one
 	for page := 0; page < swMaxPages; page++ {
 		body, statusCode, err := solarWindsDoGET(apiToken, baseURL, path, params)
 		if err != nil {
-			return nil, 0, fmt.Errorf("request failed: %w", err)
+			return nil, 0, false, fmt.Errorf("request failed: %w", err)
 		}
 		if statusCode != http.StatusOK && swPayloadTooLarge(body) {
 			if pageSize == swMeasurementsPageSizeFloor {
-				return nil, 0, fmt.Errorf("SolarWinds refused the response as too large even at %d groups per page; "+
+				return nil, 0, false, fmt.Errorf("SolarWinds refused the response as too large even at %d groups per page; "+
 					"ask for a narrower window, filter to fewer series, or group by fewer attributes", pageSize)
 			}
 			// Start over from the first page at the smaller size. Nothing says a skipToken
@@ -981,12 +992,12 @@ func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) 
 			continue
 		}
 		if statusCode != http.StatusOK {
-			return nil, 0, fmt.Errorf("HTTP %d: %s", statusCode, string(body))
+			return nil, 0, false, fmt.Errorf("HTTP %d: %s", statusCode, string(body))
 		}
 
 		var resp swMetricMeasurementsResponse
 		if err := json.Unmarshal(body, &resp); err != nil {
-			return nil, 0, fmt.Errorf("failed to parse measurements response: %w", err)
+			return nil, 0, false, fmt.Errorf("failed to parse measurements response: %w", err)
 		}
 		all = append(all, resp.Groupings...)
 		if resp.BucketSizeInSeconds > 0 {
@@ -995,11 +1006,12 @@ func fetchAllMeasurements(apiToken, baseURL, path string, q swMeasurementQuery) 
 
 		next := swNextSkipToken(resp.PageInfo)
 		if next == "" {
+			capped = false
 			break
 		}
 		params["skipToken"] = next
 	}
-	return all, bucketSeconds, nil
+	return all, bucketSeconds, capped, nil
 }
 
 // swDropPartialBuckets removes, from every grouping, the buckets that may still be
@@ -1111,9 +1123,11 @@ var swAttrToLabel = map[string]string{
 	"k8s.daemonset.name":   "workload",
 	"k8s.pod.name":         "pod",
 	"k8s.container.name":   "container",
-	"service.name":         "workload_name",
-	"sw.transaction":       "span_name",
-	"otel.status_code":     "status_code",
+	// The claim keys' identity, under the name Prometheus and Datadog use.
+	"k8s.persistentvolumeclaim.name": "persistentvolumeclaim",
+	"service.name":                   "workload_name",
+	"sw.transaction":                 "span_name",
+	"otel.status_code":               "status_code",
 }
 
 // swGroupingsToQueryResult converts SWO measurement groupings into a QueryResult.

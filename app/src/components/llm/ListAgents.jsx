@@ -2,7 +2,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import OwnerTypeBadge from './common/OwnerTypeBadge';
-import apiKnowledgeBase, { KB_AGENT_WILDCARD } from '@api1/knowledge-base';
+import apiKnowledgeBase, { KB_AGENT_WILDCARD, ALWAYS_LOAD_MAX_CHARS } from '@api1/knowledge-base';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import SearchInput from '@ui/SearchInput';
@@ -17,10 +17,14 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Text from '@shared/format/Text';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, isTenantAdmin } from '@lib/auth';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { Avatar, Box, Typography } from '@mui/material';
 import { Checkbox } from '@ui/Checkbox';
+import PeopleOutlineIcon from '@mui/icons-material/PeopleOutline';
+import KnowledgeBaseSharingModal from '@components/llm/KnowledgeBaseSharingModal';
+import OrgAccountSwitch from '@components/llm/OrgAccountSwitch';
+import { getScopeOptions, isOrgItem, ORG_SCOPE_DESCRIPTIONS } from '@components/llm/OrgScopeField';
 import { PlusIcon, EditIcon, DeleteIconRed as deleteIcon, DataBaseDark, PlusIconSecondary, infoIcon } from '@assets';
 import { getIcon } from '@components/llm/common/AgentIcon';
 import Loader from '@shared/Loader';
@@ -28,11 +32,36 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { HybridScopeChips } from '@components/llm/ScopeChip';
 import Tooltip from '@ui/Tooltip';
 import { getAgentUsageGuidance } from '@components/llm/common/agentUsageGuidance';
+import { parseHttpResponseBodyMessage } from 'src/utils/common';
 
 // "Usage" column cell — hover surface for the static when-to-use guidance in
 // agentUsageGuidance.ts. Agents with no catalog entry (and every user-created
 // agent) render an em dash instead of the icon, so the column never claims
 // guidance it does not have.
+// Agents that only delegate: the text marked on them reaches the provider agent
+// that writes the query (#40899), so the dialog says where it applies.
+const QUERY_DELEGATING_AGENTS = ['metrics', 'metrics_query', 'traces'];
+
+// Why a linked knowledge base cannot be marked "Always load", or '' when it can.
+// Mirrors the llm-server rules (#40899): only user-written text skills within
+// the size cap. The mark is always set on this agent's own link; a skill linked
+// to All agents gets that link added on save, the All-agents link stays as is.
+export const alwaysLoadDisabledReason = (kb, { isSelected }) => {
+  if (kb.kb_type !== 'manual') {
+    return 'Only user-written skills can be always loaded. Connected sources are search only.';
+  }
+  if (kb.format === 'pdf') {
+    return 'PDF skills cannot be always loaded. Use a text skill.';
+  }
+  if ((kb.content?.length || 0) > ALWAYS_LOAD_MAX_CHARS) {
+    return `This skill is longer than ${ALWAYS_LOAD_MAX_CHARS.toLocaleString()} characters. Shorten it to always load it.`;
+  }
+  if (!isSelected) {
+    return 'Prioritize this skill for the agent first.';
+  }
+  return '';
+};
+
 const USAGE_COLUMN_INFO = 'Hover the info icon on a row to see when to use that agent, an example question, why it helps, and its advantages';
 
 const AgentUsageCell = ({ agentName }) => {
@@ -204,7 +233,19 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   // distinguishable. Custom agents keep their Action menu: each row carries
   // the account it belongs to (account_id), which the actions run against.
   const isTenantWide = !accountId;
-  const agentAccountId = (agent) => (isTenantWide ? agent?.account_id || '' : accountId);
+  const tenantAdmin = isTenantAdmin();
+  // Organisation agents (#41073) belong to the tenant: no account_id, and
+  // visibility says which accounts see them. Writes to one go through its owner
+  // (empty account_id) and need a tenant admin; in an account's view its switch
+  // is that account's own on/off (switched_off), not the agent's status.
+  const isOrgAgent = (agent) => agent?.type === 'custom' && isOrgItem(agent);
+  const agentAccountId = (agent) => {
+    if (isOrgAgent(agent)) return '';
+    return isTenantWide ? agent?.account_id || '' : accountId;
+  };
+  // Knowledge priorities are per account: an organisation agent's are kept in
+  // the account viewing it.
+  const agentKbAccountId = (agent) => (isOrgAgent(agent) ? accountId || '' : agentAccountId(agent));
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [createAgentModal, setCreateAgentModal] = React.useState(false);
@@ -218,6 +259,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   const [isDeleting, setIsDeleting] = React.useState(false);
   const [agentToDelete, setAgentToDelete] = React.useState(null);
   const [agentTypeFilter, setAgentTypeFilter] = React.useState('all');
+  // "Who can use it" dialog target (tenant admins).
+  const [sharingAgent, setSharingAgent] = React.useState(null);
+  // Stable target for the dialog, which reloads whenever its item changes.
+  const sharingItem = React.useMemo(
+    () => (sharingAgent ? { id: sharingAgent.id, name: sharingAgent.aliases?.[0] || sharingAgent.name, visibility: sharingAgent.visibility } : null),
+    [sharingAgent]
+  );
 
   // State for KB counts - { agentName: count }
   const [kbCountsMap, setKbCountsMap] = React.useState({});
@@ -237,6 +285,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   // unticking it here would strip the KB from every other agent.
   const [allAgentsKbIds, setAllAgentsKbIds] = React.useState([]);
   const [wildcardKbCount, setWildcardKbCount] = React.useState(0);
+  // "Always load" is a flag on this agent's link: the ids marked when the
+  // dialog opened, and the ids marked now.
+  const [alwaysLoadKbIds, setAlwaysLoadKbIds] = React.useState([]);
+  const [selectedAlwaysLoadKbIds, setSelectedAlwaysLoadKbIds] = React.useState([]);
 
   const [triggerSubmit, setTriggerSubmit] = React.useState(false);
   // Drives the loading state on the modal's Create/Update button while the
@@ -268,7 +320,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   const fetchAvailableKbs = async (agent) => {
     setIsLoadingKbs(true);
     try {
-      const response = await apiKnowledgeBase.getKnowledgeBases(agentAccountId(agent));
+      const response = await apiKnowledgeBase.getKnowledgeBases(agentKbAccountId(agent));
       if (response?.errors?.length > 0) {
         snackbar.error('Failed to fetch knowledge bases');
         setAvailableKbs([]);
@@ -290,13 +342,16 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       // reach this agent as well, and rendering them unticked would read as "not
       // mapped" right after someone chose "All agents" in the KB form.
       const [response, wildcardResponse] = await Promise.all([
-        apiKnowledgeBase.getAgentKnowledgeBases(agentAccountId(agent), agent.name),
-        apiKnowledgeBase.getAgentKnowledgeBases(agentAccountId(agent), KB_AGENT_WILDCARD),
+        apiKnowledgeBase.getAgentKnowledgeBases(agentKbAccountId(agent), agent.name),
+        apiKnowledgeBase.getAgentKnowledgeBases(agentKbAccountId(agent), KB_AGENT_WILDCARD),
       ]);
       if (!response?.errors?.length) {
         const mappedIds = (response.data || []).map((kb) => kb.id);
+        const alwaysLoadIds = (response.data || []).filter((kb) => kb.always_load).map((kb) => kb.id);
         setAlreadyMappedKbIds(mappedIds);
         setSelectedKbIds(mappedIds);
+        setAlwaysLoadKbIds(alwaysLoadIds);
+        setSelectedAlwaysLoadKbIds(alwaysLoadIds);
       } else {
         snackbar.error('Failed to fetch mapped knowledge bases for agent');
       }
@@ -313,6 +368,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     setKbSearchTerm('');
     setAlreadyMappedKbIds([]);
     setAllAgentsKbIds([]);
+    setAlwaysLoadKbIds([]);
+    setSelectedAlwaysLoadKbIds([]);
     setIsKbSelectionModalOpen(true);
     fetchAvailableKbs(agent);
     fetchAlreadyMappedKbs(agent);
@@ -326,6 +383,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     setAvailableKbs([]);
     setAlreadyMappedKbIds([]);
     setAllAgentsKbIds([]);
+    setAlwaysLoadKbIds([]);
+    setSelectedAlwaysLoadKbIds([]);
   };
 
   const handleToggleKbSelection = (kbId) => {
@@ -339,6 +398,14 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       }
       return [...prev, kbId];
     });
+    // Unlinking a skill drops its "Always load" mark with it.
+    if (selectedKbIds.includes(kbId)) {
+      setSelectedAlwaysLoadKbIds((prev) => prev.filter((id) => id !== kbId));
+    }
+  };
+
+  const handleToggleAlwaysLoad = (kbId) => {
+    setSelectedAlwaysLoadKbIds((prev) => (prev.includes(kbId) ? prev.filter((id) => id !== kbId) : [...prev, kbId]));
   };
 
   const handleSaveKbChanges = async () => {
@@ -346,10 +413,20 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       return;
     }
 
-    const toMap = selectedKbIds.filter((id) => !alreadyMappedKbIds.includes(id));
+    // A skill linked to All agents has no link for this agent yet; marking it
+    // adds one (the All-agents link itself can't carry the mark).
+    const toMap = [
+      ...selectedKbIds.filter((id) => !alreadyMappedKbIds.includes(id)),
+      ...selectedAlwaysLoadKbIds.filter((id) => allAgentsKbIds.includes(id) && !alreadyMappedKbIds.includes(id) && !selectedKbIds.includes(id)),
+    ];
     const toUnmap = alreadyMappedKbIds.filter((id) => !selectedKbIds.includes(id));
+    // Links that stay but whose "Always load" mark changed — the map call is an
+    // upsert, so calling it again with the new value flips the flag.
+    const toRemark = alreadyMappedKbIds.filter(
+      (id) => selectedKbIds.includes(id) && alwaysLoadKbIds.includes(id) !== selectedAlwaysLoadKbIds.includes(id)
+    );
 
-    if (toMap.length === 0 && toUnmap.length === 0) {
+    if (toMap.length === 0 && toUnmap.length === 0 && toRemark.length === 0) {
       return;
     }
 
@@ -359,12 +436,21 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       let mapError = 0;
       let unmapSuccess = 0;
       let unmapError = 0;
+      let remarkSuccess = 0;
+      let remarkError = 0;
+      // The backend says why it refused a mark (too long, not a text skill, …);
+      // surface the first reason rather than only a count.
+      let firstErrorMessage = '';
 
       for (const kbId of toMap) {
         try {
-          const response = await apiKnowledgeBase.mapKnowledgeBaseToAgent(agentAccountId(selectedAgent), kbId, selectedAgent.name);
+          // New links start unmarked, so the flag is only sent when it is set.
+          const response = selectedAlwaysLoadKbIds.includes(kbId)
+            ? await apiKnowledgeBase.mapKnowledgeBaseToAgent(agentKbAccountId(selectedAgent), kbId, selectedAgent.name, true)
+            : await apiKnowledgeBase.mapKnowledgeBaseToAgent(agentKbAccountId(selectedAgent), kbId, selectedAgent.name);
           if (response?.errors?.length > 0) {
             mapError++;
+            firstErrorMessage = firstErrorMessage || response.errors[0]?.message || '';
           } else {
             mapSuccess++;
           }
@@ -374,9 +460,29 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         }
       }
 
+      for (const kbId of toRemark) {
+        try {
+          const response = await apiKnowledgeBase.mapKnowledgeBaseToAgent(
+            agentKbAccountId(selectedAgent),
+            kbId,
+            selectedAgent.name,
+            selectedAlwaysLoadKbIds.includes(kbId)
+          );
+          if (response?.errors?.length > 0) {
+            remarkError++;
+            firstErrorMessage = firstErrorMessage || response.errors[0]?.message || '';
+          } else {
+            remarkSuccess++;
+          }
+        } catch (error) {
+          console.error('Error updating always load for KB:', kbId, error);
+          remarkError++;
+        }
+      }
+
       for (const kbId of toUnmap) {
         try {
-          const response = await apiKnowledgeBase.unmapKnowledgeBaseFromAgent(agentAccountId(selectedAgent), kbId, selectedAgent.name);
+          const response = await apiKnowledgeBase.unmapKnowledgeBaseFromAgent(agentKbAccountId(selectedAgent), kbId, selectedAgent.name);
           if (response?.errors?.length > 0) {
             unmapError++;
           } else {
@@ -395,13 +501,16 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       if (unmapSuccess > 0) {
         successParts.push(`${unmapSuccess} removed`);
       }
+      if (remarkSuccess > 0) {
+        successParts.push(`${remarkSuccess} always-load updated`);
+      }
       if (successParts.length > 0) {
         snackbar.success(`Knowledge bases updated: ${successParts.join(', ')}`);
       }
 
-      const errorTotal = mapError + unmapError;
+      const errorTotal = mapError + unmapError + remarkError;
       if (errorTotal > 0) {
-        snackbar.error(`Failed to update ${errorTotal} knowledge base(s)`);
+        snackbar.error(`Failed to update ${errorTotal} knowledge base(s)`, firstErrorMessage ? { description: firstErrorMessage } : undefined);
       }
 
       handleCloseKbSelectionModal();
@@ -535,7 +644,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
     try {
       const response = await apiAskNudgebee.deleteAgent(agentAccountId(agentToDelete), agentToDelete.name);
       if (!(response?.data?.data?.ai_delete_agent?.data?.status === 'ok')) {
-        snackbar.error('Failed to delete agent');
+        const reason = parseHttpResponseBodyMessage(response?.data);
+        snackbar.error(reason ? `Failed to delete agent - ${reason}` : 'Failed to delete agent');
         return;
       }
 
@@ -557,6 +667,9 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
 
   const handleMenuAction = (action, agent) => {
     switch (action.id) {
+      case 'sharing':
+        setSharingAgent(agent);
+        break;
       case 'add-kb':
         handleOpenKbSelectionModal(agent);
         break;
@@ -577,32 +690,50 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
   const getMenuItems = (agent) => {
     const hasExtensions = extensionsMap[agent.name]?.length > 0;
     const menuItems = [];
+    const orgAgent = isOrgAgent(agent);
+    // An organisation agent is read-only for account admins; only a tenant
+    // admin edits, re-scopes or deletes it.
+    const canEditAgent = !orgAgent || tenantAdmin;
 
-    // Prioritize knowledge
-    menuItems.push({
-      id: 'add-kb',
-      label: 'Prioritize knowledge',
-      icon: DataBaseDark,
-    });
+    // Prioritize knowledge — per account, so not in the tenant-wide view of an
+    // organisation agent.
+    if (!(orgAgent && isTenantWide)) {
+      menuItems.push({
+        id: 'add-kb',
+        label: 'Prioritize knowledge',
+        icon: DataBaseDark,
+      });
+    }
 
     // Edit
-    menuItems.push({
-      id: 'edit',
-      label: agent.type === 'custom' ? 'Edit Agent' : 'Override Agent Prompt',
-      icon: EditIcon,
-    });
+    if (canEditAgent) {
+      menuItems.push({
+        id: 'edit',
+        label: agent.type === 'custom' ? 'Edit Agent' : 'Override Agent Prompt',
+        icon: EditIcon,
+      });
+    }
+
+    // Who can use it (tenant admins, custom agents)
+    if (tenantAdmin && agent.type === 'custom' && !agent.overridden) {
+      menuItems.push({
+        id: 'sharing',
+        label: 'Who can use it',
+        reactIcon: <PeopleOutlineIcon sx={{ fontSize: ds.text.title, color: ds.gray[700] }} />,
+      });
+    }
 
     // Extend (only for system agents)
     if (agent.type === 'system') {
       menuItems.push({
         id: 'extend',
-        label: hasExtensions ? 'Update Extension' : 'Add Prompt and Tools',
+        label: hasExtensions ? 'Update tools' : 'Add tools',
         icon: PlusIconSecondary,
       });
     }
 
     // Delete/Revert
-    if (agent.type === 'custom' && !agent.overridden) {
+    if (agent.type === 'custom' && !agent.overridden && canEditAgent) {
       menuItems.push({
         id: 'delete',
         label: 'Delete Agent',
@@ -628,7 +759,12 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         const kbCount = (kbCountsMap[currentAgentName] || 0) + wildcardKbCount;
         const hasExtensions = extensionsMap[currentAgentName]?.length > 0;
         const rowAccountId = agentAccountId(agent);
-        const canManage = (!isTenantWide || agent.type === 'custom') && Boolean(rowAccountId) && hasWriteAccess(rowAccountId);
+        const orgAgent = isOrgAgent(agent);
+        const canManage = orgAgent
+          ? isTenantWide
+            ? tenantAdmin
+            : hasWriteAccess(accountId)
+          : (!isTenantWide || agent.type === 'custom') && Boolean(rowAccountId) && hasWriteAccess(rowAccountId);
         const actionCell = {
           component: canManage ? (
             // Portal the menu to <body> so it escapes the nested
@@ -704,6 +840,11 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], flexWrap: 'wrap' }}>
                   <OwnerTypeBadge type={agent.type} systemSuffix='System Agent' userLabel='User Created Agent' />
+                  {orgAgent && (
+                    <Box component='span' sx={{ display: 'inline-flex' }} data-testid='agent-org-badge'>
+                      <Label text={agent.visibility === 'selected_accounts' ? 'Selected accounts' : 'Organisation'} tone='info' />
+                    </Box>
+                  )}
                   {agent.overridden && agent.type === 'custom' && (
                     <Box
                       sx={{
@@ -755,7 +896,24 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
             component: <AgentDescriptionCell text={agent.description} />,
           },
           {
-            component: <Label text={agent.status} />,
+            component:
+              orgAgent && !isTenantWide ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                  <Label text={agent.status} />
+                  <OrgAccountSwitch
+                    item={agent}
+                    name={agent.aliases?.[0] ?? agent.name}
+                    noun='agent'
+                    accountId={accountId}
+                    tenantAdmin={tenantAdmin}
+                    setOverride={apiAskNudgebee.setAgentAccountOverride}
+                    onChanged={() => refreshAgentListing?.()}
+                    testId='agent-account-switch'
+                  />
+                </Box>
+              ) : (
+                <Label text={agent.status} />
+              ),
           },
           {
             component: <Text value={agent.tools?.join(', ') || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
@@ -810,6 +968,10 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
 
   const kbToAddCount = selectedKbIds.filter((id) => !alreadyMappedKbIds.includes(id)).length;
   const kbToRemoveCount = alreadyMappedKbIds.filter((id) => !selectedKbIds.includes(id)).length;
+  const kbAlwaysLoadChangeCount =
+    alreadyMappedKbIds.filter((id) => selectedKbIds.includes(id) && alwaysLoadKbIds.includes(id) !== selectedAlwaysLoadKbIds.includes(id)).length +
+    selectedAlwaysLoadKbIds.filter((id) => allAgentsKbIds.includes(id) && !alreadyMappedKbIds.includes(id) && !selectedKbIds.includes(id)).length;
+  const kbNoChanges = kbToAddCount === 0 && kbToRemoveCount === 0 && kbAlwaysLoadChangeCount === 0;
 
   return (
     <>
@@ -822,9 +984,13 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         actionButtons={
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[3], width: '100%' }}>
             <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>
-              {kbToAddCount === 0 && kbToRemoveCount === 0
+              {kbNoChanges
                 ? 'No changes'
-                : [kbToAddCount > 0 ? `${kbToAddCount} to add` : null, kbToRemoveCount > 0 ? `${kbToRemoveCount} to remove` : null]
+                : [
+                    kbToAddCount > 0 ? `${kbToAddCount} to add` : null,
+                    kbToRemoveCount > 0 ? `${kbToRemoveCount} to remove` : null,
+                    kbAlwaysLoadChangeCount > 0 ? `${kbAlwaysLoadChangeCount} always-load change(s)` : null,
+                  ]
                     .filter(Boolean)
                     .join(', ')}
             </Typography>
@@ -832,7 +998,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
               <Button tone='secondary' size='md' onClick={handleCloseKbSelectionModal}>
                 Cancel
               </Button>
-              <Button tone='primary' size='md' onClick={handleSaveKbChanges} disabled={isSavingKb || (kbToAddCount === 0 && kbToRemoveCount === 0)}>
+              <Button tone='primary' size='md' onClick={handleSaveKbChanges} disabled={isSavingKb || kbNoChanges}>
                 {isSavingKb ? 'Saving...' : 'Save Changes'}
               </Button>
             </Box>
@@ -863,6 +1029,11 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                 Every agent can use all of this account's knowledge bases. Prioritized ones get reserved space in this agent's search results, so a
                 specialist runbook is not crowded out by larger knowledge bases.
               </Typography>
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600], mb: ds.space[3] }}>
+                <strong>Always load</strong> puts a skill&apos;s full text into this agent&apos;s prompt on every run, instead of leaving it to
+                search.
+                {QUERY_DELEGATING_AGENTS.includes(selectedAgent?.name) && ' For this agent it applies to the agent that writes the query.'}
+              </Typography>
               <ListingLayout id='kb-selection-list'>
                 <ListingLayout.Toolbar>
                   <SearchInput
@@ -877,14 +1048,29 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                     headers={[
                       { name: '', width: '5%' },
                       { name: 'Name', width: '25%' },
-                      { name: 'Description', width: '35%' },
-                      { name: 'Status', width: '15%' },
-                      { name: 'Created By', width: '20%' },
+                      { name: 'Description', width: '30%' },
+                      { name: 'Always load', width: '12%' },
+                      { name: 'Status', width: '12%' },
+                      { name: 'Created By', width: '16%' },
                     ]}
                     tableData={getFilteredKbs().map((kb) => {
                       const isAlreadyMapped = alreadyMappedKbIds.includes(kb.id);
                       const isMappedToAllAgents = allAgentsKbIds.includes(kb.id);
                       const isSelected = isMappedToAllAgents || selectedKbIds.includes(kb.id);
+                      // A mark already set on this agent's own link stays visible
+                      // and can always be cleared, whatever else applies now.
+                      const isMarked = selectedAlwaysLoadKbIds.includes(kb.id);
+                      const alwaysLoadReason = isMarked ? '' : alwaysLoadDisabledReason(kb, { isMappedToAllAgents, isSelected });
+                      const alwaysLoadCheckbox = (
+                        <Checkbox
+                          size='sm'
+                          checked={isMarked}
+                          disabled={!!alwaysLoadReason}
+                          onChange={() => handleToggleAlwaysLoad(kb.id)}
+                          aria-label={`Always load ${kb.name || 'knowledge base'}`}
+                          data-testid={`kb-always-load-${kb.id}`}
+                        />
+                      );
                       return [
                         {
                           component: (
@@ -919,6 +1105,21 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                                 overflow: 'hidden',
                               }}
                             />
+                          ),
+                        },
+                        {
+                          component: (
+                            <Box onClick={(e) => e.stopPropagation()} sx={{ display: 'inline-flex' }}>
+                              {alwaysLoadReason ? (
+                                <Tooltip title={alwaysLoadReason} placement='top'>
+                                  <Box component='span' sx={{ display: 'inline-flex' }}>
+                                    {alwaysLoadCheckbox}
+                                  </Box>
+                                </Tooltip>
+                              ) : (
+                                alwaysLoadCheckbox
+                              )}
+                            </Box>
                           ),
                         },
                         {
@@ -1000,6 +1201,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
       >
         <CreateAgentNew
           accountId={agentAccountId(selectedAgent)}
+          scopeOptions={getScopeOptions(tenantAdmin, accountId)}
+          initialVisibility={tenantAdmin ? 'organisation' : 'account'}
           handleClose={(value) => {
             if (value == 'success') {
               refreshAgentListing();
@@ -1037,8 +1240,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
           setExtensionMode(false);
           setSelectedAgent(null);
         }}
-        title={selectedAgent && extensionsMap[selectedAgent.name]?.length > 0 ? 'Update Agent Extension' : 'Add Prompt and Tools'}
-        subtitle='Add custom prompts and tools to enhance the agent capabilities.'
+        title={selectedAgent && extensionsMap[selectedAgent.name]?.length > 0 ? 'Update tools' : 'Add tools'}
+        subtitle='Add tools to extend the agent capabilities.'
         backgroundColor={ds.blue[100]}
         actionButtons={
           <Box display='flex' alignItems='center' justifyContent='flex-end' gap={ds.space[3]} p='0px'>
@@ -1063,7 +1266,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
                 setTriggerSubmit(true);
               }}
             >
-              {selectedAgent && extensionsMap[selectedAgent.name]?.length > 0 ? 'Update Extension' : 'Create Extension'}
+              {selectedAgent && extensionsMap[selectedAgent.name]?.length > 0 ? 'Update tools' : 'Save tools'}
             </Button>
           </Box>
         }
@@ -1145,6 +1348,25 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
         </Box>
       </Modal>
 
+      <KnowledgeBaseSharingModal
+        open={Boolean(sharingAgent)}
+        onClose={() => setSharingAgent(null)}
+        item={sharingItem}
+        noun='agent'
+        saveVisibility={apiAskNudgebee.updateAgentVisibility}
+        listOverrides={apiAskNudgebee.listAgentAccountOverrides}
+        accountOption={
+          sharingAgent && !isOrgAgent(sharingAgent)
+            ? { label: isTenantWide ? 'Its account' : 'This account', targetAccountId: agentAccountId(sharingAgent) }
+            : sharingAgent && accountId
+            ? { label: 'This account', targetAccountId: accountId }
+            : null
+        }
+        descriptions={ORG_SCOPE_DESCRIPTIONS}
+        testId='agent-sharing-modal'
+        onSaved={() => refreshAgentListing?.()}
+      />
+
       <ListingLayout id='all-agents'>
         <ListingLayout.Toolbar
           title={
@@ -1153,13 +1375,14 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, 
               {/* Hybrid: system catalog (tenant-wide) + custom agents
                   per account. Two chips when in account mode so users
                   see they're working against both layers. */}
-              <HybridScopeChips accountId={accountId} />
+              <HybridScopeChips accountId={accountId} tenantWritable={tenantAdmin} />
             </Box>
           }
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: 'agents' })} size='sm' />
-              {!isTenantWide && hasWriteAccess(accountId) && (
+              {/* Tenant admins can also add organisation agents from the tenant-wide view. */}
+              {((!isTenantWide && hasWriteAccess(accountId)) || (isTenantWide && tenantAdmin)) && (
                 <Button tone='primary' size='sm' id='create-agent' onClick={() => setCreateAgentModal(true)}>
                   <Box
                     sx={{

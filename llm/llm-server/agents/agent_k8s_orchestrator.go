@@ -1,10 +1,9 @@
 package agents
 
 import (
-	"log/slog"
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -32,14 +31,6 @@ func init() {
 	})
 	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
 		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
-	})
-
-	common.CacheSubscribe("agent_invalidation", func(message string) {
-		parts := strings.Split(message, ":")
-		if len(parts) == 2 {
-			slog.Info("received global agent invalidation", "account_id", parts[0], "agent", parts[1])
-			InvalidateAgentSupportedToolsCache(parts[0], parts[1])
-		}
 	})
 }
 
@@ -97,8 +88,8 @@ func (l *K8sLeanAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (l *K8sLeanAgent) GetModelCategory() core.ModelTier { return core.ModelTierReasoning }
-func (l *K8sLeanAgent) GetCacheScope() core.CacheScope   { return core.CacheScopeAccount }
+func (l *K8sLeanAgent) GetModelCategory() llmruntime.ModelTier { return llmruntime.ModelTierReasoning }
+func (l *K8sLeanAgent) GetCacheScope() llmruntime.CacheScope   { return llmruntime.CacheScopeAccount }
 
 // IsWatchCapable: drives action sub-agents (restart/scale/rollout) whose outcome
 // completes later, so it may register a background watch.
@@ -112,7 +103,7 @@ func (l *K8sLeanAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 	// Reduced k8s core (kubectl_execute + logs/events/metrics/traces + SDG +
 	// resource_search + recommendations + delegate_agent + search_tools);
 	// specialists reached on-demand via search_tools + delegate_agent.
-	return getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName())
+	return withAlertPlanTools(ctx, l.accountId, getTrimmedK8sSupportedTools(ctx, l.accountId, l.GetName()))
 }
 
 func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
@@ -129,54 +120,16 @@ func (l *K8sLeanAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 	if nudge := memoryNudgeIfEnabled(); nudge != "" {
 		promptText += "\n\n" + nudge
 	}
+	if nudge := workspaceNbctlNudgeIfEnabled(query.AccountId); nudge != "" {
+		promptText += "\n\n" + nudge
+	}
 	if grounding := k8sGroundingIfEnabled(query); grounding != "" {
 		promptText += "\n\n" + grounding
 	}
+	if n := mcpIntegrationsNudge(query.AccountId); n != "" {
+		promptText += "\n\n" + n
+	}
 	return core.ParsePromptToNBAgentPrompt(promptText)
-}
-
-// UpdateToolResponseForPlanner reuses the shared kubectl log condenser (the lean
-// agent runs kubectl directly, so raw log output lands in its own scratchpad).
-func (l *K8sLeanAgent) UpdateToolResponseForPlanner(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	return filterKubectlLogResponse(toolRequest, toolResponse)
-}
-
-// ---- shared kubectl log condenser (moved from agent_kubectl.go in Phase 3d) ----
-
-// filterKubectlLogResponse condenses a kubectl_execute response to error-context log
-// lines when the command was a `kubectl logs` invocation. For any other command, or an
-// unparseable payload, the response is returned unchanged. Shared by the k8s
-// orchestrator (lean + native) via UpdateToolResponseForPlanner so log output is
-// condensed identically wherever kubectl_execute lands.
-//
-// Kept here (not in the k8s reduced-core file) so the two orchestrator variants
-// keep a single import site for the helper they both use, and so removing the
-// retired kubectl wrapper agent in Phase 3d didn't need a new "helpers" file.
-func filterKubectlLogResponse(toolRequest core.NBAgentPlannerToolAction, toolResponse string) string {
-	if !strings.EqualFold(toolRequest.Tool, tools.ToolExecuteKubectlCommand) {
-		return toolResponse
-	}
-	// Only kubectl logs output is condensed; everything else passes through untouched.
-	if !strings.Contains(toolRequest.ToolInput, "kubectl logs") {
-		return toolResponse
-	}
-
-	resultsMap := map[string]any{}
-	if err := common.UnmarshalJson([]byte(toolResponse), &resultsMap); err != nil {
-		return toolResponse
-	}
-
-	stdout := ""
-	stderr := ""
-	if v, isOk := resultsMap["stdout"].(string); isOk {
-		stdout = v
-	}
-	if v, isOk := resultsMap["stderr"].(string); isOk {
-		stderr = v
-	}
-
-	logs := tools.GetErrorLinesFromLogStringOrDefault(stdout+stderr, true)
-	return strings.Join(logs, "\n")
 }
 
 // ---- shared cache + memory-nudge helpers (used by lean + native) ----
@@ -262,6 +215,32 @@ func appendMemoryToolName(names []string) []string {
 	return names
 }
 
+// workspaceNbctlNudgeIfEnabled tells the orchestrator how to get raw metrics
+// and logs into a file for analysis in code when nbctl is enabled in the
+// workspace (#40463), followed by the account's providers. It is the one
+// scoped exception to "do not reproduce an observability tool through the
+// CLI": fetching raw data.
+func workspaceNbctlNudgeIfEnabled(accountId string) string {
+	if !config.Config.LlmServerWorkspaceNbctlEnabled {
+		return ""
+	}
+	if summary := tools.NbctlProviderSummary(accountId); summary != "" {
+		return workspaceNbctlNudge + " **This account:** " + summary
+	}
+	return workspaceNbctlNudge
+}
+
+const workspaceNbctlNudge = "**Raw metrics and logs for analysis in code:** when you need the data itself in a script (spikes, percentiles, correlations, counts over a window), fetch it in the workspace shell with `nbctl metrics query --query '<query>' --start-time <RFC3339> --end-time <RFC3339> [--step 5m] -o json > file.json` or `nbctl logs query --query '<query>' --start-time ... --end-time ... --limit <n> -o json > file.json`, then read the file with python or jq. nbctl runs the query as written, so write it in the query language of the account's provider and discover field names with `nbctl logs list-labels` / `nbctl metrics list-metrics`. Never call Prometheus, Elasticsearch, Loki or other metrics/log endpoints over HTTP from the shell: the workspace cannot reach them. For counts, ask the provider to count instead of pulling every line: an Elasticsearch aggregation comes back as `series`, a LogQL `count_over_time` as entries whose `message` is the count. nbctl prints its warnings (cut-off lines, failed queries) on stderr, so keep stderr when scripting. For questions that do not need code, keep using the `metrics` and `logs` tools."
+
+// mcpIntegrationsNudge names the account's MCP integrations when their tools
+// are found with search_tools rather than declared; empty otherwise.
+func mcpIntegrationsNudge(accountId string) string {
+	if !config.Config.LlmServerMCPToolsOnDemandEnabled {
+		return ""
+	}
+	return toolcore.MCPIntegrationsPromptBlock(toolcore.ListMCPIntegrationTools(accountId))
+}
+
 // memoryNudgeIfEnabled returns the memory-tools prompt nudge when the tools
 // are enabled.
 func memoryNudgeIfEnabled() string {
@@ -276,18 +255,12 @@ func memoryNudgeIfEnabled() string {
 // enough to survive across LLM providers. Deliberately terse and example-
 // heavy: models converge on the shape from patterns better than from
 // abstract rules. Ordered "read first, write when appropriate" because the
-// model is more likely to over-write than over-read.
+// model is more likely to over-write than over-read. The shapes and type
+// definitions come from toolcore.MemoryWriteShapes, shared with the tool's
+// own description.
 const memoryReadWriteNudge = "**memory_read before running live tools** when a resource id, subject, or preference key could plausibly be in memory. Pass `filters` with a specific field (resource_id, subject, or key) — at least one field is required. Only add `query` when you don't know the exact key and want a semantic broaden.\n\n" +
-	"**Call memory_write when the user's turn is clearly telling you something to remember going forward**, in one of these four shapes:\n" +
-	"- Imperative: 'remember', 'note', 'save this', 'don't forget', 'keep this in mind', 'store'\n" +
-	"- Declarative preference: 'I prefer X', 'I use X', 'my default X is Y', 'always do X', 'never do Y'\n" +
-	"- Declarative fact: 'X is at Y', 'X lives in Y', 'X runs on Y'\n" +
-	"- Declarative playbook / flow: 'for X, my flow is: A → B → C', 'when X happens I do Y', 'here's how I investigate X'\n\n" +
-	"**DO NOT save pass-through context during an unrelated investigation.** If the user drops a fact while asking about something else ('the OOM started at 2pm — by the way, checkout runs on node pool B — can you check limits?'), answer the question; do not save 'checkout runs on node pool B'. Save only when the durable statement is the point of the turn, or when the user explicitly asked you to remember.\n\n" +
-	"Pick the type from the shape:\n" +
-	"- **type=preference** — a rule the user wants you to follow going forward (log source, default namespace, output format). `key` is a short snake_case identifier; `value` is what they said.\n" +
-	"- **type=fact** — a truth about their infra (where a service runs, what it depends on, a config invariant). `subject` names the resource; `body` is the assertion.\n" +
-	"- **type=playbook** — an ordered sequence for handling a specific problem. `problem` names the trigger; `steps` is the ordered list.\n\n" +
+	"**Call memory_write when the user's turn is clearly telling you something to remember going forward.** " +
+	toolcore.MemoryWriteShapes + "\n" +
 	"Pass the user's own words verbatim as `evidence` (min 15 chars). For type=playbook the evidence must appear verbatim in a recent user turn — the runtime refuses agent-fabricated playbooks.\n\n" +
 	"**When both apply in one user turn** — read first (recall what's known), then write (persist what's new). Call memory_write on the same turn the user stated the durable content; do not defer to a later turn.\n\n" +
 	"**Do NOT call memory_write for** your own methodology or interim findings during an investigation. That path is auto-consolidated when investigations resolve. And do NOT call it for questions the user asks (\"what are the pods?\" is a query, not a save-intent)."

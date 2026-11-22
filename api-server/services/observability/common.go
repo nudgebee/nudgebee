@@ -28,6 +28,44 @@ func convertOrderByWithMapping(orderBy []SortField, mapping map[string]string) [
 	return converted
 }
 
+// normaliseInOperand wraps a scalar _in / _not_in operand in a one-element list.
+//
+// Both operators take a list, but the Traces tab's Service filter is a single-select
+// and sends a bare scalar: `workload_name: {_in: "qa-payment-s3"}`. Providers then
+// disagreed about what that means - Splunk Enterprise answered 400 (#41493), SolarWinds
+// dropped the predicate and returned every span unscoped, Cloud Trace did the same
+// until it grew its own `case string:` (#41419), and the ES readers reject or mis-render
+// it - so the same bug arrived once per provider. A one-element list means exactly what
+// the scalar meant, and this is the one rewriter every logs and traces request passes
+// through, so normalising here retires the class instead of patching the next provider.
+//
+// A []string operand is retyped to []any rather than passed through, so the operand of
+// an _in is ALWAYS a []any once past here. Most builders read it through a switch with
+// both arms, but swInValues (solarwinds_traces.go) asserts []any alone and silently drops
+// the predicate on anything else - the same unscoped-result failure this function exists
+// to stop. No caller passes []string today; making the output type uniform is what keeps
+// it that way without relying on each provider to be broad enough.
+//
+// Only _in / _not_in are touched. A nil operand is left alone: "no values" is the
+// caller's to reject (each builder already does), not something to turn into [nil].
+func normaliseInOperand(op query.BinaryWhereClauseType, val any) any {
+	if op != query.In && op != query.NotIn {
+		return val
+	}
+	switch v := val.(type) {
+	case []any, nil:
+		return val
+	case []string:
+		out := make([]any, len(v))
+		for i, s := range v {
+			out[i] = s
+		}
+		return out
+	default:
+		return []any{val}
+	}
+}
+
 func convertWhereClauseWithMApping(whereClause query.QueryWhereClause, mapping map[string]string) query.QueryWhereClause {
 	converted := query.QueryWhereClause{
 		Binary: query.BinaryWhereClause{},
@@ -45,7 +83,7 @@ func convertWhereClauseWithMApping(whereClause query.QueryWhereClause, mapping m
 			converted.Binary[newCol] = make(map[query.BinaryWhereClauseType]any)
 		}
 		for op, val := range ops {
-			converted.Binary[newCol][op] = val
+			converted.Binary[newCol][op] = normaliseInOperand(op, val)
 		}
 	}
 

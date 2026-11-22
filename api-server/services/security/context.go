@@ -16,7 +16,20 @@ type RequestContext struct {
 	context         context.Context
 }
 
+// SetActionPermission records the current action's grant key on the caller's
+// SecurityContext, where the access checks read it.
+func (rc *RequestContext) SetActionPermission(permission string) {
+	if rc != nil {
+		rc.securityContext.SetActionPermission(permission)
+	}
+}
+
+// GetSecurityContext is nil for a nil RequestContext, so a check made through it
+// (GetSecurityContext().CanAccessAccount, …) fails closed.
 func (rc *RequestContext) GetSecurityContext() *SecurityContext {
+	if rc == nil {
+		return nil
+	}
 	return rc.securityContext
 }
 

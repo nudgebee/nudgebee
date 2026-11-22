@@ -64,7 +64,8 @@ const (
 	// since-revoked automation still hits assertAIInvocationAllowed server-side,
 	// which refuses it as not_opted_in. The worst case is a confusing refusal,
 	// never an unauthorised run.
-	automationToolCacheTTL = 5 * time.Minute
+	// One minute so a workflow-server change reaches every replica quickly (#40807).
+	automationToolCacheTTL = 1 * time.Minute
 
 	// automationToolFailureTTL is how long a failed load is remembered. Failures
 	// are cached far more briefly than successes so a transient error cannot
@@ -103,6 +104,10 @@ type automationTool struct {
 	// same automationToolCacheTTL as everything else here, so withdrawing it
 	// takes at most that long to stop suppressing the prompt.
 	autoApprove bool
+	// hasApprovalStep and version come with the candidate: a remediation plan offers only an automation whose run
+	// never stops for a person's approval, bound to the version it read (#42459).
+	hasApprovalStep bool
+	version         string
 }
 
 type automationInput struct {
@@ -120,6 +125,9 @@ type automationCandidate struct {
 	LLMDescription string            `json:"llm_description"`
 	Inputs         []automationInput `json:"inputs,omitempty"`
 	AutoApprove    bool              `json:"auto_approve,omitempty"`
+	// HasApprovalStep and Version: see automationTool.
+	HasApprovalStep bool   `json:"has_approval_step,omitempty"`
+	Version         string `json:"version,omitempty"`
 }
 
 type automationSearchResponse struct {
@@ -272,6 +280,9 @@ func buildAutomationTools(accountId string, candidates []automationCandidate) []
 			inputs:      c.Inputs,
 			reasonArg:   reasonArgFor(c.Inputs),
 			autoApprove: c.AutoApprove,
+
+			hasApprovalStep: c.HasApprovalStep,
+			version:         c.Version,
 		})
 	}
 	return tools
@@ -357,6 +368,10 @@ func (t *automationTool) Description() string {
 	} else {
 		sb.WriteString(" Runs with the user's own permissions after they confirm, and waits for the result.")
 	}
+	// A user who asks for an automation the assistant may not run gets the
+	// nearest one it may, unannounced, unless told otherwise: asked for a newer
+	// version, the assistant ran the older one and titled the reply after it.
+	fmt.Fprintf(&sb, " If the user asked for a different automation or version than %q, tell them this is the one that will run before calling it.", t.name)
 	return sb.String()
 }
 
@@ -523,19 +538,39 @@ func automationInputSchemaType(t string) core.ToolSchemaType {
 }
 
 func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	inputs, reason, err := t.triggerInputs(ctx, input)
+	if err != nil {
+		return core.NBToolResponse{}, err
+	}
+
+	ctx.Ctx.GetLogger().Info("automation tool: running automation",
+		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
+		"reason", reason, "input_count", len(inputs))
+
+	resp, err := t.runAndWait(ctx, inputs, nil)
+	if err != nil {
+		if refused, ok := runNotStartedResponse(quotedAutomation(t.name, t.id), err); ok {
+			return refused, nil
+		}
+	}
+	return resp, err
+}
+
+// triggerInputs checks a call's arguments and returns the inputs to trigger
+// the automation with, and the stated reason.
+func (t *automationTool) triggerInputs(ctx core.NbToolContext, input core.NBToolCallRequest) (map[string]any, string, error) {
 	reason, _ := input.Arguments[t.reasonArg].(string)
 	if strings.TrimSpace(reason) == "" {
-		return core.NBToolResponse{}, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s is required: state what you believe the problem is and what that is based on before running an automation", t.reasonArg)
 	}
 
-	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
 	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 	// Same refusal workflow_trigger makes: runbook-server reads a missing user
 	// as a system call and grants tenant-account-admin, so an unidentified run
 	// would execute with more authority than whoever asked for it.
 	if userId == "" || userId == security.GetSystemUserId() {
-		return core.NBToolResponse{}, fmt.Errorf("cannot run an automation without an identified user")
+		return nil, "", fmt.Errorf("cannot run an automation without an identified user")
 	}
 
 	inputs := map[string]any{}
@@ -573,7 +608,7 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 		if len(accepted) > 0 {
 			accepts = "this automation accepts: " + strings.Join(accepted, ", ")
 		}
-		return core.NBToolResponse{}, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s: unknown parameter(s) %s — %s (plus the required %s). Re-issue the call using those exact names",
 			t.toolName, strings.Join(unknown, ", "), accepts, t.reasonArg)
 	}
@@ -585,18 +620,22 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 	if ctx.QueryConfig.EventId != "" {
 		inputs["event"] = map[string]any{"id": ctx.QueryConfig.EventId}
 	}
+	return inputs, reason, nil
+}
 
-	ctx.Ctx.GetLogger().Info("automation tool: running automation",
-		"workflow_id", t.id, "tool", t.toolName, "account_id", t.accountId,
-		"reason", reason, "input_count", len(inputs))
+// runAndWait triggers the automation as the calling user, with any extra
+// request headers, and waits for the run's outcome.
+func (t *automationTool) runAndWait(ctx core.NbToolContext, inputs map[string]any, headers map[string]string) (core.NBToolResponse, error) {
+	tenantId := ctx.Ctx.GetSecurityContext().GetTenantId()
+	userId := ctx.Ctx.GetSecurityContext().GetUserId()
 
 	// The trigger endpoint binds the request body *directly* as the inputs map —
 	// it is not wrapped in an "inputs" key. Wrapping it means every declared
 	// input arrives unset: a required one fails the run outright, and an
 	// automation with only optional inputs runs silently on its defaults, which
 	// is worse. workflow_trigger sends it flat for the same reason.
-	raw, err := DoRunbookRequestWithContext(ctx.GoContext(), "POST",
-		fmt.Sprintf("workflows/%s/trigger", t.id), inputs, t.accountId, tenantId, userId)
+	raw, err := doRunbookRequestWithHeaders(ctx.GoContext(), "POST",
+		fmt.Sprintf("workflows/%s/trigger", t.id), inputs, t.accountId, tenantId, userId, headers)
 	if err != nil {
 		return core.NBToolResponse{}, fmt.Errorf("failed to run automation %q: %w", t.name, err)
 	}
@@ -621,4 +660,10 @@ func (t *automationTool) Call(ctx core.NbToolContext, input core.NBToolCallReque
 		return core.NBToolResponse{}, fmt.Errorf("marshal automation outcome: %w", err)
 	}
 	return core.NBToolResponse{Data: string(out), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// GrantScope: an automation exposed as a tool runs it, which needs
+// workflows:Execute; runbook-server checks the same grant again.
+func (t *automationTool) GrantScope() core.GrantScope {
+	return core.GrantScope{Modules: []string{"workflows"}}
 }
