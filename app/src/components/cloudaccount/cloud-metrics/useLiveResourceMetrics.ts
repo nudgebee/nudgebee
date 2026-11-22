@@ -124,6 +124,8 @@ export function useLiveResourceMetrics({
   useEffect(() => {
     if (!accountId || !serviceName || resources.length === 0) {
       setDataByMetric({});
+      setLoading(false);
+      setError(null);
       return;
     }
     let cancelled = false;
