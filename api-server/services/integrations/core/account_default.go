@@ -24,6 +24,13 @@ type defaultWriter interface {
 // request re-sends as already on, or a link the request creates, records no
 // choice by the user. Every clear of the column also clears its mark.
 func writeAccountDefault(tx defaultWriter, tenantId, integrationId, accountId, column string, on bool) error {
+	// column is interpolated into the SQL below, so refuse anything else here
+	// too, not only at the caller.
+	switch column {
+	case "default_log_provider", "default_traces_provider", "default_metrics_provider", "default_llm_provider":
+	default:
+		return fmt.Errorf("invalid default provider column: %q", column)
+	}
 	if !on {
 		if _, err := tx.Exec(fmt.Sprintf(`
 			UPDATE integrations_cloud_accounts
