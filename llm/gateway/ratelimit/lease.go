@@ -23,17 +23,18 @@ type LeaseStore interface {
 // leaseKey is the slot set for a concurrent limit's scope. No period or bucket: the
 // same set is used for the whole life of a request.
 // rl:{tenant}:{user|-}:{key|-}:{model|-}:concurrent
-func leaseKey(tenant, user, apiKey, model string) string {
+// apiKeyID is the key's row id (user_auths.api_key_id), never the key itself.
+func leaseKey(tenant, user, apiKeyID, model string) string {
 	if user == "" {
 		user = "-"
 	}
-	if apiKey == "" {
-		apiKey = "-"
+	if apiKeyID == "" {
+		apiKeyID = "-"
 	}
 	if model == "" {
 		model = "-"
 	}
-	return "rl:" + tenant + ":" + user + ":" + apiKey + ":" + model + ":" + string(MetricConcurrent)
+	return "rl:" + tenant + ":" + user + ":" + apiKeyID + ":" + model + ":" + string(MetricConcurrent)
 }
 
 // --- in-memory (single-pod dev fallback) ---
