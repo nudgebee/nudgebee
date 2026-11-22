@@ -18,9 +18,9 @@ import (
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
-	"nudgebee/llm/security/egressfilter"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -51,6 +51,9 @@ type RemediationGenerateRequest struct {
 	// AlertRule is the rule the event came from and what may be changed on it; an
 	// action may propose one of those changes (see remediation_alert_rule.go).
 	AlertRule *RemediationAlertRule `json:"alert_rule,omitempty"`
+	// automations are the account's automations an action may run (remediation_automation.go), read once per
+	// generation; never stored with the request.
+	automations []tools.AutomationOption
 }
 
 // Confidence is the model's 0-100 self-reported estimate. The model is unreliable about the exact
@@ -183,6 +186,9 @@ type RemediationAction struct {
 	// DeliveryRetry marks an operator step that comes from a past permission refusal: permissions can be
 	// granted since, so NudgeBee may run it after all, and a successful run clears the refusal.
 	DeliveryRetry bool `json:"delivery_retry,omitempty"`
+	// VerifyReason, set when the plan is returned, says why NudgeBee will not run the verify command
+	// without a confirmation (it is not a strict kubectl read); the person checks it themselves.
+	VerifyReason string `json:"verify_reason,omitempty"`
 	// After names the action that must be applied before this one, when the change only works in that
 	// order (a restart after the config it reloads, a redrive after the permission it needs). Actions
 	// without it are alternative strategies.
@@ -190,6 +196,11 @@ type RemediationAction struct {
 	// TradeOff names what the action gives up: what it stops, deletes, suspends, scales away or re-creates,
 	// or the deliberate change by a person it reverses. Shown on the card; such a step is a mitigation.
 	TradeOff string `json:"trade_off,omitempty"`
+	// Automation, when set, is a run of one of the account's own automations in place of a command
+	// (remediation_automation.go); a step has one or the other.
+	Automation *PlanAutomation `json:"automation,omitempty"`
+	// Source, when set, is the runbook line this step follows, checked against the document (remediation_source.go).
+	Source *PlanSource `json:"source,omitempty"`
 }
 
 // HardeningItem is an improvement the incident does not require; kept apart from actions so it never reads as the fix.
@@ -199,11 +210,15 @@ type HardeningItem struct {
 	Reason string `json:"reason"`
 }
 
-// RequiredChange says where a durable fix is made and what it is.
+// RequiredChange says where a durable fix is made and what it is. Repo is the repository it is made in, when known
+// (a change in code or a deployment source there is raised as a pull request, remediation_code_fix.go); Reason is
+// why the change fixes the cause.
 type RequiredChange struct {
 	Where  string `json:"where"`
 	Target string `json:"target"`
 	Change string `json:"change"`
+	Repo   string `json:"repo,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // actionable reports whether a required change names both what to change and how.
@@ -322,6 +337,12 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 			continue
 		}
 
+		if a.Automation != nil {
+			// It runs the automation (checkPlanAutomations kept only a valid one); there is no command to check or undo.
+			a.VerifyCommand, a.RollbackCommand = "", ""
+			kept = append(kept, *a)
+			continue
+		}
 		if strings.TrimSpace(a.ExecuteCommand) == "" {
 			// Command-less -> kept only with an artifact or a stated required change (code / chart / process
 			// fixes are still the fix); otherwise it points at nothing.
@@ -364,11 +385,13 @@ func normalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule
 
 // finalizePlan runs the inventory checks and then normalizePlan; use it for any plan the model wrote or
 // rewrote, so no path skips a check. replicas may be nil when inventory is unavailable.
-func finalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule, replicas func(kind, name, ns string) string) []planValidationNote {
+func finalizePlan(plan *RemediationPlan, availableArtifacts []string, alertRule *RemediationAlertRule, replicas func(kind, name, ns string) string,
+	automations []tools.AutomationOption) []planValidationNote {
 	if replicas != nil {
 		markScaleFromZero(plan, replicas)
 	}
-	return normalizePlan(plan, availableArtifacts, alertRule)
+	notes := checkPlanAutomations(plan, automations)
+	return append(notes, normalizePlan(plan, availableArtifacts, alertRule)...)
 }
 
 // keepDependentsAfter places each action directly after the one its After names, so ranking never
@@ -497,6 +520,23 @@ type RemediationPlan struct {
 	OutcomeCheck *OutcomeCheck `json:"outcome_check,omitempty"`
 	// Dropped lists alert-rule actions the server removed and why. Not rendered.
 	Dropped []DroppedAction `json:"dropped,omitempty"`
+	// PlanVersion is the hash of the stored plan text (events.PlanVersion), set when a stored plan is
+	// returned. Every decision on a step is recorded against it. Never stored: it is empty when saved.
+	PlanVersion string `json:"plan_version,omitempty"`
+	// Target is where the plan's commands run, from the event's account, shown in the confirmation.
+	// Set when a plan is returned; never stored.
+	Target *RemediationTarget `json:"target,omitempty"`
+	// CauseKey names the plan's cause so the alert's plans compare without a model call (events.CauseKey, C8):
+	// stored normalized, with empty fields when the cause is unclear, on every plan written with the loop on.
+	CauseKey *events.CauseKey `json:"cause_key,omitempty"`
+	// The rest are set on every plan written with the loop on (stampLoopPlan, remediation_planning.go).
+	// GeneratedAt is when this version was written; Version counts the event's plans from 1.
+	GeneratedAt *time.Time `json:"generated_at,omitempty"`
+	Version     int        `json:"version,omitempty"`
+	// Goal is the "done when", in one plain sentence, from the alert's own signal; the model writes it.
+	Goal string `json:"goal,omitempty"`
+	// Revision is what changed from the event's previous plan, and the request that wrote this one.
+	Revision *PlanRevision `json:"revision,omitempty"`
 }
 
 // RemediationExecuteRequest is the payload for ai_remediation_execute (one command per play-button click).
@@ -518,6 +558,22 @@ type RemediationExecuteRequest struct {
 	// Action names the plan action an operator marked done (slot "manual"); it identifies a
 	// command-less source change, which has no command to match.
 	Action string `json:"action"`
+	// AcknowledgeUnknown: the person confirmed that the last run of this command, whose outcome is
+	// unknown, may have run. Only then (and 10 minutes after that run) is it sent again.
+	AcknowledgeUnknown bool `json:"acknowledge_unknown"`
+	// PlanVersion is the plan version the person confirmed. Every decision (Run, Decline, "I ran this")
+	// carries it, and is refused when the event's plan is no longer that version.
+	PlanVersion string `json:"plan_version"`
+	// Reason is the person's optional reason for declining a step.
+	Reason string `json:"reason"`
+	// Step is the plan step (0-based) a Slack step message decides, sent in place of Command and Action.
+	Step *int `json:"step"`
+	// Source is where the person decided: empty for the remediation panel, "slack" for the alert's Slack
+	// thread. It only names the surface on the record; who decided is the caller's x-user-id either way.
+	Source string `json:"source"`
+	// ChatApproval is the approval a step decided in the alert's chat was given under (run_step with the
+	// loop on); the decision is recorded under it (C1). Never read from a request body.
+	ChatApproval *chatStepApproval `json:"-"`
 }
 
 // Command slots within one action.
@@ -527,6 +583,8 @@ const (
 	RemediationSlotRollback = "rollback"
 	// RemediationSlotManual records that the operator carried out an action outside NudgeBee; nothing runs.
 	RemediationSlotManual = "manual"
+	// RemediationSlotDecline records that a person declined an action; nothing runs.
+	RemediationSlotDecline = "decline"
 )
 
 // processRemediationGenerate turns the completed investigation into a structured remediation plan
@@ -537,7 +595,7 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -546,51 +604,93 @@ func processRemediationGenerate(c *gin.Context, tracer trace.Tracer, meter metri
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId, "event_id", request.EventId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
+	}
+
+	// With the loop on Nubi writes the plan in the alert's conversation; asking here queues that turn.
+	if events.RemediationLoopOn(request.AccountId) {
+		respondGenerateWithLoop(c, ctx, request.AccountId, request.EventId)
+		return
+	}
+
+	// One plan per alert at a time: a plan already being built for it (after its investigation, or by
+	// another open page) is the answer when it ends, rather than a second model call and a second plan.
+	waited, err := planBuilds.claim(ctx.GetContext(), request.EventId)
+	if err != nil {
+		c.JSON(503, BuildApiResponse(nil, []error{common.Error{Message: "a remediation plan is still being built for this alert; try again shortly"}}))
+		return
+	}
+	defer planBuilds.release(request.EventId)
+	if waited {
+		if built, version, current := loadSlackPlan(ctx, request.AccountId, request.EventId); current {
+			respondWithStoredPlan(c, ctx.GetLogger(), built, func() (string, error) { return version, nil })
+			return
+		}
 	}
 
 	conversationId := remediationConversationID(ctx, request.AccountId, request.EventId)
-	plan, trace, err := generateRemediationPlan(ctx, request, remediationLLM(ctx, sc.GetUserId(), request.AccountId, conversationId))
+	plan, trace, _, err := newRemediationPlanWith(ctx, request, conversationId, remediationLLM(ctx, ctx.GetSecurityContext().GetUserId(), request.AccountId, conversationId))
 	if err != nil {
 		var input errRemediationInput
 		if errors.As(err, &input) {
-			c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 			return
 		}
 		ctx.GetLogger().Error("remediation_generate: failed", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "failed to generate remediation plan"}}))
 		return
 	}
 
-	assignDelivery(ctx, request.AccountId, &plan)
-	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() error {
-		if err := persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace); err != nil {
-			return err
-		}
-		appendPlanToConversation(ctx, conversationId, request, plan)
-		return nil
+	// The planner model has no turn, so nothing backs a source it wrote.
+	trace.Validation = append(trace.Validation, resolvePlanSources(ctx, request.AccountId, planTurn{}, &plan)...)
+	respondWithStoredPlan(c, ctx.GetLogger(), plan, func() (string, error) {
+		return storeRemediationPlan(ctx, conversationId, request, plan, trace)
 	})
+}
+
+// newRemediationPlanWith generates the event's plan for request, written by llm: the planner model, or an
+// agent's own plan (writtenPlan).
+func newRemediationPlanWith(ctx *security.RequestContext, request RemediationGenerateRequest, conversationId string, llm func(system, human string) (string, error)) (RemediationPlan, RemediationTrace, string, error) {
+	plan, trace, err := generateRemediationPlan(ctx, request, llm)
+	if err != nil {
+		return RemediationPlan{}, RemediationTrace{}, "", err
+	}
+	assignDelivery(ctx, request.AccountId, &plan)
+	plan.Target = targetOrNil(ctx, request.AccountId)
+	inputs := request
+	trace.Request = &inputs
+	return plan, trace, conversationId, nil
+}
+
+// storeRemediationPlan stores a plan from newRemediationPlanWith and adds it to the event's conversation.
+func storeRemediationPlan(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan, trace RemediationTrace) (string, error) {
+	version, err := persistRemediationPlan(ctx, request.AccountId, request.EventId, plan, trace)
+	if err != nil {
+		return "", err
+	}
+	appendPlanToConversation(ctx, conversationId, request, plan)
+	return version, nil
 }
 
 // appendPlanToConversation adds the plan as the event conversation's closing message, after the
 // summary / RCA / log-analysis ones, so Ask Nudgebee shows it too. Best effort: the plan is already
-// stored, and the investigation page does not read this message.
-func appendPlanToConversation(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan) {
+// stored, and the investigation page does not read this message. A var so tests can count it.
+var appendPlanToConversation = func(ctx *security.RequestContext, conversationId string, request RemediationGenerateRequest, plan RemediationPlan) {
 	dao := agentcore.GetConversationDao()
 	if conversationId == "" || dao == nil {
 		return
@@ -630,6 +730,9 @@ func planMarkdown(plan RemediationPlan) string {
 		if detail != "" && detail != name {
 			fmt.Fprintf(&b, "\n\n%s", detail)
 		}
+		if a.Automation != nil {
+			fmt.Fprintf(&b, "\n\n**Runs automation** %s", automationLine(*a.Automation))
+		}
 		for _, cmd := range [][2]string{{"Run", a.ExecuteCommand}, {"Verify", a.VerifyCommand}, {"Rollback", a.RollbackCommand}} {
 			if cmd[1] != "" {
 				fmt.Fprintf(&b, "\n\n**%s**\n```bash\n%s\n```", cmd[0], cmd[1])
@@ -645,19 +748,24 @@ func planMarkdown(plan RemediationPlan) string {
 		if a.TradeOff != "" {
 			fmt.Fprintf(&b, "\n\n> **Trade-off:** %s", a.TradeOff)
 		}
+		if line := sourceMarkdown(a.Source); line != "" {
+			fmt.Fprintf(&b, "\n\n%s", line)
+		}
 	}
 	return b.String()
 }
 
 // respondWithStoredPlan returns the plan only once it is stored. The stored plan is what Run is checked
 // against (planCommandRejection), so a plan that could not be saved has commands that cannot run.
-func respondWithStoredPlan(c *gin.Context, logger *slog.Logger, plan RemediationPlan, save func() error) {
-	if err := save(); err != nil {
+func respondWithStoredPlan(c *gin.Context, logger *slog.Logger, plan RemediationPlan, save func() (string, error)) {
+	version, err := save()
+	if err != nil {
 		logger.Error("remediation_generate: failed to persist plan", "error", err)
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "failed to save remediation plan"}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: "failed to save remediation plan"}}))
 		return
 	}
-	c.JSON(200, buildApiResponse(plan, nil))
+	plan.PlanVersion = version
+	c.JSON(200, BuildApiResponse(plan, nil))
 }
 
 // remediationPlannerAgent names the plan-generation call in token usage, which
@@ -728,7 +836,7 @@ func remediationLLM(ctx *security.RequestContext, userId, accountId, conversatio
 	return func(system, human string) (string, error) {
 		// conversationId only bills the call; a one-shot plan prompt must not
 		// create a conversation cache entry.
-		resp, err := agentcore.GenerateAndTrackLLMContent(toolcore.WithPromptCachingDisabled(ctx), userId, accountId, conversationId, "", remediationPlannerAgent, false, []llms.MessageContent{
+		resp, err := llmruntime.GenerateAndTrackLLMContent(toolcore.WithPromptCachingDisabled(ctx), userId, accountId, conversationId, "", remediationPlannerAgent, false, []llms.MessageContent{
 			{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: system}}},
 			{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: human}}},
 		}, true)
@@ -765,6 +873,8 @@ type RemediationTrace struct {
 	DraftPlan        *RemediationPlan     `json:"draft_plan,omitempty"`
 	RepairRawOutput  string               `json:"repair_raw_output,omitempty"`
 	RepairValidation []planValidationNote `json:"repair_validation,omitempty"`
+	// Request is what the plan was generated from: the browser's context, artifacts and alert rule.
+	Request *RemediationGenerateRequest `json:"request,omitempty"`
 	// StateReadRequests are the reads the draft asked for (TargetReads says what each returned,
 	// including those refused).
 	StateReadRequests []stateReadRequest `json:"state_read_requests,omitempty"`
@@ -780,6 +890,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	}
 	trace.EvidenceSource = evidenceFromStoredAnalysis
 	artifacts := remediationArtifacts(request.AvailableArtifacts, hasCodeFix)
+	request.automations = planAutomations(request.AccountId)
 	if strings.TrimSpace(evidence) == "" {
 		return RemediationPlan{}, trace, errRemediationInput{"investigation context is required"}
 	}
@@ -823,7 +934,7 @@ func generateRemediationPlan(ctx *security.RequestContext, request RemediationGe
 	modelPlan.Actions = append([]RemediationAction(nil), plan.Actions...)
 	trace.ModelPlan = &modelPlan
 
-	trace.Validation = finalizePlan(&plan, artifacts, request.AlertRule, inventoryReplicas(request.AccountId))
+	trace.Validation = finalizePlan(&plan, artifacts, request.AlertRule, inventoryReplicas(request.AccountId), request.automations)
 	plan = repairAgainstTargetState(ctx, request, llm, systemPrompt, plan, &trace, artifacts)
 	for _, d := range plan.Dropped {
 		ctx.GetLogger().Info("remediation_generate: dropped alert-rule action", "action", d.Action, "reason", d.Reason)
@@ -842,7 +953,7 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -851,39 +962,43 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId, "event_id", request.EventId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) &&
 		!granted(sc, request.AccountId, moduleAiMisc, "Read", "Write")) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New(errorUserAccessMessage)}))
 		return
 	}
 
 	var plan RemediationPlan
-	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	repo, info, err := remediationReadEvent(ctx, request.AccountId, request.EventId)
 	if err != nil {
-		ctx.GetLogger().Warn("remediation_get: database unavailable", "error", err)
-		c.JSON(200, buildApiResponse(plan, nil))
+		// A read that could not be made is an error, not an empty answer: an empty answer has no loop state,
+		// and the tab would take it for "the loop is off" and fall back to the one-shot panel, which plans on
+		// mount.
+		ctx.GetLogger().Warn("remediation_get: not read", "error", err)
+		c.JSON(503, BuildApiResponse(nil, []error{common.Error{Message: "remediation could not be read, try again"}}))
 		return
 	}
-	repo := events.NewEventAnalysisRepository(dbManager)
-	info, err := repo.GetEventInfo(ctx, request.EventId, request.AccountId)
-	if err != nil || info == nil {
-		c.JSON(200, buildApiResponse(plan, nil))
+	if info == nil {
+		c.JSON(200, BuildApiResponse(plan, nil))
 		return
 	}
-	saved, err := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
+	// With the loop on, a duplicate shows its main event's plan: planEvent and planInfo are the event whose
+	// plan this read returns (the event itself otherwise).
+	planEvent, planInfo := planEventAndInfo(ctx, repo, request.AccountId, request.EventId, info)
+	saved, err := repo.GetEventAnalysis(ctx, planEvent, planInfo.Fingerprint, planInfo.AggregationKey, request.AccountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || strings.TrimSpace(saved.Analysis) == "" {
-		c.JSON(200, buildApiResponse(plan, nil))
+		c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
 		return
 	}
 	// When this event has no plan of its own, the lookup falls back to the newest plan saved for the
@@ -891,49 +1006,80 @@ func processRemediationGet(c *gin.Context, tracer trace.Tracer, meter metric.Met
 	// gets back as already generated, so restoring that one shows the operator another incident's root
 	// cause, confidence and commands, and never builds a plan for this incident. Returning no plan here
 	// makes the panel generate one from this event's own investigation.
-	if !planSavedForEvent(saved, request.EventId) {
-		c.JSON(200, buildApiResponse(plan, nil))
+	if !savedPlanShown(request.AccountId, planEvent, saved, func() bool {
+		return planPredatesAnalysis(ctx, repo, planEvent, request.AccountId, planInfo, saved)
+	}) {
+		c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
 		return
 	}
-	// A plan is built from the investigation and its report. When either was re-run after the
-	// plan was saved, the plan describes the previous analysis (dev event db61122a: the report
-	// said "configuration error", the restored plan still said "undetermined"). Returning no plan
-	// makes the panel build one from the current analysis, as above.
+	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
+		ctx.GetLogger().Warn("remediation_get: failed to parse saved plan", "error", err)
+		plan = RemediationPlan{}
+	} else {
+		plan.PlanVersion = events.PlanVersion(saved.Analysis)
+		plan.Target = targetOrNil(ctx, request.AccountId)
+	}
+	// Delivery describes the executor now, not when the plan was saved.
+	assignDelivery(ctx, request.AccountId, &plan)
+	c.JSON(200, BuildApiResponse(remediationGetBody(ctx, request.AccountId, request.EventId, info, planEvent, planInfo, plan), nil))
+}
+
+// remediationReadEvent reads what the remediation read starts from: the event, and that the loop flag can be
+// read. err means a read failed, which the caller must not answer as "no plan"; a nil info with no error means
+// the event does not exist (for this account).
+func remediationReadEvent(ctx *security.RequestContext, accountId, eventId string) (*events.EventAnalysisRepository, *events.EventInfo, error) {
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, nil, fmt.Errorf("database unavailable: %w", err)
+	}
+	loopOn, err := events.RemediationLoopRead(accountId)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loop flag not read: %w", err)
+	}
+	repo := events.NewEventAnalysisRepository(dbManager)
+	info, err := repo.GetEventInfo(ctx, eventId, accountId)
+	if errors.Is(err, events.ErrEventNotFound) {
+		return repo, nil, nil
+	}
+	if err != nil {
+		if !loopOn {
+			// With the loop off the read answers as it always did: no plan, which the one-shot panel handles.
+			ctx.GetLogger().Warn("remediation_get: event not read", "error", err)
+			return repo, nil, nil
+		}
+		return nil, nil, fmt.Errorf("event not read: %w", err)
+	}
+	return repo, info, nil
+}
+
+// planPredatesAnalysis reports whether a completed analysis the stored plan was built from (the
+// investigation, its report) was re-run after the plan was saved.
+func planPredatesAnalysis(ctx *security.RequestContext, repo *events.EventAnalysisRepository, eventId, accountId string, info *events.EventInfo, saved *events.EventAnalysis) bool {
 	var inputs []*events.EventAnalysis
 	for _, t := range []events.EventAnalysisType{events.AnalysisTypeInvestigation, events.AnalysisTypeDetailedResponse} {
-		a, aErr := repo.GetEventAnalysis(ctx, request.EventId, info.Fingerprint, info.AggregationKey, request.AccountId, t)
-		if aErr != nil {
-			ctx.GetLogger().Warn("remediation_get: unable to read analysis to check the plan's age", "error", aErr, "analysis_type", t)
+		a, err := repo.GetEventAnalysis(ctx, eventId, info.Fingerprint, info.AggregationKey, accountId, t)
+		if err != nil {
+			ctx.GetLogger().Warn("remediation: unable to read analysis to check the plan's age", "error", err, "analysis_type", t)
 			continue
 		}
 		if a != nil {
 			inputs = append(inputs, a)
 		}
 	}
-	if planOlderThanAnalysis(saved, inputs...) {
-		ctx.GetLogger().Info("remediation_get: saved plan predates the current analysis, regenerating")
-		c.JSON(200, buildApiResponse(plan, nil))
-		return
-	}
-	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
-		ctx.GetLogger().Warn("remediation_get: failed to parse saved plan", "error", err)
-		plan = RemediationPlan{}
-	}
-	// Delivery describes the executor now, not when the plan was saved.
-	assignDelivery(ctx, request.AccountId, &plan)
-	c.JSON(200, buildApiResponse(plan, nil))
+	return planOlderThanAnalysis(saved, inputs...)
 }
 
 // planCommandRejection returns why a command may not run, or "" when it is the stored plan's command for
 // its slot. A verify must name its own action's execute, so its result lands on the right attempt.
-// It also returns the plan it read, so the caller does not read it again.
-func planCommandRejection(ctx *security.RequestContext, request RemediationExecuteRequest) (plan RemediationPlan, reason string) {
+// It also returns the plan it read and its version, so the caller does not read it again. A decision
+// also re-checks the version inside its claim, under FOR SHARE (ClaimRemediationDecision).
+func planCommandRejection(ctx *security.RequestContext, request RemediationExecuteRequest) (stored storedPlan, reason string) {
 	reason = planCommandRejectionFor(request, func() (RemediationPlan, bool) {
 		var ok bool
-		plan, ok = loadSavedPlan(ctx, request.AccountId, request.EventId)
-		return plan, ok
+		stored, ok = loadSavedPlan(ctx, request.AccountId, request.EventId)
+		return stored.Plan, ok
 	})
-	return plan, reason
+	return stored, reason
 }
 
 // planCommandRejectionFor is planCommandRejection with the stored-plan read passed in.
@@ -945,7 +1091,7 @@ func planCommandRejectionFor(request RemediationExecuteRequest, loadPlan func() 
 	if !ok {
 		return "this event has no remediation plan to run commands from"
 	}
-	if strings.EqualFold(strings.TrimSpace(request.Slot), RemediationSlotManual) {
+	if slot := strings.ToLower(strings.TrimSpace(request.Slot)); slot == RemediationSlotManual || slot == RemediationSlotDecline {
 		if planOperatorStep(plan, request.Command, request.Action) {
 			return ""
 		}
@@ -969,7 +1115,7 @@ func planHasCommand(plan RemediationPlan, slot, command, executeCommand string) 
 	for _, a := range plan.Actions {
 		switch strings.ToLower(strings.TrimSpace(slot)) {
 		case "", RemediationSlotExecute:
-			if strings.TrimSpace(a.ExecuteCommand) == command {
+			if stepRef(a) != "" && stepRef(a) == command {
 				return true
 			}
 		case RemediationSlotVerify:
@@ -986,26 +1132,39 @@ func planHasCommand(plan RemediationPlan, slot, command, executeCommand string) 
 }
 
 // loadSavedPlan returns the plan stored for this event itself (not one inherited from an earlier
-// firing of the same alert).
-func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (RemediationPlan, bool) {
-	var plan RemediationPlan
+// firing of the same alert), and its version. With the loop on, a duplicate's plan is its main
+// event's (planEventAndInfo): duplicates never get a plan of their own.
+func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (storedPlan, bool) {
+	var stored storedPlan
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return plan, false
+		return stored, false
 	}
 	repo := events.NewEventAnalysisRepository(dbManager)
 	info, err := repo.GetEventInfo(ctx, eventId, accountId)
 	if err != nil || info == nil {
-		return plan, false
+		return stored, false
 	}
+	eventId, info = planEventAndInfo(ctx, repo, accountId, eventId, info)
 	saved, err := repo.GetEventAnalysis(ctx, eventId, info.Fingerprint, info.AggregationKey, accountId, events.AnalysisTypeRemediation)
 	if err != nil || saved == nil || !planSavedForEvent(saved, eventId) {
-		return plan, false
+		return stored, false
 	}
-	if err := json.Unmarshal([]byte(saved.Analysis), &plan); err != nil {
-		return plan, false
+	if err := json.Unmarshal([]byte(saved.Analysis), &stored.Plan); err != nil {
+		return stored, false
 	}
-	return plan, true
+	stored.Version, stored.RowId = events.PlanVersion(saved.Analysis), saved.ID
+	stored.Stale = planPredatesAnalysis(ctx, repo, eventId, accountId, info, saved)
+	return stored, true
+}
+
+// storedPlan is the event's stored plan as a decision binds it.
+type storedPlan struct {
+	Plan RemediationPlan
+	// Version is the hash of the stored text; RowId the event_log_analysis row holding it.
+	Version, RowId string
+	// Stale: an analysis the plan was built from was re-run after it was saved.
+	Stale bool
 }
 
 // planSavedForEvent reports whether a stored plan was generated for eventId. A row with no event id
@@ -1013,6 +1172,48 @@ func loadSavedPlan(ctx *security.RequestContext, accountId, eventId string) (Rem
 func planSavedForEvent(saved *events.EventAnalysis, eventId string) bool {
 	owner := strings.TrimSpace(saved.RelatedEventId)
 	return owner != "" && strings.EqualFold(owner, strings.TrimSpace(eventId))
+}
+
+// savedPlanShown reports whether the remediation read returns the saved plan of planEvent:
+//   - Only a plan saved for planEvent itself. Otherwise the lookup fell back to the newest plan saved for
+//     the same alert, one generated from an earlier firing's investigation; the panel treats any plan it
+//     gets back as already generated, so restoring that one shows another incident's root cause and
+//     commands. Returning no plan makes the panel generate one from this event's own investigation.
+//   - With the loop off, not a plan older than a re-run of the analysis it was built from (predates): it
+//     describes the previous analysis (e.g. the report said "configuration error", the
+//     restored plan still said "undetermined"), and returning none makes the panel build a fresh one.
+//     With the loop on the page never generates: the plan is returned, and the loop's relevance says it
+//     is stale (fired again, closed after the plan) so a person can ask Nubi to re-check it.
+func savedPlanShown(accountId, planEvent string, saved *events.EventAnalysis, predates func() bool) bool {
+	if !planSavedForEvent(saved, planEvent) {
+		return false
+	}
+	if events.RemediationLoopOn(accountId) {
+		return true
+	}
+	if predates() {
+		slog.Info("remediation_get: saved plan predates the current analysis, regenerating", "account_id", accountId, "event_id", planEvent)
+		return false
+	}
+	return true
+}
+
+// planEventAndInfo is the event whose plan eventId reads and acts on, with its info: with the loop on, the shared
+// rule (planEventOf, events.PlanEventOf: a duplicate's live main event, unless the main has no plan and the
+// duplicate has one; contract C7 primary_event_id); otherwise eventId and info unchanged.
+func planEventAndInfo(ctx *security.RequestContext, repo *events.EventAnalysisRepository, accountId, eventId string, info *events.EventInfo) (string, *events.EventInfo) {
+	if !events.RemediationLoopOn(accountId) {
+		return eventId, info
+	}
+	primary := primaryEventId(ctx, accountId, eventId)
+	if primary == "" {
+		return eventId, info
+	}
+	primaryInfo, err := repo.GetEventInfo(ctx, primary, accountId)
+	if err != nil || primaryInfo == nil {
+		return eventId, info
+	}
+	return primary, primaryInfo
 }
 
 // planOlderThanAnalysis reports whether a completed analysis the plan was built from was
@@ -1027,32 +1228,38 @@ func planOlderThanAnalysis(plan *events.EventAnalysis, inputs ...*events.EventAn
 }
 
 // persistRemediationPlan upserts the plan into event_log_analysis under the `remediation` analysis
-// type (a sibling of rca_analysis), keyed by the event's fingerprint + aggregation key.
-func persistRemediationPlan(ctx *security.RequestContext, accountId, eventId string, plan RemediationPlan, trace RemediationTrace) error {
+// type (a sibling of rca_analysis), keyed by the event's fingerprint + aggregation key. It returns the
+// stored plan's version.
+func persistRemediationPlan(ctx *security.RequestContext, accountId, eventId string, plan RemediationPlan, trace RemediationTrace) (string, error) {
 	if eventId == "" {
-		return errors.New("event id is required")
+		return "", errors.New("event id is required")
 	}
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		return fmt.Errorf("database unavailable: %w", err)
+		return "", fmt.Errorf("database unavailable: %w", err)
 	}
 	repo := events.NewEventAnalysisRepository(dbManager)
 	info, err := repo.GetEventInfo(ctx, eventId, accountId)
 	if err != nil {
-		return fmt.Errorf("event info unavailable: %w", err)
+		return "", fmt.Errorf("event info unavailable: %w", err)
 	}
 	if info == nil {
-		return errors.New("event info unavailable: event not found")
+		return "", errors.New("event info unavailable: event not found")
 	}
 	// The trace rides in the same row; processRemediationGet unmarshals into RemediationPlan and ignores it.
+	plan.PlanVersion, plan.Target = "", nil // a version names stored text, and the target is the account's now
 	data, err := json.Marshal(struct {
 		RemediationPlan
 		Generation RemediationTrace `json:"generation"`
 	}{plan, trace})
 	if err != nil {
-		return err
+		return "", err
 	}
-	return repo.UpsertEventAnalysis(ctx, eventId, string(data), plan.Summary, string(events.AnalysisStatusCompleted), info.Fingerprint, accountId, info.AggregationKey, events.AnalysisTypeRemediation)
+	if err := repo.UpsertEventAnalysis(ctx, eventId, string(data), plan.Summary, string(events.AnalysisStatusCompleted), info.Fingerprint, accountId, info.AggregationKey, events.AnalysisTypeRemediation); err != nil {
+		return "", err
+	}
+	syncAlertThread(ctx, accountId, eventId)
+	return events.PlanVersion(string(data)), nil
 }
 
 // processRemediationExecute runs a single remediation command against the account's cluster via relay.
@@ -1065,7 +1272,7 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	var actionRequest ActionRequest
 	if err := c.ShouldBindJSON(&actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -1074,25 +1281,44 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 		payload = v
 	}
 	if err := common.DecodeMapToStruct(payload, &request); err != nil {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
+	slot := strings.ToLower(strings.TrimSpace(request.Slot))
 	command := strings.TrimSpace(request.Command)
-	manual := strings.EqualFold(strings.TrimSpace(request.Slot), RemediationSlotManual)
-	if command == "" && !manual {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "command is required"}}))
+	manual, decline := slot == RemediationSlotManual, slot == RemediationSlotDecline
+	decision := manual || decline || isRunSlot(slot)
+	// A command runs on the event's account through that account's own agent; a client cannot choose
+	// another tool configuration (another cluster's credentials) for it.
+	if strings.TrimSpace(request.ConfigName) != "" {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: config_name is not accepted; a command runs on the event's own account"}}))
 		return
 	}
-	if reason := remediationCommandRejection(command); reason != "" && !manual {
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: reason}}))
+	if request.Source != "" && request.Source != slackSource {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: unknown source"}}))
+		return
+	}
+	if decision {
+		if code, msg := decisionCallerRejection(c, &actionRequest, payload); code != 0 {
+			c.JSON(code, BuildApiResponse(nil, []error{common.Error{Message: msg}}))
+			return
+		}
+		if strings.TrimSpace(request.PlanVersion) == "" {
+			c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: plan_version is required; review the plan and confirm again"}}))
+			return
+		}
+	}
+	// A Slack step message names its step instead (decideStep reads its command from the plan).
+	if command == "" && !manual && !decline && (!decision || request.Step == nil) {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "command is required"}}))
 		return
 	}
 
 	logger := slog.With("account_id", request.AccountId)
-	ctx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+	ctx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 	if err != nil {
-		c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+		c.JSON(500, BuildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
 		return
 	}
 
@@ -1102,153 +1328,56 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	sc := ctx.GetSecurityContext()
 	if sc == nil || (!sc.HasAccountAccess(request.AccountId, security.SecurityAccessTypeCreate) &&
 		!grantedRun(sc, request.AccountId, moduleAiMisc)) {
-		c.JSON(403, buildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
+		c.JSON(403, BuildApiResponse(nil, []error{errors.New("remediation: write access is required to run remediation commands")}))
 		return
 	}
 
+	// The caller gate passed, so this is the person the gateway named.
+	if decision {
+		decideStep(ctx, request, sc.GetUserId()).write(c)
+		return
+	}
+
+	if reason := remediationCommandRejection(command); reason != "" {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: reason}}))
+		return
+	}
 	// Only a command from this event's stored plan runs. Generation is grounded server-side; accepting
 	// any command string here would let execution drift from what was generated and reviewed.
-	plan, reason := planCommandRejection(ctx, request)
+	stored, reason := planCommandRejection(ctx, request)
 	if reason != "" {
 		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
 		return
 	}
-	if manual {
-		recordOperatorStep(ctx, request, sc.GetUserId())
-		c.JSON(200, buildApiResponse(tools.RemediationExecutionResult{Command: command, ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: true}, nil))
-		return
-	}
-
-	// A stand-in value must never reach the cluster. The generation prompt asks the model to emit a
-	// clearly-named placeholder rather than a secret, and the panel runs what it is given verbatim:
-	// the audit found `kubectl set env deployment/app-prod GITHUB_WEBHOOK_SECRET=
-	// GITHUB_WEBHOOK_SECRET_PLACEHOLDER` offered as a fix against production, which would have
-	// replaced a live secret with that literal string and rolled the deployment. normalizePlan
-	// already demotes such an action off the fix ranking; this is the block that makes it safe.
-	if commandHasPlaceholder(command) {
-		ctx.GetLogger().Warn("remediation_execute: command carries a placeholder value", "command", command)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: this command contains a placeholder value and was not run. Substitute the real value and run it yourself — applying it as written would overwrite the setting with the placeholder text."}}))
+	if reason := commandRunRejection(ctx, command); reason != "" {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: reason}}))
 		return
 	}
 
-	if err := tools.ValidateCommandSafety(command); err != nil {
-		ctx.GetLogger().Warn("remediation_execute: unsafe command rejected", "error", err)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: err.Error()}}))
+	// What remains is a verify or the outcome check: a read NudgeBee runs without a confirmation, so only
+	// a strict read (checkRejection). Anything else the person checks themselves.
+	provider := tools.GetCloudProviderForAccount(request.AccountId)
+	if reason := checkRejection(ctx, request.AccountId, provider, command); reason != "" {
+		c.JSON(400, BuildApiResponse(nil, []error{common.Error{Message: "remediation: " + reason}}))
 		return
 	}
-
-	// The executor is chosen from the ACCOUNT'S PROVIDER, then narrowed by the command. A cloud CLI
-	// talks to a public API endpoint and only needs credentials, so it runs in a workspace pod here;
-	// kubectl/helm/argocd/shell target hosts inside the customer network and go down the relay.
-	//
-	// Reading the command's first word alone used to decide this, which sent kubectl from an AWS
-	// account to a relay agent that cannot exist there ("agent not connected", a connectivity error
-	// for what is really a category error) and dropped GCP's `bq` through to an uncredentialed shell.
-	substrate := tools.RemediationSubstrateFor(tools.GetCloudProviderForAccount(request.AccountId), command)
-	if substrate.Reject != "" {
-		ctx.GetLogger().Warn("remediation_execute: command does not match the account's provider",
-			"command", command, "reason", substrate.Reject)
-		c.JSON(400, buildApiResponse(nil, []error{common.Error{Message: "remediation: " + substrate.Reject}}))
-		return
-	}
-
-	registeredToolName := substrate.CloudCliTool
-	ranOnWorkspace := substrate.CloudCliTool != ""
-	start := time.Now()
-	var raw string
-	var execErr error
-
-	if substrate.CloudCliTool != "" {
-		// A Run click has no conversation behind it, so the workspace gets the per-account
-		// directory rather than "" -- which it rejects with "Conversation ID is empty".
-		raw, execErr = tools.ExecuteCloudCli(ctx, substrate.CloudCliTool, request.AccountId, tools.DefaultCloudCliConversationId(request.AccountId), command)
-	} else {
-		registeredToolName = substrate.RelayTool
-		relayJob := substrate.RelayJob
-		nbTool, found := toolcore.GetNBTool(request.AccountId, registeredToolName)
-		if !found {
-			c.JSON(404, buildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
+	substrate := tools.RemediationSubstrateFor(provider, command)
+	var nbTool toolcore.NBTool
+	if substrate.RelayTool != "" {
+		var found bool
+		if nbTool, found = toolcore.GetNBTool(request.AccountId, substrate.RelayTool); !found {
+			c.JSON(404, BuildApiResponse(nil, []error{common.Error{Message: "execution tool is not configured for this account"}}))
 			return
 		}
-
-		var queryConfig toolcore.NBQueryConfig
-		if request.ConfigName != "" {
-			queryConfig = toolcore.NBQueryConfig{ToolConfigs: map[string]string{nbTool.Name(): request.ConfigName}}
-		}
-
-		toolCtx := toolcore.NewNbToolContext(ctx, nbTool, request.AccountId, sc.GetUserId(), "", "", "", command, nil, "", queryConfig, "")
-
-		var result any
-		result, execErr = tools.ExecuteContainerJob(toolCtx, relayJob, command, request.AccountId, map[string]any{}, true)
-		if s, ok := result.(string); ok {
-			raw = s
-		}
 	}
-
-	response := tools.RemediationExecutionResult{
-		Command:    command,
-		ExecutedAt: start.Format(time.RFC3339),
-		Duration:   time.Since(start).String(),
-	}
-
-	// Whether the executor actually told us how the command exited. False means "ran, outcome
-	// unknown" rather than "ran and succeeded".
-	//
-	// The two substrates report that in different shapes, so reportedness is decided per substrate.
-	// The relay returns a JSON envelope carrying exit_code; the workspace has no exit_code field at
-	// all, so running its output through parseRelayExecResult never parsed and every cloud command
-	// was recorded "outcome unverified" even when the outcome was stated plainly.
-	exitCodeReported := false
-	var exitErr *tools.RelayCommandExitError
-	if ranOnWorkspace {
-		response.Stdout, response.Stderr, response.ExitCode, response.Success, exitCodeReported = workspaceOutcome(execErr, raw)
-		if execErr != nil {
-			ctx.GetLogger().Error("remediation_execute: command failed")
-			response.Error = execErr.Error()
-		}
-	} else if errors.As(execErr, &exitErr) {
-		// The command ran and the relay reported a non-zero exit: a definitive failure
-		// with a real exit code, not a transport error.
-		stdout, stderr, _, parsed := parseRelayExecResult(raw)
-		if !parsed {
-			stdout = raw
-		}
-		response.Stdout = stdout
-		response.Stderr = stderr
-		response.ExitCode = exitErr.ExitCode
-		response.Success = false
-		response.Error = stderr
-		if response.Error == "" {
-			response.Error = exitErr.Error()
-		}
-		exitCodeReported = true
-	} else if execErr != nil {
-		// Transport failure — the command may not have run at all.
-		ctx.GetLogger().Error("remediation_execute: command failed")
-		response.Success = false
-		response.ExitCode = 1
-		response.Error = execErr.Error()
-		response.Stderr = execErr.Error()
-		response.Stdout = raw
-	} else {
-		// The relay reports its real exit code in a JSON envelope. ExecuteContainerJob passes it
-		// through when it can't merge stdout/stderr, so a non-zero exit otherwise surfaces as a
-		// green "success" with the raw envelope in stdout. Parse it and map exit_code != 0 to failure.
-		stdout, stderr, exitCode, parsed := parseRelayExecResult(raw)
-		response.Stdout = stdout
-		response.Stderr = stderr
-		response.ExitCode = exitCode
-		// An unparsed result means the executor merged stdout/stderr to text and discarded the exit
-		// code, so there is nothing to judge by. Treating that as success is the only workable
-		// default — flipping it to failure would mark every merged-output command failed — but the
-		// resolution must not then claim the command was verified. exitCodeReported carries that
-		// distinction to the record; see persistRemediationExecution.
-		exitCodeReported = parsed
-		response.Success = !parsed || exitCode == 0
-		if !response.Success && response.Error == "" {
-			response.Error = stderr
-		}
+	sent := sendRemediationCommand(ctx, request.AccountId, sc.GetUserId(), substrate, nbTool, command)
+	response, exitCodeReported, registeredToolName := sent.RemediationExecutionResult, sent.ExitCodeReported, sent.Tool
+	if sent.Err != nil {
+		ctx.GetLogger().Error("remediation_execute: check failed", "error", sent.Err)
+		response.Error = firstNonEmpty(response.Stderr, sent.Err.Error())
+	} else if !response.Success {
+		response.Error = response.Stderr
 	}
 
 	// Audit covers every command regardless of slot — that is the record of what was run.
@@ -1256,27 +1385,124 @@ func processRemediationExecute(c *gin.Context, tracer trace.Tracer, meter metric
 	// The outcome check observes the incident; it is recorded on the latest attempt, not as one.
 	// planCommandRejection passed, so the plan has this outcome check.
 	if isOutcomeSlot(request.Slot) {
-		outcome := newOutcomeResult(plan.OutcomeCheck, response, exitCodeReported)
+		outcome := newOutcomeResult(stored.Plan.OutcomeCheck, response, exitCodeReported)
 		recordOutcome(ctx, request.EventId, outcome)
-		c.JSON(200, buildApiResponse(outcome, nil))
+		c.JSON(200, BuildApiResponse(outcome, nil))
 		return
 	}
-	// A resolution says how the event was acted on, so only the state-changing execute command earns
-	// one. A verify observes and a rollback reverses; filing those as resolutions counted one
-	// remediation attempt three times and listed an undo as though it resolved the event.
-	//
-	// Failures DO earn one. Gating the insert on response.Success meant a command that ran and
-	// failed left no product-visible trace at all: the resolutions list showed only the attempts
-	// that worked, so "nothing was tried here" and "three things were tried and all failed" looked
-	// identical. The operator needs the second one most.
-	if shouldPersistRemediationResolution(request.EventId, request.Slot) {
-		persistRemediationExecution(ctx, request.EventId, sc.GetUserId(), command, response.ExitCode, response.Success, exitCodeReported, failureText(response))
-	} else if isVerifySlot(request.Slot) && request.EventId != "" && request.ExecuteCommand != "" {
-		// A verify does not earn its own resolution — that was the triple-counting bug. It annotates
-		// the attempt it checked, so "it ran" and "the check confirmed it" are one record.
+	// A verify does not earn its own resolution — that was the triple-counting bug. It annotates
+	// the attempt it checked, so "it ran" and "the check confirmed it" are one record.
+	if isVerifySlot(request.Slot) && request.EventId != "" && request.ExecuteCommand != "" {
 		persistRemediationVerification(ctx, request.EventId, request.ExecuteCommand, command, response, exitCodeReported)
 	}
-	c.JSON(200, buildApiResponse(response, nil))
+	c.JSON(200, BuildApiResponse(response, nil))
+}
+
+// decideStep records a person's decision on a step of the event's stored plan (Run, Decline, "I ran this"),
+// from the panel, a Slack card or the alert's chat (run_step), and runs the step for Run. The request names
+// the plan version the person saw; userId is that person.
+func decideStep(ctx *security.RequestContext, request RemediationExecuteRequest, userId string) stepAnswer {
+	slot := strings.ToLower(strings.TrimSpace(request.Slot))
+	if code, refusal := loopRunRefusal(request); refusal != "" {
+		return refuse(code, refusal)
+	}
+	stored, hasPlan := loadSavedPlan(ctx, request.AccountId, request.EventId)
+	if request.Step != nil && strings.TrimSpace(request.Command) == "" && hasPlan {
+		// A Slack step message names its step: its command and action are the stored plan's own, read after
+		// the caller was checked. A plan changed since is refused below by its plan_version.
+		action, err := planAction(stored.Plan, *request.Step)
+		if err != nil {
+			return refuse(400, "remediation: "+err.Error())
+		}
+		request.Command, request.Action = stepRef(action), action.Action
+	}
+	command := strings.TrimSpace(request.Command)
+	// Only a command from this event's stored plan runs. Generation is grounded server-side; accepting
+	// any command string here would let execution drift from what was generated and reviewed.
+	reason := planCommandRejectionFor(request, func() (RemediationPlan, bool) { return stored.Plan, hasPlan })
+	if reason != "" {
+		ctx.GetLogger().Warn("remediation_execute: command is not in the event's plan", "command", command, "reason", reason)
+		return refuse(400, "remediation: "+reason)
+	}
+	// A decision binds the plan the person saw: a regenerated plan, or one older than the analysis it
+	// was built from, needs a fresh look. The claim checks the version again under FOR SHARE.
+	// With the remediation loop on a newer investigation does not void the plan: the step the person approved is the
+	// one they saw, and Nubi re-checks the plan once the approval is answered (remediation_planning.go).
+	if (stored.Stale && !events.RemediationLoopOn(request.AccountId)) || stored.Version != strings.TrimSpace(request.PlanVersion) {
+		return refuse(409, planChangedMessage)
+	}
+	switch slot {
+	case RemediationSlotManual:
+		return recordOperatorStep(ctx, request, userId, stored)
+	case RemediationSlotDecline:
+		return recordDecline(ctx, request, userId, stored)
+	}
+	if _, ok := automationRefID(command); ok {
+		// A run of the account's automation (remediation_automation.go): no command to check, and it has no undo.
+		if strings.EqualFold(slot, RemediationSlotRollback) {
+			return refuse(400, "remediation: an automation step has no undo")
+		}
+		if reason := stepOrderRejection(ctx, request.EventId, stored, planStep(stored.Plan, slot, command, "")); reason != "" {
+			return refuse(409, reason)
+		}
+		return runAutomationStep(ctx, request, stored, command, userId)
+	}
+	if reason := remediationCommandRejection(command); reason != "" {
+		return refuse(400, reason)
+	}
+	if reason := commandRunRejection(ctx, command); reason != "" {
+		return refuse(400, reason)
+	}
+	if !strings.EqualFold(slot, RemediationSlotRollback) {
+		if reason := stepOrderRejection(ctx, request.EventId, stored, planStep(stored.Plan, slot, command, "")); reason != "" {
+			return refuse(409, reason)
+		}
+	}
+	return runRemediationStep(ctx, request, stored, command, userId)
+}
+
+// loopRunNeedsApproval is the refusal of a Run or undo pressed outside Nubi's approval with the remediation loop on.
+const loopRunNeedsApproval = "remediation: with the remediation loop on, a step runs only after Nubi asks for approval and a person approves it. Pick the fix on the Remediation tab, or ask in the alert's chat."
+
+// loopRunRefusal says why a decision that runs a command (Run, undo) is refused, or "". With the remediation loop on
+// every write on the alert goes through Nubi's run_step approval (#40734): only run_step's own decision (source chat,
+// set in code by runStepFromChat; a request body can only name "" or "slack") may run a step. The panel's Run and a
+// Slack step message's Run are refused before anything is read or recorded. Decline, "I ran this", verify and the
+// outcome check run nothing on the account and are unaffected. With the loop off nothing changes.
+//
+// The flag is read without falling back to off: if it cannot be read, a Run is refused (503) rather than let through
+// without an approval.
+func loopRunRefusal(request RemediationExecuteRequest) (int, string) {
+	if !isRunSlot(request.Slot) || request.Source == chatSource {
+		return 0, ""
+	}
+	on, err := events.RemediationLoopRead(request.AccountId)
+	if err != nil {
+		return 503, loopRunFlagUnread
+	}
+	if !on {
+		return 0, ""
+	}
+	return 409, loopRunNeedsApproval
+}
+
+// loopRunFlagUnread is the refusal of a Run when the remediation loop flag could not be read.
+const loopRunFlagUnread = "remediation: could not check this account's settings, so nothing ran; try again"
+
+// commandRunRejection says why a command of the plan is not sent as written, or "".
+func commandRunRejection(ctx *security.RequestContext, command string) string {
+	// A placeholder must never reach the cluster: the panel runs commands verbatim, and the audit found
+	// `kubectl set env deployment/app-prod GITHUB_WEBHOOK_SECRET=GITHUB_WEBHOOK_SECRET_PLACEHOLDER` offered
+	// against production. normalizePlan only demotes such an action; this is the block.
+	if commandHasPlaceholder(command) {
+		ctx.GetLogger().Warn("remediation_execute: command carries a placeholder value", "command", command)
+		return "remediation: this command contains a placeholder value and was not run. Substitute the real value and run it yourself — applying it as written would overwrite the setting with the placeholder text."
+	}
+	if err := tools.ValidateCommandSafety(command); err != nil {
+		ctx.GetLogger().Warn("remediation_execute: unsafe command rejected", "error", err)
+		return err.Error()
+	}
+	return ""
 }
 
 // remediationCommandRejection returns why the Run button refuses this command before it runs, or ""
@@ -1394,55 +1620,6 @@ func truncateForRecord(out string) string {
 	return out
 }
 
-// shouldPersistRemediationResolution decides whether a command run earns an event_resolution row.
-// Deliberately independent of whether the command succeeded: a failed execute is exactly the run an
-// operator most needs to see recorded. Slot still gates it, because a verify observes and a rollback
-// reverses — filing those as resolutions counted one attempt three times and listed an undo as
-// though it resolved the event.
-func shouldPersistRemediationResolution(eventId, slot string) bool {
-	if eventId == "" {
-		return false
-	}
-	normalized := strings.ToLower(strings.TrimSpace(slot))
-	return normalized == "" || normalized == RemediationSlotExecute
-}
-
-// persistRemediationExecution records a command run as an event_resolution row so the UI can mark the
-// action already-applied, or show that it was tried and failed. Best-effort: a DB failure must not
-// fail the (already-run) command.
-func persistRemediationExecution(ctx *security.RequestContext, eventId, userId, command string, exitCode int, success, exitCodeReported bool, errText string) {
-	dbManager, err := common.GetDatabaseManager(common.Metastore)
-	if err != nil {
-		ctx.GetLogger().Warn("remediation: database unavailable, execution not persisted", "error", err)
-		return
-	}
-	repo := events.NewEventAnalysisRepository(dbManager)
-	data, err := json.Marshal(map[string]any{
-		"command":            command,
-		"exit_code":          exitCode,
-		"success":            success,
-		"exit_code_reported": exitCodeReported,
-		// The executor's own words on a failure. A permission refusal here is how the next plan knows
-		// to give this verb to the operator (remediation_delivery.go).
-		"error": truncateForRecord(errText),
-	})
-	if err != nil {
-		return
-	}
-	// The resolutions list shows status_message next to the row. A fixed string there told the reader
-	// nothing they could not already see from the row's type, so record the outcome instead.
-	// Say which of the two happened. "exit code 0" and "we never learned the exit code" are very
-	// different facts, and recording the second as the first is how a command that quietly failed
-	// ends up on the page as a success.
-	statusMessage := fmt.Sprintf("Ran from the remediation panel, exit code %d", exitCode)
-	if !exitCodeReported {
-		statusMessage = "Ran from the remediation panel — the executor reported no exit code, so the outcome is unverified"
-	}
-	if err := repo.InsertRemediationExecution(ctx, eventId, userId, command, string(data), statusMessage, success); err != nil {
-		ctx.GetLogger().Warn("remediation: failed to persist execution", "error", err)
-	}
-}
-
 // relayExecEnvelope is the JSON the relay executors return for a command run. Keys vary by executor,
 // so every field is optional; presence of exit_code is what tells us this is a real envelope (rather
 // than plain command output) and therefore that the exit code is trustworthy.
@@ -1506,7 +1683,7 @@ func remediationAudit(ctx *security.RequestContext, accountId, command, tool str
 		status = audit.EventStatusFailure
 	}
 	// Credentials in the command are masked as in workspaceExecuteAudit.
-	command = egressfilter.RedactSecrets(command)
+	command = redactAuditCommand(command)
 	return &audit.AuditRequest{
 		Audits: []audit.Audit{
 			{
@@ -1681,4 +1858,12 @@ func eventRegion(provider, accountId, eventId string) string {
 		return ""
 	}
 	return strings.TrimSpace(node)
+}
+
+// planAction is step index (0-based) of plan.
+func planAction(plan RemediationPlan, index int) (RemediationAction, error) {
+	if index < 0 || index >= len(plan.Actions) {
+		return RemediationAction{}, fmt.Errorf("the plan has steps 1 to %d", len(plan.Actions))
+	}
+	return plan.Actions[index], nil
 }

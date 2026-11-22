@@ -1,7 +1,7 @@
 import TextEnricherDynamicCard from '../TextEnricherDynamicCard';
 import ShowingObjectCard from '../ShowingObjectCard';
 import ShowingTableCard from '../ShowingTableCard';
-import { getTableData, getTableData3 } from '../util';
+import { getTableData, getTableData3, getTableData4 } from '../util';
 
 // The envelopes below are what api-server's BuildAuthoredEvidence emits for each
 // evidence type an automation can attach (api-server/services/event/authored_evidence.go).
@@ -117,5 +117,14 @@ describe('values a card cannot render directly', () => {
       data: { headers: ['Unit', 'Enabled'], rows: [['postgresql', false]], table_name: 'Units' },
     });
     expect(table.convertedJson2[0][1].component.props.value).toBe('false');
+  });
+
+  // The Knowledge Graph node/edge details tables, trace span attributes and log
+  // resource attributes all render their properties through getTableData4, and
+  // KG properties carry booleans (is_active, is_healthy, ebs_optimized, …).
+  it('shows a boolean property as text in a key/value properties table', () => {
+    const { convertedJson2 } = getTableData4([{ is_active: true, ebs_optimized: false }]);
+    expect(convertedJson2[0][1].component.props.children).toBe('true');
+    expect(convertedJson2[1][1].component.props.children).toBe('false');
   });
 });

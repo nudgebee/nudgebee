@@ -136,6 +136,10 @@ export async function fillRuleForm(locators: GatewayConfigLocators, draft: RuleD
   await expect(locators.rulePriorityInput).toHaveValue(String(draft.priority), { timeout: 10000 });
   await locators.ruleMatchModelInput.fill(draft.model);
   await expect(locators.ruleMatchModelInput).toHaveValue(draft.model, { timeout: 10000 });
+  // A rule that rewrites nothing is a no-op the form refuses (nb-39222), so the rule rewrites to a target model.
+  const targetModel = `${draft.model}-target`;
+  await locators.ruleTargetModelInput.fill(targetModel);
+  await expect(locators.ruleTargetModelInput).toHaveValue(targetModel, { timeout: 10000 });
   await locators.ruleEnabledSwitch.setChecked(draft.enabled);
   await expect(locators.ruleEnabledSwitch).toBeChecked({ checked: draft.enabled, timeout: 10000 });
 }

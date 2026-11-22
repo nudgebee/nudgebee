@@ -132,7 +132,7 @@ func TestBackfillSecretEncryptionStopsAtShutdown(t *testing.T) {
 		WithArgs(cancelOnMatch{decryptsTo{"plain-1"}, cancel}, "s1", "plain-1").
 		// The delay makes sqlmock wait on the context, so the cancel always wins
 		// over the result instead of racing it.
-		WillDelayFor(time.Minute).
+		WillDelayFor(time.Second).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	got, err := BackfillSecretEncryption(ctx, slog.New(slog.DiscardHandler))

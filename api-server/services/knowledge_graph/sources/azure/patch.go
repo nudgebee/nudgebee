@@ -87,9 +87,10 @@ func (p *patchPolicy) ContextFor(kind sources.ResourceKind) []core.NodeType {
 }
 
 // BuildNodes replays convertResourcesToGraph's node steps for one resource,
-// including the VNet-name propagation resolved against contextNodes. A VM whose
-// network the account build resolves through its NIC comes out keyed differently
-// here; the applier's id check sends that case to the account rebuild.
+// including the VNet-name propagation resolved against contextNodes. The key
+// reads only the resource id, region and name, not the network, so the node
+// keys the same as in the account build; the applier's id check still sends any
+// mismatch to the account rebuild.
 func (p *patchPolicy) BuildNodes(rows []sources.CloudResourceRow, contextNodes []*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []string) {
 	nodes := make([]*core.DbNode, 0, len(rows))
 	for i := range rows {

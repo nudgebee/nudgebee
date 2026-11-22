@@ -171,18 +171,3 @@ func TestWorkloadNode_NoSecretMaterialFromAnnotations(t *testing.T) {
 
 // workloadRow shapes a k8s_workloads row the way the collector writes it:
 // meta.config is the agent's config, and the labels column is config.labels.
-func workloadRow(t *testing.T, kind, namespace, name string, config map[string]interface{}) K8sWorkloadRow {
-	t.Helper()
-	meta, err := json.Marshal(map[string]interface{}{"config": config, "namespace": namespace})
-	if err != nil {
-		t.Fatal(err)
-	}
-	labels, err := json.Marshal(config["labels"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return K8sWorkloadRow{
-		ID: kind + "/" + namespace + "/" + name, Kind: kind, Namespace: namespace, Name: name,
-		ClusterName: "c1", IsActive: true, Meta: meta, Labels: labels,
-	}
-}

@@ -135,6 +135,12 @@ type AgentDetailsFeatures struct {
 	NodeAgentConnection         *bool          `json:"nodeAgentConnection" mapstructure:"nodeAgentConnection"`
 	NodeAgentCount              *int           `json:"nodeAgentCount" mapstructure:"nodeAgentCount"`
 	OpencostConnection          *bool          `json:"opencostConnection" mapstructure:"opencostConnection"`
+	// ClickhouseLogsConnection: the agent's ClickHouse answers and its logs table is
+	// present. It does not say logs are arriving. Absent from agents too old to check.
+	ClickhouseLogsConnection      *bool   `json:"clickhouseLogsConnection" mapstructure:"clickhouseLogsConnection"`
+	ClickhouseLogsConnectionError *string `json:"clickhouseLogsConnectionError" mapstructure:"clickhouseLogsConnectionError"`
+	// ClickhouseLogsTable is the table the agent checked, as "database.table".
+	ClickhouseLogsTable *string `json:"clickhouseLogsTable" mapstructure:"clickhouseLogsTable"`
 	// OpencostServerSide is a server-managed marker stamped by the spend sync
 	// (spend.setOpenCostServerSide). It is true when OpenCost is collected
 	// server-side for this cluster (the migrated default, agent OpenCost off);

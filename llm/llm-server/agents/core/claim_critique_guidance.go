@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -134,17 +135,17 @@ func claimGuidanceFeedback(ctx *security.RequestContext, request NBAgentRequest,
 
 		bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 		defer cancel()
-		bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
+		bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
 		// Like the audit, send the evidence exactly as captured: a pre-flight trim
 		// would let guidance cite observations the model never saw. If the input
 		// cannot be sent unaltered, the call fails and legacy feedback stays.
-		bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
+		bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
 		guidanceCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		messages := []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, prompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, string(input)),
 		}
-		response, err = GenerateAndTrackLLMContent(guidanceCtx, request.UserId, request.AccountId, request.ConversationId,
+		response, err = llmruntime.GenerateAndTrackLLMContent(guidanceCtx, request.UserId, request.AccountId, request.ConversationId,
 			request.MessageId, request.AgentId, false, messages, false, llms.WithTemperature(0), llms.WithJSONMode())
 		if err != nil {
 			return finish("generation_error", fmt.Errorf("generate claim guidance: %w", err))

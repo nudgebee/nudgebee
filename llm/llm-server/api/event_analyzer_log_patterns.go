@@ -56,8 +56,8 @@ func renderLogPatternBreakdown(ev events.InvestigateData) string {
 		fmt.Fprintf(&head, "Total: peak %s per %d min at %s.\n",
 			logPatternCount(breakdown.Total.Peak), bucket, logPatternClock(breakdown.Total.PeakAt))
 	case breakdown.Total.Normal > 0:
-		fmt.Fprintf(&head, "Normal is the average per %d min over the %d h before %s. It was measured before the alert fired, so a ratio here can be higher than the one in the alert's description, whose %d h already held the start of the spike.\n",
-			bucket, hours, logPatternClock(breakdown.BaselineEvaluatedAt), hours)
+		fmt.Fprintf(&head, "Normal is the average per %d min over the %d h before %s. The ratio in the alert's description is a different figure: the count in the %d min before the alert fired against the %d h average up to then. It is not the peak's ratio; that is the × figure below.\n",
+			bucket, hours, logPatternClock(breakdown.BaselineEvaluatedAt), bucket, hours)
 		fmt.Fprintf(&head, "Total: peak %s per %d min at %s vs %s normal (%s×).\n",
 			logPatternCount(breakdown.Total.Peak), bucket, logPatternClock(breakdown.Total.PeakAt),
 			logPatternCount(breakdown.Total.Normal), logPatternRatio(breakdown.Total.Peak, breakdown.Total.Normal))

@@ -8,7 +8,7 @@ import Tooltip from '@ui/Tooltip';
  * inside a sentence") rather than a hand-rolled pill.
  *
  * Live resource names run to full ARNs
- * (arn:aws:rds:us-east-1:740395098545:rdsreservedinstances:6be9a4d44a341064),
+ * (arn:aws:rds:us-east-1:777777777777:rdsreservedinstances:6be9a4d44a341064),
  * which would swamp a sentence or a card row. The middle is truncated so both the
  * service prefix and the identifying suffix survive; the full value goes in a
  * tooltip.
@@ -19,7 +19,7 @@ const DEFAULT_MAX = 44;
  * The identifying tail of a resource id — the part a reader actually recognises
  * and uses to find the thing. K8s ids are `namespace/Kind/name`
  * (`nudgebee/Deployment/ml-server`) and cloud ids are ARNs
- * (`arn:aws:rds:us-east-1:740395098545:db:main-rackspace`); in both, the final
+ * (`arn:aws:rds:us-east-1:777777777777:db:main-db`); in both, the final
  * `/`- or `:`-delimited segment is the resource's own name. The full id stays in
  * the hover tooltip.
  *

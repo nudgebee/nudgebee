@@ -6,11 +6,17 @@ import PodDetailsPage from '@components/k8s/pods/PodsDetails';
 import { Box } from '@mui/material';
 import { useData } from '@context/DataContext';
 import { ds } from '@utils/colors';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
+import { hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 
 const PodDetails = () => {
   const router = useRouter();
 
   const [podData, setPodData] = useState({});
+  // Set on an access-denied GraphQL response -- getPodDetails otherwise
+  // swallows that into an empty `cloud_resourses: []` with no indication why,
+  // which rendered as a blank "Pod name: / ID: -" page instead of saying so.
+  const [accessDenied, setAccessDenied] = useState(false);
   const { setPodLogRequest } = useData();
 
   useEffect(() => {
@@ -18,6 +24,10 @@ const PodDetails = () => {
       return router.push('/kubernetes');
     }
     k8sApi.getPodDetails(router.query.PodDetails).then((res) => {
+      if (res.accessDenied) {
+        setAccessDenied(true);
+        return;
+      }
       setPodData(res.data);
       if (res.data && res.data.cloud_resourses.length === 1) {
         const podObj = res.data.cloud_resourses[0];
@@ -28,6 +38,12 @@ const PodDetails = () => {
       }
     });
   }, [router.query.PodDetails]);
+
+  // Matches KubernetesDetails' own TAB_REQUIRED_MODULE for the Apps & Infra /
+  // Pods tab this page drills down from.
+  if (accessDenied || (isGrantsOnlyUser() && !hasPermission('k8s', 'Read'))) {
+    return <PermissionDeniedContent message={missingPermissionMessage('k8s:Read')} />;
+  }
 
   const sx = {
     padding: `${ds.space[4]} ${ds.space[5]} ${ds.space[4]} ${ds.space[5]}`,

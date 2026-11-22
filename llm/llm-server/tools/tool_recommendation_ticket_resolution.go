@@ -95,7 +95,7 @@ func (m RecommendationTicketResolutionTool) Call(nbCtx core.NbToolContext, input
 		"resolver_type":     "NBLLM",
 	}
 
-	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_create_ticket_resolution", map[string]any{"object": object}, "recommendation_record_ticket_resolution")
+	resp, err := doApiServerActionRequest(nbCtx, "/rpc/recommendation", "recommendations_create_ticket_resolution", recommendationsExecuteKey, map[string]any{"object": object}, "recommendation_record_ticket_resolution")
 	if err != nil {
 		nbCtx.Ctx.GetLogger().Error("recommendation_record_ticket_resolution: failed", "error", err, "recommendation_id", recommendationId, "ticket_id", ticketId)
 		return errNBLLMToolResponse(err), nil

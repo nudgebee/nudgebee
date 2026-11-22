@@ -8,6 +8,7 @@ import axios, { type AxiosError } from "axios";
 import path from "path";
 import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { PLAYWRIGHT_REPORT_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
+import { finalizeAlertThreads, postAlertInThread, resetAlertThreads, threadLinksText } from "./SlackThreads";
 export default class SlackReporter implements Reporter {
   // ── Test tracking ──────────────────────────────────────────────────────
   private readonly allTests = new Set<string>();
@@ -16,6 +17,10 @@ export default class SlackReporter implements Reporter {
   private readonly skippedTests = new Set<string>();
   private readonly retriedTests = new Set<string>();
   private readonly apiFailedTests = new Set<string>();
+
+  // Alerts still being sent. Playwright does not wait for onTestEnd to finish, so onEnd waits for
+  // these itself, otherwise the closing counts and summary links can miss the last alert of a run.
+  private readonly pendingAlerts = new Set<Promise<void>>();
 
   // Dedup guards — prevent duplicate instant alerts across retries
   private readonly failAlertSent = new Set<string>();
@@ -195,9 +200,23 @@ export default class SlackReporter implements Reporter {
     return null;
   }
 
+  // ── Lifecycle: onBegin ─────────────────────────────────────────────────
+
+  // Runs in the main process before any worker starts, so the previous run's thread ids are gone
+  // before the first alert looks for them.
+  onBegin(): void {
+    resetAlertThreads();
+  }
+
   // ── Lifecycle: onTestEnd ───────────────────────────────────────────────
 
-  async onTestEnd(test: TestCase, result: TestResult): Promise<void> {
+  onTestEnd(test: TestCase, result: TestResult): Promise<void> {
+    const pending: Promise<void> = this.handleTestEnd(test, result).finally(() => this.pendingAlerts.delete(pending));
+    this.pendingAlerts.add(pending);
+    return pending;
+  }
+
+  private async handleTestEnd(test: TestCase, result: TestResult): Promise<void> {
     const testId = this.getTestId(test);
     this.allTests.add(testId);
 
@@ -253,6 +272,8 @@ export default class SlackReporter implements Reporter {
   // ── Lifecycle: onEnd ───────────────────────────────────────────────────
 
   async onEnd(result: FullResult): Promise<void> {
+    await Promise.allSettled([...this.pendingAlerts]);
+    await finalizeAlertThreads();
     const total = this.allTests.size;
     const failed = this.failedTests.size;
     const skipped = this.skippedTests.size;
@@ -332,6 +353,12 @@ export default class SlackReporter implements Reporter {
       { type: "section", text: { type: "mrkdwn", text: greetingText } },
     ];
 
+    // Where this run's failed, skipped and other alerts went, so the summary is the one place to start.
+    const threadLinks = await threadLinksText();
+    if (threadLinks) {
+      attachmentBlocks.push({ type: "section", text: { type: "mrkdwn", text: threadLinks } });
+    }
+
     if (this.failedTests.size > 0) {
       attachmentBlocks.push({
         type: "section",
@@ -409,7 +436,6 @@ export default class SlackReporter implements Reporter {
   ): Promise<void> {
     const webhookUrl = this.getWebhookUrl();
     const testId = this.getTestId(test);
-    if (!webhookUrl) return;
     if (!["failed", "timedOut"].includes(result.status)) return;
     if (this.failAlertSent.has(testId)) return;
     this.failAlertSent.add(testId);
@@ -442,36 +468,36 @@ export default class SlackReporter implements Reporter {
       `\`\`\`${cleanError}\`\`\``,
     ].join("\n");
 
-    await this.postToSlack(
-      webhookUrl,
-      {
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `:rotating_light: *Test Failed Alert*`,
-            },
+    const payload = {
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `:rotating_light: *Test Failed Alert*`,
           },
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `*Test Case:* ${test.title}`,
-            },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Test Case:* ${test.title}`,
           },
-        ],
-        attachments: [
-          {
-            color: SlackReporter.COLORS.FAIL,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: sidebarDetails } },
-            ],
-          },
-        ],
-      },
-      `Failure alert — "${test.title}"`
-    );
+        },
+      ],
+      attachments: [
+        {
+          color: SlackReporter.COLORS.FAIL,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: sidebarDetails } },
+          ],
+        },
+      ],
+    };
+
+    if (await postAlertInThread("failed", payload)) return;
+    if (!webhookUrl) return;
+    await this.postToSlack(webhookUrl, payload, `Failure alert — "${test.title}"`);
   }
 
   // ── Instant Alert: Test Skipped ────────────────────────────────────────
@@ -482,7 +508,6 @@ export default class SlackReporter implements Reporter {
   ): Promise<void> {
     const webhookUrl = this.getWebhookUrl();
     const testId = this.getTestId(test);
-    if (!webhookUrl) return;
     if (this.skipAlertSent.has(testId)) return;
 
     const skipReason =
@@ -525,29 +550,29 @@ export default class SlackReporter implements Reporter {
       "```",
     ].join("\n");
 
-    await this.postToSlack(
-      webhookUrl,
-      {
-        blocks: [
-          {
-            type: "section",
-            text: {
-              type: "mrkdwn",
-              text: `:warning: *Test Skipped Alert*`,
-            },
+    const payload = {
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `:warning: *Test Skipped Alert*`,
           },
-        ],
-        attachments: [
-          {
-            color: SlackReporter.COLORS.SKIP,
-            blocks: [
-              { type: "section", text: { type: "mrkdwn", text: details } },
-            ],
-          },
-        ],
-      },
-      `Skipped alert — "${test.title}"`
-    );
+        },
+      ],
+      attachments: [
+        {
+          color: SlackReporter.COLORS.SKIP,
+          blocks: [
+            { type: "section", text: { type: "mrkdwn", text: details } },
+          ],
+        },
+      ],
+    };
+
+    if (await postAlertInThread("skipped", payload)) return;
+    if (!webhookUrl) return;
+    await this.postToSlack(webhookUrl, payload, `Skipped alert — "${test.title}"`);
   }
 
   // ── Summary helpers ────────────────────────────────────────────────────

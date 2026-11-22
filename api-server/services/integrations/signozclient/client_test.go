@@ -36,6 +36,10 @@ type fakeSignoz struct {
 	contextStatus int
 	// noStatusField drops "status" from the sessions/context envelope.
 	noStatusField bool
+	// gatewayStatus, when set, makes every route answer with that status and a
+	// proxy's own HTML error page: the tunnel or ingress in front of SigNoz is
+	// down, so nothing reaches SigNoz at all.
+	gatewayStatus int
 	// apiKey is the one SIGNOZ-API-KEY the query routes accept; keyForbidden
 	// makes that key's role unable to read logs (403).
 	apiKey       string
@@ -75,6 +79,20 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 	_, _ = w.Write([]byte(body))
 }
 
+// proxyErrorPage is the page an ngrok tunnel or an ingress serves when nothing
+// is behind it. It is the body that used to be pasted into the user's error
+// popup (#41200), so tests assert none of it survives into a message.
+const proxyErrorPage = `<!DOCTYPE html> <html class="h-full" lang="en-US" dir="ltr"> ` +
+	`<head> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> ` +
+	`<link rel="preload" href="/static/fonts/Euclid.woff2" as="font" crossorigin> </head> ` +
+	`<body>ERR_NGROK_8012</body> </html>`
+
+func writeProxyError(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(proxyErrorPage))
+}
+
 func writeSPA(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte("<!doctype html><html><head></head><body></body></html>"))
@@ -82,6 +100,9 @@ func writeSPA(w http.ResponseWriter) {
 
 func (f *fakeSignoz) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case f.gatewayStatus != 0:
+		writeProxyError(w, f.gatewayStatus)
+
 	case r.URL.Path == "/api/v2/sessions/context" && f.v2 && f.contextStatus != 0:
 		f.contextHits.Add(1)
 		writeJSON(w, f.contextStatus, `{"status":"error","error":{"type":"unavailable","code":"unavailable","message":"service unavailable"}}`)
@@ -533,4 +554,88 @@ func TestLogin_RefusesAPIKeyCredentials(t *testing.T) {
 	_, err = LoginFresh(context.Background(), http.DefaultClient, keyCreds(srv.URL))
 	assert.ErrorIs(t, err, errAPIKeyLogin)
 	assert.Zero(t, f.contextHits.Load()+f.v1Hits.Load()+f.v2Hits.Load())
+}
+
+// A proxy or tunnel in front of SigNoz answers with its own HTML error page.
+// None of that page may reach the user's message: the integration form's error
+// popup used to be filled with raw page source (#41200).
+func TestProxyErrorPageNeverReachesTheMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(Credentials) error
+	}{
+		{"password login", func(c Credentials) error {
+			_, err := LoginFresh(context.Background(), http.DefaultClient, c)
+			return err
+		}},
+		{"API key check", func(c Credentials) error {
+			c.AuthType = AuthAPIKey
+			c.APIKey = testAPIKey
+			return CheckAPIKey(context.Background(), http.DefaultClient, c)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := modern()
+			f.gatewayStatus = http.StatusBadGateway
+			_, creds := serve(t, f)
+
+			err := tc.call(creds)
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "<", "the message carries page markup")
+			assert.NotContains(t, err.Error(), "DOCTYPE")
+			assert.Contains(t, err.Error(), "502")
+			assert.Contains(t, err.Error(), "not reachable")
+		})
+	}
+}
+
+func TestStatusError(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		contains string
+	}{
+		{"SigNoz's own message is shown", http.StatusInternalServerError,
+			`{"status":"error","error":{"type":"internal","code":"internal","message":"clickhouse: read timeout"}}`,
+			"clickhouse: read timeout"},
+		{"a plain-string error field is shown", http.StatusInternalServerError,
+			`{"status":"error","error":"query took too long"}`, "query took too long"},
+		{"a legacy errors array is shown", http.StatusInternalServerError,
+			`{"errors":[{"code":500,"msg":"storage unavailable"}]}`, "storage unavailable"},
+		{"a proxy's 502 page becomes a reachability message", http.StatusBadGateway,
+			proxyErrorPage, "SigNoz is not reachable (HTTP 502)"},
+		{"503 is a reachability message", http.StatusServiceUnavailable, proxyErrorPage, "not reachable"},
+		{"504 with an empty body is a reachability message", http.StatusGatewayTimeout, "", "not reachable"},
+		{"any other status with no message is reported bare", http.StatusTooManyRequests,
+			proxyErrorPage, "returned HTTP 429"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := StatusError("/api/v4/query_range", tc.status, []byte(tc.body))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.contains)
+			assert.NotContains(t, err.Error(), "<", "the message carries page markup")
+		})
+	}
+}
+
+// A 400 is reported as a rejected request only when SigNoz said why. Without a
+// message there is nothing to quote, and it must not become an empty
+// "SigNoz rejected the login request: ".
+func TestClassify_400NeedsAMessageToBeARejection(t *testing.T) {
+	const path = "/api/v2/sessions/email_password"
+	var rejected *RequestRejectedError
+
+	err := classify(path, http.StatusBadRequest,
+		[]byte(`{"status":"error","error":{"code":"invalid_input","message":"orgId is not a valid uuid"}}`))
+	require.ErrorAs(t, err, &rejected)
+	assert.Equal(t, "orgId is not a valid uuid", rejected.Message)
+
+	err = classify(path, http.StatusBadRequest, []byte(proxyErrorPage))
+	require.Error(t, err)
+	assert.False(t, errors.As(err, &rejected), "a proxy's 400 page is not a SigNoz rejection")
+	assert.NotContains(t, err.Error(), "<")
+	assert.Contains(t, err.Error(), "returned HTTP 400")
 }

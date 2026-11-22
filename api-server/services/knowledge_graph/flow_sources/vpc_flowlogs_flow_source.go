@@ -844,7 +844,7 @@ func getOrCreateUnresolvedGroupNode(cache map[string]*core.DbNode, scope, tenant
 	props := map[string]any{
 		"name":            name,
 		"kind":            "ExternalService",
-		"subtype":         "vpc-unresolved-ip",
+		"subtype":         core.UnresolvedVPCAddressSubtype,
 		"is_sync_gap":     true,
 		"discovered_from": "vpc_flow_logs",
 		"scope":           scope,

@@ -27,6 +27,7 @@ import apiWorkflow from '@api1/workflow';
 import { hasWriteAccess } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { Label } from '@ui/Label';
+import FailedStepsMark, { type FailedStepsInfo } from './components/FailedStepsMark';
 import Datetime from '@shared/format/Datetime';
 import FieldRenderer from '@shared/forms/FieldRenderer';
 import { Accordion } from '@ui/Accordion';
@@ -70,7 +71,7 @@ import ExecutionStatusBar, { type PendingApproval } from './components/Execution
 import { findExecutionTaskForNode, getSwitchAncestorChain, getSwitchChildNodeIds } from './utils/templateUtils';
 import { getDuration, getStatusColor, getStatusTone, isExecutionCompleted } from './utils/executionStatus';
 import { getLlmSessionId, getLlmAccountId, buildAskNudgebeeHref } from './utils/llmChat';
-import { resolveApprovalOptions } from './utils/approvalOptions';
+import { resolveApprovalOptions, describePendingApproval } from './utils/approvalOptions';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 
 // Function to get appropriate icon based on task type (matches ActionNode.tsx exactly)
@@ -133,7 +134,7 @@ const getTaskKey = (task: WorkflowExecutionTaskResponse, index: number): string 
   return task.id || `${task.type || 'task'}-${index}`;
 };
 
-interface ExecutionData {
+interface ExecutionData extends FailedStepsInfo {
   id: string;
   status: 'COMPLETE' | 'COMPLETE_WITH_ERROR' | 'SCHEDULED' | 'IN_PROGRESS' | 'FAILED' | 'SKIPPED' | 'RUNNING' | 'COMPLETED';
   close_time?: string;
@@ -357,6 +358,9 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
           error: execution.error,
           version_number: execution.version_number,
           version: execution.version_number,
+          failed_step_count: execution.failed_step_count,
+          first_failed_step: execution.first_failed_step,
+          first_failed_step_error: execution.first_failed_step_error,
         });
       } catch (error) {
         console.error('Error resolving deep-linked execution:', error);
@@ -1310,8 +1314,9 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                           />
                         </Box>
                         {/* Status badge - using existing CustomLabels */}
-                        <Box sx={{ flexShrink: 0 }}>
+                        <Box sx={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                           <Label text={execution.status.toLowerCase()} />
+                          <FailedStepsMark info={execution} testId={`execution-failed-steps-mark-${execution.id}`} />
                         </Box>
                       </Box>
                       {/* Secondary row: trigger type + duration with icons */}
@@ -1688,6 +1693,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     .map<PendingApproval>((t) => ({
                       taskId: t.id as string,
                       options: resolveApprovalOptions((t as any).input, undefined),
+                      ...describePendingApproval((t as any).input, undefined),
                     }))
                 : []
             }
@@ -1857,6 +1863,7 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
                     tone={getStatusTone(selectedExecution.status)}
                     id='execution-overall-status-label'
                   />
+                  <FailedStepsMark size='md' info={executionData || selectedExecution} testId='execution-overall-failed-steps-mark' />
                   <Typography
                     sx={{
                       fontSize: 'var(--ds-text-small)',

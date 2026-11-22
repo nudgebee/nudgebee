@@ -24,6 +24,7 @@ from notifications_server.services.rules import (
     NotificationRulesService,
     _resolve_scope,
 )
+from notifications_server.services.cache import AsyncCache
 
 TENANT = "22222222-2222-2222-2222-222222222222"
 ACCT_A = "aaaaaaaa-0000-0000-0000-000000000001"
@@ -287,6 +288,7 @@ class _SessionFactory:
 
 class _Cache:
     redis_client = object()
+    aio = property(AsyncCache)
 
     def __init__(self):
         self.cached = []

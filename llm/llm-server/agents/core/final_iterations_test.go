@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
@@ -16,14 +17,14 @@ func TestFinalIterationsNote(t *testing.T) {
 	_, ok := finalIterationsNote(context.Background())
 	require.False(t, ok, "no budget set: sub-agents and other callers get nothing")
 
-	_, ok = finalIterationsNote(context.WithValue(context.Background(), contextKeyIterationsLeft, finalIterationsWarning+1))
+	_, ok = finalIterationsNote(context.WithValue(context.Background(), llmruntime.ContextKeyIterationsLeft, finalIterationsWarning+1))
 	require.False(t, ok)
 
-	note, ok := finalIterationsNote(context.WithValue(context.Background(), contextKeyIterationsLeft, 2))
+	note, ok := finalIterationsNote(context.WithValue(context.Background(), llmruntime.ContextKeyIterationsLeft, 2))
 	require.True(t, ok)
 	require.Contains(t, note, "You have 2 planning step(s) left")
 
-	note, ok = finalIterationsNote(context.WithValue(context.Background(), contextKeyIterationsLeft, 1))
+	note, ok = finalIterationsNote(context.WithValue(context.Background(), llmruntime.ContextKeyIterationsLeft, 1))
 	require.True(t, ok)
 	require.Contains(t, note, "You have 1 planning step(s) left")
 }
@@ -83,7 +84,7 @@ func TestPlannersSendFinalIterationsNote(t *testing.T) {
 		fake := &fakeLLMModel{response: "<final_answer>done</final_answer>"}
 		withFakeLLMModel(t, fake)
 		ctx := llmOverrideContext()
-		planCtx := context.WithValue(ctx.GetContext(), contextKeyIterationsLeft, left)
+		planCtx := context.WithValue(ctx.GetContext(), llmruntime.ContextKeyIterationsLeft, left)
 
 		p4 := &NBReActPlanner4{ctx: ctx, request: NBAgentRequest{Query: "list pods"}, nbAgent: notebookOptOutAgent{}}
 		_, _, err := p4.Plan(planCtx, steps, "list pods")

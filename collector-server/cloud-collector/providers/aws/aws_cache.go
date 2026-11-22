@@ -118,7 +118,7 @@ type amazonElasticCache struct {
 }
 
 func (a *amazonElasticCache) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return errors.ErrUnsupported
+	return applyAlarmMissingRecommendation(ctx, account, recommendation, "aws_elasticache_")
 }
 
 func (a *amazonElasticCache) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -139,6 +139,7 @@ func (a *amazonElasticCache) GetResources(ctx providers.CloudProviderContext, ac
 	svc := elasticache.NewFromConfig(cfg)
 	resources := []providers.Resource{}
 	instanceTypeMap := make(map[string]map[string]interface{})
+	attachAlarms := regionAlarmAttacher(ctx, account, regionName)
 
 	paginator := elasticache.NewDescribeCacheClustersPaginator(svc, &elasticache.DescribeCacheClustersInput{
 		ShowCacheNodeInfo: aws.Bool(true),
@@ -197,6 +198,8 @@ func (a *amazonElasticCache) GetResources(ctx providers.CloudProviderContext, ac
 				status = providers.ResourceStatusUnknown
 			}
 
+			attachAlarms(metaDetails, aws.ToString(cluster.CacheClusterId))
+
 			resource := providers.Resource{
 				Id:          aws.ToString(cluster.CacheClusterId),
 				ServiceName: ServiceNameElastiCache,
@@ -236,6 +239,10 @@ func (a *amazonElasticCache) GetRecommendations(ctx providers.CloudProviderConte
 			ctx.GetLogger().Info("Resource meta is nil or empty, skipping recommendations for ElastiCache resource", "resourceArn", resource.Arn, "region", resource.Region)
 			continue
 		}
+
+		recommendations = append(recommendations, alarmMissingRecommendations(ctx, "elasticache", resource,
+			providers.AlarmDimension{Name: "CacheClusterId", Value: resource.Id},
+			map[string]any{"cache_cluster_id": resource.Id, "cache_cluster_arn": resource.Arn, "cache_cluster_region": resource.Region})...)
 
 		engineStr, engineOk := ToString(meta["Engine"], "Engine", resource.Arn, resource.Region, ctx)
 		if engineOk {

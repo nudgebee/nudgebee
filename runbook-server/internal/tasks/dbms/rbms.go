@@ -8,6 +8,10 @@ import (
 	"strings"
 )
 
+// dbmsIntegrationTypes is the integration types a dbms.query step can run against. The schema
+// declares them so a save is checked against the same list the step resolves with.
+var dbmsIntegrationTypes = []string{"mysql", "postgresql", "clickhouse", "mssql", "oracle"}
+
 // DBMSQueryTask defines a task that queries databases.
 type DBMSQueryTask struct{}
 
@@ -63,7 +67,7 @@ func (t *DBMSQueryTask) Execute(taskCtx types.TaskContext, params map[string]any
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
-	integrationId, err := integrationsService.ResolveIntegrationID(requestContext, params["integration_id"].(string), []string{"mysql", "postgresql", "clickhouse", "mssql", "oracle"})
+	integrationId, err := integrationsService.ResolveIntegrationID(requestContext, params["integration_id"].(string), dbmsIntegrationTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +105,7 @@ func (t *DBMSQueryTask) InputSchema() *types.Schema {
 				Type:        types.PropertyTypeIntegration,
 				Description: "DBMS Integration Id.",
 				Required:    true,
+				SubTypes:    dbmsIntegrationTypes,
 				Order:       3,
 			},
 			"command": {

@@ -191,8 +191,19 @@ func TestValidateRelationshipType(t *testing.T) {
 		if err := ValidateRelationshipType(rt); err != nil {
 			t.Errorf("%s rejected unexpectedly: %v", rt, err)
 		}
+		if RequiresDeclaredNode(rt) {
+			t.Errorf("%s may link any two nodes", rt)
+		}
 	}
-	for _, rt := range []string{"", "INVALID", "calls", "Calls", "OWNS"} {
+	for _, rt := range []string{"CONNECTED_TO", "DEPENDS_ON", "RUNS_ON", "HOSTED_ON", "ROUTES_TO", "BELONGS_TO"} {
+		if err := ValidateRelationshipType(rt); err != nil {
+			t.Errorf("%s rejected unexpectedly: %v", rt, err)
+		}
+		if !RequiresDeclaredNode(rt) {
+			t.Errorf("%s must need a declared node at one end", rt)
+		}
+	}
+	for _, rt := range []string{"", "INVALID", "calls", "Calls", "OWNS", "MANAGES", "EXPOSES"} {
 		if err := ValidateRelationshipType(rt); err == nil {
 			t.Errorf("expected %q to be rejected", rt)
 		}

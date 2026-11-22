@@ -131,7 +131,7 @@ func (r RemediationGenerateTool) Call(nbRequestContext core.NbToolContext, input
 	userPrompt := investigationContext
 
 	// Use LLM to generate the remediation plan
-	// Note: "LLM" is the tool name constant defined in agents/core/llm_common.go
+	// Note: "LLM" is the tool name constant defined in llms/runtime/llm_common.go
 	// We use the string directly to avoid circular import dependency
 	llmTool, ok := core.GetNBTool(nbRequestContext.AccountId, "LLM")
 	if !ok {
@@ -352,10 +352,16 @@ func (r RemediationExecuteTool) Call(nbRequestContext core.NbToolContext, input 
 		}, nil
 	}
 
-	wm := workspace.NewWorkspaceManager()
-	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
+	env := map[string]string{
 		workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
-	})
+	}
+	if scmProxyEnabled() {
+		for k, v := range scmProxyEnvForCommand(nbRequestContext, nbRequestContext.AccountId) {
+			env[k] = v
+		}
+	}
+	wm := workspace.NewWorkspaceManager()
+	response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 	duration := time.Since(startTime)
 	result.Duration = duration.String()
 

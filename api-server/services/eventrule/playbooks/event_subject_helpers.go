@@ -147,6 +147,14 @@ func EventIsAboutNode(event PlaybookEvent) bool {
 // type=json blocks the block's `data` field is a JSON-encoded STRING (see
 // relay/service.go:284 + nudgebee-agent/pkg/enrichers/finding.go:67). We decode
 // it here so callers can walk maps/slices directly.
+// GetResourceViaRelay exposes getResourceViaRelay to actions that live outside
+// this package (observability), which need a Kubernetes API read next to their
+// metrics queries.
+func GetResourceViaRelay(ctx PlaybookActionContext, params map[string]any) (any, error) {
+	data, _, err := getResourceViaRelay(ctx, params)
+	return data, err
+}
+
 func getResourceViaRelay(ctx PlaybookActionContext, params map[string]any) (any, map[string]any, error) {
 	rel := relay.RelayExecuteRequest{
 		Body: relay.ActionExecuteBody{

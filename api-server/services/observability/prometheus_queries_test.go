@@ -362,6 +362,11 @@ func TestBuildPrometheusWorkloadQueries_ClusterAggregationsWindowed(t *testing.T
 			metric:   "cpu_usage_trend",
 			expected: `sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[300s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[300s]))`,
 		},
+		{
+			name:     "cpu_total falls back to node-exporter cores then kube-state-metrics capacity",
+			metric:   "cpu_total",
+			expected: `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__}) or count(count by (instance, cpu) (node_cpu_seconds_total{__CLUSTER__ mode="idle"})) or sum(max by (node) (kube_node_status_capacity{__CLUSTER__ resource="cpu"}))`,
+		},
 	}
 
 	for _, tc := range cases {

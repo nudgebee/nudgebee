@@ -341,7 +341,8 @@ test(
     test.setTimeout(600000);
 
     const wfLocators = new WorkflowLocators(page);
-    const workflowName = generateWorkflowName("QA Event Run");
+    // Unique per run: the event keeps earlier runs in its history under their workflow name, so a fixed name matches a stale row.
+    const workflowName = `${generateWorkflowName("QA Event Run")} ${Date.now()}`;
     // llm.investigate is an internal LLM call with no external side effects, so it's safe to trigger for real.
     const workflowJson = {
       name: workflowName,
@@ -385,7 +386,7 @@ test(
         await expect(investigate.automationDropdownMenu).toBeVisible({ timeout: 5000 });
         await expect(investigate.automationDropdownMenu.getByText("Loading automations")).toBeHidden({ timeout: 20000 });
         await investigate.automationDropdownMenu.getByPlaceholder("Search automation").fill(workflowName);
-        await investigate.menuItem(workflowName, investigate.automationDropdownMenu).click();
+        await investigate.runnableAutomation(workflowName).click();
         await expect(triggerDialog).toBeVisible({ timeout: 5000 });
       }).toPass({ timeout: 60000 });
 

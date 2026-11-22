@@ -387,24 +387,6 @@ func TestPrometheus_ValidateConfig_UnreachableEndpoint(t *testing.T) {
 
 // ----- config resolution ----------------------------------------------------
 
-// An account can hold both an agent-created row (no URL, no credentials) and a
-// user-configured one. Picking the wrong one produces an empty-URL failure that
-// looks like a missing integration.
-func TestPickPrometheusUserIntegration_SkipsAgentRow(t *testing.T) {
-	agentRow := core.IntegrationDto{Id: "agent-row", Source: "agent"}
-	userRow := core.IntegrationDto{Id: "user-row", Source: "user"}
-
-	got, found := pickPrometheusUserIntegration([]core.IntegrationDto{agentRow, userRow})
-	require.True(t, found)
-	assert.Equal(t, "user-row", got.Id)
-
-	_, found = pickPrometheusUserIntegration([]core.IntegrationDto{agentRow})
-	assert.False(t, found, "an agent-only account has no direct connection to use")
-
-	_, found = pickPrometheusUserIntegration(nil)
-	assert.False(t, found)
-}
-
 // ----- helpers --------------------------------------------------------------
 
 func errorsToString(errs []error) string {
@@ -514,5 +496,52 @@ func TestPrometheus_ValidateConfig_RulerProbe(t *testing.T) {
 		}), "acc")
 		require.NotEmpty(t, errs)
 		assert.Contains(t, errorsToString(errs), PrometheusRulerURLKey)
+	})
+}
+
+// ----- connection_mode=vm_agent ---------------------------------------------
+
+func TestPrometheus_Schema_ConnectionMode(t *testing.T) {
+	prop, ok := Prometheus{}.ConfigSchema().Properties[PrometheusConnectionModeKey]
+	require.True(t, ok)
+	assert.Equal(t, PrometheusConnectionModeDirect, prop.Default, "existing rows must keep meaning direct")
+	assert.Equal(t, []any{PrometheusConnectionModeDirect, PrometheusConnectionModeVMAgent}, prop.Enum)
+}
+
+func TestPrometheus_ValidateConfig_VMAgent(t *testing.T) {
+	base := func(extra map[string]string) []core.IntegrationConfigValue {
+		m := map[string]string{
+			PrometheusConnectionModeKey: PrometheusConnectionModeVMAgent,
+			PrometheusURLKey:            "http://10.0.0.5:9090", // private: not reachable from here, must not be probed
+			PrometheusAuthTypeKey:       PrometheusAuthNone,
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return promCfg(m)
+	}
+
+	t.Run("private url accepted without probing", func(t *testing.T) {
+		assert.Empty(t, Prometheus{}.ValidateConfig(nil, base(nil), "acc"))
+	})
+	t.Run("basic needs credentials", func(t *testing.T) {
+		assert.NotEmpty(t, Prometheus{}.ValidateConfig(nil, base(map[string]string{PrometheusAuthTypeKey: PrometheusAuthBasic}), "acc"))
+		assert.Empty(t, Prometheus{}.ValidateConfig(nil, base(map[string]string{
+			PrometheusAuthTypeKey: PrometheusAuthBasic, PrometheusUsernameKey: "u", PrometheusPasswordKey: "p",
+		}), "acc"))
+	})
+	t.Run("signed auth is rejected", func(t *testing.T) {
+		errs := Prometheus{}.ValidateConfig(nil, base(map[string]string{
+			PrometheusAuthTypeKey: PrometheusAuthAWSSigV4, PrometheusAWSAccessKeyIDKey: "a", PrometheusAWSSecretAccessKeyKey: "b", PrometheusAWSRegionKey: "r",
+		}), "acc")
+		require.NotEmpty(t, errs)
+		assert.Contains(t, errs[0].Error(), "not supported through a forager")
+	})
+	t.Run("ruler is rejected", func(t *testing.T) {
+		assert.NotEmpty(t, Prometheus{}.ValidateConfig(nil, base(map[string]string{PrometheusRulerTypeKey: PrometheusRulerMimirCortex}), "acc"))
+	})
+	t.Run("bad url", func(t *testing.T) {
+		assert.NotEmpty(t, Prometheus{}.ValidateConfig(nil, base(map[string]string{PrometheusURLKey: "ftp://x"}), "acc"))
+		assert.NotEmpty(t, Prometheus{}.ValidateConfig(nil, base(map[string]string{PrometheusURLKey: ""}), "acc"))
 	})
 }

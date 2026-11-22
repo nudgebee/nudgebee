@@ -37,10 +37,14 @@ func TestShellWriteTargetUsesRequestedCluster(t *testing.T) {
 	got, err := e.shellWriteTarget(owner, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl --context k8s-dev delete pod x -n app"}`})
 	require.NoError(t, err)
 	require.Equal(t, "k8s-dev", got.Name)
+	shell, ok := toolcore.GetNBTool(account, toolcore.ToolExecuteShellCommand)
+	require.True(t, ok)
+	require.Equal(t, toolApprovalTarget{ConfigID: "dev-id", AccountID: "dev-id"}, e.toolApprovalTarget(shell, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl --context k8s-dev delete pod x -n app"}`}), "rules are matched on the target account")
 
 	got, err = e.shellWriteTarget(owner, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl delete pod x -n app"}`})
 	require.NoError(t, err)
 	require.Equal(t, "k8s-prod", got.Name)
+	require.Equal(t, toolApprovalTarget{ConfigID: "prod-id", AccountID: "prod-id"}, e.toolApprovalTarget(shell, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl delete pod x -n app"}`}), "rules are matched on the target account")
 
 	_, err = e.shellWriteTarget(owner, NBAgentPlannerToolAction{ToolInput: `{"command":"kubectl --context nope delete pod x"}`})
 	require.ErrorContains(t, err, "available clusters")
@@ -66,15 +70,16 @@ func TestPerCallWriteTargetUsesNamedAccount(t *testing.T) {
 			ToolConfigs: map[string]string{tools.ToolExecuteAwsCliCommand: "aws-prod"},
 		}},
 	}
-
 	got, found, err := e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1","account":"aws-demo"}`})
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, "aws-demo", got.Name)
+	require.Equal(t, toolApprovalTarget{ConfigID: "demo-id", AccountID: "demo-id"}, e.toolApprovalTarget(tool, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1","account":"aws-demo"}`}), "rules are matched on the target account")
 
 	_, found, err = e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1"}`})
 	require.NoError(t, err)
 	require.False(t, found, "no named account: the existing authorization applies")
+	require.Equal(t, toolApprovalTarget{ConfigID: "prod-id", AccountID: "prod-id"}, e.toolApprovalTarget(tool, NBAgentPlannerToolAction{ToolInput: `{"command":"aws ec2 terminate-instances --instance-ids i-1"}`}), "rules are matched on the target account")
 
 	e.ctx = security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id"})
 	_, _, err = e.perCallWriteTarget(tool, scoped, NBAgentPlannerToolAction{ToolInput: `{"command":"aws s3 rm s3://b/k","account":"aws-demo"}`})

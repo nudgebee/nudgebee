@@ -18,6 +18,7 @@ import useExecutionDashboard from './useExecutionDashboard';
 import ExecutionSummaryCards from './ExecutionSummaryCards';
 import MostFailedAutomations from './MostFailedAutomations';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
+import FailedStepsMark, { firstFailedStepSummary } from '../components/FailedStepsMark';
 import { EXECUTION_STATUS_OPTIONS, TABLE_HEADERS, executionAutomationLabel, executionUserLabel, nonPersistedAutomationLabel } from './constants';
 
 const TABLE_ID = 'execution-dashboard-table';
@@ -118,6 +119,7 @@ const ExecutionDashboard: React.FC = () => {
     accounts,
     accountOptions,
     refresh,
+    seeded,
   } = useExecutionDashboard();
 
   const [selectedExecution, setSelectedExecution] = useState<AccountExecutionItem | null>(null);
@@ -159,7 +161,14 @@ const ExecutionDashboard: React.FC = () => {
             </Box>
           ),
         },
-        { component: <Label text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} /> },
+        {
+          component: (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
+              <Label text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} />
+              <FailedStepsMark info={execution} testId={`execution-dashboard-failed-steps-mark-${execution.id}`} />
+            </Box>
+          ),
+        },
         {
           component: (
             <Box sx={{ minWidth: 0 }}>
@@ -206,6 +215,11 @@ const ExecutionDashboard: React.FC = () => {
             <Tooltip title={execution.failure_reason} variant='explainer' desc='Open the row for the full error.'>
               <Typography sx={{ ...ERROR_CELL_CLAMP, color: 'var(--ds-red-600)' }}>{execution.failure_reason}</Typography>
             </Tooltip>
+          ) : firstFailedStepSummary(execution) ? (
+            // A completed run whose continue-on-failure step failed: show that step's error.
+            <Tooltip title={firstFailedStepSummary(execution)} variant='explainer' desc='Open the run for every failed step.'>
+              <Typography sx={{ ...ERROR_CELL_CLAMP, color: 'var(--ds-red-600)' }}>{firstFailedStepSummary(execution)}</Typography>
+            </Tooltip>
           ) : (
             <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-500)' }}>—</Typography>
           ),
@@ -245,6 +259,9 @@ const ExecutionDashboard: React.FC = () => {
           actions={
             <>
               <CustomDateTimeRangePicker
+                // The picker copies its range once on mount; remount after the URL
+                // seed so a linked from/to shows here, not the default range.
+                key={seeded ? 'seeded' : 'default'}
                 passedSelectedDateTime={{
                   startTime: filters.startDate.getTime(),
                   endTime: filters.endDate.getTime(),

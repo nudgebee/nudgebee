@@ -53,13 +53,31 @@ func StoreEventsForAllAccounts(ctx *security.RequestContext) {
 
 	accountTenantIds := map[string]string{}
 	queryResponse := []map[string]any{}
-	err = dbms.QueryAndScan(&queryResponse, "select id::text, tenant::text from cloud_accounts where status = 'active' and lower(cloud_provider) IN ('aws', 'azure', 'gcp', 'cloudfoundry')")
+	// waiting marks an account whose credentials were rejected and whose back-off
+	// (see events_backoff.go) has not ended by this tick.
+	// It reads the same agent row previousEventsAuthFailures does, against the
+	// database clock so every replica agrees.
+	err = dbms.QueryAndScan(&queryResponse, `select c.id::text, c.tenant::text,
+			coalesce((select (a.connection_status->'events'->>'retry_after')::timestamptz > now() + make_interval(secs => $1)
+				from agent a where a.cloud_account_id = c.id and a.type != 'proxy'
+				order by a.updated_at desc limit 1), false) as waiting
+		from cloud_accounts c
+		where c.status = 'active' and lower(c.cloud_provider) IN ('aws', 'azure', 'gcp', 'cloudfoundry')`,
+		eventsSchedulerSlack.Seconds())
 	if err != nil {
 		ctx.GetLogger().Error("events: unable to fetch active accounts", "error", err)
 		return
 	}
+	waiting := 0
 	for _, qr := range queryResponse {
+		if w, _ := qr["waiting"].(bool); w {
+			waiting++
+			continue
+		}
 		accountTenantIds[qr["id"].(string)] = qr["tenant"].(string)
+	}
+	if waiting > 0 {
+		ctx.GetLogger().Info("events: skipping accounts whose credentials were rejected until their retry time", "count", waiting)
 	}
 
 	if len(accountTenantIds) == 0 {
@@ -132,6 +150,14 @@ func ConsumeCloudAccountEventsJobs(ctx *security.RequestContext, concurrency int
 		// Execute StoreEvents logic
 		_, err = StoreEvents(jobCtx, job.AccountId)
 		if err != nil {
+			// Rejected credentials: the account is backed off, so this is the one
+			// line the failed poll writes, and the message is acknowledged.
+			var rejected *credentialsRejectedError
+			if errors.As(err, &rejected) {
+				logger.Warn("events: cloud rejected the account's credentials, polling less often until they work",
+					"error", rejected.err, "consecutive_failures", rejected.failures, "next_poll_after", rejected.retryAfter)
+				return nil
+			}
 			// Check if the error indicates a permanent failure (e.g. HTTP 4xx from provider API, or account not found)
 			if isPermanentProviderError(err) || strings.Contains(err.Error(), "not found") {
 				logger.Error("events: permanent error, dropping message", "error", err)
@@ -358,12 +384,13 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	})
 
 	if err != nil {
-		ctx.GetLogger().Error("unable to fetch events", "error", err)
+		eventsStatus, rejected := eventsStatusOnFailure(err, previousEventsAuthFailures(ctx, dbms, accountId), time.Now())
 		_ = updateOrCreateAgentStatus(ctx, accountId, AgentStatusConnected, err.Error(), true, map[string]any{
-			"events": map[string]any{
-				"err": err.Error(),
-			},
+			"events": eventsStatus,
 		})
+		if rejected != nil {
+			err = rejected
+		}
 		return StoreEventResponse{
 			Count:    0,
 			Duration: time.Since(t0),
@@ -408,7 +435,7 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	// one that has to end what was on.
 	keepOngoingWhereListed(events.Items, listedScopes(events.Ongoing))
 	if events.Ongoing != nil {
-		if err := endFiringsNoLongerOn(ctx, dbms, accountId, *events.Ongoing); err != nil {
+		if err := endFiringsNoLongerOn(ctx, dbms, accountId, *events.Ongoing, resolvedFindingIDs(events.Items)); err != nil {
 			ctx.GetLogger().Error("unable to end firings that are no longer on", "error", err, "accountId", accountId)
 		}
 	}
@@ -432,8 +459,8 @@ func StoreEvents(ctx *security.RequestContext, accountId string) (StoreEventResp
 	// events from the close step. Without this, long-lived alarms get closed
 	// and then filtered out by the dedup check (finding_id already exists),
 	// leaving them stuck as CLOSED.
-	currentFindingIds := lo.Map(events.Items, func(event providers.Event, _ int) string {
-		return event.FiringFindingID()
+	currentFindingIds := lo.FlatMap(events.Items, func(event providers.Event, _ int) []string {
+		return event.StoredFindingIDs()
 	})
 
 	// Collect fingerprints of RESOLVED events so their existing FIRING counterparts
@@ -593,15 +620,14 @@ func storeMultipleEventsInDB(ctx *security.RequestContext, dbms *common.Database
 func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager, originatingAccount providers.Account, internalDBAccountID string, events []providers.Event) error {
 	funcName := "etl.events.insertNewEvents"
 
-	// 1. Compute per-firing finding_ids for incoming events.
-	findingIds := lo.Map(events, func(event providers.Event, _ int) string {
-		return event.FiringFindingID()
+	// 1. Find which incoming firings already exist (processed firings), under
+	// their current finding_id or the one they were stored under before a format change
+	storedFindingIds := lo.FlatMap(events, func(event providers.Event, _ int) []string {
+		return event.StoredFindingIDs()
 	})
-
-	// 2. Find which of these finding_ids already exist (processed firings)
 	existingFindingIds := []string{}
 	query := `SELECT finding_id FROM events WHERE cloud_account_id = $1 AND finding_id = ANY($2)`
-	err := dbms.QueryAndScan(&existingFindingIds, query, internalDBAccountID, pq.Array(findingIds))
+	err := dbms.QueryAndScan(&existingFindingIds, query, internalDBAccountID, pq.Array(storedFindingIds))
 	if err != nil {
 		ctx.GetLogger().Error("failed to query for existing events by finding_id", "error", err)
 		return err
@@ -611,10 +637,13 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 		return fid, true
 	})
 
-	// 3. Filter out events whose per-firing finding_id already exists
-	eventsToProcess := lo.Filter(events, func(event providers.Event, idx int) bool {
-		candidateFindingId := findingIds[idx]
-		return !existingFindingIdsMap[candidateFindingId]
+	reopenStoredAsMoment(ctx, dbms, internalDBAccountID, events, existingFindingIdsMap)
+
+	// 2. Filter out events whose firing is already stored
+	eventsToProcess := lo.Filter(events, func(event providers.Event, _ int) bool {
+		return !lo.SomeBy(event.StoredFindingIDs(), func(fid string) bool {
+			return existingFindingIdsMap[fid]
+		})
 	})
 
 	if len(eventsToProcess) == 0 {
@@ -655,28 +684,29 @@ func insertNewEvents(ctx *security.RequestContext, dbms *common.DatabaseManager,
 	return nil
 }
 
-// resolveExistingEvents updates existing FIRING events to RESOLVED by fingerprint
-// and records the resolution in event_history.
+// resolveExistingEvents updates existing FIRING events to RESOLVED and records
+// the resolution in event_history. A resolve that carries the source's own id
+// for the firing ends that firing only; one without it ends every open firing
+// of its fingerprint.
 func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseManager, accountID string, resolvedEvents []providers.Event) error {
 	funcName := "etl.events.resolveExistingEvents"
 
-	// Build fingerprint → resolved event map (last one wins if duplicates)
-	fpToEvent := map[string]providers.Event{}
+	// Build resolve key → resolved event map (last one wins if duplicates)
+	keyToEvent := map[string]providers.Event{}
 	for _, e := range resolvedEvents {
-		fpToEvent[e.EventId] = e
+		keyToEvent[resolveKey(e)] = e
 	}
-	fps := lo.Keys(fpToEvent)
 
-	// Update existing FIRING events to RESOLVED per fingerprint (each may have a different resolution timestamp)
+	// Update existing FIRING events to RESOLVED per key (each may have a different resolution timestamp)
 	var allResolved []resolvedRow
+	rowEvents := map[string]providers.Event{}
 
-	// A failed fingerprint must not abandon the ones already updated: their rows
+	// A failed key must not abandon the ones already updated: their rows
 	// are committed as RESOLVED, so the next sync's UPDATE skips them and their
 	// notification and history would be lost for good. Collect and continue.
 	var updateErrs []error
 
-	for _, fp := range fps {
-		re := fpToEvent[fp]
+	for _, re := range keyToEvent {
 		resolvedAt := re.Date.UTC()
 
 		var rows []resolvedRow
@@ -696,27 +726,36 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 		// from an earlier cycle can land after the next firing is stored; without
 		// the bound it would close that firing while it still breaches, and
 		// nothing stores it again because its finding_id already exists.
+		match, matchArg := "fingerprint = $2", any(re.EventId)
+		if re.FindingId != "" {
+			// Another firing of the same fingerprint can still be on (another
+			// dimension of the same rule on the same resource), so only this one ends.
+			match, matchArg = "finding_id = ANY($2)", pq.Array(re.StoredFindingIDs())
+		}
 		err := dbms.QueryAndScan(&rows,
 			`UPDATE events SET status = 'RESOLVED', updated_at = $3, ends_at = $3
-			 WHERE cloud_account_id = $1 AND fingerprint = $2
+			 WHERE cloud_account_id = $1 AND `+match+`
 			 AND status NOT IN ('CLOSED', 'RESOLVED')
 			 AND starts_at <= $3
 			 RETURNING id::text, tenant::text, cloud_account_id::text, fingerprint`,
-			accountID, fp, resolvedAt)
+			accountID, matchArg, resolvedAt)
 		if err != nil {
-			ctx.GetLogger().Error("failed to resolve event by fingerprint", "error", err, "component", funcName, "fingerprint", fp)
+			ctx.GetLogger().Error("failed to resolve event", "error", err, "component", funcName, "fingerprint", re.EventId, "findingId", re.FindingId)
 			updateErrs = append(updateErrs, err)
 			continue
+		}
+		for _, row := range rows {
+			rowEvents[row.ID] = re
 		}
 		allResolved = append(allResolved, rows...)
 	}
 
 	if len(allResolved) > 0 {
-		ctx.GetLogger().Info("resolved existing events by fingerprint", "component", funcName, "count", len(allResolved))
+		ctx.GetLogger().Info("resolved existing events", "component", funcName, "count", len(allResolved))
 	}
 
 	announceResolved(ctx, dbms, allResolved, func(row resolvedRow) map[string]any {
-		re, ok := fpToEvent[row.Fingerprint]
+		re, ok := rowEvents[row.ID]
 		if !ok {
 			return nil
 		}
@@ -729,6 +768,27 @@ func resolveExistingEvents(ctx *security.RequestContext, dbms *common.DatabaseMa
 	})
 
 	return errors.Join(updateErrs...)
+}
+
+// resolveKey names what a resolve ends: the source's own id for the firing
+// when the event carries one, its fingerprint otherwise.
+func resolveKey(e providers.Event) string {
+	if e.FindingId != "" {
+		return "finding:" + e.FindingId
+	}
+	return "fingerprint:" + e.EventId
+}
+
+// resolvedFindingIDs are the finding_ids of the firings a batch's resolves end
+// by the source's own id for the firing.
+func resolvedFindingIDs(events []providers.Event) []string {
+	var ids []string
+	for _, e := range events {
+		if e.EventStatus == providers.EventStatusResolved && e.FindingId != "" {
+			ids = append(ids, e.StoredFindingIDs()...)
+		}
+	}
+	return ids
 }
 
 // resolvedRow is an event a resolve has just moved from open to RESOLVED.

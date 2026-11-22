@@ -1,0 +1,37 @@
+name: vm_cpu_spin
+type: vm_event
+tags: [vm, cpu, metrics]
+
+alert:
+  alertname: HostHighCpuUsage
+  labels:
+    instance_id: ${VM_A_INSTANCE_ID}
+    severity: high
+  summary: "CPU usage above 90% for 10 minutes on ${VM_A_HOST}"
+  log_lines: |
+    CPU utilisation on ${VM_A_HOST} has been above the 90% threshold for 10 minutes.
+  fingerprint: bench-vm-cpu-spin-011
+
+vm:
+  settle_seconds: 120
+  inject:
+    - vm/fault.sh cpu_spin inject ${VM_A_SSH}
+  restore:
+    - vm/fault.sh cpu_spin restore ${VM_A_SSH}
+
+# CPU is a metrics-and-process question; the process is found over SSH, so only
+# metrics are required here. The other host stays healthy: an unscoped
+# fleet-wide average would hide the spike, and a query for it is a wrong-host
+# read.
+expected_telemetry:
+  signals: [metrics]
+  target_markers:
+    - ${VM_A_INSTANCE}
+    - ${VM_A_HOST}
+  forbidden_markers:
+    - ${VM_B_INSTANCE}
+    - ${VM_B_HOST}
+
+expected_diagnosis:
+  - "The response must identify a single systemd service, nb-bench-spin.service (a shell busy-loop, sh -c 'while :; do :; done'), pinned at about 100% of one CPU core on ${VM_A_HOST} as the cause of the CPU alert."
+  - "The response must NOT attribute the load to a traffic increase or to ${VM_B_HOST}; the load is one runaway process on one host."

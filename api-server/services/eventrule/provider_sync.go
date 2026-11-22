@@ -48,30 +48,46 @@ type syncableProvider struct {
 	// to mean "deleted upstream". False where a *successful* listing may still
 	// be partial for reasons the API does not report.
 	reconcileDeletions bool
+	// byKnownIDs syncs the rules Nudgebee already holds an id for, one read each,
+	// instead of enumerating the provider's inventory. For a provider with no
+	// list/search/enumerate operation this is the only way to refresh a
+	// definition at all; the rules it can answer for are exactly those it has
+	// been told about, which for SolarWinds means those that have fired once.
+	//
+	// Implies reconcileDeletions must be false: the id set comes from our own
+	// rows, so "absent" only ever means "we never knew about it", and a read
+	// that fails transiently must not look like a deletion.
+	byKnownIDs bool
 }
 
 var syncableProviders = map[string]syncableProvider{
-	"datadog":   {"datadog", "user", "datadog_webhook", true},
-	"grafana":   {"grafana", "user", "grafana_webhook", true},
-	"newrelic":  {"newrelic", "user", "newrelic_webhook", true},
-	"dynatrace": {"dynatrace", "user", "dynatrace_webhook", true},
-	"signoz":    {"signoz", "user", "signoz_webhook", true},
-	"splunk":    {"splunk_observability_platform", "user", "splunk_webhook", true},
+	"datadog":   {"datadog", "user", "datadog_webhook", true, false},
+	"grafana":   {"grafana", "user", "grafana_webhook", true, false},
+	"newrelic":  {"newrelic", "user", "newrelic_webhook", true, false},
+	"dynatrace": {"dynatrace", "user", "dynatrace_webhook", true, false},
+	"signoz":    {"signoz", "user", "signoz_webhook", true, false},
+	"splunk":    {"splunk_observability_platform", "user", "splunk_webhook", true, false},
 	// CubeAPM's admin API returns the full rule set in one call with no
 	// permission filtering, so an absent rule can be trusted to mean deleted.
-	"cubeapm": {"cubeapm", "user", "cubeapm_webhook", true},
+	"cubeapm": {"cubeapm", "user", "cubeapm_webhook", true, false},
 	// Kibana filters _find by the caller's Kibana feature privileges and still
 	// returns 200 — a credential holding feature_stackAlerts.read but not
 	// feature_logs.read sees a subset, with `total` reporting only the visible
 	// rules. There is no signal to distinguish that from rules having been
 	// deleted, so deletions are never reconciled for this source.
-	"elasticsearch": {"ES", "user", "elasticsearch_webhook", false},
+	"elasticsearch": {"ES", "user", "elasticsearch_webhook", false, false},
 	// The direct (agentless) Prometheus only: an in-cluster agent pushes its own
 	// inventory through the collector. Rows land on the Alertmanager webhook's
 	// source so a synced definition and the firings the webhook reports share one
 	// row; that source name predates the *_webhook convention, hence the exception
 	// in TestSyncableProvidersAreWellFormed.
-	"prometheus": {"prometheus", "user", "prometheus_alertmanager_webhook", true},
+	"prometheus": {"prometheus", "user", "prometheus_alertmanager_webhook", true, false},
+	// SolarWinds cannot be enumerated: its REST API has no alert endpoints and
+	// the GraphQL proxy allowlists only the operations its Terraform provider
+	// ships, none of which lists or searches. It is synced by reading back the
+	// ids its firings taught us, so an alert Nudgebee has never seen fire stays
+	// unknown — permanently, not pending an implementation.
+	"solarwinds": {"solarwinds", "user", "solarwinds_webhook", false, true},
 }
 
 // SyncableProviders lists the source values SyncProviderRules accepts, whether
@@ -128,7 +144,7 @@ func SyncProviderRulesForAccount(sc *security.RequestContext, req SyncProviderRu
 		}
 		// Skip providers with no list implementation unless the caller named
 		// them, so the default "sync everything" call stays quiet.
-		if !explicit && !alertrule.SupportsListing(entry.provider, entry.providerSource) {
+		if !explicit && !entry.byKnownIDs && !alertrule.SupportsListing(entry.provider, entry.providerSource) {
 			continue
 		}
 
@@ -141,6 +157,66 @@ func SyncProviderRulesForAccount(sc *security.RequestContext, req SyncProviderRu
 		results = append(results, result)
 	}
 	return results, nil
+}
+
+// rulesToSync returns the provider rules to write for this account.
+//
+// Two strategies, because not every provider can be enumerated:
+//
+//   - A provider with a list API returns its whole inventory, and anything
+//     missing from it may be reconciled as deleted.
+//   - A byKnownIDs provider is read one rule at a time, for the ids Nudgebee
+//     already holds. SolarWinds is the case this exists for: it ships no list,
+//     search or enumerate operation, so its inventory cannot be asked for — only
+//     a rule whose id we were told, which a firing provides.
+//
+// The result has the same shape either way, so the upsert below is identical.
+func rulesToSync(sc *security.RequestContext, entry syncableProvider, accountId string) ([]alertrule.ExternalAlertRule, error) {
+	if entry.byKnownIDs {
+		return rulesByKnownIDs(sc, entry, accountId)
+	}
+	return alertrule.ListAlertRules(sc, entry.provider, entry.providerSource, accountId)
+}
+
+// rulesByKnownIDs reads back each rule this account already has an external id
+// for, so a definition can be refreshed without an inventory call.
+//
+// A rule whose read fails is omitted rather than failing the sync: one alert
+// deleted upstream, or one transient error, must not stop the rest being
+// refreshed. Omission is safe precisely because byKnownIDs forces
+// reconcileDeletions off, so an omitted rule is left alone rather than disabled.
+func rulesByKnownIDs(sc *security.RequestContext, entry syncableProvider, accountId string) ([]alertrule.ExternalAlertRule, error) {
+	if !alertrule.SupportsGet(entry.provider, entry.providerSource) {
+		return nil, fmt.Errorf("rule sync by id is not supported for provider %s/%s",
+			entry.provider, entry.providerSource)
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	var externalRuleIds []string
+	if err := dbms.Db.Select(&externalRuleIds, `
+		SELECT DISTINCT external_rule_id FROM event_rules
+		WHERE account_id = $1 AND tenant_id = $2 AND source = $3
+		  AND external_rule_id IS NOT NULL AND external_rule_id <> ''`,
+		accountId, sc.GetSecurityContext().GetTenantId(), entry.ruleSource); err != nil {
+		return nil, fmt.Errorf("failed to list known %s rule ids: %w", entry.ruleSource, err)
+	}
+
+	rules := make([]alertrule.ExternalAlertRule, 0, len(externalRuleIds))
+	for _, externalRuleId := range externalRuleIds {
+		rule, err := alertrule.GetAlertRule(sc, entry.provider, entry.providerSource, accountId, externalRuleId)
+		if err != nil {
+			sc.GetLogger().Warn("rule sync: could not read a known provider rule",
+				"provider", entry.provider, "account_id", accountId,
+				"external_rule_id", externalRuleId, "error", err)
+			continue
+		}
+		rules = append(rules, *rule)
+	}
+	return rules, nil
 }
 
 // SyncProviderRules pulls every alert rule the provider has configured for the
@@ -177,7 +253,7 @@ func SyncProviderRules(sc *security.RequestContext, accountId, source string) (P
 	// A partial listing still carries usable rules; only deletion reconciliation
 	// is unsafe, because anything the provider did not return would look
 	// deleted. Upsert what we got and leave existing rows alone.
-	rules, err := alertrule.ListAlertRules(sc, provider, providerSource, accountId)
+	rules, err := rulesToSync(sc, entry, accountId)
 	complete := true
 	if errors.Is(err, alertrule.ErrIncompleteListing) {
 		complete = false
@@ -232,7 +308,7 @@ func SyncProviderRules(sc *security.RequestContext, accountId, source string) (P
 		_, _, err := upsertEventRule(dbms, annotations, labels,
 			rule.Name, rule.Query, rule.Duration,
 			accountId, tenantId,
-			ruleSource, "alert", normalizeSyncSeverity(rule.Severity), rule.Enabled,
+			ruleSource, "alert", rule.Severity, rule.Enabled,
 			rule.AlertType, provider, providerSource,
 			// isDefinition: these rules were read from the provider's own rule
 			// API, so they ARE the definition. Without this the write lands under
@@ -290,15 +366,4 @@ func disableMissingProviderRules(dbms *database.DatabaseManager, accountId, tena
 		return 0, err
 	}
 	return int(affected), nil
-}
-
-// normalizeSyncSeverity clamps a provider severity to event_rule_severity,
-// which holds only 'critical' and 'warning'. A provider that reports anything
-// else (or nothing) is treated as a warning rather than failing the insert on
-// the foreign key.
-func normalizeSyncSeverity(severity string) string {
-	if severity == "critical" {
-		return "critical"
-	}
-	return "warning"
 }

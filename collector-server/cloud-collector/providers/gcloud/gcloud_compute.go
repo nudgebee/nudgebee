@@ -3,6 +3,7 @@ package gcloud
 import (
 	"encoding/json"
 	"fmt"
+	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
 	"nudgebee/collector/cloud/providers/constants"
 	"strings"
@@ -615,7 +616,84 @@ func (s *computeEngineService) ApplyCommand(ctx providers.CloudProviderContext, 
 	if resultErr != nil {
 		return providers.ApplyCommandResponse{Success: false, Message: resultMessage}, resultErr
 	}
+
+	// Reflect the new state in the stored cloud_resourses row now, so the UI's
+	// State column updates immediately instead of after the next full poll. (#31234)
+	syncComputeInstanceStateToDB(ctx, account, client, session.ProjectId, zone, instanceName, command.ResourceId, command.Command)
+
 	return providers.ApplyCommandResponse{Success: true, Message: resultMessage}, nil
+}
+
+// syncComputeInstanceStateToDB updates the stored cloud_resourses row for a single
+// instance after a successful action. The UI's State badge reads meta->>'status'
+// (raw GCP status, per app stateFilter.ts) and the normalized status column; both
+// are written here, patching only meta's status key so the rest of the row's meta
+// (InstanceTypeDetails, disks, network) survives.
+//
+// Best-effort: the action already succeeded on GCP, so failures here are logged,
+// never returned — the next full StoreResources poll reconciles anything missed.
+func syncComputeInstanceStateToDB(ctx providers.CloudProviderContext, account providers.Account, client *compute.InstancesClient, projectId, zone, instanceName, resourceId, command string) {
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		ctx.GetLogger().Warn("post-action state sync: failed to get database manager", "error", err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// A deleted instance is gone, so there is nothing to Get — archive the row the
+	// same way the poll does. resourceId is the resourse_id the UI sends.
+	if command == "delete" {
+		if resourceId == "" {
+			ctx.GetLogger().Warn("post-action state sync: deleted instance has no resource id, leaving archival to next poll", "instance", instanceName)
+			return
+		}
+		archiveQuery := `UPDATE cloud_resourses
+			SET is_active = false, status = $1, updated_at = $2
+			WHERE account = $3 AND resourse_id = $4 AND lower(service_name) = lower($5)`
+		if _, err := dbms.Exec(archiveQuery, string(providers.ResourceStatusDeleted), now, account.ID, resourceId, ServiceNameCompute); err != nil {
+			ctx.GetLogger().Warn("post-action state sync: failed to archive deleted instance row", "error", err, "resourceId", resourceId)
+		}
+		return
+	}
+
+	// start/stop/reset: op.Wait already returned, so read back the settled state.
+	instance, err := client.Get(ctx.GetContext(), &computepb.GetInstanceRequest{
+		Project:  projectId,
+		Zone:     zone,
+		Instance: instanceName,
+	})
+	if err != nil {
+		ctx.GetLogger().Warn("post-action state sync: failed to fetch instance after action", "error", err, "instance", instanceName, "zone", zone)
+		return
+	}
+	if instance.Id == nil {
+		ctx.GetLogger().Warn("post-action state sync: fetched instance has nil ID", "instance", instanceName)
+		return
+	}
+
+	numericId := fmt.Sprintf("%d", *instance.Id)
+	rawStatus := instance.GetStatus()
+	nbStatus := string(gcpComputeStatusToNbStatus(instance.Status))
+
+	updateQuery := `UPDATE cloud_resourses
+		SET status = $1,
+			is_active = true,
+			meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{status}', to_jsonb($2::text)),
+			updated_at = $3,
+			last_seen = $3
+		WHERE account = $4 AND resourse_id = $5 AND lower(service_name) = lower($6)`
+	res, err := dbms.Exec(updateQuery, nbStatus, rawStatus, now, account.ID, numericId, ServiceNameCompute)
+	if err != nil {
+		ctx.GetLogger().Warn("post-action state sync: failed to update instance state", "error", err, "resourceId", numericId)
+		return
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		// Not tracked yet (never synced) — the next full poll will add it.
+		ctx.GetLogger().Info("post-action state sync: no stored row matched, reconciling on next poll", "resourceId", numericId, "status", rawStatus)
+		return
+	}
+	ctx.GetLogger().Info("post-action state sync: updated instance state", "resourceId", numericId, "rawStatus", rawStatus, "status", nbStatus)
 }
 
 // extractZoneFromResourceId extracts the zone from a GCP resource ID

@@ -111,9 +111,3 @@ func TestAccountTenant_LegacyCacheEntryIsAMiss(t *testing.T) {
 	cached, _ := c.Get(context.Background(), wsCacheKey("acct-1", "k8s"))
 	assert.Contains(t, string(cached), `"tenant_id":"tenant-1"`)
 }
-
-type noopCache struct{}
-
-func (noopCache) Get(context.Context, string) ([]byte, bool)               { return nil, false }
-func (noopCache) Set(context.Context, string, []byte, time.Duration) error { return nil }
-func (noopCache) Delete(context.Context, string) error                     { return nil }

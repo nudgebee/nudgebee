@@ -44,6 +44,7 @@ var webhookFiringIdentity = map[string]firingIdentity{
 	IntegrationCubeAPMWebhook:                {firingKeyMode, "startsAt"},
 	IntegrationElasticsearchWebhook:          {firingKeyMode, "alert.uuid ({{alert.uuid}}, Kibana 8.8+); a body without it has no per-firing key"},
 	IntegrationSigNozWebhook:                 {firingKeyMode, "startsAt"},
+	IntegrationOrionWebhook:                  {firingKeyMode, "alert_active_id (${N=Alerting;M=AlertActiveID}), the same on a trigger and its reset (verified on Orion 2026.4.0); empty under Orion's Test"},
 
 	IntegrationZendutyWebhook:       {perFiringEventId, "incident unique_id"},
 	IntegrationPagerdutyWebhook:     {perFiringEventId, "incident id"},
@@ -147,6 +148,11 @@ var firingKeyParsers = map[string]firingKeySequence{
 type firingIdSequence func(status, firingId string) (core.EventIncomingWebhook, error)
 
 var firingIdParsers = map[string]firingIdSequence{
+	IntegrationOrionWebhook: func(status, firingId string) (core.EventIncomingWebhook, error) {
+		sc := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+		return singleEvent(OrionWebhook{}.ProcessEventWebook(sc, orionSettings(), "acct-1",
+			orionBody(map[string]string{"status": status, "alert_active_id": firingId})))
+	},
 	IntegrationElasticsearchWebhook: func(status, firingId string) (core.EventIncomingWebhook, error) {
 		payload := canonicalKibanaPayload()
 		payload["status"] = status

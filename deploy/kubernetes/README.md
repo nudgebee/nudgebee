@@ -119,6 +119,27 @@ Equivalents for the other bundled subcharts:
 | ClickHouse | `CLICKHOUSE_HOST` / `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD`          |
 | Qdrant    | (set the Qdrant client URL via the relevant service's env)              |
 
+### Postgres user permissions for Nubi's database tools
+
+Nubi's database tools (events, anomaly, recommendations, resolutions, security) run the SQL the AI writes as a read-only role, `nb_llm_sql_tools`, that can read only the current account's rows of the views in schema `nb_llm_tools`. Migrations create the schema and views; the role needs these permissions:
+
+| Database user | Needs |
+|---|---|
+| The user in `APP_DATABASE_URL` (runs migrations) | `CREATEROLE`, or superuser, so migration V1112 can create the role. The bundled Postgres runs migrations as a superuser. |
+| The user llm-server connects as (`LLM_SERVER_DB_URL`, defaults to `APP_DATABASE_URL`) | Membership in `nb_llm_sql_tools` (on PostgreSQL 16+, with the `SET` option, which a plain `GRANT` gives). V1112 grants it to the migration user; grant it yourself if `LLM_SERVER_DB_URL` uses a different user. |
+| `nb_llm_sql_tools` | `NOLOGIN`, `USAGE` on schema `nb_llm_tools`, `SELECT` on the views in it. Nothing else. |
+
+Without the role, migrations still succeed (V1112 logs a NOTICE), but those tools refuse every query until it exists. To set it up by hand, after migrations have run, as a superuser:
+
+```sql
+CREATE ROLE nb_llm_sql_tools NOLOGIN;
+GRANT nb_llm_sql_tools TO <llm-server db user>;
+GRANT USAGE ON SCHEMA nb_llm_tools TO nb_llm_sql_tools;
+GRANT SELECT ON ALL TABLES IN SCHEMA nb_llm_tools TO nb_llm_sql_tools;
+```
+
+Check it with `SELECT pg_has_role('<llm-server db user>', 'nb_llm_sql_tools', 'SET');` (use `'MEMBER'` before PostgreSQL 16); it must return `true`. Setting `LLM_SERVER_AGENT_SQL_SCOPED_ROLE=false` on llm-server runs the tools as llm-server's own user instead, which can read the whole database; only use it if the role cannot be created.
+
 ## Monitoring (Prometheus Operator)
 
 `ServiceMonitor` and `PrometheusRule` are Prometheus Operator CRDs. A cluster without the operator has no such kinds, and installing them there fails the release with `no matches for kind "ServiceMonitor" in version "monitoring.coreos.com/v1"` — so **the chart creates none of them by default** and installs anywhere.

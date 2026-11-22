@@ -34,7 +34,7 @@ func TestCallNbTool_IntegrationOnAnotherAccount(t *testing.T) {
 			// The planner's config picker chose among the conversation's own.
 			req.QueryConfig.ToolConfigs = map[string]string{toolName: picked[0]}
 		}
-		resp, err := callNbTool(sc, req, "integration-target-e2e", tool, string(input), nil, "", uuid.NewString(), "")
+		resp, err := callNbTool(sc, req, "integration-target-e2e", tool, string(input), nil, "", uuid.NewString(), "", toolcore.ToolRequestTypeRead)
 		t.Logf("%s %v: status=%s err=%v data=%.1500s ran_on=%v", toolName, args["target"], resp.Status, err, fmt.Sprint(resp.Data), resp.AdditionalDetails[toolcore.MetadataExecutedTarget])
 		return resp
 	}
@@ -114,7 +114,7 @@ func TestCallNbTool_IntegrationOnAnotherAccount(t *testing.T) {
 		require.True(t, ok)
 		input, _ := json.Marshal(map[string]any{"query": "select 1", "instance": "prod-pg", "target": prod})
 		req := NBAgentRequest{AccountId: accountId, UserId: os.Getenv("TEST_USER"), ConversationId: uuid.NewString(), MessageId: uuid.NewString(), AgentId: uuid.NewString()}
-		resp, err := callNbTool(scoped, req, "integration-target-e2e", tool, string(input), nil, "", uuid.NewString(), "")
+		resp, err := callNbTool(scoped, req, "integration-target-e2e", tool, string(input), nil, "", uuid.NewString(), "", toolcore.ToolRequestTypeRead)
 		t.Logf("no access: status=%s err=%v data=%.300s", resp.Status, err, resp.Data)
 		assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
 		assert.NotContains(t, resp.Data, "prod-pg@", "nothing from k8s-prod's database")

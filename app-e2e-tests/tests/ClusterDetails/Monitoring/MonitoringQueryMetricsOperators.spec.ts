@@ -132,22 +132,36 @@ test(
 
       await test.step("Step 1 - discover a real label and value from live data to build every check on", async () => {
         // Never hardcoded, because which labels exist depends on what is deployed; a metric must be chosen first since the label input is disabled until then.
-        const metric = await metrics.selectFirstMetric();
-        console.log(`[QueryMetrics] metric selected: ${metric ?? "(none offered)"}`);
-        test.skip(!metric, "The metric picker offered nothing on this cluster.");
+        // Walks the offered metrics until one returns series carrying two labels, so the combined-filter checks have something to combine.
+        let metric: string | null = null;
+        let usable: [string, string][] = [];
+        let chosenIndex = -1;
+        let lastIndex = -1;
+        for (let index = 0; index < 5; index++) {
+          const offered = await metrics.selectOfferedMetric(index);
+          console.log(`[QueryMetrics] metric selected: ${offered ?? "(none offered)"}`);
+          if (!offered) break;
+          lastIndex = index;
+          await metrics.submitQuery();
+          const count = await metrics.waitForResults();
+          console.log(`[QueryMetrics] series returned for "${offered}": ${count}`);
+          if (count === 0) continue;
+          const labels = await metrics.readRowLabels(0);
+          const found = Object.entries(labels).filter(([k, v]) => k && v && !k.startsWith("__"));
+          console.log(`[QueryMetrics] labels read off the first series: ${Object.keys(labels).join(", ") || "(none)"}`);
+          if (found.length > usable.length) [metric, usable, chosenIndex] = [offered, found, index];
+          if (usable.length >= 2) break;
+        }
+        // A later candidate may be the one left selected, so the chosen metric is selected again to keep the page and the labels in step.
+        if (metric && chosenIndex !== lastIndex) {
+          await metrics.selectOfferedMetric(chosenIndex);
+          await metrics.submitQuery();
+          await metrics.waitForResults();
+        }
+        test.skip(!metric || usable.length === 0, "No offered metric returned a series with a usable label on this cluster.");
 
-        await metrics.submitQuery();
-        const count = await metrics.waitForResults();
-        console.log(`[QueryMetrics] series returned for "${metric}": ${count}`);
-        test.skip(count === 0, "This cluster returned no metric series; there is nothing to filter.");
-
-        const labels = await metrics.readRowLabels(0);
-        const usable = Object.entries(labels).filter(([k, v]) => k && v && !k.startsWith("__"));
-        console.log(`[QueryMetrics] labels read off the first series: ${Object.keys(labels).join(", ") || "(none)"}`);
-        test.skip(usable.length === 0, "No usable label found on the first series.");
-
-        // Prefer cluster then job: columns come back alphabetically, and the first one is a node label whose second value made a typed != commit as another value.
-        const preferred = usable.find(([k]) => k === "cluster") ?? usable.find(([k]) => k === "job") ?? usable[0];
+        // The first usable label read off a live series; its value is picked from the builder suggestions, never typed.
+        const preferred = usable[0];
         [label, value] = preferred;
         const second = usable.find(([k]) => k !== label);
         if (second) [secondLabel, secondValue] = second;
@@ -161,7 +175,7 @@ test(
         const uncovered = offeredOperators.filter((o) => !COVERED_OPERATORS.includes(o));
         record(
           "The page offers only operators this suite exercises",
-          uncovered.length === 0,
+          offeredOperators.length > 0 && uncovered.length === 0,
           uncovered.length === 0
             ? `offered: ${offeredOperators.join(", ") || "(none read)"}`
             : `offered ${uncovered.join(", ")}, which no step below covers — extend this suite`
@@ -224,7 +238,7 @@ test(
         const prefix = value;
         const pattern = `${value}|zzz-no-such-value-e2e`;
 
-        const added = await addMetricFilterChip(locators, label, "=~", pattern);
+        const added = await addMetricFilterChip(locators, label, "=~", pattern, { typedValue: true });
         if (!added) {
           record("Operator '=~'", false, "the builder would not commit a regex filter");
           return;
@@ -267,7 +281,7 @@ test(
         await clearMetricFilterChips(page);
         const impossible = `zzz-no-such-value-e2e-${Date.now()}`;
 
-        const added = await addMetricFilterChip(locators, label, "=", impossible);
+        const added = await addMetricFilterChip(locators, label, "=", impossible, { typedValue: true });
         if (!added) {
           record("A non-existent value", false, "the builder would not commit the filter");
           return;

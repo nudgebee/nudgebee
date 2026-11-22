@@ -9,6 +9,7 @@ from server.metrics.api_server_metrics import (
     _step_seconds,
     query_utilisation_via_api_server,
     AgentNotConnectedError,
+    ApiServerMetricsError,
     query_metrics_via_api_server,
 )
 from server.metrics.metrics import Metrics
@@ -86,6 +87,12 @@ def fetch_metrics(
                     # the account's own provider just answered.
                     logger.warning(
                         f"Agent not connected for account {account_id}; "
+                        f"leaving this column empty and keeping the rest."
+                    )
+                    entries = []
+                except ApiServerMetricsError as e:
+                    logger.warning(
+                        f"API server metrics failed for account {account_id} query {query}: {e}; "
                         f"leaving this column empty and keeping the rest."
                     )
                     entries = []

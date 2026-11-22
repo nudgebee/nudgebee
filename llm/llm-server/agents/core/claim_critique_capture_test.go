@@ -10,21 +10,24 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
+	"nudgebee/llm/security"
+
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
-	"nudgebee/llm/config"
-	"nudgebee/llm/security"
 )
 
 type claimCaptureDAO struct {
 	IConversationDao
+	llmruntime.UsageStore
 	mu        sync.Mutex
 	rows      []ClaimCritiqueAuditRecord
 	writes    int
 	failWrite int
-	usage     chan *TokenUsageRecord
+	usage     chan *llmruntime.TokenUsageRecord
 }
 
 func (d *claimCaptureDAO) SaveClaimCritiqueAudit(ctx context.Context, r *ClaimCritiqueAuditRecord) error {
@@ -48,7 +51,7 @@ func (d *claimCaptureDAO) GetAgentNameFromAgentId(_ string) (string, error) { re
 func (d *claimCaptureDAO) GetConversationCost(_, _ string, _, _, _, _, _ int, _ string) (float64, error) {
 	return 0, errors.New("unpriced test model")
 }
-func (d *claimCaptureDAO) InsertTokenUsage(r *TokenUsageRecord) error {
+func (d *claimCaptureDAO) InsertTokenUsage(r *llmruntime.TokenUsageRecord) error {
 	if d.usage != nil {
 		d.usage <- r
 	}
@@ -70,10 +73,12 @@ func installClaimCaptureDAO(t *testing.T, d *claimCaptureDAO) {
 	t.Helper()
 	previous := GetConversationDao()
 	d.IConversationDao = previous
-	conversationDaoMutex.Lock()
 	SetConversationDao(d)
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() { conversationDaoMutex.Lock(); defer conversationDaoMutex.Unlock(); SetConversationDao(previous) })
+	d.UsageStore = llmruntime.SetUsageStore(d)
+	t.Cleanup(func() {
+		SetConversationDao(previous)
+		llmruntime.SetUsageStore(d.UsageStore)
+	})
 }
 
 func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {
@@ -83,7 +88,7 @@ func TestClaimCapturePersistsWithTracingDisabled(t *testing.T) {
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled, config.Config.LlmTraceEnabled = previous, tracing })
 	for _, output := range []string{validClaimAudit, `{"claims":[`} {
 		t.Run(output, func(t *testing.T) {
-			dao := &claimCaptureDAO{usage: make(chan *TokenUsageRecord, 4)}
+			dao := &claimCaptureDAO{usage: make(chan *llmruntime.TokenUsageRecord, 4)}
 			installClaimCaptureDAO(t, dao)
 			fake := &fakeLLMModel{turns: []fakeTurn{{content: output}}}
 			withFakeLLMModel(t, fake)
@@ -175,7 +180,7 @@ func TestClaimCaptureDAOAndUsageID(t *testing.T) {
 	mock.ExpectExec("INSERT INTO llm_conversation_token_usage").WithArgs(
 		nil, nil, nil, "", nil, nil, "", "", 0, 0, 0, 0, false, nil, 0, nil, nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, record.TokenUsageID,
 	).WillReturnResult(sqlmock.NewResult(0, 1))
-	require.NoError(t, dao.InsertTokenUsage(&TokenUsageRecord{ID: record.TokenUsageID}))
+	require.NoError(t, llmruntime.NewUsageStore(dao.dbManager).InsertTokenUsage(&llmruntime.TokenUsageRecord{ID: record.TokenUsageID}))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -197,14 +202,14 @@ func TestClaimCaptureNoVerdictDecision(t *testing.T) {
 }
 
 func TestClaimCaptureFailureUsageID(t *testing.T) {
-	dao := &claimCaptureDAO{usage: make(chan *TokenUsageRecord, 1)}
+	dao := &claimCaptureDAO{usage: make(chan *llmruntime.TokenUsageRecord, 1)}
 	installClaimCaptureDAO(t, dao)
 	base := llmOverrideContext()
 	id := uuid.NewString()
-	goctx := context.WithValue(base.GetContext(), contextKeyPreserveInput, true)
-	goctx = context.WithValue(goctx, contextKeyClaimUsageID, id)
+	goctx := context.WithValue(base.GetContext(), llmruntime.ContextKeyPreserveInput, true)
+	goctx = context.WithValue(goctx, llmruntime.ContextKeyClaimUsageID, id)
 	ctx := security.NewRequestContext(goctx, base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
-	recordTokenUsageFailure(ctx, "", "", "", "claim_test", "test", "test", "", "", nil, errors.New("provider unavailable"))
+	llmruntime.RecordTokenUsageFailure(ctx, "", "", "", "claim_test", "test", "test", "", "", nil, errors.New("provider unavailable"))
 	select {
 	case usage := <-dao.usage:
 		require.Equal(t, id, usage.ID)
@@ -212,7 +217,7 @@ func TestClaimCaptureFailureUsageID(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("missing failure usage")
 	}
-	require.Empty(t, claimUsageID(base), "unrelated inference retains default IDs")
+	require.Empty(t, llmruntime.ClaimUsageID(base), "unrelated inference retains default IDs")
 }
 
 func TestClaimCaptureCompletionFailureLeavesStarted(t *testing.T) {
@@ -220,7 +225,7 @@ func TestClaimCaptureCompletionFailureLeavesStarted(t *testing.T) {
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
-	dao := &claimCaptureDAO{failWrite: 2, usage: make(chan *TokenUsageRecord, 1)}
+	dao := &claimCaptureDAO{failWrite: 2, usage: make(chan *llmruntime.TokenUsageRecord, 1)}
 	installClaimCaptureDAO(t, dao)
 	fake := &fakeLLMModel{turns: []fakeTurn{{content: validClaimAudit}}}
 	withFakeLLMModel(t, fake)

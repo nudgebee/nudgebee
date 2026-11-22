@@ -21,7 +21,7 @@ import (
 // test — the two paths agreeing is the entire dedup mechanism, because there is
 // no separate reconciliation step downstream.
 func TestFiringFindingIDAgreesAcrossIngestionPaths(t *testing.T) {
-	const alarmARN = "arn:aws:cloudwatch:us-east-1:864186153326:alarm:nudgebee-scenario-services-order-down"
+	const alarmARN = "arn:aws:cloudwatch:us-east-1:888888888888:alarm:nudgebee-scenario-services-order-down"
 	transition := time.Date(2026, 9, 5, 10, 4, 56, 0, time.UTC)
 
 	// EventBridge: the rule supplies the alarm ARN as the fingerprint, and the
@@ -85,5 +85,24 @@ func TestFiringFindingIDIsTimezoneIndependent(t *testing.T) {
 	if a.FiringFindingID() != b.FiringFindingID() {
 		t.Errorf("same instant in two zones produced %q and %q",
 			a.FiringFindingID(), b.FiringFindingID())
+	}
+}
+
+// While a source's finding_id format changes, a firing may already be stored under
+// the old one. Both are reported so polling neither closes nor re-stores it.
+func TestStoredFindingIDsIncludesLegacyFormat(t *testing.T) {
+	e := Event{FindingId: "new-form", LegacyFindingId: "old-form"}
+	if got := e.StoredFindingIDs(); len(got) != 2 || got[0] != "new-form" || got[1] != "old-form" {
+		t.Errorf("StoredFindingIDs() = %q, want [new-form old-form]", got)
+	}
+
+	same := Event{FindingId: "same", LegacyFindingId: "same"}
+	if got := same.StoredFindingIDs(); len(got) != 1 {
+		t.Errorf("StoredFindingIDs() = %q, want one id when the formats agree", got)
+	}
+
+	none := Event{FindingId: "only"}
+	if got := none.StoredFindingIDs(); len(got) != 1 || got[0] != "only" {
+		t.Errorf("StoredFindingIDs() = %q, want [only]", got)
 	}
 }

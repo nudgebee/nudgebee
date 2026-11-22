@@ -81,7 +81,7 @@ const ResourceActionHistory: React.FC<ResourceActionHistoryProps> = ({ accountId
 
   useEffect(() => {
     apiUser
-      .listUsers({ limit: 1000 })
+      .listUsers({ limit: 1000, includeBees: true })
       .then((response: any) => {
         const rows: UserSummary[] = response?.data || [];
         const map: Record<string, UserSummary> = {};

@@ -1,9 +1,11 @@
 package executors
 
 import (
+	"nudgebee/runbook/config"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A script step's account has to be one its executor can run for; the error
@@ -47,4 +49,43 @@ func TestCheckAccountSupports(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		}
 	}
+}
+
+func TestFactory_DefaultsToAgent(t *testing.T) {
+	t.Setenv("RUNBOOK_SERVER_TASK_SCRIPTING_MODE", "")
+	executor, err := NewExecutor(ExecutionConfig{})
+	require.NoError(t, err)
+	assert.IsType(t, &AgentExecutor{}, executor)
+}
+
+func TestFactory_Kubernetes(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/non/existent/path") // Ensure loading config fails
+
+	// Outside a cluster there is no config to load; inside one, in-cluster
+	// config succeeds. Either way the factory must build the Kubernetes executor.
+	executor, err := NewExecutor(ExecutionConfig{ExecutorType: "kubernetes"})
+	if err != nil {
+		assert.Contains(t, err.Error(), "failed to load kubernetes config")
+	} else {
+		assert.IsType(t, &KubernetesExecutor{}, executor)
+	}
+}
+
+func TestFactory_AwsSsm(t *testing.T) {
+	executor, err := NewExecutor(ExecutionConfig{ExecutorType: "aws_ssm"})
+	require.NoError(t, err)
+	assert.IsType(t, &AwsSsmExecutor{}, executor)
+}
+
+// Scripts never run inside the runbook-server process, whether a step names
+// "local" or the system default is set to it.
+func TestFactory_RefusesLocal(t *testing.T) {
+	_, err := NewExecutor(ExecutionConfig{ExecutorType: "local"})
+	assert.ErrorContains(t, err, "unknown script execution mode: local")
+
+	original := config.Config.TaskScriptExecutionModel
+	t.Cleanup(func() { config.Config.TaskScriptExecutionModel = original })
+	config.Config.TaskScriptExecutionModel = "local"
+	_, err = NewExecutor(ExecutionConfig{})
+	assert.ErrorContains(t, err, "unknown script execution mode: local")
 }

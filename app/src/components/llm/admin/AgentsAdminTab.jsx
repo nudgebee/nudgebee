@@ -27,7 +27,7 @@ const AgentsAdminTab = ({ stickyTable = false }) => {
     const seq = ++requestSeq.current;
     setLoading(true);
     apiAskNudgebee
-      .listAgents({ accountId })
+      .listAgents({ accountId, includeSwitchedOff: true })
       .then((res) => {
         if (seq === requestSeq.current) {
           setAgents(res?.data?.data?.ai_list_agents?.data ?? []);

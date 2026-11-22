@@ -16,6 +16,23 @@ type SortField struct {
 
 type LogsQueryBuilderRequest struct {
 	Where query.QueryWhereClause `json:"where,omitempty" mapstructure:"where,omitempty"`
+	// Count, when present (an empty object included), asks logs_list / logs_query for the
+	// number of lines matching Where instead of the lines: count mode (log_count.go). The
+	// line-only request fields (query, limit, offset, sort_fields, step_interval,
+	// include_raw) are then refused rather than ignored.
+	Count *LogCountRequest `json:"count,omitempty" mapstructure:"count,omitempty"`
+}
+
+// LogCountRequest is count mode's own part of a request.
+type LogCountRequest struct {
+	// GroupBy names up to three labels to count by: canonical names (pod, namespace) or
+	// provider fields. Empty counts all matching lines as one group.
+	GroupBy []string `json:"group_by,omitempty" mapstructure:"group_by,omitempty"`
+	// Interval is the bucket size (30s, 10m, 1h, 1d). Empty gives one count per group for
+	// the whole window.
+	Interval string `json:"interval,omitempty" mapstructure:"interval,omitempty"`
+	// Limit is the most groups returned, largest first; default 100, at most 1000.
+	Limit int `json:"limit,omitempty" mapstructure:"limit,omitempty"`
 }
 
 type FetchLogRequest struct {
@@ -71,6 +88,11 @@ type OutputLog struct {
 // run. Surfacing the query end-to-end lets the UI and LLM report exactly which
 // query produced a given set of logs.
 type FetchLogsResult struct {
+	// Mode says what the result holds: LogResultModeLines, or LogResultModeCount when it
+	// holds counts instead — a count-mode request, or a hand-written query that asked for
+	// counts and no lines (size 0 with aggregations). A reader picks its decoding by it:
+	// an empty Logs means "nothing matched" only in lines mode.
+	Mode     string      `json:"mode"`
 	Logs     []OutputLog `json:"logs"`
 	Query    string      `json:"query"`
 	Provider string      `json:"provider"`
@@ -101,6 +123,39 @@ type FetchLogsResult struct {
 	// when the request has IncludeRaw.
 	AggregationsRaw json.RawMessage `json:"aggregations_raw,omitempty"`
 	TotalRaw        json.RawMessage `json:"total_raw,omitempty"`
+	// Count is what only a count-mode answer knows; nil for every other request. In
+	// count mode Total is exact and set whenever the count ran (0 included; only a
+	// backend error explained by a Suggestion leaves it out), Series has one entry per group labelled
+	// with the group_by names as the caller wrote them (one point per bucket stamped at
+	// its start, or one point at the window's end), and Truncated means groups were left
+	// out.
+	Count *LogCountDetails `json:"count,omitempty"`
+}
+
+// The values of FetchLogsResult.Mode.
+const (
+	LogResultModeLines = "lines"
+	LogResultModeCount = "count"
+)
+
+// LogCountDetails is the part of a count-mode answer lines have no equivalent for.
+type LogCountDetails struct {
+	// Ungrouped counts the matching lines that have no value for a group_by label; they
+	// are in Total and in no series.
+	Ungrouped int64 `json:"ungrouped"`
+	// GroupsTotal is how many groups matched; GroupsOmitted how many of them the limit
+	// left out. When Complete is false the backend could not list every group, and
+	// GroupsTotal is a lower bound.
+	GroupsTotal   int  `json:"groups_total"`
+	GroupsOmitted int  `json:"groups_omitted"`
+	Complete      bool `json:"complete"`
+	// Interval is the bucket size actually used: the requested one, or a wider one when
+	// the window would hold too many buckets. Empty without an interval.
+	Interval string `json:"interval,omitempty"`
+	// StartTime and EndTime (unix ms) are the window actually counted. With an interval
+	// it is the requested window widened to whole buckets.
+	StartTime int64 `json:"start_time"`
+	EndTime   int64 `json:"end_time"`
 }
 
 type SearchResponse struct {
@@ -386,6 +441,10 @@ type QueryResult struct {
 	// `count` when a series has a single bucket and no neighbour to measure from.
 	bucketSeconds int64
 
+	// pagesCapped is set when a provider stopped paging at its page cap with more
+	// pages left (SolarWinds), so the caller can say series are missing. Internal only.
+	pagesCapped bool
+
 	// Sample holds real documents, flattened to `path: value` lines, when a query
 	// matched nothing. Note says which search produced them. Elasticsearch only.
 	Sample string `json:"sample,omitempty"`
@@ -429,11 +488,14 @@ type ProviderCapabilities struct {
 	SupportsServiceMap             bool `json:"supports_service_map"`
 	SupportsTraceGrouping          bool `json:"supports_trace_grouping"`
 	SupportsHeatmap                bool `json:"supports_heatmap"`
-	SupportsCrossZoneCommunication bool `json:"supports_cross_zone_communication"` // traces only; false by default for all providers
+	SupportsCrossZoneCommunication bool `json:"supports_cross_zone_communication"` // traces only; true for otel_clickhouse, false for every other provider
 	SupportsRawQuery               bool `json:"supports_raw_query"`
 	SupportsLogGroups              bool `json:"supports_log_groups"`
 	// Interface-derived at runtime (optional interface — not all providers implement it)
 	SupportsAutoQuery bool `json:"supports_auto_query"`
+	// SupportsLogCount says logs_list's count mode (query_request.count) works for this
+	// source: it implements LogCountSource.
+	SupportsLogCount bool `json:"supports_log_count"`
 	// Whether Create Alert can write a rule for this provider + account. Decided
 	// for the two Prometheus transports (the agent must be connected to land a
 	// PrometheusRule CR; a direct Prometheus must declare a ruler); every other
@@ -468,6 +530,19 @@ type ProviderCapabilities struct {
 	// mirroring DefaultProviderResponse.DefaultIndex. Only populated by the
 	// list_provider_capabilities path; empty for providers without an index concept.
 	DefaultIndex string `json:"default_index,omitempty"`
+	// ByTraceNaturalOrderOnly says this provider's "By Traces" listing can only be
+	// returned in its index's natural order (newest first), so a client must not offer
+	// or send any other order for that view — it is refused, not silently reordered.
+	// Traces only; omitted (false) for every other provider and provider type, which a
+	// client reads as "order it however you like".
+	//
+	// This is NOT a quality signal, and it expires. It is false elsewhere only because
+	// every other reader reduces a page of spans to traces and sorts those (see
+	// trace_by_trace_order.go): that accepts any order by never ranking traces at all.
+	// Fix that paging so those readers rank traces and they become natural-order-only
+	// too, making this field true everywhere — at which point delete it rather than keep
+	// a constant in the contract.
+	ByTraceNaturalOrderOnly bool `json:"by_trace_natural_order_only,omitempty"`
 }
 
 // AvailableProvider is one active observability provider that can serve the

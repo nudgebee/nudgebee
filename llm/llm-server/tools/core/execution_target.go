@@ -113,6 +113,8 @@ func (t ExecutionTarget) Kind() string {
 		return "Azure account"
 	case "vm":
 		return "VM account"
+	case "mcp":
+		return "MCP integration"
 	}
 	return "connected account"
 }

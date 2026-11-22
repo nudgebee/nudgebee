@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -12,7 +13,7 @@ func init() {
 	toolInput := "Provide software catalog data question in natural language"
 	toolOutput := "The tool will return software catalog data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogSoftwareCatalogName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(AgentDatadogSoftwareCatalogName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogSoftwareCatalogAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -63,7 +64,7 @@ func (l DatadogSoftwareCatalogAgent) GetSystemPrompt(ctx *security.RequestContex
 			"Input: Optional query string to filter entities.",
 			"Output: JSON response containing software catalog entities from Datadog.",
 		},
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool for reasoning, generating the initial Datadog event query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -95,7 +96,7 @@ func (l DatadogSoftwareCatalogAgent) GetSystemPrompt(ctx *security.RequestContex
 }
 
 func (p DatadogSoftwareCatalogAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	toolsList := []string{tools.ToolDatadogSoftwareCatalog, core.ToolLlm}
+	toolsList := []string{tools.ToolDatadogSoftwareCatalog, llmruntime.ToolLlm}
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

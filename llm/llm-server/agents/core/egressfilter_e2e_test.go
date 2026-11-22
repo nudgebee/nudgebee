@@ -39,6 +39,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security/egressfilter"
 )
 
@@ -169,14 +170,14 @@ func wrapRealProvider(t *testing.T, env e2eEnv, enabled bool, mode egressfilter.
 	// fresh wrap, so we invalidate before constructing and on cleanup. This
 	// is the production-correct path too: in real deployments a config flip
 	// requires cache invalidation to take effect.
-	InvalidateAllLLMClientCache()
+	llmruntime.InvalidateAllLLMClientCache()
 	t.Cleanup(func() {
 		config.Config.LlmServerEgressFilterEnabled = false
 		config.Config.LlmServerEgressFilterSecretsEnabled = false
 		config.Config.LlmServerEgressFilterSecretsMode = string(egressfilter.ModeDetect)
-		InvalidateAllLLMClientCache()
+		llmruntime.InvalidateAllLLMClientCache()
 	})
-	model, err := GetLLMModel(env.provider, env.model, "", false, "")
+	model, err := llmruntime.GetLLMModel(env.provider, env.model, "", false, "")
 	require.NoError(t, err)
 	require.NotNil(t, model)
 	return model

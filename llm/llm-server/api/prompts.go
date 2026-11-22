@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"nudgebee/llm/agents/core"
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/prompts"
 
@@ -55,17 +55,17 @@ func handlePromptsApis(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 
 // purgeExpiredAttachments manually triggers cleanup of expired image attachment data.
 func purgeExpiredAttachments(c *gin.Context) {
-	count, err := core.PurgeExpiredImageAttachments()
+	count, err := attachments.PurgeExpiredImageAttachments()
 	if err != nil {
 		slog.Error("admin: attachment purge failed", "error", err)
 		c.JSON(500, gin.H{"error": "purge failed"})
 		return
 	}
 
-	slog.Info("admin: attachment purge completed", "count", count, "retention_days", core.GetImageRetentionDays())
+	slog.Info("admin: attachment purge completed", "count", count, "retention_days", attachments.GetImageRetentionDays())
 	c.JSON(200, gin.H{
 		"purged":         count,
-		"retention_days": core.GetImageRetentionDays(),
+		"retention_days": attachments.GetImageRetentionDays(),
 	})
 }
 
@@ -213,6 +213,7 @@ func updateExperimentAccounts(c *gin.Context) {
 	// Get updated experiment
 	exp, err := db.GetExperiment(ctx, name)
 	if err != nil || exp == nil {
+		slog.Error("prompts api: failed to retrieve updated experiment", "name", name, "error", err)
 		c.JSON(500, gin.H{"error": "Failed to retrieve updated experiment"})
 		return
 	}

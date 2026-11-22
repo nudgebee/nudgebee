@@ -322,6 +322,9 @@ func TestTargetKindForSource(t *testing.T) {
 
 func TestMuteEventSources(t *testing.T) {
 	assert.Equal(t, []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}, MuteEventSources("AWS_CloudWatch_Alarm"))
+	// A mute written on an EventBridge rule covers the pushed alarms now stored
+	// as CloudWatch alarms.
+	assert.Equal(t, []string{"AWS_EventBridge", "AWS_CloudWatch_Alarm"}, MuteEventSources("AWS_EventBridge"))
 	// Prometheus firings also arrive through Alertmanager-fed webhooks (on dev,
 	// mostly PagerDuty); a mute that only covered agent delivery let them through.
 	promSources := []string{"prometheus", "prometheus_alertmanager_webhook", "pagerduty_webhook", "zenduty_webhook"}

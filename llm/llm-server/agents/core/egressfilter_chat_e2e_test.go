@@ -32,6 +32,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/security/egressfilter"
 )
@@ -100,12 +101,12 @@ func enableEgressFilterForTest(t *testing.T, mode egressfilter.Mode) {
 	config.Config.LlmServerEgressFilterEnabled = true
 	config.Config.LlmServerEgressFilterSecretsEnabled = true
 	config.Config.LlmServerEgressFilterSecretsMode = string(mode)
-	InvalidateAllLLMClientCache()
+	llmruntime.InvalidateAllLLMClientCache()
 	t.Cleanup(func() {
 		config.Config.LlmServerEgressFilterEnabled = false
 		config.Config.LlmServerEgressFilterSecretsEnabled = false
 		config.Config.LlmServerEgressFilterSecretsMode = string(egressfilter.ModeDetect)
-		InvalidateAllLLMClientCache()
+		llmruntime.InvalidateAllLLMClientCache()
 	})
 }
 

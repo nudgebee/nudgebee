@@ -47,6 +47,17 @@ templates:
           expression: "((m1 + m2) / m3) * 100"
           label: "HTTP Error Rate %"
 
+      # An existing alarm on any HTTP error count already covers this
+      satisfied_by:
+        - namespace: "AWS/ApplicationELB"
+          metric_name: "HTTPCode_Target_4XX_Count"
+        - namespace: "AWS/ApplicationELB"
+          metric_name: "HTTPCode_Target_5XX_Count"
+        - namespace: "AWS/ApplicationELB"
+          metric_name: "HTTPCode_ELB_4XX_Count"
+        - namespace: "AWS/ApplicationELB"
+          metric_name: "HTTPCode_ELB_5XX_Count"
+
       period: 60
       evaluation_periods: 5
       datapoints_to_alarm: 5

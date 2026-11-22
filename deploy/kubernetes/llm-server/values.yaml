@@ -51,6 +51,10 @@ securityContext:
 service:
   type: ClusterIP
   port: 8000
+  # TLS port of the workspace proxy; gh/glab in workspaces call it instead of
+  # holding GitHub/GitLab tokens (#41852). Must match LLM_SERVER_WORKSPACE_PROXY_TLS_PORT
+  # (default 8443); it is opened by LLM_SERVER_WORKSPACE_SCM_ENABLED.
+  workspaceProxyTlsPort: 8443
 
 ingress:
   # -- Enable [ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/).
@@ -112,6 +116,8 @@ workspaceNetworkPolicy:
   workspacePort: 8080
   # Port llm-server listens on for workspace callbacks.
   llmServerPort: 8000
+  # llm-server's workspace proxy TLS port (service.workspaceProxyTlsPort).
+  workspaceProxyTlsPort: 8443
   # If true, workspace pods may reach the public internet *except* the CIDRs
   # listed in `externalEgressExcept`. Required for tools like `git clone`,
   # `curl`, `pip install`, etc. Set to false for maximum lockdown.

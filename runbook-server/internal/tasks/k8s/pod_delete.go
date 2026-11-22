@@ -3,7 +3,6 @@ package k8s
 import (
 	"errors"
 	"fmt"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
 	"strings"
@@ -86,25 +85,8 @@ func (t *PodDeleteTask) Execute(taskCtx types.TaskContext, params map[string]any
 
 	// Parse deletion response for errors
 	if respStr, ok := deleteResp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil { // Handle unmarshal error
-			return nil, fmt.Errorf("failed to parse kubectl delete response: %w", err)
-		}
-		if stderr, ok := kubectlResp["stderr"].(string); ok && stderr != "" {
-			// kubectl delete --force emits "Warning: Immediate deletion..." to
-			// stderr on success, so we can't treat any stderr as failure.
-			// Detect real errors by kubectl's known prefixes:
-			//   "error:"            - client-side errors
-			//   "error from server" - Kubernetes API errors (NotFound, Forbidden, ...)
-			//   "fail"              - generic failure messages
-			stderrLower := strings.ToLower(stderr)
-			if strings.Contains(stderrLower, "error:") ||
-				strings.Contains(stderrLower, "error from server") ||
-				strings.Contains(stderrLower, "fail") {
-				return nil, fmt.Errorf("kubectl delete error: %s", stderr)
-			}
-			// Log warnings
-			taskCtx.GetLogger().Warn("kubectl delete stderr output", "stderr", stderr)
+		if _, err := interpretKubectlResponse(respStr); err != nil {
+			return nil, fmt.Errorf("kubectl delete error: %w", err)
 		}
 	}
 

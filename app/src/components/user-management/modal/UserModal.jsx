@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 import { useForm } from 'react-hook-form';
 import { useRouter } from 'next/router';
@@ -67,6 +67,9 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
   const [groupList, setGroupList] = useState([]);
   const [userGroups, setUserGroups] = useState([]);
   const [userStatus, setUserStatus] = useState('active');
+  // Lets submitForm flush the Integration Profiles section's staged map/unmap edits
+  // as part of Save changes (the child stages them until then).
+  const integrationProfilesRef = useRef(null);
 
   const isAddMode = mode === 'add';
   const isEditMode = mode === 'edit';
@@ -361,6 +364,14 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
               setLoading(false);
               return;
             }
+            // Apply the Integration Profiles section's staged map/unmap edits. These
+            // are written only here — never on button click — so Cancel/close discards
+            // them (#39872). On any failure the child toasts and we hold the success path.
+            const profilesOk = (await integrationProfilesRef.current?.applyPendingChanges?.()) ?? true;
+            if (!profilesOk) {
+              setLoading(false);
+              return;
+            }
             handleSnackBarData({ message: 'User updated', severity: 'success' });
             setUserGroups([]);
             setTimeout(() => {
@@ -594,7 +605,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData = nul
         {/* Integration profiles (edit only — requires a persisted user id) */}
         {isEditMode && userData?.id && (
           <Card variant='outlined' elevation='flat' header={<CardHeader title='Integration Profiles' />}>
-            <IntegrationProfiles userId={userData.id} onNotify={handleSnackBarData} hideHeading />
+            <IntegrationProfiles ref={integrationProfilesRef} userId={userData.id} onNotify={handleSnackBarData} hideHeading />
           </Card>
         )}
       </Box>

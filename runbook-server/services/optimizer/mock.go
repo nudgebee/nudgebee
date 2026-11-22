@@ -24,6 +24,11 @@ func (m *MockOptimizerService) GetWorkload(ctx context.Context, sc *security.Req
 	return args.Get(0).([]string), args.Error(1)
 }
 
+func (m *MockOptimizerService) DecideApproval(ctx context.Context, sc *security.RequestContext, accountID, approvalID uuid.UUID, decision ApprovalDecision, comments string) (string, error) {
+	args := m.Called(ctx, sc, accountID, approvalID, decision, comments)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockOptimizerService) SkipExecution(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, autoOptimizeID uuid.UUID, byMinutes int) (string, error) {
 	args := m.Called(ctx, sc, accountID, autoOptimizeID, byMinutes)
 	return args.String(0), args.Error(1)

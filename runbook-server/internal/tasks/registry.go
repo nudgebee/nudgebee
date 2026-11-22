@@ -172,5 +172,9 @@ func NewInitializedTaskRegistry() *TaskRegistry {
 	tr.RegisterTask(&crypto.CryptoEncryptTask{})
 	tr.RegisterTask(&crypto.CryptoDecryptTask{})
 
+	for _, t := range extensionTasks {
+		tr.RegisterTask(t)
+	}
+
 	return tr
 }

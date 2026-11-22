@@ -100,6 +100,22 @@ func WorkloadMetricEvidence(ctx *security.RequestContext, accountID, workload, n
 		// minutes searching for a metric that does not exist.
 		query = firstQueryAsked(out, keys)
 	}
+	return metricEvidenceCard(data, query, title), nil
+}
+
+// UtilisationEvidence is the WorkloadMetricEvidence card for one result the caller
+// already fetched. A caller that fetched with its own scope (an exact pod list, its
+// own step) uses it so the chart shows exactly the series it acted on, rather than a
+// second fetch that may scope differently.
+func UtilisationEvidence(result QueryResult, title string) map[string]any {
+	query := result.Query
+	if query == "" {
+		query = result.QueryKey
+	}
+	return metricEvidenceCard(promQLSingleEnvelope(result, false), query, title)
+}
+
+func metricEvidenceCard(data any, query, title string) map[string]any {
 	return map[string]any{
 		"type":    "prometheus",
 		"data":    data,
@@ -110,7 +126,7 @@ func WorkloadMetricEvidence(ctx *security.RequestContext, accountID, workload, n
 		},
 		"additional_info": map[string]any{"title": title},
 		"insight":         []map[string]any{},
-	}, nil
+	}
 }
 
 // firstResultWithSeries returns the result for the first of keys, in order, that came

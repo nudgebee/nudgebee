@@ -6,15 +6,19 @@ import (
 	"context"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
+	"os"
+	"testing"
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
-	"os"
-	"testing"
-	"time"
 )
 
 // Runs existing skills without creating, editing, or deleting KB fixtures.
@@ -102,16 +106,16 @@ func TestExistingLogsKBInventory(t *testing.T) {
 		"Nudgebee_Namespace_Log_Correlation":  false,
 		"Checkout_Service_Log_Triage_Runbook": false,
 	}
-	kbs, err := toolcore.ListKnowledgebases(sc, account)
+	kbs, err := knowledge.ListKnowledgebases(sc, account)
 	require.NoError(t, err)
-	mappings, err := toolcore.ListKBAgentMappings(sc, account)
+	mappings, err := knowledge.ListKBAgentMappings(sc, account)
 	require.NoError(t, err)
 	for _, listed := range kbs {
 		if _, ok := wanted[listed.Name]; !ok {
 			continue
 		}
 		wanted[listed.Name] = true
-		kb, getErr := toolcore.GetKnowledgebase(sc, account, listed.Id)
+		kb, getErr := knowledge.GetKnowledgebase(sc, account, listed.Id)
 		require.NoError(t, getErr)
 		var agents []string
 		for _, mapping := range mappings {

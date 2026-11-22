@@ -489,10 +489,7 @@ func elasticsearchAlertType(kibanaRuleType string) string {
 // only rows are 'critical' and 'warning', so passing the lower-cased priority
 // ("high"/"medium"/"low") fails the insert with 23503.
 func eventRuleSeverity(priority event.EventPriority) string {
-	if priority == event.EventPriorityHigh {
-		return "critical"
-	}
-	return "warning"
+	return eventrule.NarrowSeverity(string(priority))
 }
 
 // mapElasticsearchStatus maps the operator-templated status (or the Kibana

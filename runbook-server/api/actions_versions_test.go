@@ -81,6 +81,7 @@ func (s *ActionsVersionsHandlerTestSuite) makeActionRequest(action string, args 
 	}
 	body, _ := json.Marshal(actionReq)
 	req, _ := http.NewRequest(http.MethodPost, "/rpc", bytes.NewBuffer(body))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	return w, req

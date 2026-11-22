@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Box, Typography, Radio, RadioGroup, FormControlLabel, CircularProgress } from '@mui/material';
 import Tabs from '@shared/navigation/Tabs';
 import { Input } from '@ui/Input';
@@ -6,17 +6,25 @@ import { Modal } from '@ui/Modal';
 import { Button as DsButton } from '@ui/Button';
 import { Select } from '@ui/Select';
 import { Switch } from '@ui/Switch';
+import { Callout } from '@ui/Callout';
 import BlockWithHeading from '@components/runbooks/BlockWithHeading';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import CustomDateTimePicker from '@shared/widgets/CustomDateTimePicker';
 import dayjs from 'dayjs';
-import apiTriage, { type TriageRule, type CreateTriageRuleInput, type UpdateTriageRuleInput, type RulePreviewResponse } from '@api1/triage';
+import apiTriage, {
+  type TriageRule,
+  type CreateTriageRuleInput,
+  type UpdateTriageRuleInput,
+  type RulePreviewResponse,
+  type TriageSource,
+} from '@api1/triage';
 
 interface TriageRuleModalProps {
   open: boolean;
   handleClose: () => void;
   accountId?: string;
+  provider?: string;
   rule?: TriageRule | null;
   isCreate: boolean;
   onSuccess?: (savedRule?: TriageRule) => void;
@@ -72,7 +80,7 @@ const jsonToLabels = (json: string): string => {
   return json;
 };
 
-const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, accountId, rule, isCreate, onSuccess }) => {
+const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, accountId, provider, rule, isCreate, onSuccess }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   // priority + scoreAdjustment hold transient string values ('', '-') during typing so users can
@@ -96,6 +104,9 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
   const [applyToExisting, setApplyToExisting] = useState(false);
   const [preview, setPreview] = useState<RulePreviewResponse | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Source dropdown options, fetched from the backend for this account.
+  const [sourceOptions, setSourceOptions] = useState<TriageSource[]>([]);
 
   useEffect(() => {
     if (open) {
@@ -219,6 +230,26 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
       setAction('auto_classify_fp');
     }
   }, [ruleType]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    apiTriage.listTriageSources(provider, accountId).then((sources) => {
+      if (!cancelled) setSourceOptions(sources);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, provider, accountId]);
+
+  const visibleSourceOptions = useMemo(() => {
+    const opts = [{ label: 'Any', value: '' }, ...sourceOptions.map((s) => ({ label: s.label, value: s.value }))];
+    // Keep an already-saved source selectable even if it isn't in the fetched set.
+    if (matchSource && !opts.some((o) => o.value === matchSource)) {
+      opts.push({ label: matchSource, value: matchSource });
+    }
+    return opts;
+  }, [sourceOptions, matchSource]);
 
   const handleSubmit = async () => {
     if (!name.trim()) {
@@ -458,7 +489,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
         </Box>
       }
     >
-      <Box p={ds.space[5]} sx={{ maxHeight: '70vh', overflowY: 'auto' }}>
+      <Box p={ds.space[5]} sx={{ maxHeight: '70vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: ds.space[6] }}>
         <BlockWithHeading number={1} heading='Basic Information' isExpandable={false}>
           <Box display='flex' flexDirection='column' gap={ds.space[4]}>
             <Input label='Rule Name' value={name} onChange={setName} size='sm' placeholder='e.g., Suppress maintenance alerts' required />
@@ -484,9 +515,9 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
 
         <BlockWithHeading number={2} heading='Rule Type' isExpandable={false}>
           <Tabs value={ruleType} onChange={setRuleType} behavior='filter' variant='secondary' ariaLabel='Rule type' options={RULE_TYPE_TAB_OPTIONS} />
-          <Typography variant='body2' sx={{ color: ds.gray[600] }}>
-            {RULE_TYPES.find((t) => t.value === ruleType)?.description}
-          </Typography>
+          <Box mt={ds.space[3]}>
+            <Callout tone='info'>{RULE_TYPES.find((t) => t.value === ruleType)?.description}</Callout>
+          </Box>
         </BlockWithHeading>
 
         <BlockWithHeading number={3} heading='Match Criteria' isExpandable={true} defaultStateOfExpand={true}>
@@ -498,19 +529,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
             <Input label='Alert Name (regex)' value={matchAlertname} onChange={setMatchAlertname} size='sm' placeholder='e.g., KubePodCrashLooping' />
             <Input label='Namespace (exact match)' value={matchNamespace} onChange={setMatchNamespace} size='sm' placeholder='e.g., kube-system' />
             <Input label='Service (regex)' value={matchService} onChange={setMatchService} size='sm' />
-            <Select
-              label='Source'
-              value={matchSource}
-              size='sm'
-              options={[
-                { label: 'Any', value: '' },
-                { label: 'Kubernetes', value: 'kubernetes' },
-                { label: 'Prometheus', value: 'prometheus' },
-                { label: 'PagerDuty', value: 'pagerduty' },
-                { label: 'Datadog', value: 'datadog' },
-              ]}
-              onChange={(next) => setMatchSource(next)}
-            />
+            <Select label='Source' value={matchSource} size='sm' options={visibleSourceOptions} onChange={(next) => setMatchSource(next)} />
             <Select
               label='Priority'
               value={matchPriority}

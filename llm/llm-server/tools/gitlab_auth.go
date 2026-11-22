@@ -86,3 +86,8 @@ func BuildGitlabAuth(cfg core.ToolConfig) (*CloudAuthResult, error) {
 
 	return &CloudAuthResult{Env: env}, nil
 }
+
+// GitlabConfigFields returns a gitlab integration's base URL and token.
+func GitlabConfigFields(cfg core.ToolConfig) (apiUrl, token string) {
+	return extractGitlabConfigFields(cfg.Values)
+}

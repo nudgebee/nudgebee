@@ -8,6 +8,7 @@ import (
 
 	"github.com/lib/pq"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/internal/database/models"
 	"nudgebee/services/security"
 )
 
@@ -87,7 +88,7 @@ func (e *ConfigurationExporter) FetchData(
 				WHEN cr.meta->>'namespace'                      IS NOT NULL THEN cr.meta->>'namespace'
 				WHEN cr.meta->'config'->>'namespace'            IS NOT NULL THEN cr.meta->'config'->>'namespace'
 				WHEN r.recommendation->'metadata'->>'namespace' IS NOT NULL THEN r.recommendation->'metadata'->>'namespace'
-				ELSE r.recommendation->>'namespace'
+				ELSE COALESCE(r.recommendation->>'namespace', ` + models.PopeyeNamespaceSQL + `)
 			END AS resource_k8s_namespace
 		FROM recommendation r
 		LEFT JOIN cloud_resourses cr ON cr.id = r.resource_id
@@ -118,8 +119,9 @@ func (e *ConfigurationExporter) FetchData(
 			cr.meta->>'namespace' = $%d OR
 			cr.meta->'config'->>'namespace' = $%d OR
 			r.recommendation->'metadata'->>'namespace' = $%d OR
-			r.recommendation->>'namespace' = $%d
-		)`, argCount, argCount, argCount, argCount)
+			r.recommendation->>'namespace' = $%d OR
+			(`+models.PopeyeNamespaceSQL+`) = $%d
+		)`, argCount, argCount, argCount, argCount, argCount)
 		args = append(args, *filters.Namespace)
 	}
 

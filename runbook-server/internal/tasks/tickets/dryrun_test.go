@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/runbook/internal/tasks/testutils"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/services/security"
 	"testing"
 
 	"github.com/google/uuid"
@@ -16,6 +17,12 @@ import (
 // before any side effect.
 func TestTicketWriteTasks_DryRunSkipsSideEffects(t *testing.T) {
 	integrationID := uuid.NewString()
+
+	// The integration lookup needs a database; these cases are about side effects, so treat the
+	// id as an existing integration of the right kind.
+	origResolve := resolveIntegrationID
+	resolveIntegrationID = func(_ *security.RequestContext, value string, _ []string) (string, error) { return value, nil }
+	t.Cleanup(func() { resolveIntegrationID = origResolve })
 
 	cases := []struct {
 		name     string

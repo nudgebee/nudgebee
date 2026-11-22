@@ -418,14 +418,7 @@ EOF`, oracleService, safeQuery)
 			}
 			return convertCsvToJsonString(requestContext, raw, rune(',')), nil
 		default:
-			outputformat := map[string]string{
-				"stdout": responseAny.(string),
-			}
-			outputformatBytes, err := common.MarshalJson(outputformat)
-			if err != nil {
-				return nil, err
-			}
-			return string(outputformatBytes), nil
+			return commandOutputJSON(responseAny, responseParsed)
 		}
 	}
 	responseParsedbytes, err := common.MarshalJson(responseParsed)

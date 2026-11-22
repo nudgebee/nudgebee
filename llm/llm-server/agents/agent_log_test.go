@@ -391,8 +391,9 @@ func TestCanonicalQueryAuthoringForRoutine(t *testing.T) {
 
 	assert.Contains(t, out, "this is the default for ROUTINE mode", "must state canonical JSON is the ROUTINE-mode default, not a hedged suggestion — hedged phrasing lost to the tool description's NL framing in live testing")
 	assert.Contains(t, out, "unified query-planning call")
-	assert.Contains(t, out, "app → deployment.keyword", "must advertise this account's real canonical mapping, not a generic placeholder")
-	assert.Contains(t, out, "namespace → k8s.namespace.keyword")
+	assert.Contains(t, out, "  - app\n", "must advertise this account's real canonical names, not a generic placeholder")
+	assert.Contains(t, out, "  - namespace\n")
+	assert.NotContains(t, out, "deployment.keyword", "the backend field is services-server's business, not the model's")
 	assert.Contains(t, out, "never invent a field name")
 	assert.Contains(t, out, "not fully confident", "must tell the model it can still fall back to natural language")
 }
@@ -443,7 +444,7 @@ func TestBuildCanonicalLogQueryPromptV3(t *testing.T) {
 		p := buildCanonicalLogQueryPromptV3(provider, []string{"app", "namespace", "pod", "k8s_deployment_name", "k8s_namespace_name", "k8s_pod_name"}, nil)
 
 		assert.Contains(t, p, "Canonical fields for THIS backend")
-		assert.Contains(t, p, "content → log")
+		assert.Contains(t, p, "- content\n")
 		assert.Contains(t, p, "Backend labels (use ONLY when NO canonical_name above fits the concept)")
 		assert.Contains(t, p, "prefer the SHORT Kubernetes-native form", "the sparse-mapping fallback list must carry the ambiguity heuristic")
 		assert.Contains(t, p, "k8s_deployment_name")

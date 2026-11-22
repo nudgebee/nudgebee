@@ -37,7 +37,7 @@ export function uniqueAgentName(): string {
   return `nb-e2e-agent-${uniqueSuffix()}`;
 }
 
-// Logs in, opens the Nubi panel and lands on AI & Tools > Egress Filter
+// Logs in, opens the Nubi panel and lands on AI & Tools > Security > Egress Filter
 // (relocated from Settings, docs/ia-consolidation-plan.md PR 3).
 export async function openEgressFilterTab(page: Page): Promise<EgressFilterLocators> {
   const loginPage = new LoginPage(page);

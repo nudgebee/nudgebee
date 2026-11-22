@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/google/uuid"
@@ -243,23 +244,15 @@ type claimShadowResult struct {
 	Content     string
 }
 
-func evaluateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, input, answer, notebook string, steps []NBAgentPlannerToolActionStep) claimShadowResult {
-	detail, status := prepareClaimCapture(ctx, request.AccountId, input, answer, notebook, steps)
-	if status != "" {
-		return claimShadowResult{Status: status}
-	}
-	return generateClaimShadow(ctx, request, detail)
-}
-
 func generateClaimShadow(ctx *security.RequestContext, request NBAgentRequest, detail claimCaptureDetail) claimShadowResult {
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, detail.Prompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, string(detail.InputPacket)),
 	}
-	response, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
+	response, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
 		request.MessageId, request.AgentId, false, messages, false, llms.WithTemperature(0), llms.WithJSONMode())
 	if err != nil {
-		if errors.Is(err, errPreservedPromptChanged) {
+		if errors.Is(err, llmruntime.ErrPreservedPromptChanged) {
 			return claimShadowResult{Status: "input_limit", ErrorStage: "preflight", ErrorDetail: TruncateHead(err.Error(), 2048)}
 		}
 		return claimShadowResult{Status: "generation_error", ErrorStage: "generation", ErrorDetail: TruncateHead(err.Error(), 2048)}
@@ -275,9 +268,9 @@ func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest,
 	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
 	record.TokenUsageID = uuid.NewString()
-	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
-	bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
-	bounded = context.WithValue(bounded, contextKeyClaimUsageID, record.TokenUsageID)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, record.TokenUsageID)
 	fallbackCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	return generateClaimShadow(fallbackCtx, request, record.Detail)
 }
@@ -288,13 +281,13 @@ func generateClaimFallback(ctx *security.RequestContext, request NBAgentRequest,
 func generateClaimContinuation(conv *critiqueConversation, usageID string, request NBAgentRequest, detail claimCaptureDetail) claimShadowResult {
 	bounded, cancel := context.WithTimeout(conv.ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
-	ctx := conv.derive(context.WithValue(bounded, contextKeyClaimUsageID, usageID))
+	ctx := conv.derive(context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, usageID))
 	instruction := conv.instruction(detail.Prompt)
 	response, err := conv.generate(ctx, request, llms.TextParts(llms.ChatMessageTypeHuman, instruction))
 	switch {
 	case errors.Is(err, errCritiqueToolCall):
 		return claimShadowResult{Status: "tool_call", ErrorStage: "generation", ErrorDetail: "Continuation audit called a tool"}
-	case errors.Is(err, errPreservedPromptChanged):
+	case errors.Is(err, llmruntime.ErrPreservedPromptChanged):
 		return claimShadowResult{Status: "input_limit", ErrorStage: "preflight", ErrorDetail: TruncateHead(err.Error(), 2048)}
 	case err != nil:
 		return claimShadowResult{Status: "generation_error", ErrorStage: "generation", ErrorDetail: TruncateHead(err.Error(), 2048)}
@@ -336,25 +329,33 @@ func evaluateClaimResponse(response *llms.ContentResponse, count int) (result cl
 // conv, when set, runs the audit and guidance as continuations of the planner's
 // request; any failure there falls back to the standalone packet audit.
 func runClaimCritiqueShadow(ctx *security.RequestContext, request NBAgentRequest, planner, agentName, baseline, baselineFeedback, input, answer, notebook string, steps []NBAgentPlannerToolActionStep, finalRound bool, conv *critiqueConversation) (effectiveDecision, effectiveFeedback string) {
-	effectiveDecision, effectiveFeedback = baseline, baselineFeedback
+	return runClaimCritique(ctx, request, planner, agentName, func() (string, string) { return baseline, baselineFeedback },
+		input, answer, notebook, steps, finalRound, conv)
+}
+
+// claimBaselinePending is the baseline stored while the critiquer it comes
+// from is still running; completion overwrites it with the real verdict.
+const claimBaselinePending = "pending"
+
+// runClaimCritique is runClaimCritiqueShadow with the critiquer's verdict
+// supplied by baseline, which is called once the audit has run. The audit never
+// reads that verdict, so a caller can run its critiquer while the audit runs.
+func runClaimCritique(ctx *security.RequestContext, request NBAgentRequest, planner, agentName string, baseline func() (string, string), input, answer, notebook string, steps []NBAgentPlannerToolActionStep, finalRound bool, conv *critiqueConversation) (effectiveDecision, effectiveFeedback string) {
 	if !config.Config.ClaimCritiqueFeedbackEnabled || ctx == nil ||
 		(request.ParentAgentId != "" && request.ParentAgentId != request.AgentId) {
-		return
-	}
-	baseline = strings.ToLower(strings.TrimSpace(baseline))
-	if baseline != "accept" && baseline != "refine" {
-		baseline = "unknown"
+		return baseline()
 	}
 	started := time.Now()
 	bounded, cancel := context.WithTimeout(ctx.GetContext(), claimCritiqueTimeout())
 	defer cancel()
-	bounded = context.WithValue(bounded, ContextKeyModelTier, ModelTierReasoning)
-	bounded = context.WithValue(bounded, contextKeyPreserveInput, true)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning)
+	bounded = context.WithValue(bounded, llmruntime.ContextKeyPreserveInput, true)
 	auditCtx := security.NewRequestContext(bounded, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
-	record := newClaimCapture(auditCtx, request, planner, agentName, baseline, baselineFeedback, input, answer, notebook, steps)
+	record := newClaimCapture(auditCtx, request, planner, agentName, claimBaselinePending, "", input, answer, notebook, steps)
 	record.Detail.FeedbackEnabled = config.Config.ClaimCritiqueFeedbackEnabled
 	if err := persistClaimCapture(auditCtx, record); err != nil {
-		MetricsClaimCritiqueShadow(planner, baseline, "unknown", "capture_error", time.Since(started).Seconds())
+		effectiveDecision, effectiveFeedback = baseline()
+		MetricsClaimCritiqueShadow(planner, claimBaselineLabel(effectiveDecision), "unknown", "capture_error", time.Since(started).Seconds())
 		ctx.GetLogger().Error("claim critique capture failed before inference", "audit_id", record.ID)
 		return
 	}
@@ -366,7 +367,7 @@ func runClaimCritiqueShadow(ctx *security.RequestContext, request NBAgentRequest
 		if oversizedContinuation {
 			record.Detail.ErrorStage, record.Detail.ErrorDetail = "", ""
 		}
-		auditCtx = security.NewRequestContext(context.WithValue(bounded, contextKeyClaimUsageID, record.TokenUsageID),
+		auditCtx = security.NewRequestContext(context.WithValue(bounded, llmruntime.ContextKeyClaimUsageID, record.TokenUsageID),
 			ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 		if conv != nil {
 			result = generateClaimContinuation(conv, record.TokenUsageID, request, record.Detail)
@@ -397,6 +398,9 @@ func runClaimCritiqueShadow(ctx *security.RequestContext, request NBAgentRequest
 			result.Feedback = guided
 		}
 	}
+	effectiveDecision, effectiveFeedback = baseline()
+	baselineLabel := claimBaselineLabel(effectiveDecision)
+	record.BaselineDecision, record.BaselineFeedback = baselineLabel, effectiveFeedback
 	record.Status, record.Decision = result.Status, result.Decision
 	if result.ErrorStage != "" {
 		record.Detail.ErrorStage, record.Detail.ErrorDetail = result.ErrorStage, result.ErrorDetail
@@ -420,13 +424,23 @@ func runClaimCritiqueShadow(ctx *security.RequestContext, request NBAgentRequest
 		decision = "unknown"
 	}
 	latency := time.Since(started).Seconds()
-	MetricsClaimCritiqueShadow(planner, baseline, decision, result.Status, latency)
+	MetricsClaimCritiqueShadow(planner, baselineLabel, decision, result.Status, latency)
 	// Content and exact model usage are in existing token telemetry. Keep free-
 	// form claims, evidence, and model error bodies out of operational logs.
 	ctx.GetLogger().Info("claim critique shadow", "audit_id", record.ID, "planner", planner, "status", result.Status,
-		"baseline", baseline, "decision", decision, "latency_seconds", latency,
+		"baseline", baselineLabel, "decision", decision, "latency_seconds", latency,
 		"conversation_id", request.ConversationId, "message_id", request.MessageId, "agent_id", request.AgentId)
 	return
+}
+
+// claimBaselineLabel is the critiquer verdict as stored and used as a metric
+// label: accept, refine, or unknown.
+func claimBaselineLabel(decision string) string {
+	decision = strings.ToLower(strings.TrimSpace(decision))
+	if decision != "accept" && decision != "refine" {
+		return "unknown"
+	}
+	return decision
 }
 
 // Only a valid audit may add feedback. Unknown incumbent outcomes retain their

@@ -287,6 +287,9 @@ func checkLLMChange(state llmTenantState, ch LLMDefaultsChange, envConfigured bo
 // ErrLLMChangeBlocked is returned when a change would leave accounts with no LLM.
 var ErrLLMChangeBlocked = errors.New("integrations: this change would leave accounts with no LLM")
 
+// ErrLLMCheckNotPermitted is returned when the caller may not read the tenant's LLM defaults.
+var ErrLLMCheckNotPermitted = errors.New("integrations: checking an LLM change is not permitted")
+
 // enforceLLMChange runs the check inside the caller's transaction and refuses a
 // blocked change or one made by a user who is not a tenant admin. The advisory
 // lock serialises LLM changes per tenant so two saves cannot both become the
@@ -318,11 +321,14 @@ func enforceLLMChange(ctx *security.RequestContext, tx *sqlx.Tx, ch LLMDefaultsC
 }
 
 // CheckLLMChange is the read-only check behind integrations_check_llm_defaults.
+// It only reports what a change would do, so a tenant-wide reader (built-in, or
+// a custom role holding the action's integrations:Read grant) may run it; the
+// change itself stays tenant-admin only (enforceLLMChange).
 func CheckLLMChange(ctx *security.RequestContext, ch LLMDefaultsChange) (LLMDefaultsReport, error) {
-	sc := ctx.GetSecurityContext()
-	if !sc.IsTenantAdmin() && !sc.IsSuperAdmin() {
-		return LLMDefaultsReport{}, errors.New("integrations: only a tenant admin can change LLM integrations")
+	if !ctx.GetSecurityContext().CanAccessTenant(security.SecurityAccessTypeRead) {
+		return LLMDefaultsReport{}, ErrLLMCheckNotPermitted
 	}
+	sc := ctx.GetSecurityContext()
 	envConfigured := LLMEnvConfigured(ctx.GetContext())
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {

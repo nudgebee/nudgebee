@@ -15,7 +15,8 @@
  * The last two arrive with the services-server VM-scan pipeline (#35405); the
  * queries here are inert until that lands.
  */
-import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { escapeLikePattern, gqlStringify, queryGraphQL } from '@lib/HttpService';
+import { joinFleetMetrics, vmPrivateIp } from '@components/vm/vmMetricsData';
 import apiHome from '@api1/home';
 import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
@@ -38,6 +39,8 @@ export interface VmResource {
   resourse_id: string;
   type: string;
   status: string;
+  /** false once decommissioned; the row stays listed so it can be recommissioned. */
+  is_active?: boolean;
   region: string;
   meta: Record<string, any>;
   tags: Record<string, any>;
@@ -173,6 +176,7 @@ query ListVms($limit: Int, $offset: Int) {
       resourse_id
       type
       status
+      is_active
       region
       meta
       tags
@@ -318,6 +322,17 @@ mutation ScanVm($accountId: String!, $datasourceId: String!, $cloudResourceId: S
   }
 }`;
 
+const UPDATE_VM_ACTIVE = `
+mutation UpdateVmActive($accountId: String!, $cloudResourceId: String!, $isActive: Boolean!) {
+  security_update_vm_active(object: {
+    account_id: $accountId,
+    cloud_resource_id: $cloudResourceId,
+    is_active: $isActive
+  }) {
+    data
+  }
+}`;
+
 const SCAN_VM_ACCOUNT = `
 mutation ScanVmAccount($accountId: String!) {
   security_scan_vm_account(object: {
@@ -342,6 +357,32 @@ query ListVmScanDatasources($accountId: String!) {
     account_id: $accountId
   }) {
     data
+  }
+}`;
+
+const GET_VM_SERVICE_MAP = `
+query VmServiceMap($accountId: String!, $windowSeconds: Int) {
+  vm_get_service_map(request: {
+    account_id: $accountId
+    window_seconds: $windowSeconds
+  }) {
+    data {
+      labels
+      applications {
+        Id { kind name namespace }
+        Category { category }
+        Labels
+        Type
+        Status
+        IsHealthy
+        HealthReason
+        DesiredInstances
+        FailedInstances
+        Instances { Id { kind name namespace } IsFailed }
+        Upstreams { Id RequestCount FailureCount Latency Protocol Stats Status Weight BytesSent BytesReceived }
+        Downstreams { Id RequestCount FailureCount Latency Protocol Stats Status Weight BytesSent BytesReceived }
+      }
+    }
   }
 }`;
 
@@ -470,7 +511,148 @@ function queryGraphQLCached(query: string, operationName: string, variables: Rec
   );
 }
 
+/** Utilisation keys the VM metrics panel asks for (see services/observability/prometheus_vm_queries.go). */
+export const VM_METRIC_KEYS = [
+  'cpu_usage_line',
+  'cpu_total',
+  'memory_usage_line',
+  'mem_total',
+  'disk_read_bytes',
+  'disk_write_bytes',
+  'disk_used',
+  'disk_total',
+  'vm_service_cpu_usage',
+  'vm_service_memory_usage',
+  'vm_service_disk_used',
+  'vm_service_git',
+] as const;
+
+/** Fleet-wide keys behind the VM list's CPU and memory gauges (see prometheus_vm_queries.go). */
+export const VM_FLEET_METRIC_KEYS = [
+  'vm_fleet_cpu_used',
+  'vm_fleet_cpu_cores',
+  'vm_fleet_mem_used',
+  'vm_fleet_mem_total',
+  'vm_fleet_identity',
+  'vm_fleet_hostname',
+] as const;
+
+/** Current load of one VM, as a share of what it has. Undefined fields were not reported. */
+export interface VmFleetMetric {
+  cpuPct?: number;
+  memPct?: number;
+}
+
+export interface VmMetricSeries {
+  /** Labels of the series; per-service keys carry `container_id`. */
+  metric: Record<string, string>;
+  /** Epoch seconds. */
+  timestamps: number[];
+  values: number[];
+}
+
+export interface VmMetricResult {
+  key: string;
+  series: VmMetricSeries[];
+  /** Why the key has no data (no provider, unsupported key, query error). */
+  reason?: string;
+}
+
+const METRICS_QUERY_UTILISATION = `
+  query MetricsQueryUtilisation($jsonFilter: jsonb!, $accountId: String!, $startTime: Float!, $endTime: Float!) {
+    metrics_aggregate_utilisation(request: {account_id: $accountId, request: $jsonFilter, end_time: $endTime, start_time: $startTime}) {
+      results
+    }
+  }
+`;
+
+/** The backend returns series values as strings in some providers; normalise to numbers and drop non-finite points. */
+export function parseVmMetricResults(raw: any[]): VmMetricResult[] {
+  return (Array.isArray(raw) ? raw : []).map((r: any) => {
+    const series: VmMetricSeries[] = (r?.payload || []).map((p: any) => {
+      const timestamps: number[] = [];
+      const values: number[] = [];
+      (p?.timestamps || []).forEach((t: any, i: number) => {
+        const v = Number(p?.values?.[i]);
+        // Number(null) and Number('') are 0, which would pass as an epoch timestamp.
+        const ts = t === null || t === undefined || t === '' ? NaN : Number(t);
+        // A point needs both: a bad timestamp breaks the chart axis as surely as a bad value.
+        if (Number.isFinite(v) && Number.isFinite(ts)) {
+          timestamps.push(ts);
+          values.push(v);
+        }
+      });
+      return { metric: p?.metric || {}, timestamps, values };
+    });
+    return { key: r?.query_key, series, reason: r?.error || r?.note || undefined };
+  });
+}
+
 const apiVm = {
+  /**
+   * CPU, memory, disk and per-service metrics for one VM, read from the account's
+   * metrics provider. The VM is identified by whichever of its cloud instance id,
+   * private IP and hostname we know; the backend resolves the node-agent `instance`
+   * label from them.
+   */
+  async getVmMetrics({
+    accountId,
+    vm,
+    startDate,
+    endDate,
+    metrics = [...VM_METRIC_KEYS],
+  }: {
+    accountId: string;
+    vm: Pick<VmResource, 'name' | 'resourse_id' | 'meta'>;
+    /** Epoch ms. */
+    startDate: number;
+    endDate: number;
+    metrics?: string[];
+  }): Promise<VmMetricResult[]> {
+    const response = await queryGraphQL(METRICS_QUERY_UTILISATION, 'MetricsQueryUtilisation', {
+      accountId,
+      startTime: startDate,
+      endTime: endDate,
+      jsonFilter: {
+        kind: 'vm',
+        vm_instance_id: vm.resourse_id && !vm.resourse_id.startsWith('vm-') ? vm.resourse_id : undefined,
+        vm_ip: vmPrivateIp(vm.meta),
+        vm_hostname: vm.name,
+        metrics,
+        instant: false,
+      },
+    });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to load VM metrics');
+    return parseVmMetricResults(response?.data?.data?.metrics_aggregate_utilisation?.results);
+  },
+
+  /**
+   * CPU and memory use of every VM in `vms`, from one batched call: the backend answers per
+   * node-agent `instance` for the whole store, and the VMs are matched to those instances
+   * here by cloud instance id, then private IP, then hostname. A VM with no match is absent
+   * from the result (no agent, or one that stopped reporting).
+   */
+  async getVmFleetMetrics({
+    accountId,
+    vms,
+  }: {
+    accountId: string;
+    vms: Array<Pick<VmResource, 'id' | 'name' | 'resourse_id' | 'meta'>>;
+  }): Promise<Record<string, VmFleetMetric>> {
+    if (!vms.length) return {};
+    const end = Date.now();
+    const response = await queryGraphQL(METRICS_QUERY_UTILISATION, 'MetricsQueryUtilisation', {
+      accountId,
+      startTime: end - 5 * 60 * 1000,
+      endTime: end,
+      jsonFilter: { kind: 'vm_fleet', metrics: [...VM_FLEET_METRIC_KEYS], instant: true },
+    });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to load VM metrics');
+    return joinFleetMetrics(parseVmMetricResults(response?.data?.data?.metrics_aggregate_utilisation?.results), vms);
+  },
+
   /** Self-hosted accounts, i.e. everything the /vm page can be scoped to. */
   async getSelfHostedAccounts(refresh = false) {
     const accounts = await apiHome.getCloudAccounts('SelfHosted', refresh);
@@ -494,7 +676,10 @@ const apiVm = {
     const where: any = { account: { _eq: accountId } };
     if (resourceIds?.length) where.id = { _in: resourceIds };
     if (search) {
-      where._and = [{ _or: [{ name: { _ilike: `%${search}%` } }, { resourse_id: { _ilike: `%${search}%` } }] }];
+      // Match the typed text literally — escape %, _ and \ so a search like "%" does
+      // not become the ILIKE wildcard that matches every VM (#41436).
+      const pattern = `%${escapeLikePattern(search)}%`;
+      where._and = [{ _or: [{ name: { _ilike: pattern } }, { resourse_id: { _ilike: pattern } }] }];
     }
     const response = await queryGraphQLCached(LIST_VMS.replaceAll('__WHERE__', gqlStringify(where)), 'ListVms', { limit, offset });
     const rows = response?.data?.data?.vms?.rows || [];
@@ -523,7 +708,9 @@ const apiVm = {
     if (cloudResourceId) where.cloud_resource_id = { _eq: cloudResourceId };
     if (pkgType) where.pkg_type = { _eq: pkgType };
     if (search) {
-      where._and = [{ _or: [{ name: { _ilike: `%${search}%` } }, { source_name: { _ilike: `%${search}%` } }] }];
+      // Same literal match as listVms: a typed % or _ must not list every package (#41436).
+      const pattern = `%${escapeLikePattern(search)}%`;
+      where._and = [{ _or: [{ name: { _ilike: pattern } }, { source_name: { _ilike: pattern } }] }];
     }
     const query = LIST_VM_PACKAGES.replaceAll('__WHERE__', gqlStringify(where))
       .replaceAll('__GROUP_BY__', JSON.stringify(PACKAGE_GROUP_KEY))
@@ -815,6 +1002,21 @@ const apiVm = {
   },
 
   /**
+   * Decommission (`isActive` false) a VM that has left the network, or recommission it (true).
+   * Decommissioning archives its packages and open vulnerability findings and makes scans skip
+   * it; the row stays in the list as Inactive. Recommissioning only reactivates the row — the
+   * next scan repopulates its packages and findings.
+   */
+  async updateVmActive({ accountId, cloudResourceId, isActive }: { accountId: string; cloudResourceId: string; isActive: boolean }) {
+    readCache.clear();
+    const response = await queryGraphQL(UPDATE_VM_ACTIVE, 'UpdateVmActive', { accountId, cloudResourceId, isActive });
+    const errors = response?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message || 'Failed to update VM');
+    }
+  },
+
+  /**
    * Fire an on-demand scan for every instance reachable by the account's
    * discovery datasource(s). Same ack-now/runs-detached contract as scanVm;
    * fails with a clear error when no discovery agent is configured.
@@ -851,6 +1053,140 @@ const apiVm = {
       updatedAt: row.updated_at,
     }));
   },
+  /**
+   * Whether this account's metrics store is connected and VM agents are writing to
+   * it. Probes the store through the forager, so it can take a few seconds: call it
+   * on demand rather than caching it.
+   */
+  async getMetricsStatus(accountId: string): Promise<VmMetricsStatus> {
+    const response = await queryGraphQL(METRICS_CHECK_VM_STATUS, 'MetricsCheckVmStatus', { accountId });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to check VM metrics');
+    const status = response?.data?.data?.metrics_check_vm_status;
+    if (!status) throw new Error('Failed to check VM metrics');
+    return { ...status, reporting: status.reporting || [] };
+  },
+  /**
+   * Whether this account's log store is connected and holding recent logs. Probes the
+   * store through the forager, so it can take a few seconds: call it on demand.
+   */
+  async getLogsStatus(accountId: string): Promise<VmLogsStatus> {
+    const response = await queryGraphQL(LOGS_CHECK_VM_STATUS, 'LogsCheckVmStatus', { accountId });
+    const errors = response?.data?.errors;
+    if (errors?.length) throw new Error(errors[0]?.message || 'Failed to check VM logs');
+    const status = response?.data?.data?.logs_check_vm_status;
+    if (!status) throw new Error('Failed to check VM logs');
+    return status;
+  },
+
+  /**
+   * Whether this account can receive Alertmanager alerts and when one last did. The
+   * webhook is push-only, so there is no connection to probe: the status is the
+   * integration's own state plus the newest event it produced.
+   */
+  async getAlertWebhookStatus(accountId: string): Promise<VmAlertWebhookStatus> {
+    const integrations = await listAccountIntegrations(accountId, ALERTMANAGER_WEBHOOK_INTEGRATION);
+    if (!integrations.length) return { state: 'not_configured' };
+    const enabled = integrations.filter((row: any) => row.status === 'enabled');
+    if (!enabled.length) return { state: 'disabled', integration_name: integrations[0].name };
+
+    const res: any = await k8sApi.getK8sEvents(
+      1,
+      0,
+      { account_id: accountId, source: [ALERTMANAGER_WEBHOOK_INTEGRATION], sort_by: 'updated_at', timeFilter: false },
+      ['updated_at']
+    );
+    const events = res?.data?.events;
+    if (!Array.isArray(events)) throw new Error('Failed to read received alerts');
+    const lastReceived = events[0]?.updated_at;
+    return lastReceived
+      ? { state: 'receiving', integration_name: enabled[0].name, last_received_at: lastReceived }
+      : { state: 'no_alerts', integration_name: enabled[0].name };
+  },
+
+  /**
+   * The account's service map, built by its forager from node-agent metrics and
+   * named against inventory on the server. Same application shape as the K8s
+   * map, so the K8s node and edge components render it unchanged.
+   */
+  async getServiceMap(accountId: string, windowSeconds: number): Promise<any[]> {
+    const response = await queryGraphQL(GET_VM_SERVICE_MAP, 'VmServiceMap', { accountId, windowSeconds });
+    const errors = response?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message || 'Failed to load the service map');
+    }
+    return response?.data?.data?.vm_get_service_map?.data?.applications || [];
+  },
 };
+
+export type VmAlertWebhookState = 'not_configured' | 'disabled' | 'no_alerts' | 'receiving';
+
+export interface VmAlertWebhookStatus {
+  state: VmAlertWebhookState;
+  integration_name?: string;
+  /** When the most recent alert (or a repeat of one) reached the account. */
+  last_received_at?: string;
+}
+
+const ALERTMANAGER_WEBHOOK_INTEGRATION = 'prometheus_alertmanager_webhook';
+
+export type VmMetricsState = 'not_configured' | 'check_failed' | 'unreachable' | 'no_data' | 'connected';
+
+export interface VmMetricsStatus {
+  state: VmMetricsState;
+  provider?: string;
+  integration_id?: string;
+  integration_name?: string;
+  error?: string;
+  /** What `reporting` counts: this account's VMs, or every agent in the store when the account has no VM inventory to match against. */
+  scope?: 'account' | 'store';
+  /** VMs the account has on record. */
+  inventory?: number;
+  /** Agents writing to the same store that are not this account's VMs. */
+  other_agents?: number;
+  /** node-agents seen writing to the account's metrics store recently. */
+  reporting: Array<{ instance: string; hostname?: string }>;
+}
+
+export type VmLogsState = VmMetricsState;
+
+export interface VmLogsStatus {
+  state: VmLogsState;
+  provider?: string;
+  integration_id?: string;
+  integration_name?: string;
+  error?: string;
+}
+
+const LOGS_CHECK_VM_STATUS = `
+  query LogsCheckVmStatus($accountId: String!) {
+    logs_check_vm_status(request: {account_id: $accountId}) {
+      state
+      provider
+      integration_id
+      integration_name
+      error
+    }
+  }
+`;
+
+const METRICS_CHECK_VM_STATUS = `
+  query MetricsCheckVmStatus($accountId: String!) {
+    metrics_check_vm_status(request: {account_id: $accountId}) {
+      state
+      provider
+      integration_id
+      integration_name
+      error
+      scope
+      inventory
+      other_agents
+      reporting {
+        instance
+        hostname
+      }
+    }
+  }
+`;
 
 export default apiVm;

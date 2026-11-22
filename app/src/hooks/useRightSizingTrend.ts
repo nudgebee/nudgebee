@@ -3,10 +3,12 @@ import k8sApi from '@api1/kubernetes';
 import { safeParseJSON } from '@components/optimise-new/utils';
 import { extractContainerData, replicaWindowOf } from '@components/optimise-new/rightSizingData';
 import { toPerPodTrend, type PerPodTrend } from '@components/optimise-new/evidence/perPodTrend';
+import { trendRangeFor, useTrendRange, type TrendRangeDays } from '@components/optimise-new/evidence/TrendRange';
 
 /**
- * The usage trend behind a pod right-sizing recommendation: seven days of the
- * workload's CPU and memory, per pod, from the utilisation API.
+ * The usage trend behind a pod right-sizing recommendation: the workload's CPU
+ * and memory, per pod, from the utilisation API, over a range that starts at
+ * the window the recommendation was computed over.
  *
  * Owned by the detail drawer rather than by either tab, because the Details tab
  * draws a compact version of the same series the Evidence tab draws in full,
@@ -23,6 +25,9 @@ export interface RightSizingTrend {
   /** The executed metric queries, keyed by metric; only the Prometheus datasource returns them. */
   cpuQueries: Record<string, string>;
   memoryQueries: Record<string, string>;
+  /** Days the trend covers; both tabs label their charts with it. */
+  rangeDays: TrendRangeDays;
+  setRangeDays: (days: TrendRangeDays) => void;
 }
 
 const NO_ROWS: PerPodTrend = { rows: [], source: null, replicas: null, hasBusiestPod: false };
@@ -61,6 +66,12 @@ export function useRightSizingTrend(fullRecommendation: any): RightSizingTrend {
   const recData = useMemo(() => safeParseJSON(fullRecommendation?.recommendation), [fullRecommendation?.recommendation]);
   const containers = useMemo(() => extractContainerData(recData), [recData]);
   const containerName = containers[0]?.containerName;
+  const primary = containers[0];
+  const windowHours =
+    primary?.cpu?.strategy?.settings?.history_duration ??
+    primary?.memory?.strategy?.settings?.history_duration ??
+    replicaWindowOf(primary ? [primary.cpu, primary.memory] : [])?.windowHours;
+  const [rangeDays, setRangeDays] = useTrendRange(fullRecommendation?.id, trendRangeFor(windowHours));
 
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -85,7 +96,7 @@ export function useRightSizingTrend(fullRecommendation: any): RightSizingTrend {
   const hasContainers = containers.length > 0;
 
   useEffect(() => {
-    // Rows never outlive the recommendation they were fetched for: the drawer
+    // Rows never outlive the recommendation, or the range, they were fetched for: the drawer
     // is reused across recommendations, and a stale trend under a new verdict
     // would be read as that verdict's evidence. The resets are no-ops when
     // there is nothing to clear, so a re-run never causes a render by itself.
@@ -97,7 +108,7 @@ export function useRightSizingTrend(fullRecommendation: any): RightSizingTrend {
     let cancelled = false;
     setLoading(true);
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 7);
+    startDate.setDate(startDate.getDate() - rangeDays);
 
     // Match the KubernetesUtilization page: the 'prometheus' datasource with an
     // explicit metrics list. The recommendation line is the first container's
@@ -149,7 +160,7 @@ export function useRightSizingTrend(fullRecommendation: any): RightSizingTrend {
     return () => {
       cancelled = true;
     };
-  }, [fullRecommendation?.id, hasContainers, accountId, namespaceName, workloadName, workloadType, effectivePodName, containerName]);
+  }, [fullRecommendation?.id, hasContainers, accountId, namespaceName, workloadName, workloadType, effectivePodName, containerName, rangeDays]);
 
   // Per pod, like the recommendation line: totals are divided by the running
   // pod count, or by the replica average the producers stamped on the row.
@@ -160,7 +171,7 @@ export function useRightSizingTrend(fullRecommendation: any): RightSizingTrend {
     return toPerPodTrend(rows, window, livePods);
   }, [rows, containers, livePods]);
 
-  return { perPod, loading, hasData: rows.length > 0, cpuQueries, memoryQueries };
+  return { perPod, loading, hasData: rows.length > 0, cpuQueries, memoryQueries, rangeDays, setRangeDays };
 }
 
 export default useRightSizingTrend;

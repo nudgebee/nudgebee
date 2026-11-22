@@ -8,6 +8,10 @@
 # account, then the engine scores the returned diagnosis with RAGAS + verdict
 # judge like any other agent.
 #
+# vm_event scenarios (010-013) are not registered either: they inject faults
+# over SSH on a real fleet, which the dashboard image can't reach. See
+# event_code_fix/vm/README.md.
+#
 # Scenario 008 (pr_followup) is not registered: it opens and closes a real PR
 # on every run, which does not belong behind a dashboard button. Run it with
 # `python event_code_fix/run_event_code_fix.py --scenario pr_followup_cache_size_limit`.

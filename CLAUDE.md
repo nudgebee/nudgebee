@@ -79,8 +79,8 @@ Each service's Makefile / package.json is the source of truth — read it for th
 | Service type | Services | Validate with |
 |---|---|---|
 | Go with Makefile | api-server/services, ticket-server, cloud-collector, relay-server, cost-server, llm-server, llm/gateway, code-analysis | `make validate` (fmt + lint + test); `make fmt` to auto-format |
-| Python with Makefile | ml-k8s-server, rag-server, k8s-collector/app | `make lint && make test`; `make fmt` to auto-format (black, line-length 120) |
-| Python without Makefile | auto-pilot (+sidecar), notifications-server, llm/benchmark | `poetry install`, then `poetry run black --check . && poetry run flake8 . && poetry run pytest` |
+| Python with Makefile | ml-k8s-server, rag-server, k8s-collector/app, notifications-server | `make lint && make test`; `make fmt` to auto-format (black, line-length 120) |
+| Python without Makefile | auto-pilot (+sidecar), llm/benchmark | `poetry install`, then `poetry run black --check . && poetry run flake8 . && poetry run pytest` |
 | Go without Makefile | app-e2e-tests, api-server/test_servicemap | `go test ./...` |
 | TypeScript | app | `npm run lint2 && npm run test`; `npm run lint2:fix` to auto-fix. Install with `npm ci --legacy-peer-deps` |
 

@@ -1,14 +1,13 @@
-"""Teams bot installs are recorded as ms_teams_team integrations, and the
-Microsoft tenant id names the ms_teams integration."""
+"""The bot's activities keep a bound team's row current and release a team the
+app leaves; they never bind one."""
 
 import asyncio
-from types import SimpleNamespace
 from unittest import mock
 
 from botbuilder.schema import Activity
 
 from notifications_server.services.ms_teams import bot_installations as bi
-from notifications_server.services.ms_teams.ms_teams import aad_tenant_id_of
+from notifications_server.services.ms_teams import team_binding as tb
 
 SERVICE_URL = "https://smba.example.com/teams/"
 NB_TENANT = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -49,6 +48,7 @@ def test_team_install_carries_the_team_fields():
             "service_url": SERVICE_URL,
             "aad_tenant_id": "tenant-a",
             "app_id": "app-1",
+            "event_time": None,
         }
     ]
 
@@ -103,16 +103,19 @@ def _team(session):
     return integ, mi._decrypt_config(rows)
 
 
-def test_install_before_connect_records_nothing():
+def test_an_unbound_team_is_never_recorded_or_bound():
     session = _session_with()
     assert bi.apply_team_change(session, _change()) == bi.NOT_CONNECTED
-    from notifications_server.models.models import Integration
+    released = _team_row("released")
+    session = _session_with(released)
+    assert bi.apply_team_change(session, _change()) == bi.NOT_CONNECTED
+    integ, cfg = _team(session)
+    assert (integ.status, str(integ.tenant_id), cfg) == ("released", NB_TENANT, {}), "a re-add needs a new link"
 
-    assert session.query(Integration).count() == 0
 
-
-def test_install_rename_uninstall_and_reinstall():
-    session = _session_with(_teams_integration("tenant-a", NB_TENANT))
+def test_a_bound_teams_fields_are_refreshed_and_bound_at_is_left_alone():
+    row = _team_row()
+    session = _session_with(row, _config(row.id, "bound_at", "2026-11-01T10:00:00"))
     assert bi.apply_team_change(session, _change()) == bi.RECORDED
     integ, cfg = _team(session)
     assert (integ.name, str(integ.tenant_id), integ.status) == ("group-1", NB_TENANT, "enabled")
@@ -122,6 +125,7 @@ def test_install_rename_uninstall_and_reinstall():
         "service_url": SERVICE_URL,
         "aad_tenant_id": "tenant-a",
         "app_id": "app-1",
+        "bound_at": "2026-11-01T10:00:00",
     }
 
     assert bi.apply_team_change(session, _change()) == bi.UNCHANGED, "a repeat event writes nothing"
@@ -131,50 +135,27 @@ def test_install_rename_uninstall_and_reinstall():
     assert cfg["team_name"] == "Platform On-call"
     assert cfg["team_thread_id"] == "19:general@thread.tacv2", "an empty field keeps the stored value"
 
-    assert bi.apply_team_change(session, _change("remove")) == bi.REMOVED
-    assert _team(session)[0].status == "disabled", "uninstall disables, never deletes"
-    assert bi.apply_team_change(session, _change("remove")) == bi.UNCHANGED
 
-    assert bi.apply_team_change(session, _change()) == bi.RECORDED
-    assert _team(session)[0].status == "enabled"
-
-
-def test_a_team_row_moves_with_its_microsoft_tenant():
-    other_tenant = "bbbbbbbb-2222-4222-8222-222222222222"
-    session = _session_with(_teams_integration("tenant-a", NB_TENANT))
-    assert bi.apply_team_change(session, _change()) == bi.RECORDED
-    before = _team(session)[0]
-    row_id = before.id
-
-    from notifications_server.models.models import Integration
-
-    connection = session.query(Integration).filter(Integration.type == "ms_teams").one()
-    session.delete(connection)
-    session.add(_teams_integration("tenant-a", other_tenant))
-    session.commit()
-
-    assert bi.apply_team_change(session, _change()) == bi.RECORDED
-    after = _team(session)[0]
-    assert (after.id, after.name) == (row_id, "group-1"), "one row per team: the id is not stable across workspaces"
-    assert str(after.tenant_id) == other_tenant
+def test_the_app_leaving_a_team_releases_it():
+    session = _session_with(_team_row())
+    with mock.patch.object(bi, "release_team", return_value=tb.RELEASED_TEAM) as release:
+        assert bi.apply_team_change(session, _change("remove", event_time="t")) == bi.REMOVED
+    assert release.call_args.args[1:] == ("group-1", "t")
+    with mock.patch.object(bi, "release_team", return_value=tb.UNCHANGED):
+        assert bi.apply_team_change(session, _change("remove")) == bi.UNCHANGED
 
 
-def test_a_concurrent_insert_is_retried_as_an_update():
-    from sqlalchemy.exc import IntegrityError
+def test_a_stored_team_name_survives_later_messages():
+    session = _session_with(_team_row())
+    # Teams leaves the team name out of message events.
+    assert bi.apply_team_change(session, _change(team_name="", from_message=True)) == bi.RECORDED
+    integ, cfg = _team(session)
+    assert "team_name" not in cfg
 
-    calls = []
-
-    def flaky(session, change):
-        calls.append(change["action"])
-        if len(calls) == 1:
-            raise IntegrityError("INSERT", {}, Exception("duplicate key"))
-        return bi.RECORDED
-
-    session = mock.Mock()
-    with mock.patch.object(bi, "_apply_team_change", side_effect=flaky):
-        assert bi.apply_team_change(session, _change()) == bi.RECORDED
-    session.rollback.assert_called_once()
-    assert calls == ["upsert", "upsert"]
+    bi.store_team_name(session, integ.id, "Platform")
+    assert _team(session)[1]["team_name"] == "Platform"
+    assert bi.apply_team_change(session, _change(team_name="", from_message=True)) == bi.UNCHANGED
+    assert _team(session)[1]["team_name"] == "Platform"
 
 
 def test_messages_from_a_recorded_team_skip_the_database():
@@ -235,15 +216,9 @@ def test_record_team_installations_runs_off_the_loop():
 
 
 def test_aad_tenant_id_from_account_id():
-    assert bi.aad_tenant_id_from_account_id("object-1.tenant-a") == "tenant-a"
-    assert bi.aad_tenant_id_from_account_id("tenant-a") == "tenant-a"
-    assert bi.aad_tenant_id_from_account_id(None) == ""
-
-
-def test_connect_names_the_integration_by_tenant_id():
-    account = {"home_account_id": "object-1.tenant-from-account"}
-    assert aad_tenant_id_of({"id_token_claims": {"tid": "tenant-a"}}, account) == "tenant-a"
-    assert aad_tenant_id_of({}, account) == "tenant-from-account"
+    assert tb.aad_tenant_id_from_account_id("object-1.tenant-a") == "tenant-a"
+    assert tb.aad_tenant_id_from_account_id("tenant-a") == "tenant-a"
+    assert tb.aad_tenant_id_from_account_id(None) == ""
 
 
 def _session_with(*rows):
@@ -262,162 +237,27 @@ def _session_with(*rows):
     return session
 
 
-def _teams_integration(name, tenant_id, status="enabled"):
+def _team_row(status="enabled"):
     import uuid
 
     from notifications_server.models.models import Integration
 
     return Integration(
         id=uuid.uuid4(),
-        tenant_id=uuid.UUID(tenant_id),
-        type="ms_teams",
+        tenant_id=uuid.UUID(NB_TENANT),
+        type=bi.TEAM_TYPE,
         source="user",
-        name=name,
+        name="group-1",
         status=status,
         labels={},
     )
 
 
-def test_lookup_by_microsoft_tenant_is_exact():
-    from notifications_server.services import messaging_installations as mi
-
-    nb_tenant = "aaaaaaaa-1111-4111-8111-111111111111"
-    session = _session_with(
-        _teams_integration("tenant-a", nb_tenant),
-        _teams_integration("object-9.tenant-ab", "bbbbbbbb-2222-4222-8222-222222222222"),
-    )
-    found = mi.load_ms_teams_installation_by_aad_tenant(session, "tenant-a")
-    assert found is not None and str(found.tenant_id) == nb_tenant
-    # The old substring match let "tenant-a" resolve to "object-9.tenant-ab".
-    assert str(mi.load_ms_teams_installation_by_aad_tenant(session, "tenant-ab").tenant_id) != nb_tenant
-    assert mi.load_ms_teams_installation_by_aad_tenant(session, "nant-a") is None
-    assert mi.load_ms_teams_installation_by_aad_tenant(session, "") is None
-
-
-def test_lookup_accepts_names_saved_before_the_rename():
+def _config(integration_id, name, value):
     import uuid
 
-    from notifications_server.models.models import MessagingPlatform
-    from notifications_server.services import messaging_installations as mi
+    from notifications_server.models.models import IntegrationConfigValue
 
-    nb_tenant = "aaaaaaaa-1111-4111-8111-111111111111"
-    session = _session_with(_teams_integration("object-1.tenant-a", nb_tenant))
-    assert str(mi.load_ms_teams_installation_by_aad_tenant(session, "tenant-a").tenant_id) == nb_tenant
-
-    legacy = _session_with(
-        MessagingPlatform(
-            id=uuid.uuid4(),
-            tenant_id=uuid.UUID(nb_tenant),
-            platform="ms_teams",
-            team_id="object-1.tenant-b",
-            client_id="c",
-            token="t",
-        )
+    return IntegrationConfigValue(
+        id=uuid.uuid4(), integration_id=integration_id, name=name, value=value, is_encrypted=False
     )
-    found = mi.load_ms_teams_installation_by_aad_tenant(legacy, "tenant-b")
-    assert found is not None and found._origin == mi.ORIGIN_LEGACY
-
-
-def test_tenant_owner_counts_disabled_integrations():
-    from notifications_server.services import messaging_installations as mi
-
-    nb_tenant = "aaaaaaaa-1111-4111-8111-111111111111"
-    session = _session_with(_teams_integration("tenant-a", nb_tenant, status="disabled"))
-    assert mi.load_ms_teams_installation_by_aad_tenant(session, "tenant-a") is None
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-a") == nb_tenant
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-z") is None
-
-
-def test_tenant_owner_counts_legacy_rows():
-    import uuid
-
-    from notifications_server.models.models import MessagingPlatform
-    from notifications_server.services import messaging_installations as mi
-
-    nb_tenant = "aaaaaaaa-1111-4111-8111-111111111111"
-    session = _session_with(
-        MessagingPlatform(
-            id=uuid.uuid4(),
-            tenant_id=uuid.UUID(nb_tenant),
-            platform="ms_teams",
-            team_id="object-1.tenant-b",
-            client_id="c",
-            token="t",
-        )
-    )
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-b") == nb_tenant
-
-
-def test_tenant_owner_is_the_oldest_claim_however_rows_come_back():
-    import datetime
-    import uuid
-
-    from notifications_server.models.models import MessagingPlatform
-    from notifications_server.services import messaging_installations as mi
-
-    older, newer = "aaaaaaaa-1111-4111-8111-111111111111", "bbbbbbbb-2222-4222-8222-222222222222"
-    day = datetime.datetime(2026, 1, 1)
-
-    def legacy(tenant, created_at):
-        return MessagingPlatform(
-            id=uuid.uuid4(),
-            tenant_id=uuid.UUID(tenant),
-            platform="ms_teams",
-            team_id="object-1.tenant-b",
-            client_id="c",
-            token="t",
-            created_at=created_at,
-        )
-
-    # Inserted newest first, so insertion order can't be what picks the owner.
-    session = _session_with(legacy(newer, day + datetime.timedelta(days=30)), legacy(older, day))
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-b") == older
-
-    integrations = [_teams_integration("tenant-c", t) for t in (newer, older)]
-    integrations[0].created_at, integrations[0].updated_at = day + datetime.timedelta(
-        days=30
-    ), day + datetime.timedelta(days=60)
-    integrations[1].created_at, integrations[1].updated_at = day, day
-    session = _session_with(*integrations)
-    # The older claim wins even though the newer one was updated more recently.
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-c") == older
-    assert mi.ms_teams_aad_tenant_owner(session, "tenant-c", enabled_only=True) == older
-
-
-def _run_connect(owner, tenant_id="aaaaaaaa-1111-4111-8111-111111111111"):
-    from notifications_server.routers import tools
-
-    request = SimpleNamespace(headers={"x-user-email": "admin@example.com"})
-    token_result = {"id_token_claims": {"tid": "tenant-a", "preferred_username": "admin@example.com"}}
-    service = mock.Mock()
-    with (
-        mock.patch.object(tools, "find_installation_by_tenant_and_platform", return_value=[]),
-        mock.patch.object(tools, "teams_app") as teams_app,
-        mock.patch.object(tools, "ms_teams_aad_tenant_owner", return_value=owner) as owner_lookup,
-        mock.patch.object(tools, "MsTeamsService", return_value=service),
-        mock.patch.object(tools, "Session"),
-        mock.patch.object(tools, "render_success_page", return_value="<html></html>"),
-    ):
-        teams_app.acquire_token_by_authorization_code.return_value = token_result
-        teams_app.get_accounts.return_value = [{"home_account_id": "object-1.tenant-a", "local_account_id": "object-1"}]
-        result = asyncio.run(tools.ms_teams_oauth_redirect(request, {"code": "c", "tenant_id": tenant_id}))
-    return result, service, owner_lookup
-
-
-def test_connect_refuses_a_microsoft_tenant_linked_elsewhere():
-    import pytest
-    from fastapi import HTTPException
-
-    from notifications_server.routers import tools
-
-    with pytest.raises(HTTPException) as exc:
-        _run_connect(owner="bbbbbbbb-2222-4222-8222-222222222222")
-    assert exc.value.status_code == 400
-    assert exc.value.detail == tools.MS_TEAMS_TENANT_ALREADY_LINKED
-
-
-def test_connect_saves_when_the_microsoft_tenant_is_free_or_already_ours():
-    for owner in (None, "aaaaaaaa-1111-4111-8111-111111111111"):
-        _, service, owner_lookup = _run_connect(owner=owner)
-        assert owner_lookup.call_args.args[1] == "tenant-a"
-        service.save_teams_installation.assert_called_once()

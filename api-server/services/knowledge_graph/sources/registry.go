@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/security"
+	"sort"
 	"sync"
 )
 
@@ -27,6 +28,9 @@ type EnricherRegistryEntry struct {
 	Name        string
 	Factory     CrossSourceEnricherFactory
 	Description string
+	// RunsAfter names the enrichers whose output this one reads, so they must run
+	// first in Phase 2.1. See ListRegisteredEnrichers.
+	RunsAfter []string
 }
 
 var (
@@ -181,8 +185,13 @@ func RegisterAllSourcesToService(service interface {
 // =============================================================================
 
 // RegisterCrossSourceEnricherFactory registers a cross-source enricher factory with the global registry
-// This should be called in the init() function of each enricher implementation
-func RegisterCrossSourceEnricherFactory(name string, factory CrossSourceEnricherFactory, description string) {
+// This should be called in the init() function of each enricher implementation.
+//
+// runsAfter names enrichers whose output this one reads in the same build —
+// edges or nodes they add to the slice it is handed. Declare it whenever that is
+// true: without it the order is only alphabetical, and nothing fails when it is
+// wrong, the enricher just finds less.
+func RegisterCrossSourceEnricherFactory(name string, factory CrossSourceEnricherFactory, description string, runsAfter ...string) {
 	registryMutex.Lock()
 	defer registryMutex.Unlock()
 
@@ -202,6 +211,7 @@ func RegisterCrossSourceEnricherFactory(name string, factory CrossSourceEnricher
 		Name:        name,
 		Factory:     factory,
 		Description: description,
+		RunsAfter:   runsAfter,
 	}
 
 	slog.Debug("registered cross-source enricher factory", "enricher", name, "description", description)
@@ -234,17 +244,88 @@ func CreateCrossSourceEnricher(name string, logger *slog.Logger) (core.CrossSour
 	return factory(logger), nil
 }
 
-// ListRegisteredEnrichers returns a list of all registered enricher names
+// ListRegisteredEnrichers returns every registered enricher name in the order
+// Phase 2.1 should run them: each after the enrichers it declares in RunsAfter,
+// ties broken by name.
+//
+// The order used to come straight from ranging over the registry map, which Go
+// randomises on every call — and RegisterAllEnrichersToService runs per build,
+// so two builds of the same inputs could run the enrichers in different orders
+// and emit different graphs. That made the build impossible to replay
+// deterministically, and silently broke aws_lb_k8s whenever it happened to run
+// before k8s_ec2.
 func ListRegisteredEnrichers() []string {
+	// Copy under the lock, order outside it. Entries are never modified after
+	// init, so the pointers stay valid once the lock is released.
 	registryMutex.RLock()
-	defer registryMutex.RUnlock()
+	entries := make([]*EnricherRegistryEntry, 0, len(enricherRegistry))
+	for _, entry := range enricherRegistry {
+		entries = append(entries, entry)
+	}
+	registryMutex.RUnlock()
+	return orderEnrichers(entries)
+}
 
-	enrichers := make([]string, 0, len(enricherRegistry))
-	for name := range enricherRegistry {
-		enrichers = append(enrichers, name)
+// orderEnrichers sorts entries so every enricher comes after the ones it names
+// in RunsAfter, choosing the alphabetically first ready enricher at each step.
+// It never fails at runtime: a dependency that is not registered is ignored,
+// and enrichers caught in a cycle are appended in name order. Both are bugs in
+// a registration, caught by TestRegisteredEnricherDependencies rather than here.
+func orderEnrichers(entries []*EnricherRegistryEntry) []string {
+	registered := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		registered[e.Name] = true
 	}
 
-	return enrichers
+	// remaining[name] = how many registered dependencies have not been placed yet.
+	remaining := make(map[string]int, len(entries))
+	dependents := make(map[string][]string, len(entries))
+	for _, e := range entries {
+		remaining[e.Name] = 0
+		for _, dep := range e.RunsAfter {
+			if registered[dep] && dep != e.Name {
+				remaining[e.Name]++
+				dependents[dep] = append(dependents[dep], e.Name)
+			}
+		}
+	}
+
+	ready := make([]string, 0, len(entries))
+	for name, n := range remaining {
+		if n == 0 {
+			ready = append(ready, name)
+		}
+	}
+
+	ordered := make([]string, 0, len(entries))
+	placed := make(map[string]bool, len(entries))
+	for len(ready) > 0 {
+		sort.Strings(ready)
+		next := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, next)
+		placed[next] = true
+		for _, d := range dependents[next] {
+			remaining[d]--
+			if remaining[d] == 0 {
+				ready = append(ready, d)
+			}
+		}
+	}
+
+	// Anything left is in a cycle.
+	if len(ordered) < len(entries) {
+		stuck := make([]string, 0, len(entries)-len(ordered))
+		for _, e := range entries {
+			if !placed[e.Name] {
+				stuck = append(stuck, e.Name)
+			}
+		}
+		sort.Strings(stuck)
+		slog.Error("cross-source enricher dependencies form a cycle; running them in name order", "enrichers", stuck)
+		ordered = append(ordered, stuck...)
+	}
+	return ordered
 }
 
 // RegisterAllEnrichersToService registers all available enrichers to the provided service

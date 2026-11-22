@@ -57,8 +57,10 @@ export class ChatHistoryLocators extends CommonLocators {
     // (`Ask ${assistantName}`), so the name is matched as a prefix and the id is
     // kept as the fallback, both scoped to the header so neither rung can
     // resolve into the home page's own Nubi input.
-    this.askNubiPageBtn = this.appHeader
-      .getByRole("button", { name: /^Ask / })
+    // Nubi now lives in the main left rail (#39730), so its rail item is tried first.
+    this.askNubiPageBtn = page
+      .locator("#nubi-sidenavbutton")
+      .or(this.appHeader.getByRole("button", { name: /^Ask / }))
       .or(this.appHeader.locator("#global-search-trigger-ask-ai"))
       .first();
 

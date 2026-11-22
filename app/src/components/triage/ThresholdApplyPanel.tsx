@@ -9,7 +9,7 @@ import { Select } from '@ui/Select';
 import Modal from '@ui/Modal';
 import apiTriage, { type ThresholdSuggestionItem, type ThresholdApplyOptions, type ThresholdApplyResult } from '@api1/triage';
 import { appliedIsCurrent, changesWait, formatWait, recommendationTypeOf } from './thresholdVerdict';
-import apiIntegrations from '@api1/integrations';
+import apiTickets from '@api1/tickets';
 import { buildAuditLogUrl } from '@components/audits/common';
 import { snackbar } from '@shared/snackbarService';
 import { ds } from 'src/utils/colors';
@@ -223,31 +223,34 @@ const ThresholdApplyPanel: React.FC<ThresholdApplyPanelProps> = ({ data, onAppli
     (async () => {
       setLoadingIntegrations(true);
       try {
-        // listTicketConfigurationsByTool returns each integration with its accessible
-        // repos already parsed into `projects` ({ key: "owner/repo", name }).
-        const [ghRes, glRes]: any[] = await Promise.all([
-          apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'github' }),
-          apiIntegrations.listTicketConfigurationsByTool({ status: 'enabled', tool: 'gitlab' }),
-        ]);
+        // listTicketConfigsForCreate is read-level (unlike listTicketConfigurationsByTool)
+        // and returns each integration with its accessible repos already parsed into
+        // `projects` ({ key: "owner/repo", name }), plus `url` for self-hosted GitLab.
+        const res: any = await apiTickets.listTicketConfigsForCreate({ status: 'enabled' });
         if (cancelled) {
           return;
         }
-        const gh: GitIntegration[] = (ghRes?.data || []).map((g: any) => ({
-          key: `github:${g.name}`,
-          label: `GitHub: ${g.name}`,
-          name: g.name,
-          type: 'github',
-          url: 'https://github.com',
-          projects: Array.isArray(g.projects) ? g.projects : [],
-        }));
-        const gl: GitIntegration[] = (glRes?.data || []).map((g: any) => ({
-          key: `gitlab:${g.name}`,
-          label: `GitLab: ${g.name}`,
-          name: g.name,
-          type: 'gitlab',
-          url: g.url || 'https://gitlab.com',
-          projects: Array.isArray(g.projects) ? g.projects : [],
-        }));
+        const configs = res?.data || [];
+        const gh: GitIntegration[] = configs
+          .filter((g: any) => g.tool === 'github')
+          .map((g: any) => ({
+            key: `github:${g.name}`,
+            label: `GitHub: ${g.name}`,
+            name: g.name,
+            type: 'github',
+            url: 'https://github.com',
+            projects: Array.isArray(g.projects) ? g.projects : [],
+          }));
+        const gl: GitIntegration[] = configs
+          .filter((g: any) => g.tool === 'gitlab')
+          .map((g: any) => ({
+            key: `gitlab:${g.name}`,
+            label: `GitLab: ${g.name}`,
+            name: g.name,
+            type: 'gitlab',
+            url: g.url || 'https://gitlab.com',
+            projects: Array.isArray(g.projects) ? g.projects : [],
+          }));
         const combined = [...gh, ...gl];
         setGitIntegrations(combined);
         if (combined.length > 0) {

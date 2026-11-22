@@ -3,8 +3,8 @@
  * the user closes it — win or walk away, there's no success/failure signal
  * from the popup itself, only its closing. Extracted from
  * `MessagingIntegrationTile.jsx`'s own `handleInstall` (same popup
- * dimensions, same close-poll), for Slack and Microsoft Teams specifically:
- * both are a single "open this URL" action with no form of their own, unlike
+ * dimensions, same close-poll), for Slack specifically: a single "open this
+ * URL" action with no form of its own, unlike
  * Discord (a bot-token modal) or Google Chat (no in-app trigger at all — see
  * `GoogleChatSpacesPanel.jsx`'s own doc comment). The real Integrations page
  * still carries its own copy of this logic for now — that component has no

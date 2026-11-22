@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/observability"
+	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"time"
 
@@ -46,8 +47,26 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
 		return
 	}
+	// Field conditions written without their _binary wrapper would be dropped by the
+	// decoder and the query would run unfiltered; move them under _binary instead.
+	if err := query.NormalizeQueryRequestWhere(reqInput); err != nil {
+		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
 
 	switch actionPayload.Action.Name {
+	case "logs_check_vm_status":
+		resp, err := runObservabilityActionWithTimeout(ctx, actionPayload.Action.Name, observabilityStatusActionTimeout, func() (observability.VMLogsStatus, error) {
+			return observability.CheckVMLogsStatus(ctx, accountId)
+		})
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		c.JSON(200, resp)
+		return
+
 	case "logs_query", "logs_list":
 		var request observability.FetchLogRequest
 		err := common.UnmarshalMapToStruct(actionPayload.Input["request"].(map[string]interface{}), &request)

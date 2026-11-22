@@ -57,6 +57,9 @@ func TestTriggerNotificationForRecommendationResolution_SQLInjection(t *testing.
 	// The key expectation is that the query uses $1 and passes accountID as an argument
 	// instead of embedding it directly in the query string.
 	// sqlmock expects prepared statements by default for parameterized queries.
+	mock.ExpectQuery(`SELECT EXISTS`).
+		WithArgs(recID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(`select ca.account_name from cloud_accounts ca where id=\$1`).
 		WithArgs(accountID).
 		WillReturnRows(sqlmock.NewRows([]string{"account_name"}).AddRow("Test Account"))

@@ -26,9 +26,12 @@ type LogQueryDetails struct {
 	NoLines bool
 	// Series is the provider's counts flattened into the metrics shape.
 	Series []Result
-	// HasCounts is set when the provider returned counts. With an empty Series it
-	// means the counts did not fit series and are only in AggregationsRaw.
+	// HasCounts is set when the provider returned counts.
 	HasCounts bool
+	// CountsUnfit is set when those counts are not in a shape series can hold, so
+	// they are only in AggregationsRaw. Counts that fit but matched nothing leave it
+	// unset: an empty Series is then the answer, not a sign of an unsupported shape.
+	CountsUnfit bool
 	// GroupsOmitted is set when a grouping level left groups out (an Elasticsearch
 	// terms aggregation with sum_other_doc_count > 0), so Series is not every group.
 	GroupsOmitted bool
@@ -91,7 +94,7 @@ func applyLogQueryDetails(result *FetchLogsResult, details LogQueryDetails, limi
 	if details.GroupsOmitted && len(details.Series) > 0 {
 		result.SeriesNote = "a terms grouping left some groups out (sum_other_doc_count > 0), so series does not hold every group; raise that terms aggregation's size"
 	}
-	if details.HasCounts && len(details.Series) == 0 {
+	if details.CountsUnfit {
 		if includeRaw {
 			result.SeriesNote = "the provider's counts do not fit series (only nested terms groupings optionally ending in one date_histogram do); they are in aggregations_raw"
 		} else {
@@ -138,7 +141,11 @@ func esLogQueryDetails(rawJSON []byte, aggsDef map[string]any, size any, endMill
 			if series, omitted, ok := esSeriesFromAggregations(aggsDef, aggs, endMillis); ok {
 				details.Series = series
 				details.GroupsOmitted = omitted
+			} else {
+				details.CountsUnfit = true
 			}
+		} else {
+			details.CountsUnfit = true
 		}
 	}
 

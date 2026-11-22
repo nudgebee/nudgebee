@@ -44,6 +44,9 @@ type alertMember struct {
 	Recent bool
 	// Open: the current firing was still going when the seed started.
 	Open bool
+	// Resource is what the tag relations read off the resource a cloud alarm is
+	// about (incident_group_app.go); empty for everything else.
+	Resource resourceTags
 }
 
 // relation is the evidence that puts a member in the seed's incident, strongest
@@ -55,6 +58,8 @@ const (
 	relConnected
 	relDependency
 	relNode
+	relSameApp
+	relPatchWave
 )
 
 // relatedMember is an active alert the seed has evidence for.
@@ -228,9 +233,13 @@ func decideGroup(in decideInput) groupDecision {
 			continue
 		}
 		reason := fmt.Sprintf("%s is related to %s, both firing within the incident attach window", m.SubjectKey, in.SeedKey)
-		if m.Relation == relNode {
+		switch m.Relation {
+		case relNode:
 			// The node axis audits and guards its links by this prefix.
 			reason, _ = in.linkReason(m)
+		case relSameApp, relPatchWave:
+			// So do the tag relations; the reason names the alert being filed.
+			reason = resourceReason(m.Relation, m.Resource, m.SubjectKey)
 		}
 		for _, row := range m.Rows {
 			if row != head {
@@ -388,6 +397,8 @@ func (in decideInput) linkReason(via relatedMember) (string, int) {
 		return fmt.Sprintf("%s depends on %s, which was still firing when this alert started", in.SeedKey, via.SubjectKey), via.Hops
 	case relNode:
 		return fmt.Sprintf("%s node %s ran out of memory; %s failed on it within the incident attach window", nodeMemoryReasonPrefix, in.Node, in.SeedKey), 0
+	case relSameApp, relPatchWave:
+		return resourceReason(via.Relation, via.Resource, in.SeedKey), 0
 	}
 	return fmt.Sprintf("%s within incident attach window", in.SeedKey), 0
 }

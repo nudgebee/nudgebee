@@ -103,7 +103,7 @@ if [ -f "${APP_DIR}/package.json" ]; then
 fi
 
 # ============================================================
-# 4. Python Poetry dependencies for services with Makefiles
+# 4. Python dependencies (uv where the service has uv.lock, else Poetry)
 # ============================================================
 PYTHON_SERVICES=(
   "ml-k8s-server"
@@ -112,16 +112,19 @@ PYTHON_SERVICES=(
   "notifications-server"
 )
 
-if command -v poetry >/dev/null 2>&1; then
-  for svc in "${PYTHON_SERVICES[@]}"; do
-    SVC_DIR="${REPO_ROOT}/${svc}"
-    if [ -f "${SVC_DIR}/pyproject.toml" ] && [ ! -d "${SVC_DIR}/.venv" ]; then
+for svc in "${PYTHON_SERVICES[@]}"; do
+  SVC_DIR="${REPO_ROOT}/${svc}"
+  if [ -f "${SVC_DIR}/pyproject.toml" ] && [ ! -d "${SVC_DIR}/.venv" ]; then
+    if [ -f "${SVC_DIR}/uv.lock" ] && command -v uv >/dev/null 2>&1; then
+      echo "[session-start] Installing Python deps for ${svc}..."
+      cd "${SVC_DIR}" && uv sync --locked >/dev/null 2>&1 || true
+    elif [ ! -f "${SVC_DIR}/uv.lock" ] && command -v poetry >/dev/null 2>&1; then
       echo "[session-start] Installing Python deps for ${svc}..."
       cd "${SVC_DIR}" && poetry install --no-interaction >/dev/null 2>&1 || true
     fi
-  done
-  echo "[session-start] Python dependencies checked."
-fi
+  fi
+done
+echo "[session-start] Python dependencies checked."
 
 # ============================================================
 # 5. Go module cache warm-up for llm-server (most common)

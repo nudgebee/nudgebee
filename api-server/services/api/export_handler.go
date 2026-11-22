@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/recommendation"
+	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -70,6 +71,11 @@ func handleExportRecommendations(c *gin.Context, tracer *trace.Tracer, meter *me
 	ctx, err := buildContextFromPayload(c, &actionPayload, tracer, meter, logger)
 	if err != nil {
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+	// The exporters select by account id alone, with no tenant filter.
+	if request.AccountID != "" && !ctx.GetSecurityContext().CanAccessAccount(request.AccountID, security.SecurityAccessTypeRead) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountID))
 		return
 	}
 

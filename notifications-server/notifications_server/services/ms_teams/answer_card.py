@@ -1,6 +1,7 @@
 """Nubi's chat answers as Adaptive Cards: text as TextBlocks (Teams' markdown
 subset), markdown tables as Table elements, and code blocks as monospace text."""
 
+import json
 import re
 from typing import List
 
@@ -36,7 +37,11 @@ def _blocks(markdown: str) -> List[dict]:
         if line.strip().startswith("```"):
             flush()
             end = next((j for j in range(i + 1, len(lines)) if lines[j].strip().startswith("```")), len(lines))
-            blocks.append(_code("\n".join(lines[i + 1 : end])))
+            body = "\n".join(lines[i + 1 : end])
+            if line.strip()[3:].strip().lower() == "nb-chart":
+                blocks.append(_chart_note(body))
+            else:
+                blocks.append(_code(body))
             i = end + 1
         elif _is_table_start(lines, i):
             flush()
@@ -94,6 +99,16 @@ def _table(header: List[str], rows: List[List[str]]) -> dict:
         "columns": [{"width": 1} for _ in range(width)],
         "rows": [row(header, bold=True)] + [row(r) for r in rows],
     }
+
+
+def _chart_note(spec: str) -> dict:
+    # Adaptive Cards have no chart element: name the chart rather than show its JSON.
+    try:
+        title = str(json.loads(spec).get("title") or "").strip()
+    except (ValueError, AttributeError):
+        title = ""
+    label = f"Chart: {title}" if title else "Chart"
+    return {"type": "TextBlock", "text": f"_{label} (open the conversation in the web app to view it)_", "wrap": True}
 
 
 def _code(code: str) -> dict:

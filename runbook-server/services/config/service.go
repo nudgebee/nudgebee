@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/storage"
@@ -27,6 +28,10 @@ type Service struct {
 
 const MaxConfigSize = 100 * 1024 // 100KB
 
+// SecretMask is what reads return in place of a secret's value. The Configs
+// edit form pre-fills it, so a save can carry it back unchanged.
+const SecretMask = "*****"
+
 func NewService() (*Service, error) {
 	dao, err := storage.NewConfigDao()
 	if err != nil {
@@ -40,6 +45,19 @@ func (s *Service) SaveConfig(ctx context.Context, config model.Config) (string, 
 		return "", fmt.Errorf("config value too large: exceeds %d bytes", MaxConfigSize)
 	}
 
+	if config.Value == SecretMask {
+		existing, err := s.dao.Get(ctx, config.TenantID, config.AccountID, config.Key)
+		if err != nil {
+			return "", err
+		}
+		value, err := keepMaskedSecret(config, existing)
+		if err != nil {
+			return "", err
+		}
+		config.Value = value
+		return s.dao.Save(ctx, config)
+	}
+
 	if config.Type == model.ConfigTypeSecret {
 		encrypted, err := common.Encrypt(config.Value)
 		if err != nil {
@@ -48,6 +66,25 @@ func (s *Service) SaveConfig(ctx context.Context, config model.Config) (string, 
 		config.Value = encrypted
 	}
 	return s.dao.Save(ctx, config)
+}
+
+// keepMaskedSecret resolves a save whose value is SecretMask: the caller
+// echoed the masked read back without typing a new value, so the stored
+// (already encrypted) secret is kept. Storing the mask itself would silently
+// replace the secret with "*****".
+func keepMaskedSecret(incoming model.Config, existing *model.Config) (string, error) {
+	storedSecret := existing != nil && existing.Type == model.ConfigTypeSecret
+	if !storedSecret && incoming.Type != model.ConfigTypeSecret {
+		// No secret involved: "*****" is just a plain config's literal value.
+		return incoming.Value, nil
+	}
+	if !storedSecret {
+		return "", common.Error{Code: http.StatusBadRequest, Message: fmt.Sprintf("enter a value for %q: %q is the masked placeholder for a secret, not a value", incoming.Key, SecretMask)}
+	}
+	if incoming.Type != model.ConfigTypeSecret {
+		return "", common.Error{Code: http.StatusBadRequest, Message: fmt.Sprintf("enter the value again to change %q from a secret to a config", incoming.Key)}
+	}
+	return existing.Value, nil
 }
 
 // listScopeFor returns the scope for a List call:
@@ -112,7 +149,7 @@ func (s *Service) applySecretMask(cfg *model.Config, decrypt bool) (*model.Confi
 		cfg.Value = decrypted
 		return cfg, nil
 	}
-	cfg.Value = "*****"
+	cfg.Value = SecretMask
 	return cfg, nil
 }
 
@@ -124,7 +161,7 @@ func (s *Service) ListConfigs(ctx context.Context, tenantID string, accountID *s
 	configs = mergeAccountOverTenant(configs)
 	for i := range configs {
 		if configs[i].Type == model.ConfigTypeSecret {
-			configs[i].Value = "*****"
+			configs[i].Value = SecretMask
 		}
 	}
 	return configs, nil

@@ -248,7 +248,8 @@ test.describe("Nubi Gateway Config Tab", () => {
 
       await openSection(locators, "routing");
       await openNewRuleDialog(locators);
-      await expect(locators.ruleSaveBtn).toBeEnabled({ timeout: 15000 });
+      // An untouched rule changes nothing, so Create starts blocked (nb-39222).
+      await expect(locators.ruleSaveBtn).toBeDisabled({ timeout: 15000 });
 
       // A target provider that differs from the matched one is a substitution,
       // and the requested model name does not exist there — so the form refuses

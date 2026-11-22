@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -37,6 +38,11 @@ var explicitLogEndAnchorRE = regexp.MustCompile(`(?i)\b(?:end(?:s|ed|ing)?\s+(?:
 
 func generateLogQueryPlan(ctx *security.RequestContext, request core.NBAgentRequest, provider services_server.ObservabilityProvider, fields []string, indices map[string]string) (logQueryPlan, error) {
 	canonicalRules := buildCanonicalLogQueryPromptV3(provider, fields, indices)
+	nativeSyntax := fmt.Sprintf("the native query syntax accepted by provider %q", provider.Provider)
+	if tools.IsLogQLProvider(provider.Provider) {
+		// otel_clickhouse's native language is LogQL too, not ClickHouse SQL.
+		nativeSyntax = "LogQL"
+	}
 	prompt := fmt.Sprintf(`Generate exactly one executable log-query plan for the already-resolved provider %q.
 
 Inspect the complete user request and knowledge reference yourself. Choose native only when they contain a complete provider-native query or an applicable native template that can be completed from concrete values in the request or context. Preserve a complete user-supplied query exactly. If a template is unrelated or cannot be completed safely, choose canonical.
@@ -51,7 +57,7 @@ Return JSON only in exactly one of these forms:
 {"query_type":"canonical","canonical_query":{"where":{},"time_range":"1h","limit":1000}}
 
 Native requirements:
-- The query must use the native query syntax accepted by provider %q.
+- The query must use %s.
 - Preserve fixed selectors, clauses, operators, fields, indices, and literals from an applicable query or template.
 - Never put provider-independent canonical JSON in native.query.
 - If any native placeholder cannot be resolved, return canonical instead.
@@ -60,7 +66,7 @@ Native requirements:
 Canonical requirements:
 %s
 
-Ignore the canonical rules' standalone-output formatting instruction. The final response must use one wrapper object above, without markdown fences.`, provider.Provider, provider.Provider, canonicalRules)
+Ignore the canonical rules' standalone-output formatting instruction. The final response must use one wrapper object above, without markdown fences.`, provider.Provider, nativeSyntax, canonicalRules)
 
 	human := fmt.Sprintf("<knowledge_reference>\n%s\n</knowledge_reference>\n\n<user_request>\n%s\n</user_request>",
 		strings.TrimSpace(request.KBPrestepContent), request.Query)
@@ -79,10 +85,10 @@ Ignore the canonical rules' standalone-output formatting instruction. The final 
 		llms.TextParts(llms.ChatMessageTypeHuman, human),
 	}
 	summaryCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierSummary),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter(),
 	)
-	res, err := core.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(summaryCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		return logQueryPlan{}, err
 	}
@@ -178,7 +184,7 @@ func (a *FetchLogsAgent) executeNativeQueryDirect(ctx *security.RequestContext, 
 	if matched, reason := looksLikeFetchError(provider.Provider, logs); matched {
 		return errorResponse(a.GetName(), fmt.Errorf("%s fetch failed: %s", provider.Provider, reason)), nil
 	}
-	if strings.EqualFold(provider.Provider, "loki") {
+	if tools.IsLogQLProvider(provider.Provider) {
 		logs = unwrapLokiInnerTimestamps(ctx, logs)
 	}
 	workspaceAccount := request.AccountId
@@ -186,11 +192,7 @@ func (a *FetchLogsAgent) executeNativeQueryDirect(ctx *security.RequestContext, 
 		workspaceAccount = a.accountId
 	}
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, provider.Provider, logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-	if err != nil {
-		return core.NBAgentResponse{}, err
-	}
-	return makeFetchResponse(a.GetName(), executedLogQuery(logs, plan.Query), logs, flattened, fileRef, bundleSignal, fileRefs), nil
+	return makeFetchResponse(a.GetName(), executedLogQuery(logs, plan.Query), logs, flattened, fileRef, fileRefs), nil
 }
 
 func nativeQueryExecutionArgs(plan nativeLogQueryPlan, provider services_server.ObservabilityProvider, now time.Time) (time.Time, time.Time, int, string, error) {
@@ -237,10 +239,10 @@ func nativeQueryExecutionArgs(plan nativeLogQueryPlan, provider services_server.
 // executeCanonicalQueryDirect mirrors FetchLogsAgentV2.generateCanonicalLogQueryAndExecute
 // (agent_log_fetch_v2.go) exactly, except jsonQuery is already built instead
 // of being derived via generateCanonicalLogQuery — every downstream step
-// (index defaulting, execution, error/format handling, workspace save,
-// auto-diagnostics) is byte-identical to the shared path, so behavior after
+// (index defaulting, execution, error/format handling, workspace save)
+// is byte-identical to the shared path, so behavior after
 // query generation is unchanged. Calls only shared, already-exported-within-
 // package helpers (callTool, looksLikeFetchError, unwrapLokiInnerTimestamps,
-// saveLogsToWorkspace, runAutoDiagnosticBundle, makeFetchResponse,
+// saveLogsToWorkspace, makeFetchResponse,
 // executedLogQuery, mergeRefs, errorResponse, injectDefaultIndexIfMissing) —
 // none of their definitions change.

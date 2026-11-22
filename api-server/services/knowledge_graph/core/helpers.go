@@ -287,6 +287,11 @@ const (
 	EdgePriority8  EdgeSourcePriority = 8  // elastic-apm
 	EdgePriority9  EdgeSourcePriority = 9  // aws-vpc-flow (VPC Flow Logs — coarsest network observation: no L7, no latency, IP-derived)
 	EdgePriority10 EdgeSourcePriority = 10 // Lowest priority (unknown sources)
+	// EdgePriorityManualDeclared is below every other source, unknown ones
+	// included: a manual edge of a type only users declare (CONNECTED_TO,
+	// RUNS_ON, …) never displaces another source's edge on the same node pair
+	// (the dedup keys on the pair, not the relationship).
+	EdgePriorityManualDeclared EdgeSourcePriority = 11
 )
 
 // Aliases for readability
@@ -331,6 +336,7 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 		"aws":              EdgePriority2, // AWS ALB/NLB routing
 		"cloud_enrichment": EdgePriority3, // Cloud API routing data
 		"dns_resolver":     EdgePriority4, // DNS-based discovery
+		"manual":           EdgePriorityManualDeclared,
 	},
 	RelationshipRoutesToBackend: {
 		"k8s":              EdgePriority1,
@@ -372,6 +378,14 @@ var edgeTypePriorities = map[RelationshipType]map[string]EdgeSourcePriority{
 	RelationshipConnectionRejected: {
 		"aws-vpc-flow": EdgePriority1,
 	},
+	// Types users may declare only on links touching a node declared outside
+	// any account. Keep in step with flow_sources.EdgeTypePriorities.
+	// (ROUTES_TO carries its manual entry above.)
+	RelationshipConnectedTo: {"manual": EdgePriorityManualDeclared},
+	RelationshipDependsOn:   {"manual": EdgePriorityManualDeclared},
+	RelationshipRunsOn:      {"manual": EdgePriorityManualDeclared},
+	RelationshipHostedOn:    {"manual": EdgePriorityManualDeclared},
+	RelationshipBelongsTo:   {"manual": EdgePriorityManualDeclared},
 }
 
 // metricsToMerge defines which edge properties should be merged with source prefix
@@ -933,6 +947,8 @@ var specificTypeLogoMap = map[string]string{
 	"GitLabGroup":        "gitlab",
 	"PagerDutyUser":      "pagerduty",
 	"PagerDutyTeam":      "pagerduty",
+	// Hosts scanned through a self-hosted VM account (sources/selfhosted).
+	SpecificTypeSelfHostedVM: "selfhosted",
 }
 
 // ComputeLogoID returns the icon identifier for a KG node so the frontend can render the correct logo.
@@ -1424,6 +1440,116 @@ func GetGCPAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]GCPAc
 	}
 
 	return gcpAccounts, nil
+}
+
+// VMAccount represents an active self-hosted VM cloud account.
+type VMAccount struct {
+	CloudAccountID string `db:"cloud_account_id"`
+	Name           string `db:"name"`
+	Tenant         string `db:"tenant"`
+}
+
+// GetVMAccountsForTenant retrieves all active self-hosted VM accounts for a
+// tenant, optionally filtered to specific cloud account IDs. Mirrors
+// GetGCPAccountsForTenant (no agent join — a VM account's forager is reached
+// through its Prometheus/Loki integration, resolved separately per account by
+// vmservicemap.ResolveStore).
+func GetVMAccountsForTenant(tenantID string, cloudAccountIDs []string) ([]VMAccount, error) {
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	query := `
+		SELECT ca.id as cloud_account_id, ca.account_name as name, ca.tenant as tenant
+		FROM cloud_accounts ca
+		WHERE ca.cloud_provider = 'SelfHosted'
+		  AND ca.status = 'active'
+		  AND ca.tenant = ?`
+
+	args := []interface{}{tenantID}
+
+	if len(cloudAccountIDs) > 0 {
+		query += `
+		  AND ca.id IN (?)`
+		args = append(args, cloudAccountIDs)
+	}
+
+	// Expand the IN clause, then rebind to PostgreSQL placeholders.
+	var queryErr error
+	query, args, queryErr = sqlx.In(query, args...)
+	if queryErr != nil {
+		return nil, fmt.Errorf("failed to expand query with IN clause: %w", queryErr)
+	}
+	query = dbManager.Db.Rebind(query)
+
+	rows, err := dbManager.Db.Queryx(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query VM accounts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var vmAccounts []VMAccount
+	for rows.Next() {
+		var account VMAccount
+		if err := rows.StructScan(&account); err != nil {
+			continue
+		}
+		vmAccounts = append(vmAccounts, account)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating VM account rows: %w", err)
+	}
+
+	return vmAccounts, nil
+}
+
+// GetDiscoveryLinkedCloudAccounts returns the cloud accounts accountID's
+// discovery datasources are scoped to: accountID itself, plus the
+// discovery_target account of each discovery integration accountID owns.
+// cloudProvider optionally filters the result ("AWS", "Azure", "GCP"); pass ""
+// for no filter.
+//
+// Mirrors the scope CTE in sources/selfhosted's hostRowsQuery: a forager's
+// vmpackage/scan rows for a VM account's hosts can land in either account
+// depending on where a discovery datasource was pointed, and so can the cloud
+// resources those hosts call — an unresolved destination must be checked
+// against the same account set the hosts themselves can live in, not the
+// VM account alone and not every account in the tenant.
+func GetDiscoveryLinkedCloudAccounts(tenantID, accountID, cloudProvider string) ([]string, error) {
+	dbManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	query := `
+		WITH scope AS (
+			SELECT $2::uuid AS account_id
+			UNION
+			SELECT target.cloud_account_id
+			FROM integrations i
+			JOIN integrations_cloud_accounts own
+			  ON own.integration_id = i.id AND own.link_role = 'own'
+			 AND own.cloud_account_id = $2::uuid AND own.tenant_id = $1::uuid
+			JOIN LATERAL (
+				SELECT ica.cloud_account_id
+				FROM integrations_cloud_accounts ica
+				WHERE ica.integration_id = i.id AND ica.link_role = 'discovery_target'
+				ORDER BY ica.id DESC
+				LIMIT 1
+			) target ON true
+			WHERE i.tenant_id = $1::uuid AND i.type = 'discovery'
+		)
+		SELECT s.account_id::text
+		FROM scope s
+		JOIN cloud_accounts ca ON ca.id = s.account_id AND ca.tenant = $1::uuid AND ca.status = 'active'
+		WHERE ($3 = '' OR ca.cloud_provider = $3)`
+
+	var accountIDs []string
+	if err := dbManager.Db.Select(&accountIDs, query, tenantID, accountID, cloudProvider); err != nil {
+		return nil, fmt.Errorf("failed to query discovery-linked cloud accounts: %w", err)
+	}
+	return accountIDs, nil
 }
 
 // ExtractDeploymentFromReplicaSet extracts the Deployment name from a ReplicaSet name

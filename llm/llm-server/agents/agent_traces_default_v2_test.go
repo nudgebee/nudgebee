@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -134,9 +135,9 @@ func TestFilterDiscoveredTraceAttributes(t *testing.T) {
 // account would never be reused.
 func TestTracesDefaultAgent_CacheScopeAccount(t *testing.T) {
 	v1 := TracesDefaultAgent{accountId: "acct"}
-	assert.Equal(t, core.CacheScopeAccount, v1.GetCacheScope())
+	assert.Equal(t, llmruntime.CacheScopeAccount, v1.GetCacheScope())
 
 	v2 := newTracesDefaultAgentV2("acct", services_server.ObservabilityProvider{})
-	assert.Equal(t, core.CacheScopeAccount, v2.GetCacheScope(),
+	assert.Equal(t, llmruntime.CacheScopeAccount, v2.GetCacheScope(),
 		"v2 embeds v1 and must inherit the account scope")
 }

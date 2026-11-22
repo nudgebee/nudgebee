@@ -18,10 +18,9 @@ import PropTypes from 'prop-types';
 import buttonConfiguration from '@lib/buttonConfiguration';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
-import apiAutoPilot from '@api1/autoPilot';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import RunbookTargetResource from '@components/runbooks/RunbookTargetResource';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { infoIcon } from '@assets';
 import TicketFormSection from '@components/tickets/TicketFormSection';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -34,9 +33,9 @@ interface TimeHeaderProps {
 }
 
 const TimeHeader = ({ title, subtitle }: TimeHeaderProps) => (
-  <Box sx={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-    <Typography sx={{ color: colors.text.secondary, fontSize: '14px', fontWeight: 400 }}>{title}</Typography>
-    <Typography sx={{ color: colors.text.secondaryDark, fontSize: '12px', fontWeight: 400 }}>{subtitle}</Typography>
+  <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[2] }}>
+    <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-body-lg)', fontWeight: ds.weight.regular }}>{title}</Typography>
+    <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>{subtitle}</Typography>
   </Box>
 );
 
@@ -70,7 +69,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   _isLoading,
   setIsLoading,
   reviewAutoOptimize = false,
-  approvalData = {},
   accountOptions = [],
   defaultAccountId = '',
 }: {
@@ -87,7 +85,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   _isLoading?: boolean;
   setIsLoading: (loading: boolean) => void;
   reviewAutoOptimize?: boolean;
-  approvalData?: any;
   accountOptions?: { label: string; value: string }[];
   defaultAccountId?: string;
 }) => {
@@ -133,6 +130,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
     endDate: autoOptimizeData?.end_at ? dayjs(autoOptimizeData?.end_at) : null,
   });
   const [dryRunData, setDryRunData] = useState(autoOptimizeData?.status === 'Dryrun');
+  const [requireApproval, setRequireApproval] = useState(autoOptimizeData?.attributes?.require_approval ?? false);
   const [githubRepoName, setGithubRepoName] = useState(autoOptimizeData?.attributes?.git_ops_config?.repository_name ?? '');
   const [notificationData, setNotificationData] = useState({
     email: autoOptimizeData?.notification?.email?.enabled || false,
@@ -165,7 +163,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
     gitops: {
       message: '',
     },
-    reviewComment: '',
     jira: {
       formErrors: {},
     },
@@ -191,7 +188,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   );
   const selectedCluster = accountOptions.find((option) => option.value === selectedAccountId) || null;
   const requestAnnotations = CI_REQUEST_ANNOTATIONS;
-  const [reviewComment, setReviewComment] = useState('');
   const [selectedApplications, setSelectedApplications] = useState<any[]>([]);
   const [selectedNamespaces, setSelectedNamespaces] = useState([]);
   const [createTicketData, setCreateTicketData] = useState<any>({});
@@ -216,10 +212,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   }, [autoOptimizeData?.id]);
 
   useEffect(() => {
-    if (approvalData?.reviewer_comments) {
-      setReviewComment(approvalData.reviewer_comments);
-    }
-
     if (msTeamName) {
       filterChannelsName(msTeamName);
     }
@@ -675,44 +667,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   const handleCancel = () => {
     closeAutoPilotSingleConfigModal(false);
   };
-  const handleReviewAction = (status: string) => {
-    if (status == 'REJECTED') {
-      if (!reviewComment) {
-        setDisplayErrorsDesc({ ...displayErrorsDesc, reviewComment: 'Please add a review comment if you wish to reject the runbook' });
-        return;
-      }
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId ?? autoOptimizeData?.account_id ?? selectedCluster?.value,
-          reviewComment,
-          'REJECTED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true);
-          } else {
-            snackbar.error(`Failed to reject Auto Optimize !`);
-          }
-        });
-    } else if (status == 'APPROVED') {
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId ?? autoOptimizeData?.account_id ?? selectedCluster?.value,
-          reviewComment,
-          'APPROVED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true);
-          } else {
-            snackbar.error(`Failed to approve Auto Optimize !`);
-          }
-        });
-    }
-  };
-
   const validateAutoPilotRequest = () => {
     let valid = true;
     const validate = {
@@ -724,7 +678,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
       gitops: {
         message: '',
       },
-      reviewComment: '',
       jira: {
         formErrors: {},
       },
@@ -890,6 +843,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
             },
       },
       dryrun: dryRunData,
+      require_approval: requireApproval,
       gitops: {
         enabled: githubRepoName != '',
         repository_name: githubRepoName,
@@ -921,7 +875,6 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               gitops: {
                 message: '',
               },
-              reviewComment: '',
               jira: {
                 formErrors: {},
               },
@@ -973,28 +926,15 @@ const VerticalAutoOptimizeSingleConfiguration = ({
   const autoPilotSingleConfigButton: AutoPilotButton[] = [
     {
       label: 'Cancel',
-      backgroundColor: colors.background.primaryDark,
+      backgroundColor: ds.blue[500],
       onClick: handleCancel,
     },
   ];
 
-  if (reviewAutoOptimize) {
-    autoPilotSingleConfigButton.push({
-      isDisabled: !Object.keys(approvalData).length || approvalData.status == 'REJECTED',
-      label: 'Reject',
-      backgroundColor: colors.background.primaryDark,
-      onClick: () => handleReviewAction('REJECTED'),
-    });
-    autoPilotSingleConfigButton.push({
-      isDisabled: !Object.keys(approvalData).length || approvalData.status == 'APPROVED',
-      label: 'Approve',
-      backgroundColor: colors.background.primaryDark,
-      onClick: () => handleReviewAction('APPROVED'),
-    });
-  } else {
+  if (!reviewAutoOptimize) {
     autoPilotSingleConfigButton.push({
       label: !autoOptimizeData.id ? 'Create Auto Optimize Rule' : 'Update Auto Optimize Rule',
-      backgroundColor: colors.background.primaryDark,
+      backgroundColor: ds.blue[500],
       onClick: handleCreateAutoPilotRule,
     });
   }
@@ -1150,43 +1090,49 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           />
           <Box
             sx={{
-              borderRadius: '4px',
-              borderTop: `1px solid ${colors.switchIcon}`,
-              background: colors.background.primaryLightest,
-              padding: '8px 16px',
-              marginTop: '30px',
+              borderRadius: ds.radius.sm,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
+              marginTop: ds.space.mul(0, 15),
             }}
           >
             <Box>
-              <Typography sx={{ color: colors.text.secondary, fontSize: '16px', fontWeight: 600 }}>{'Trigger Thresholds'}</Typography>
-              <Typography sx={{ color: colors.text.secondaryDark, fontSize: '12px', fontWeight: 400 }}>
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+                {'Trigger Thresholds'}
+              </Typography>
+              <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
                 <b>Minimum Change - </b> Do not trigger Change if the percent difference is less than the Minimum Change
                 <br />
               </Typography>
-              <Typography sx={{ color: colors.text.secondaryDark, fontSize: '12px', fontWeight: 400 }}>
+              <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
                 <b>Maximum Change - </b> Do not trigger Change if the percent difference is more than the Maximum Change
                 <br />
               </Typography>
             </Box>
           </Box>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: '16px', my: '30px' }}>
-            <Box sx={{ display: 'flex', gap: '16px', flexDirection: 'row' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], my: ds.space.mul(0, 15) }}>
+            <Box sx={{ display: 'flex', gap: ds.space[4], flexDirection: 'row' }}>
               <Box sx={{ flex: 1 }}>
-                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
-                  <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>CPU</Typography>
+                <Box sx={{ mb: ds.space.mul(0, 5), borderLeft: `2px solid ${ds.yellow[500]}`, padding: `0 ${ds.space.mul(0, 5)}` }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.brand[500], fontWeight: ds.weight.semibold }}>CPU</Typography>
                 </Box>
                 <Box
                   sx={{
-                    borderRadius: '8px',
-                    border: `1px solid ${colors.border.vertical}`,
-                    padding: '16px',
-                    gap: '10px',
+                    borderRadius: ds.radius.lg,
+                    border: `1px solid ${ds.gray[200]}`,
+                    padding: ds.space[4],
+                    gap: ds.space.mul(0, 5),
                   }}
                 >
                   <Grid container spacing={2}>
                     <Grid item xs={6}>
-                      <Box sx={{ maxWidth: '110px' }}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400, mb: '6px' }}>Minimum Change</Typography>
+                      <Box sx={{ maxWidth: ds.space.mul(0, 55) }}>
+                        <Typography
+                          sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular, mb: ds.space.mul(0, 3) }}
+                        >
+                          Minimum Change
+                        </Typography>
                         <Input
                           suffix='%'
                           size='sm'
@@ -1207,8 +1153,12 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                       </Box>
                     </Grid>
                     <Grid item xs={6}>
-                      <Box sx={{ maxWidth: '110px' }}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400, mb: '6px' }}>Maximum Change</Typography>
+                      <Box sx={{ maxWidth: ds.space.mul(0, 55) }}>
+                        <Typography
+                          sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular, mb: ds.space.mul(0, 3) }}
+                        >
+                          Maximum Change
+                        </Typography>
                         <Input
                           suffix='%'
                           size='sm'
@@ -1232,21 +1182,25 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 </Box>
               </Box>
               <Box sx={{ flex: 1 }}>
-                <Box sx={{ mb: '10px', borderLeft: `2px solid ${colors.nudgebeeMain}`, padding: '0px 10px' }}>
-                  <Typography sx={{ fontSize: '14px', color: colors.text.secondary, fontWeight: 600 }}>Memory</Typography>
+                <Box sx={{ mb: ds.space.mul(0, 5), borderLeft: `2px solid ${ds.yellow[500]}`, padding: `0 ${ds.space.mul(0, 5)}` }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.brand[500], fontWeight: ds.weight.semibold }}>Memory</Typography>
                 </Box>
                 <Box
                   sx={{
-                    borderRadius: '8px',
-                    border: `1px solid ${colors.border.vertical}`,
-                    padding: '16px',
-                    gap: '10px',
+                    borderRadius: ds.radius.lg,
+                    border: `1px solid ${ds.gray[200]}`,
+                    padding: ds.space[4],
+                    gap: ds.space.mul(0, 5),
                   }}
                 >
                   <Grid container spacing={2}>
                     <Grid item xs={6}>
-                      <Box sx={{ maxWidth: '110px' }}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400, mb: '6px' }}>Minimum Change</Typography>
+                      <Box sx={{ maxWidth: ds.space.mul(0, 55) }}>
+                        <Typography
+                          sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular, mb: ds.space.mul(0, 3) }}
+                        >
+                          Minimum Change
+                        </Typography>
                         <Input
                           suffix='%'
                           size='sm'
@@ -1267,8 +1221,12 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                       </Box>
                     </Grid>
                     <Grid item xs={6}>
-                      <Box sx={{ maxWidth: '110px' }}>
-                        <Typography sx={{ color: colors.text.tertiary, fontSize: '12px', fontWeight: 400, mb: '6px' }}>Maximum Change</Typography>
+                      <Box sx={{ maxWidth: ds.space.mul(0, 55) }}>
+                        <Typography
+                          sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular, mb: ds.space.mul(0, 3) }}
+                        >
+                          Maximum Change
+                        </Typography>
                         <Input
                           suffix='%'
                           size='sm'
@@ -1295,18 +1253,22 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           </Box>
           <Box
             sx={{
-              borderRadius: '4px 4px 0px 0px',
-              borderTop: `1px solid ${colors.switchIcon}`,
-              background: colors.background.primaryLightest,
-              padding: '8px 16px',
-              marginTop: '20px',
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
+              marginTop: ds.space.mul(0, 10),
             }}
           >
-            <Typography sx={{ color: colors.text.secondary, fontSize: '16px', fontWeight: 600 }}>{'Schedule Optimization'}</Typography>
-            <Typography sx={{ color: colors.text.secondaryDark, fontSize: '12px', fontWeight: 400 }}>Cron Schedule follow UTC timezone</Typography>
+            <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+              {'Schedule Optimization'}
+            </Typography>
+            <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
+              Cron Schedule follow UTC timezone
+            </Typography>
           </Box>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', marginTop: '10px' }}>
-            <Box sx={{ display: 'flex', gap: '12px', alignItems: 'end' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', marginTop: ds.space.mul(0, 5) }}>
+            <Box sx={{ display: 'flex', gap: ds.space[3], alignItems: 'end' }}>
               <ToggleGroup
                 selection='single'
                 size='md'
@@ -1323,11 +1285,11 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           </Box>
           <Box>
             <TimeHeader title='Cron Expression' subtitle='' />
-            <Box sx={{ width: '150px' }}>
+            <Box sx={{ width: ds.space.mul(0, 75) }}>
               <Input size='sm' value={cronExpression} name='updateCron' onChange={updateCronJob} disabled={reviewAutoOptimize} />
             </Box>
           </Box>
-          <Box sx={{ display: 'flex', flexDirection: 'column', gap: '24px', marginTop: '10px' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5], marginTop: ds.space.mul(0, 5) }}>
             {isDailyTimeFrameOpen && (
               <Box>
                 <TimeHeader title='Daily' subtitle=' Actions can be scheduled for one or more hours each day' />
@@ -1362,7 +1324,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 />
               </Box>
             )}
-            <Box sx={{ display: 'flex', gap: '12px' }}>
+            <Box sx={{ display: 'flex', gap: ds.space[3] }}>
               <Box sx={{ flex: 1 }}>
                 <CustomDateTimePicker
                   id='auto-optimize-start-date'
@@ -1397,13 +1359,13 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           </Box>
           <Box
             sx={{
-              borderRadius: '4px 4px 0px 0px',
-              borderTop: `1px solid ${colors.switchIcon}`,
-              background: colors.background.primaryLightest,
-              padding: '8px 16px',
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
             }}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
               <Switch
                 checked={raisePullRequest}
                 onChange={(event) => setRaisePullRequest(event.target.checked)}
@@ -1412,7 +1374,9 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 disabled={Object.keys(selectedWorkloadAnnotations).length === 0 || reviewAutoOptimize}
                 aria-label='Raise Git Pull Request'
               />
-              <Typography sx={{ color: colors.text.secondary, fontSize: '16px', fontWeight: 600 }}>{'Raise Git Pull Request'}</Typography>
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+                {'Raise Git Pull Request'}
+              </Typography>
               {Object.keys(selectedWorkloadAnnotations).length == 0 && (
                 <Tooltip title='Cannot enable Raise Git Pull Request. Please configure the required annotations at Deployment.'>
                   <Box sx={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
@@ -1422,14 +1386,14 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               )}
             </Box>
             {Object.keys(selectedWorkloadAnnotations).length === 0 && (
-              <Box sx={{ marginTop: '8px' }}>
-                <Typography sx={{ color: colors.text.secondary, fontSize: '12px', fontWeight: 400 }}>
+              <Box sx={{ marginTop: ds.space[2] }}>
+                <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
                   The following annotations are required at Deployment:
                 </Typography>
                 <ul>
                   {requestAnnotations.map((_value) => (
                     <li key={_value}>
-                      <Typography sx={{ fontSize: '12px', fontWeight: 600 }}>{_value}</Typography>
+                      <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.semibold }}>{_value}</Typography>
                     </li>
                   ))}
                 </ul>
@@ -1446,8 +1410,8 @@ const VerticalAutoOptimizeSingleConfiguration = ({
             </ul>
           ) : null}
           {raisePullRequest && Object.keys(selectedWorkloadAnnotations).length > 0 ? (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: '15px', minWidth: '230px' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space.mul(0, 5) }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[4], minWidth: ds.space.mul(0, 115) }}>
                 <Select
                   id='github-repo-name'
                   label='Repo Name'
@@ -1464,7 +1428,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                   }}
                   disabled={reviewAutoOptimize}
                   error={displayErrorsDesc.gitops.message || undefined}
-                  minWidth='230px'
+                  minWidth={ds.space.mul(0, 115)}
                   placeholder='Select repo'
                 />
               </Box>
@@ -1490,13 +1454,13 @@ const VerticalAutoOptimizeSingleConfiguration = ({
           ) : null}
           <Box
             sx={{
-              borderRadius: '4px 4px 0px 0px',
-              borderTop: `1px solid ${colors.switchIcon}`,
-              background: colors.background.primaryLightest,
-              padding: '8px 16px',
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
             }}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
               <Switch
                 checked={dryRunData}
                 onChange={(event) => setDryRunData(event.target.checked)}
@@ -1505,21 +1469,48 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 disabled={reviewAutoOptimize}
                 aria-label='Dry Run'
               />
-              <Typography sx={{ color: colors.text.secondary, fontSize: '16px', fontWeight: 600 }}>{'Dry Run'}</Typography>
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>{'Dry Run'}</Typography>
             </Box>
-            <Typography sx={{ color: colors.text.secondaryDark, fontSize: '12px', fontWeight: 400 }}>
+            <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
               Instead of applying Recommendations, Log changes
             </Typography>
           </Box>
           <Box
             sx={{
-              borderRadius: '4px 4px 0px 0px',
-              borderTop: `1px solid ${colors.switchIcon}`,
-              background: colors.background.primaryLightest,
-              padding: '8px 16px',
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
             }}
           >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
+              <Switch
+                checked={requireApproval && !dryRunData}
+                onChange={(event) => setRequireApproval(event.target.checked)}
+                name='requireApproval'
+                size='md'
+                disabled={reviewAutoOptimize || dryRunData}
+                aria-label='Require approval'
+              />
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+                {'Require approval'}
+              </Typography>
+            </Box>
+            <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
+              {dryRunData
+                ? 'Not needed for a dry run, which applies nothing.'
+                : 'Each run lists its planned changes under Approvals and applies them only after an account editor approves.'}
+            </Typography>
+          </Box>
+          <Box
+            sx={{
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
               <Switch
                 checked={inPlace}
                 onChange={(event) => setInPlace(event.target.checked)}
@@ -1558,7 +1549,9 @@ const VerticalAutoOptimizeSingleConfiguration = ({
                 disabled={reviewAutoOptimize}
                 aria-label='Create Jira Ticket'
               />
-              <Typography sx={{ color: colors.text.secondary, fontSize: '16px', fontWeight: 600 }}>{'Create Jira Ticket'}</Typography>
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+                {'Create Jira Ticket'}
+              </Typography>
             </Box>
             {createTicket && (
               <TicketFormSection
@@ -1623,7 +1616,6 @@ VerticalAutoOptimizeSingleConfiguration.propTypes = {
   isLoading: PropTypes.bool,
   setIsLoading: PropTypes.func,
   reviewAutoOptimize: PropTypes.bool,
-  approvalData: PropTypes.object,
   isMsTeamsLoading: PropTypes.bool,
   isGoogleChannelsLoading: PropTypes.bool,
 };

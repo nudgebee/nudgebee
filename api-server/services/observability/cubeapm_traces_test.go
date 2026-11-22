@@ -121,6 +121,15 @@ func TestCubeAPMTraceWhereRendering(t *testing.T) {
 			deny:  []string{`*GET`},
 		},
 		{
+			// The counterpart to the case above: _regex must reach LogsQL as the
+			// pattern the user typed. Escaping it here would make the operator a
+			// slower spelling of _contains and match nothing on any metacharacter.
+			name:  "regex passes the pattern through unescaped",
+			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{"workload_name": {query.Regex: "p.yment"}}},
+			want:  []string{`service:~"p.yment"`},
+			deny:  []string{`p\\.yment`, `(?i)`},
+		},
+		{
 			name: "two labels on the same field do not overwrite each other",
 			where: query.QueryWhereClause{Binary: query.BinaryWhereClause{
 				"workload_name": {query.Eq: "a"},

@@ -8,6 +8,7 @@ import ReactFlow, {
   MarkerType,
   useReactFlow,
   useStore,
+  useStoreApi,
   Handle,
   Position,
   MiniMap,
@@ -19,6 +20,7 @@ import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import AutoAwesomeRoundedIcon from '@mui/icons-material/AutoAwesomeRounded';
 import SearchOffRoundedIcon from '@mui/icons-material/SearchOffRounded';
+import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import FilterListIcon from '@mui/icons-material/FilterList';
@@ -52,7 +54,20 @@ import EdgeDetails from '@components/k8s/details/EdgeDetails';
 import Datetime from '@shared/format/Datetime';
 import KGSettings from './KGSettings';
 import { downloadRelationshipsCsv, downloadGraphImage, IMAGE_MAX_NODES } from './kgExport';
-import { parseUniqueKey, formatTypeBadge, decodeFilterOptions, computeFilterOptionsClientSide } from './kgFilterCascade';
+import {
+  parseUniqueKey,
+  formatTypeBadge,
+  decodeFilterOptions,
+  computeFilterOptionsClientSide,
+  buildAccountOptions,
+  getNodeTypeLeaves,
+  buildNodeTypeOptions,
+  TENANT_ACCOUNT_LABEL,
+} from './kgFilterCascade';
+import { getAutoFitCenter } from './kgViewport';
+import { getFocusCenter } from './kgFocusView';
+import { humanizeType } from './ManualNodesTable';
+import { nodeRoleLabel } from './nodeRoleLabels';
 import { getCurrentTenant, isTenantAdmin } from '@lib/auth';
 import PropTypes from 'prop-types';
 
@@ -277,14 +292,6 @@ const LOD_ZOOM_THRESHOLD = 0.35;
 // auto-fit lands somewhere legible even if it means panning to see the rest.
 const FIT_VIEW_MIN_ZOOM = 0.4;
 
-// Datastore-facet labels for in-cluster workloads classified as databases/caches/queues.
-// Keyed by the node's `role` (see backend db_classifier.go).
-const ROLE_BADGE_LABELS = {
-  database: 'Database',
-  cache: 'Cache',
-  messagequeue: 'Queue',
-};
-
 // --- 2. CUSTOM NODE COMPONENT (Adaptive LOD via useStore) ---
 // Selector returns boolean — node only re-renders when crossing the zoom threshold, not on every zoom tick
 const zoomSelector = (state) => state.transform[2] < LOD_ZOOM_THRESHOLD;
@@ -314,24 +321,27 @@ const AdaptiveServiceNode = memo(
           </div>
           <div className='node-content'>
             <div className='node-title'>{data.name}</div>
-            <span className='node-sub'>{[data.subtitle, ROLE_BADGE_LABELS[data.role], data.location].filter(Boolean).join(' · ')}</span>
+            <span className='node-sub'>{[data.subtitle, data.login, nodeRoleLabel(data.role), data.location].filter(Boolean).join(' · ')}</span>
             {contextLine && (
               <span className='node-sub' title={contextLine}>
                 {contextLine}
               </span>
             )}
           </div>
-          <button
-            className='info-btn'
-            onClick={(e) => {
-              e.stopPropagation();
-              if (data.onInfoClick) {
-                data.onInfoClick(data.properties);
-              }
-            }}
-          >
-            <InfoOutlinedIcon style={{ fontSize: 18 }} />
-          </button>
+          <Tooltip title='View node details' placement='top'>
+            <button
+              className='info-btn'
+              aria-label='View node details'
+              onClick={(e) => {
+                e.stopPropagation();
+                if (data.onInfoClick) {
+                  data.onInfoClick(data.properties);
+                }
+              }}
+            >
+              <InfoOutlinedIcon style={{ fontSize: 18 }} />
+            </button>
+          </Tooltip>
           <Button
             className='focus-btn'
             icon={<FilterCenterFocusIcon style={{ fontSize: ds.text.bodyLg }} />}
@@ -356,7 +366,10 @@ const AdaptiveServiceNode = memo(
     prev.data.subtitle === next.data.subtitle &&
     prev.data.accountName === next.data.accountName &&
     prev.data.namespace === next.data.namespace &&
-    prev.data.location === next.data.location
+    prev.data.login === next.data.login &&
+    prev.data.location === next.data.location &&
+    prev.data.role === next.data.role &&
+    prev.data.subType === next.data.subType
 );
 AdaptiveServiceNode.displayName = 'AdaptiveServiceNode';
 AdaptiveServiceNode.propTypes = {
@@ -364,6 +377,7 @@ AdaptiveServiceNode.propTypes = {
     id: PropTypes.string,
     name: PropTypes.string,
     subtitle: PropTypes.string,
+    login: PropTypes.string,
     accountName: PropTypes.string,
     namespace: PropTypes.string,
     type: PropTypes.string,
@@ -573,9 +587,7 @@ const BreadcrumbTooltipContent = memo(({ node }) => {
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: ds.space.mul(0, 35) }}>Type:</Typography>
-        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>
-          {snakeToTitleCase(node.nodeType || '')}
-        </Typography>
+        <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-background-100)' }}>{humanizeType(node.nodeType)}</Typography>
       </Box>
       <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'flex-start' }}>
         <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', minWidth: ds.space.mul(0, 35) }}>Unique Key:</Typography>
@@ -636,6 +648,58 @@ const findShortestPath = (adjacencyMap, startId, endId) => {
   return null;
 };
 
+// Selected nodes arrive in different shapes: a Node-filter option carries the
+// unique key as displayLabel and no name/type/account, and breadcrumb
+// navigation keeps only { label, value }. Take what the chip and its tooltip
+// read from the graph's own record so every chip renders alike. label/value
+// stay as given — they feed back into the Node filter's draft state.
+const withGraphNodeFields = (node, nodesById) => {
+  const record = nodesById.get(node.value);
+  if (!record) return node;
+  const { displayLabel, name, nodeType, uniqueKey, accountName, accountId } = record;
+  return { ...node, displayLabel, name, nodeType, uniqueKey, accountName, accountId };
+};
+
+// Full breadcrumb path: the user-selected nodes plus the intermediate nodes and
+// edge types on the shortest path between each consecutive pair.
+export const buildBreadcrumbPath = (selectedNodes, adjacencyMap, nodesById, edgeTypeLookup) => {
+  const fullPath = [];
+  for (let i = 0; i < selectedNodes.length; i++) {
+    const currNode = withGraphNodeFields(selectedNodes[i], nodesById);
+    if (i === 0) {
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null });
+      continue;
+    }
+    const prevNode = selectedNodes[i - 1];
+    const pathBetween = findShortestPath(adjacencyMap, prevNode.value, currNode.value);
+
+    if (!pathBetween) {
+      // Disconnected subgraphs — no path exists, mark as disconnected
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null, isDisconnected: true });
+    } else if (pathBetween.length > 2) {
+      // Add intermediate nodes (skip first as it's already in path)
+      for (let j = 1; j < pathBetween.length - 1; j++) {
+        const intermediateId = pathBetween[j];
+        const prevId = pathBetween[j - 1];
+        const nodeData = nodesById.get(intermediateId);
+        if (nodeData) {
+          const edgeType = edgeTypeLookup.get(`${prevId}->${intermediateId}`) || null;
+          fullPath.push({ ...nodeData, isUserSelected: false, edgeFromPrev: edgeType });
+        }
+      }
+      // Edge from last intermediate to current node
+      const lastIntermediateId = pathBetween[pathBetween.length - 2];
+      const edgeToFinal = edgeTypeLookup.get(`${lastIntermediateId}->${currNode.value}`) || null;
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeToFinal });
+    } else {
+      // Direct connection (no intermediate nodes)
+      const edgeType = edgeTypeLookup.get(`${prevNode.value}->${currNode.value}`) || null;
+      fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeType });
+    }
+  }
+  return fullPath;
+};
+
 // --- 3. SHARED ACCOUNT LOOKUP HOOK ---
 const useAccountLookup = (accounts) => {
   return useMemo(() => {
@@ -674,7 +738,15 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       const isIdentityNode = n.kind === 'UserAccount' || n.kind === 'UserGroup';
       const tenantScopedName = tenantId && n.account_id === tenantId ? 'Not in a connected account' : n.account_id;
       const accName = isIdentityNode ? '' : accMap.get(n.account_id) || tenantScopedName;
-      const subtitle = isIdentityNode && n.specific_type ? humanizeNodeType(n.specific_type) : n.kind;
+      // A kind of the tenant's own (NetworkSwitch, declared outside any account) shows by its name, not its category.
+      const isCustomKind = tenantId && n.account_id === tenantId && n.specific_type && n.specific_type !== n.kind;
+      const subtitle = humanizeType((isIdentityNode || isCustomKind) && n.specific_type ? n.specific_type : n.kind);
+      // A UserAccount's key segment is the login / external user id (see
+      // buildNodeOption), and n.name is the display name, which two different
+      // accounts can share — so show the login beside the source to tell one
+      // person's two accounts apart. Read off the key the payload already carries;
+      // no extra field is needed for it.
+      const login = n.kind === 'UserAccount' ? parseUniqueKey(n.unique_key)?.name || '' : '';
       return {
         id: n.id,
         type: 'serviceNode',
@@ -682,6 +754,7 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
           name: n.name,
           type: n.kind,
           subtitle,
+          login,
           borderColor: n.kind === 'Workload' ? 'var(--ds-blue-500)' : 'var(--ds-green-400)',
           subType: n.logo_id,
           role: n.role, // datastore facet: 'database' | 'cache' | 'messagequeue' (in-cluster datastores)
@@ -726,45 +799,26 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
 // Renders the cloud-provider icon shown in each Account filter group header.
 const renderAccountGroupIcon = (provider) => <CloudProviderIcon cloud_provider={provider} width='14px' height='14px' />;
 
-// The selectable leaves for a given node_type: its known specific_types, or (when none are
-// known yet — no ontology data, or not backfilled) a single leaf identical to the node_type
-// itself, so every node type stays selectable and accounted for either way.
-function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
-  const specificTypes = specificTypesByNodeType?.[nodeType];
-  return specificTypes?.length ? specificTypes : [nodeType];
-}
-
-// Builds the grouped Node Type filter options: one leaf per specific_type, grouped by its
-// broad node_type. A node_type whose only leaf is identical to itself (no ontology mapping,
-// or the AWS/GCP/Azure specific_type extractors' own fallback-to-node_type default) has
-// nothing to drill into, so it's left ungrouped rather than rendered as a group header with
-// one child of the same name — FilterDropdown buckets ungrouped options under "Other".
-// Real leaves also carry `searchText: nodeType` so the dropdown's search matches on the broad
-// (ontological) type too — e.g. searching "compute" surfaces EC2Instance/GCEInstance/etc. even
-// though none of those specific-type labels themselves contain "compute".
-function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
-  return (nodeTypes || []).flatMap((nodeType) => {
-    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
-    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
-    return leaves.map((leaf) => ({
-      label: snakeToTitleCase(leaf),
-      value: leaf,
-      ...(hasRealBreakdown ? { group: nodeType, searchText: nodeType } : {}),
-    }));
-  });
-}
+// getNodeTypeLeaves and buildNodeTypeOptions are imported from ./kgFilterCascade (shared
+// with the Manual Dependency dialog's KG node picker).
 
 // Translates the flat set of selected Node Type filter leaf values (specific_types, or a bare
 // node_type when it has no breakdown) back into the two independent backend filter arrays.
 // A group with every leaf selected collapses to its broad node_type (matches pre-nesting
 // behavior and tolerates nodes whose specific_type hasn't been backfilled yet); a group with
-// only some leaves selected is sent as specific_types instead. The two arrays must never both
-// reference the same group, since the backend ANDs node_types and specific_types together.
+// only some leaves selected is sent as specific_types instead. The backend ORs the two arrays
+// (a node matches if it is in either), so a full group mixed with a leaf of another is safe.
 // `nodeTypes` must be the same full node_type list `buildNodeTypeOptions` was called with, so
 // every group a leaf could belong to (even ones absent from `specificTypesByNodeType`) is
 // accounted for — otherwise a selected leaf whose node_type has no map entry would vanish from
 // both output arrays, silently turning a scoped selection into "no filter at all".
-function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
+// A selected leaf can still be missing from every group: picking an account rebuilds the list
+// from that account's types, and the dropdown keeps showing a chosen type the account lacks
+// (#41503). Such a leaf matches nothing, so next to a leaf that is still listed it changes no
+// result and is left out — sending it would AND it with the other array and empty the graph.
+// When every selected leaf is missing, they are sent as specific_types so the backend matches
+// nothing instead of everything.
+export function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeType) {
   const selectedSet = new Set(selectedValues || []);
   const resultNodeTypes = [];
   const resultSpecificTypes = [];
@@ -778,6 +832,9 @@ function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeTy
       resultSpecificTypes.push(...selectedInGroup);
     }
   });
+  if (selectedSet.size > 0 && resultNodeTypes.length === 0 && resultSpecificTypes.length === 0) {
+    return { nodeTypes: [], specificTypes: [...selectedSet] };
+  }
   return { nodeTypes: resultNodeTypes, specificTypes: resultSpecificTypes };
 }
 
@@ -785,14 +842,10 @@ function splitNodeTypeSelection(selectedValues, nodeTypes, specificTypesByNodeTy
 // tenant-scoped identity nodes) and anything else deliberately gets no icon —
 // CloudProviderIcon falls back to the AWS logo for unknown providers, which
 // would be misleading on an ExternalService/identity row with no real source.
-const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', 'gitlab', 'pagerduty']);
+const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure', 'github', 'gitlab', 'pagerduty', 'selfhosted']);
 
 // parseUniqueKey and formatTypeBadge are imported from ./kgFilterCascade (shared with the
 // client-side cascade).
-
-// PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
-// snakeToTitleCase only splits on '_', so it would leave these un-spaced.
-const humanizeNodeType = (nodeType) => (nodeType || '').replace(/([a-z])([A-Z])/g, '$1 $2');
 
 // Build a Node-dropdown option from a unique key + node id. Shapes the row as
 // [provider icon] [NodeType badge] <name>  <cluster · location · hierarchy chip>
@@ -811,10 +864,19 @@ const humanizeNodeType = (nodeType) => (nodeType || '').replace(/([a-z])([A-Z])/
 // indistinguishable. formatTypeBadge then drops that brand prefix on rows that
 // render the provider's icon — the icon carries the source, so the badge spends
 // its width on the resource kind ("Config Map", not "Kubernetes Config …").
+// displayNameMap (unique_key -> human name, from FilterOptions.DisplayNames)
+// supplies the label for identity nodes, whose key segment is a login or an
+// opaque provider id rather than a readable name — without it a PagerDuty user
+// reads as "PA1B2C3". The login then moves into the context chip, which is empty
+// for identity rows (no cluster, location or hierarchy), so one person's two
+// accounts are still tellable apart: "Mangglesh Dagar   mangglesh1653".
 // The full key plus cluster name are kept in `searchText` so search still
-// matches namespace/region/type/cluster (including the un-stripped type), and
-// `displayLabel` mirrors the legacy value for any consumer that reads it.
-const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap) => {
+// matches namespace/region/cluster — the display name joins it so an identity
+// row matches its human name too — and `displayLabel` mirrors the legacy value
+// for any consumer that reads it. The key only carries the broad node type
+// (Workload, ComputeInstance), so the specific type and the badge text join too:
+// "daemonset", "Daemon Set" and "EC2" then find the rows whose badge reads that (#41140).
+export const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap, displayNameMap) => {
   const parsed = parseUniqueKey(uniqueKey);
   const cluster = clusterMap?.[uniqueKey];
   if (!parsed) {
@@ -822,18 +884,22 @@ const buildNodeOption = (uniqueKey, id, clusterMap, specificTypeMap) => {
   }
   const { provider, location, nodeType, hierarchy, name } = parsed;
   const specificType = specificTypeMap?.[uniqueKey];
-  const contextChip = [cluster, location, hierarchy].filter(Boolean).join(' · ');
+  const displayName = displayNameMap?.[uniqueKey];
+  const contextChip = [displayName ? name : '', cluster, location, hierarchy].filter(Boolean).join(' · ');
   const hasIcon = KNOWN_CLOUD_PROVIDERS.has(provider);
+  const badge = formatTypeBadge(specificType || nodeType, provider, hasIcon);
   const option = {
-    label: name || uniqueKey,
+    label: displayName || name || uniqueKey,
     displayLabel: uniqueKey,
     value: id,
-    badge: formatTypeBadge(specificType || nodeType, provider, hasIcon),
+    badge,
     type: contextChip,
     // cluster/location/hierarchy are case-sensitive identifiers (k8s cluster,
     // namespace, region, vpc/resource-group id) — keep casing verbatim, don't title-case.
     typeTextTransform: 'none',
-    searchText: [uniqueKey, cluster].filter(Boolean).join(' '),
+    // humanizeType also splits acronyms ("EC2 Instance"), which the badge doesn't, so the
+    // spelling the Node Type dropdown shows finds the row too.
+    searchText: [uniqueKey, cluster, displayName, specificType, badge, humanizeType(specificType || nodeType)].filter(Boolean).join(' '),
   };
   if (hasIcon) {
     // The icon is the only thing naming the provider now that the badge doesn't
@@ -883,13 +949,17 @@ FilterWithInfo.propTypes = {
   children: PropTypes.node.isRequired,
 };
 
-const ServiceMapContent = ({ cardElevation }) => {
+const ServiceMapContent = ({ cardElevation, height }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const { fitView, getNodes, getEdges } = useReactFlow();
+  const { fitView, getNodes, getEdges, setCenter, getViewport, setViewport } = useReactFlow();
+  const reactFlowStore = useStoreApi();
 
   const [isFilterLoading, setIsFilterLoading] = useState(true);
   const [isGraphLoading, setIsGraphLoading] = useState(true);
+  // The last graph request failed — the canvas says so instead of showing an
+  // empty result, and Apply stays enabled to retry the same filters (#41498).
+  const [graphLoadError, setGraphLoadError] = useState(false);
   const [rawData, setRawData] = useState({ nodes: [], edges: [] });
   const [selectedAccountIds, setSelectedAccountIds] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -898,10 +968,15 @@ const ServiceMapContent = ({ cardElevation }) => {
   const [selectedEdgeDetails, setSelectedEdgeDetails] = useState(null);
   const [isNodeDetailsLoading, setIsNodeDetailsLoading] = useState(false);
   const [isEdgeDetailsLoading, setIsEdgeDetailsLoading] = useState(false);
+  const [edgeDetailsUnavailable, setEdgeDetailsUnavailable] = useState(false);
   const [selectedNodeTypes, setSelectedNodeTypes] = useState([]);
   const [selectedLevel, setSelectedLevel] = useState(1);
   const [queryItems, setQueryItems] = useState([]);
   const [queryItemsLabel, setQueryItemsLabel] = useState([]);
+  // queryItems/queryItemsLabel are the live (draft) chips; these hold the chips of the
+  // applied filters, so Back/Forward snapshots restore the chips that produced each graph.
+  const [appliedQueryItems, setAppliedQueryItems] = useState([]);
+  const [appliedQueryItemsLabel, setAppliedQueryItemsLabel] = useState([]);
   const [labelFilters, setLabelFilters] = useState('');
   const [attributeFilters, setAttributeFilters] = useState('');
   const [kgFilterOptions, setKgFilterOptions] = useState({});
@@ -929,6 +1004,8 @@ const ServiceMapContent = ({ cardElevation }) => {
   // Pin / search / focus mode state
   const [pinnedNodeId, setPinnedNodeId] = useState(null);
   const [searchResetKey, setSearchResetKey] = useState(0);
+  // Text in the "Search nodes…" box; every node whose name or type contains it is highlighted.
+  const [nodeSearchQuery, setNodeSearchQuery] = useState('');
   const [focusedNodeId, setFocusedNodeId] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // True while the PNG export runs: ReactFlow renders every node (not just the
@@ -936,6 +1013,11 @@ const ServiceMapContent = ({ cardElevation }) => {
   const [isExportingImage, setIsExportingImage] = useState(false);
   // Collapse the left filter sidebar to give the graph canvas more room.
   const [isFilterCollapsed, setIsFilterCollapsed] = useState(false);
+  // Width of the absolutely-positioned top-right toolbar (search, Relationships,
+  // Download, Settings). The Back / Forward / path row reserves this much room
+  // on its right so the path wraps instead of sliding under the toolbar.
+  const toolbarRef = useRef(null);
+  const [toolbarWidth, setToolbarWidth] = useState(0);
 
   const graphWrapperRef = useRef(null);
   const edgesByNodeRef = useRef(new Map());
@@ -945,6 +1027,7 @@ const ServiceMapContent = ({ cardElevation }) => {
   const adjacencyMapRef = useRef(new Map());
   const layoutIdRef = useRef(0);
   const originalPositionsRef = useRef(null);
+  const preFocusViewportRef = useRef(null);
   const focusLayoutIdRef = useRef(0);
   const nodeDetailRequestRef = useRef(0);
   const edgeDetailRequestRef = useRef(0);
@@ -957,7 +1040,19 @@ const ServiceMapContent = ({ cardElevation }) => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+      clearTimeout(nodeSearchDebounceRef.current);
     };
+  }, []);
+
+  // The toolbar's width changes with the Settings button (admins only) and the
+  // Download button's loading state, so track it rather than hardcoding it.
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return undefined;
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(() => setToolbarWidth(toolbar.offsetWidth));
+    observer.observe(toolbar);
+    return () => observer.disconnect();
   }, []);
 
   // Refs for path computation in handleInfoClick (these get updated after useMemos are computed)
@@ -1029,6 +1124,37 @@ const ServiceMapContent = ({ cardElevation }) => {
     }
   }, []);
 
+  // A role was set or removed from the node details: show the refreshed node
+  // there, and update its card and those of the linked instances that took the
+  // same change. The drawn cards are patched in place: replacing the graph
+  // data would re-lay it out and clear search, focus and highlights.
+  const handleRoleChange = useCallback(
+    (result) => {
+      const updated = result?.node;
+      if (!updated?.id) return;
+      setSelectedNodeDetails((prev) => ({ ...updated, pathToNode: prev?.pathToNode }));
+      const patchCard = (node) =>
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === node.id ? { ...n, data: { ...n.data, role: node.properties?.role, subType: node.logo_id ?? n.data?.subType } } : n
+          )
+        );
+      patchCard(updated);
+      // A linked instance's role after the change (its own detected role on a
+      // removal) is only known to the server, so its card is read back.
+      (result.applied || []).forEach((id) => {
+        apiKubernetes1
+          .knowledgeGraphGetNode(id)
+          .then((res) => {
+            const twin = res?.data?.data?.kg_get_node?.data;
+            if (twin?.id && isMountedRef.current) patchCard(twin);
+          })
+          .catch((err) => console.error('Failed to refresh a linked node:', err));
+      });
+    },
+    [setNodes]
+  );
+
   const nodeLookup = useMemo(() => {
     const map = {};
     if (rawData?.nodes) {
@@ -1054,17 +1180,25 @@ const ServiceMapContent = ({ cardElevation }) => {
       // Open modal immediately with basic info, then fetch full edge details
       const requestId = ++edgeDetailRequestRef.current;
       setIsEdgeDetailsLoading(true);
+      setEdgeDetailsUnavailable(false);
       setSelectedEdgeDetails({ ...rawEdge, source_name: sourceName, destination_name: destName });
 
       try {
-        const response = await apiKubernetes1.knowledgeGraphGetEdge(rawEdge.id);
+        const response = await apiKubernetes1.knowledgeGraphGetEdge(rawEdge.id, rawEdge.source_node_id, rawEdge.dest_node_id);
         if (requestId !== edgeDetailRequestRef.current || !isMountedRef.current) return;
         const fullEdge = response?.data?.data?.kg_get_edge?.data;
         if (fullEdge) {
           setSelectedEdgeDetails({ ...fullEdge, source_name: sourceName, destination_name: destName });
+        } else {
+          // The graph edge only carries id/endpoints/type, so without the lookup
+          // the dialog has nothing to show. Say so rather than render it blank.
+          setEdgeDetailsUnavailable(true);
         }
       } catch (err) {
         console.error('Failed to fetch edge details:', err);
+        if (requestId === edgeDetailRequestRef.current && isMountedRef.current) {
+          setEdgeDetailsUnavailable(true);
+        }
       } finally {
         if (requestId === edgeDetailRequestRef.current && isMountedRef.current) {
           setIsEdgeDetailsLoading(false);
@@ -1157,6 +1291,7 @@ const ServiceMapContent = ({ cardElevation }) => {
           nodeIdMap: initialKgFilterOptionsRef.current.nodeIdMap,
           nodeClusterMap: initialKgFilterOptionsRef.current.nodeClusterMap,
           nodeSpecificTypeMap: initialKgFilterOptionsRef.current.nodeSpecificTypeMap,
+          nodeDisplayNameMap: initialKgFilterOptionsRef.current.nodeDisplayNameMap,
         }));
         nodeTypeGroupingRef.current = {
           nodeTypeList: initialKgFilterOptionsRef.current.nodeTypeList || [],
@@ -1195,6 +1330,7 @@ const ServiceMapContent = ({ cardElevation }) => {
         nodeIdMap: computed.nodeIdMap,
         nodeClusterMap: computed.nodeClusterMap,
         nodeSpecificTypeMap: computed.nodeSpecificTypeMap,
+        nodeDisplayNameMap: computed.nodeDisplayNameMap,
       };
       if (!suppressNodeTypesUpdate) {
         nodeTypeGroupingRef.current = { nodeTypeList, specificTypesByNodeType };
@@ -1242,6 +1378,8 @@ const ServiceMapContent = ({ cardElevation }) => {
 
       const userFilters = acIds?.length > 0 || nIds?.length > 0 || nTypes?.length > 0 || !!lblFilters || !!attrFilters;
 
+      setGraphLoadError(false);
+
       if (!userFilters && (kgNodeCount || 0) > MAX_NODE_LIMIT) {
         setRawData({ nodes: [], edges: [] });
         setIsGraphLoading(false);
@@ -1286,9 +1424,26 @@ const ServiceMapContent = ({ cardElevation }) => {
           abortController.signal
         )
         .then((res) => {
-          const data = res?.data?.data?.kg_get_complete_graph?.data || { nodes: [], edges: [] };
-          setRawData(data);
-          if (!data.nodes?.length) {
+          // A failed request still resolves here: queryGraphQL's catch returns
+          // the error response rather than throwing on a 502, and the gateway
+          // reports upstream/parse/permission failures as an `errors` array on
+          // a 200. Both used to fall through to the empty graph below and
+          // render as "No nodes match your filters" with no error shown
+          // (#40696). Treat an errors array — or a missing payload with no
+          // errors (e.g. a network failure that resolves to a bare XHR) — as a
+          // failure, and keep the empty-but-valid graph as a real empty state.
+          const payload = res?.data?.data?.kg_get_complete_graph?.data;
+          const errorMessage = res?.data?.errors?.[0]?.message;
+          if (errorMessage || !payload) {
+            console.error('Failed to fetch knowledge graph:', errorMessage || `status ${res?.status ?? 'unknown'}`);
+            snackbar.error('Failed to load knowledge graph data.');
+            setRawData({ nodes: [], edges: [] });
+            setGraphLoadError(true);
+            setIsGraphLoading(false);
+            return;
+          }
+          setRawData(payload);
+          if (!payload.nodes?.length) {
             setIsGraphLoading(false);
           }
         })
@@ -1299,6 +1454,7 @@ const ServiceMapContent = ({ cardElevation }) => {
           // Same as the error paths above: drop the previous filters' graph so
           // it can't be shown or downloaded as this request's result.
           setRawData({ nodes: [], edges: [] });
+          setGraphLoadError(true);
           setIsGraphLoading(false);
         });
     },
@@ -1314,12 +1470,21 @@ const ServiceMapContent = ({ cardElevation }) => {
       selectedLevel,
       labelFilters,
       attributeFilters,
-      queryItems,
-      queryItemsLabel,
+      queryItems: appliedQueryItems,
+      queryItemsLabel: appliedQueryItemsLabel,
     };
     setFilterHistory((prev) => [...prev.slice(-19), snapshot]);
     setFilterFuture([]); // new action invalidates forward history
-  }, [selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel]);
+  }, [
+    selectedAccountIds,
+    selectedNodes,
+    selectedNodeTypes,
+    selectedLevel,
+    labelFilters,
+    attributeFilters,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
+  ]);
 
   // Pop last snapshot and restore all state + re-fetch the graph
   const handleBack = useCallback(() => {
@@ -1330,7 +1495,16 @@ const ServiceMapContent = ({ cardElevation }) => {
     // Save current state to future stack so Forward can return here
     setFilterFuture((prev) => [
       ...prev,
-      { selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel },
+      {
+        selectedAccountIds,
+        selectedNodes,
+        selectedNodeTypes,
+        selectedLevel,
+        labelFilters,
+        attributeFilters,
+        queryItems: appliedQueryItems,
+        queryItemsLabel: appliedQueryItemsLabel,
+      },
     ]);
 
     // Restore applied state
@@ -1352,6 +1526,8 @@ const ServiceMapContent = ({ cardElevation }) => {
     // Restore filter builder chip UI state
     setQueryItems(snapshot.queryItems);
     setQueryItemsLabel(snapshot.queryItemsLabel);
+    setAppliedQueryItems(snapshot.queryItems);
+    setAppliedQueryItemsLabel(snapshot.queryItemsLabel);
 
     // Fire fetch immediately; skip the useEffect duplicate trigger
     skipNextGraphEffectRef.current = true;
@@ -1371,8 +1547,8 @@ const ServiceMapContent = ({ cardElevation }) => {
     selectedLevel,
     labelFilters,
     attributeFilters,
-    queryItems,
-    queryItemsLabel,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
     fetchGraph,
     setSelectedAccountIds,
     setSelectedNodes,
@@ -1399,7 +1575,16 @@ const ServiceMapContent = ({ cardElevation }) => {
     // Save current state to history stack so Back can return here
     setFilterHistory((prev) => [
       ...prev.slice(-19),
-      { selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, queryItems, queryItemsLabel },
+      {
+        selectedAccountIds,
+        selectedNodes,
+        selectedNodeTypes,
+        selectedLevel,
+        labelFilters,
+        attributeFilters,
+        queryItems: appliedQueryItems,
+        queryItemsLabel: appliedQueryItemsLabel,
+      },
     ]);
 
     // Restore applied state
@@ -1421,6 +1606,8 @@ const ServiceMapContent = ({ cardElevation }) => {
     // Restore filter builder chip UI state
     setQueryItems(snapshot.queryItems);
     setQueryItemsLabel(snapshot.queryItemsLabel);
+    setAppliedQueryItems(snapshot.queryItems);
+    setAppliedQueryItemsLabel(snapshot.queryItemsLabel);
 
     // Fire fetch immediately; skip the useEffect duplicate trigger
     skipNextGraphEffectRef.current = true;
@@ -1440,8 +1627,8 @@ const ServiceMapContent = ({ cardElevation }) => {
     selectedLevel,
     labelFilters,
     attributeFilters,
-    queryItems,
-    queryItemsLabel,
+    appliedQueryItems,
+    appliedQueryItemsLabel,
     fetchGraph,
     setSelectedAccountIds,
     setSelectedNodes,
@@ -1500,6 +1687,7 @@ const ServiceMapContent = ({ cardElevation }) => {
   const isGraphRendered = !isLimitExceeded && nodes.length > 0;
   let downloadDisabledReason = '';
   if (isGraphLoading) downloadDisabledReason = 'Loading the graph…';
+  else if (graphLoadError) downloadDisabledReason = 'The graph failed to load.';
   else if (!hasUserFilters && isLimitExceeded)
     downloadDisabledReason = `The whole graph has ${kgNodeCount.toLocaleString()} nodes, too many to load. Apply a filter to download.`;
   else if (!initialNodes.length) downloadDisabledReason = hasUserFilters ? 'No nodes match your filters.' : 'The knowledge graph is empty.';
@@ -1725,6 +1913,8 @@ const ServiceMapContent = ({ cardElevation }) => {
   // consistent before and after navigation, the same way search/focus already reset.
   useEffect(() => {
     setSearchResetKey((k) => k + 1);
+    setNodeSearchQuery('');
+    clearTimeout(nodeSearchDebounceRef.current);
     setFocusedNodeId(null);
     originalPositionsRef.current = null;
     clearPinHighlight();
@@ -1742,6 +1932,7 @@ const ServiceMapContent = ({ cardElevation }) => {
 
       if (!originalPositionsRef.current) {
         originalPositionsRef.current = new Map(currentNodes.map((n) => [n.id, n.position]));
+        preFocusViewportRef.current = getViewport();
       }
 
       const connectedIds = new Set([nodeId, ...(adjacencyMapRef.current.get(nodeId) || [])]);
@@ -1752,6 +1943,11 @@ const ServiceMapContent = ({ cardElevation }) => {
       clearPinHighlight();
       setPinnedNodeId(null);
       setSearchResetKey((k) => k + 1);
+      setNodeSearchQuery('');
+      clearTimeout(nodeSearchDebounceRef.current);
+      // Drop the search highlight now, not only after the focus layout resolves: that layout
+      // can be superseded (e.g. focus exited mid-layout) and would leave stale highlights.
+      handleNodeSearch('');
 
       const currentLayoutId = ++focusLayoutIdRef.current;
       const layouted = await getLayoutedElements(subNodes, subEdges);
@@ -1774,13 +1970,30 @@ const ServiceMapContent = ({ cardElevation }) => {
       );
       setEdges((eds) => eds.map((e) => ({ ...e, hidden: !connectedIds.has(e.source) || !connectedIds.has(e.target) })));
 
-      setTimeout(() => fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM }), 100);
+      setTimeout(() => {
+        // Focus was left (exitFocusMode bumps the id) or moved to another node meanwhile.
+        if (currentLayoutId !== focusLayoutIdRef.current) return;
+        // Too many neighbours to fit at the min zoom: centre on the focused node instead of the
+        // subgraph's bounds, which would leave the focused node off screen (#41141).
+        const { width, height } = reactFlowStore.getState();
+        const center = getFocusCenter(
+          getNodes().filter((n) => !n.hidden),
+          nodeId,
+          width,
+          height,
+          FIT_VIEW_MIN_ZOOM,
+          0.2
+        );
+        if (center) setCenter(center.x, center.y, { zoom: FIT_VIEW_MIN_ZOOM, duration: 300 });
+        else fitView({ duration: 300, padding: 0.2, minZoom: FIT_VIEW_MIN_ZOOM });
+      }, 100);
     },
-    [getNodes, getEdges, setNodes, setEdges, fitView, clearPinHighlight]
+    [getNodes, getEdges, setNodes, setEdges, fitView, setCenter, getViewport, reactFlowStore, clearPinHighlight, handleNodeSearch]
   );
 
   const exitFocusMode = useCallback(() => {
     const snapshot = originalPositionsRef.current;
+    const viewport = preFocusViewportRef.current;
     setNodes((nds) =>
       nds.map((n) => ({
         ...n,
@@ -1790,10 +2003,12 @@ const ServiceMapContent = ({ cardElevation }) => {
     );
     setEdges((eds) => eds.map((e) => ({ ...e, hidden: false })));
     originalPositionsRef.current = null;
+    preFocusViewportRef.current = null;
     focusLayoutIdRef.current++;
     setFocusedNodeId(null);
-    setTimeout(() => fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM }), 50);
-  }, [setNodes, setEdges, fitView]);
+    // Return to the pan/zoom the user had before focusing, not a fresh fit of the whole graph.
+    setTimeout(() => (viewport ? setViewport(viewport, { duration: 300 }) : fitView({ duration: 300, minZoom: FIT_VIEW_MIN_ZOOM })), 50);
+  }, [setNodes, setEdges, fitView, setViewport]);
 
   // Keep the stable ref pointer up to date whenever enterFocusMode changes (adjacency map update)
   useEffect(() => {
@@ -1821,7 +2036,19 @@ const ServiceMapContent = ({ cardElevation }) => {
         if (currentLayoutId !== layoutIdRef.current) return;
         setNodes(layouted.nodes);
         setEdges(layouted.edges);
-        setTimeout(() => window.requestAnimationFrame(() => fitView({ minZoom: FIT_VIEW_MIN_ZOOM })), 50);
+        // A graph too big to fit at FIT_VIEW_MIN_ZOOM would be centred on its bounding box,
+        // which can be empty space (#41135); centre on the node nearest it instead.
+        setTimeout(
+          () =>
+            window.requestAnimationFrame(() => {
+              if (currentLayoutId !== layoutIdRef.current) return;
+              const { width, height } = reactFlowStore.getState();
+              const center = getAutoFitCenter(layouted.nodes, width, height, FIT_VIEW_MIN_ZOOM);
+              if (center) setCenter(center.x, center.y, { zoom: FIT_VIEW_MIN_ZOOM });
+              else fitView({ minZoom: FIT_VIEW_MIN_ZOOM });
+            }),
+          50
+        );
       } finally {
         if (currentLayoutId === layoutIdRef.current) {
           setIsGraphLoading(false);
@@ -1829,7 +2056,7 @@ const ServiceMapContent = ({ cardElevation }) => {
       }
     };
     runLayout();
-  }, [initialNodes, initialEdges, fitView, setNodes, setEdges, isLimitExceeded]);
+  }, [initialNodes, initialEdges, fitView, setCenter, reactFlowStore, setNodes, setEdges, isLimitExceeded]);
 
   // PNG export: isExportingImage turned off onlyRenderVisibleElements; wait two
   // frames for the off-screen nodes to reach the DOM, then capture.
@@ -1879,7 +2106,7 @@ const ServiceMapContent = ({ cardElevation }) => {
         // slim response: f.kind, f.name, f.account_id, f.unique_key
         const accountName = accountLookup.get(f.account_id) || f.account_id || '';
         const displayName = f.name || f.unique_key;
-        const simplifiedLabel = f.name ? `${f.name} (${snakeToTitleCase(f.kind)})` : f.unique_key;
+        const simplifiedLabel = f.name ? `${f.name} (${humanizeType(f.kind)})` : f.unique_key;
 
         return {
           label: f.unique_key,
@@ -1909,6 +2136,7 @@ const ServiceMapContent = ({ cardElevation }) => {
   const filterNodeOptions = useMemo(() => {
     const clusterMap = kgFilterOptions?.nodeClusterMap;
     const specificTypeMap = kgFilterOptions?.nodeSpecificTypeMap;
+    const displayNameMap = kgFilterOptions?.nodeDisplayNameMap;
     if (draftNodes.length > 0 && adjacencyMap.size > 0) {
       const selectedIds = new Set(draftNodes.map((n) => n.value));
       const neighborIds = new Set();
@@ -1925,7 +2153,7 @@ const ServiceMapContent = ({ cardElevation }) => {
         const node = uniqueServiceKeysMap.get(id);
         if (node) {
           // node.uniqueKey / node.label both hold the canonical unique key.
-          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value, clusterMap, specificTypeMap));
+          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value, clusterMap, specificTypeMap, displayNameMap));
         }
       });
       return [...neighborOptions, ...draftNodes];
@@ -1934,7 +2162,7 @@ const ServiceMapContent = ({ cardElevation }) => {
     // Default: full list from Stage-1 filter data.
     // Always include currently drafted nodes even if not returned by the filtered API response.
     const map = kgFilterOptions?.nodeIdMap || {};
-    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id, clusterMap, specificTypeMap));
+    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id, clusterMap, specificTypeMap, displayNameMap));
     const optionValues = new Set(Object.values(map));
     const selectedNotInMap = (draftNodes || []).filter((sel) => !optionValues.has(sel.value));
     return [...options, ...selectedNotInMap];
@@ -1942,6 +2170,7 @@ const ServiceMapContent = ({ cardElevation }) => {
     kgFilterOptions?.nodeIdMap,
     kgFilterOptions?.nodeClusterMap,
     kgFilterOptions?.nodeSpecificTypeMap,
+    kgFilterOptions?.nodeDisplayNameMap,
     draftNodes,
     adjacencyMap,
     uniqueServiceKeysMap,
@@ -2033,6 +2262,13 @@ const ServiceMapContent = ({ cardElevation }) => {
   ]);
 
   const handleApply = useCallback(() => {
+    // Nothing changed: Apply is only enabled to retry a failed load. Refetch the
+    // applied filters — no history step, and no skip flag, since no applied
+    // state changes to consume it.
+    if (!hasChanges) {
+      fetchGraph();
+      return;
+    }
     pushToHistory();
     // Fire the API call immediately with draft values — don't wait for the
     // React render cycle (unmounting a large ReactFlow graph is slow and
@@ -2052,7 +2288,21 @@ const ServiceMapContent = ({ cardElevation }) => {
     setSelectedLevel(draftLevel);
     setLabelFilters(draftLabelFilters);
     setAttributeFilters(draftAttributeFilters);
-  }, [draftAccountIds, draftNodes, draftNodeTypes, draftLevel, draftLabelFilters, draftAttributeFilters, fetchGraph, pushToHistory]);
+    setAppliedQueryItems(queryItems);
+    setAppliedQueryItemsLabel(queryItemsLabel);
+  }, [
+    draftAccountIds,
+    draftNodes,
+    draftNodeTypes,
+    draftLevel,
+    draftLabelFilters,
+    draftAttributeFilters,
+    queryItems,
+    queryItemsLabel,
+    fetchGraph,
+    pushToHistory,
+    hasChanges,
+  ]);
 
   const handleClear = useCallback(() => {
     pushToHistory();
@@ -2072,6 +2322,8 @@ const ServiceMapContent = ({ cardElevation }) => {
     setDraftAttributeFilters('');
     setQueryItems([]);
     setQueryItemsLabel([]);
+    setAppliedQueryItems([]);
+    setAppliedQueryItemsLabel([]);
     setSelectedAccountIds([]);
     setSelectedNodes([]);
     setSelectedNodeTypes([]);
@@ -2085,50 +2337,10 @@ const ServiceMapContent = ({ cardElevation }) => {
   }, [selectedAccountIds, selectedNodes, selectedNodeTypes, selectedLevel, labelFilters, attributeFilters, fetchGraph, pushToHistory]);
 
   // Compute full breadcrumb path including intermediate nodes and edge types
-  const fullBreadcrumbPath = useMemo(() => {
-    if (selectedNodes.length === 0) {
-      return [];
-    }
-    if (selectedNodes.length === 1) {
-      return [{ ...selectedNodes[0], isUserSelected: true, edgeFromPrev: null }];
-    }
-
-    const fullPath = [];
-    for (let i = 0; i < selectedNodes.length; i++) {
-      if (i === 0) {
-        fullPath.push({ ...selectedNodes[0], isUserSelected: true, edgeFromPrev: null });
-      } else {
-        const prevNode = selectedNodes[i - 1];
-        const currNode = selectedNodes[i];
-        const pathBetween = findShortestPath(adjacencyMap, prevNode.value, currNode.value);
-
-        if (!pathBetween) {
-          // Disconnected subgraphs — no path exists, mark as disconnected
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: null, isDisconnected: true });
-        } else if (pathBetween.length > 2) {
-          // Add intermediate nodes (skip first as it's already in path)
-          for (let j = 1; j < pathBetween.length - 1; j++) {
-            const intermediateId = pathBetween[j];
-            const prevId = pathBetween[j - 1];
-            const nodeData = uniqueServiceKeysMap.get(intermediateId);
-            if (nodeData) {
-              const edgeType = edgeTypeLookup.get(`${prevId}->${intermediateId}`) || null;
-              fullPath.push({ ...nodeData, isUserSelected: false, edgeFromPrev: edgeType });
-            }
-          }
-          // Edge from last intermediate to current node
-          const lastIntermediateId = pathBetween[pathBetween.length - 2];
-          const edgeToFinal = edgeTypeLookup.get(`${lastIntermediateId}->${currNode.value}`) || null;
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeToFinal });
-        } else {
-          // Direct connection (no intermediate nodes)
-          const edgeType = edgeTypeLookup.get(`${prevNode.value}->${currNode.value}`) || null;
-          fullPath.push({ ...currNode, isUserSelected: true, edgeFromPrev: edgeType });
-        }
-      }
-    }
-    return fullPath;
-  }, [selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup]);
+  const fullBreadcrumbPath = useMemo(
+    () => buildBreadcrumbPath(selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup),
+    [selectedNodes, adjacencyMap, uniqueServiceKeysMap, edgeTypeLookup]
+  );
 
   // Breadcrumb handlers - truncate to clicked node (for both user-selected and intermediate)
   const handleBreadcrumbNavigate = useCallback(
@@ -2182,6 +2394,8 @@ const ServiceMapContent = ({ cardElevation }) => {
       setDraftAttributeFilters('');
       setQueryItems([]);
       setQueryItemsLabel([]);
+      setAppliedQueryItems([]);
+      setAppliedQueryItemsLabel([]);
 
       const existingIndex = fullBreadcrumbPath.findIndex((n) => n.value === nodeId);
 
@@ -2247,16 +2461,10 @@ const ServiceMapContent = ({ cardElevation }) => {
     setPinnedNodeId(null);
   }, [clearPinHighlight]);
 
+  const currentTenantId = getCurrentTenant()?.id;
   const accountOptions = useMemo(
-    () =>
-      accounts
-        ?.filter((ac) => kgFilterOptions?.accountIds?.includes(ac.id))
-        ?.map((acc) => ({
-          label: acc.label || acc.account_name,
-          value: acc.id || acc.value,
-          group: acc.cloud_provider || 'Other',
-        })) || [],
-    [accounts, kgFilterOptions?.accountIds]
+    () => buildAccountOptions(accounts, kgFilterOptions?.accountIds, kgFilterOptions?.accountSources, currentTenantId),
+    [accounts, kgFilterOptions?.accountIds, kgFilterOptions?.accountSources, currentTenantId]
   );
 
   return (
@@ -2274,7 +2482,7 @@ const ServiceMapContent = ({ cardElevation }) => {
             <CircularProgress size={40} />
           </Box>
         ) : (
-          <NodeDetails node={selectedNodeDetails} />
+          <NodeDetails node={selectedNodeDetails} onRoleChange={handleRoleChange} />
         )}
       </Modal>
 
@@ -2290,7 +2498,7 @@ const ServiceMapContent = ({ cardElevation }) => {
             <CircularProgress size={40} />
           </Box>
         ) : (
-          <EdgeDetails edge={selectedEdgeDetails} />
+          <EdgeDetails edge={selectedEdgeDetails} detailsUnavailable={edgeDetailsUnavailable} />
         )}
       </Modal>
 
@@ -2298,7 +2506,7 @@ const ServiceMapContent = ({ cardElevation }) => {
         display='grid'
         gridTemplateColumns={`${isFilterCollapsed ? ds.space.mul(0, 20) : ds.space.mul(0, 185)} 1fr`}
         gap='var(--ds-space-2)'
-        sx={{ height: 'calc(100vh - 148px)', overflow: 'hidden', padding: 'var(--ds-space-2) 0px', isolation: 'isolate' }}
+        sx={{ height, boxSizing: 'border-box', overflow: 'hidden', padding: 'var(--ds-space-2) 0px', isolation: 'isolate' }}
       >
         {/* Collapsed rail — a slim strip with an expand control so the canvas can be broadened */}
         {isFilterCollapsed && (
@@ -2405,8 +2613,9 @@ const ServiceMapContent = ({ cardElevation }) => {
               <FilterWithInfo
                 info={
                   <InfoTip title='Account'>
-                    Scope the graph to specific cloud accounts. Only resources owned by the selected account(s) are shown. Leave empty to include
-                    every connected AWS, GCP, Azure and Kubernetes account.
+                    Scope the graph to specific accounts: AWS, GCP, Azure and Kubernetes accounts, and GitHub, GitLab and PagerDuty integrations.
+                    Users, groups and nodes declared outside any account are under {TENANT_ACCOUNT_LABEL}. Only nodes owned by the selected account(s)
+                    are shown. Leave empty to include every account.
                   </InfoTip>
                 }
               >
@@ -2572,7 +2781,14 @@ const ServiceMapContent = ({ cardElevation }) => {
             </Box>
 
             <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', pt: 'var(--ds-space-1)' }}>
-              <Button data-testid='kg-apply-filters-btn' tone='primary' size='sm' onClick={handleApply} disabled={!hasChanges} fullWidth>
+              <Button
+                data-testid='kg-apply-filters-btn'
+                tone='primary'
+                size='sm'
+                onClick={handleApply}
+                disabled={!hasChanges && !graphLoadError}
+                fullWidth
+              >
                 Apply Filters
               </Button>
               <Button data-testid='kg-clear-filters-btn' tone='secondary' size='sm' onClick={handleClear} fullWidth>
@@ -2597,7 +2813,18 @@ const ServiceMapContent = ({ cardElevation }) => {
           }}
         >
           {(filterHistory.length > 0 || filterFuture.length > 0 || selectedNodes.length > 0) && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2] }}>
+            <Box
+              data-testid='kg-path-row'
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: ds.space[2],
+                mb: ds.space[2],
+                // The toolbar sits ds.space[3] in from the card edge; the card's own
+                // ds.space[2] padding already covers the rest, so this leaves a ds.space[2] gap.
+                pr: toolbarWidth ? `calc(${toolbarWidth}px + ${ds.space[3]})` : undefined,
+              }}
+            >
               {filterHistory.length > 0 && (
                 <Button data-testid='kg-back-btn' tone='secondary' size='sm' icon={<ArrowBackIcon sx={{ width: '14px' }} />} onClick={handleBack}>
                   Back
@@ -2623,6 +2850,7 @@ const ServiceMapContent = ({ cardElevation }) => {
 
           {/* Top-right toolbar: search + relationships */}
           <Box
+            ref={toolbarRef}
             sx={{ position: 'absolute', top: ds.space[3], right: ds.space[3], zIndex: 200, display: 'flex', alignItems: 'center', gap: ds.space[2] }}
           >
             {/* Node search spotlight */}
@@ -2635,6 +2863,12 @@ const ServiceMapContent = ({ cardElevation }) => {
               popoverWidth={ds.space.mul(0, 210)}
               popoverAlign='center'
               size='sm'
+              searchValue={nodeSearchQuery}
+              onSearchChange={(q) => {
+                setNodeSearchQuery(q);
+                clearTimeout(nodeSearchDebounceRef.current);
+                nodeSearchDebounceRef.current = setTimeout(() => handleNodeSearch(q), 200);
+              }}
               onSelect={(event) => {
                 const val = event.target.value;
                 if (!val) {
@@ -2774,6 +3008,69 @@ const ServiceMapContent = ({ cardElevation }) => {
             )}
             {isGraphLoading ? (
               <Loader style={{ position: 'static', width: '100%', height: '100%' }} />
+            ) : graphLoadError ? (
+              <Box
+                data-testid='kg-load-error'
+                display='flex'
+                flexDirection='column'
+                alignItems='center'
+                justifyContent='center'
+                height='100%'
+                width='100%'
+                p={ds.space[6]}
+              >
+                <Box
+                  sx={{
+                    maxWidth: ds.space.mul(0, 240),
+                    width: '100%',
+                    textAlign: 'center',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-5)',
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: ds.space.mul(0, 32),
+                      height: ds.space.mul(0, 32),
+                      borderRadius: 'var(--ds-radius-pill)',
+                      background: 'linear-gradient(135deg, var(--ds-red-100) 0%, var(--ds-red-200) 100%)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    <ErrorOutlineRoundedIcon sx={{ fontSize: 32, color: 'var(--ds-red-500)' }} />
+                  </Box>
+
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-heading)',
+                        fontWeight: 'var(--ds-font-weight-semibold)',
+                        fontFamily: ds.font.display,
+                        color: ds.gray[700],
+                      }}
+                    >
+                      The knowledge graph could not be loaded
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontSize: 'var(--ds-text-body)',
+                        fontWeight: 'var(--ds-font-weight-regular)',
+                        color: ds.gray[600],
+                        lineHeight: 1.6,
+                      }}
+                    >
+                      The request failed, so this is not an empty result. Try again with the same filters.
+                    </Typography>
+                  </Box>
+                  <Button data-testid='kg-load-error-retry-btn' tone='secondary' size='sm' onClick={() => fetchGraph()}>
+                    Retry
+                  </Button>
+                </Box>
+              </Box>
             ) : isLimitExceeded ? (
               <Box display='flex' flexDirection='column' alignItems='center' justifyContent='center' height='100%' width='100%' p={ds.space[6]}>
                 <Box
@@ -3045,10 +3342,10 @@ const ServiceMapContent = ({ cardElevation }) => {
   );
 };
 
-export default function KnowledgeGraphServiceMapWrapper({ cardElevation = 'raised' }) {
+export default function KnowledgeGraphServiceMapWrapper({ cardElevation = 'raised', height = 'calc(100vh - 132px)' }) {
   return (
     <ReactFlowProvider>
-      <ServiceMapContent cardElevation={cardElevation} />
+      <ServiceMapContent cardElevation={cardElevation} height={height} />
     </ReactFlowProvider>
   );
 }
@@ -3057,4 +3354,10 @@ KnowledgeGraphServiceMapWrapper.propTypes = {
   // Card elevation for the filter panel: 'flat' when mounted inside a modal (b-Cortex),
   // where a raised shadow would stack on the modal surface; 'raised' on a page (Troubleshoot).
   cardElevation: PropTypes.oneOf(['raised', 'flat']),
+  // Outer (border-box) height of the filters + canvas grid. The default sizes it
+  // to the viewport for the Troubleshoot page — the same box as the old
+  // content-box calc(100vh - 148px) plus its 2 × 8px vertical padding. A host
+  // with its own bounded box (the b-Cortex modal) passes '100%' so the canvas
+  // fills that box instead of running past it (#41509).
+  height: PropTypes.string,
 };

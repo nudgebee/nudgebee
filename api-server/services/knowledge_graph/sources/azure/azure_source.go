@@ -102,8 +102,17 @@ func (s *AzureSource) Validate() error {
 	return nil
 }
 
-// GenerateUniqueKey generates a unique key for an Azure node
-// Format: azure:{account}:{region}:{NodeType}:{vnet_id}:{name}
+// GenerateUniqueKey generates a unique key for an Azure node.
+// Format: azure:{account}:{region}:{NodeType}:{resource_group}:{name}
+//
+// The hierarchy is the resource group because that is where Azure makes a name
+// unique, as the project is for GCP and the VPC for AWS; a child resource is
+// named by its path below its parent ("sqlsrv1/databases/orders"), because a
+// child name is unique only per parent and type (a storage account's blob, file,
+// queue and table services are all "default"). Both come from the resource id
+// (see azureKeyParts), so the inventory row, the single-resource patch, the
+// subnets/NICs/NSGs synthesized from metadata and a declared node all key the
+// same resource the same way.
 func (s *AzureSource) GenerateUniqueKey(node *core.DbNode) string {
 	if node == nil {
 		return ""
@@ -111,47 +120,27 @@ func (s *AzureSource) GenerateUniqueKey(node *core.DbNode) string {
 
 	keyComponents := core.NewUniqueKeyComponents("azure", node.NodeType)
 
-	// Extract name
 	name, _ := core.GetNodePropertyString(node, "name")
-	if name == "" {
-		name, _ = core.GetNodePropertyString(node, "resource_id")
+	resourceID, _ := core.GetNodePropertyString(node, "resource_id")
+	if resourceID == "" {
+		resourceID, _ = core.GetNodePropertyString(node, "arn")
 	}
-	if name == "" {
-		name, _ = core.GetNodePropertyString(node, "id")
+	resourceGroup, keyName := azureKeyParts(resourceID, name)
+	if resourceGroup == "" {
+		rg, _ := core.GetNodePropertyString(node, "resource_group")
+		resourceGroup = strings.ToLower(rg)
 	}
-	keyComponents.Name = name
+	if keyName == "" {
+		keyName = resourceID
+	}
+	if keyName == "" {
+		keyName, _ = core.GetNodePropertyString(node, "id")
+	}
+	keyComponents.Name = keyName
 	keyComponents.Account = node.CloudAccountID
-
-	// Extract region (location)
 	region, _ := core.GetNodePropertyString(node, "region")
-	if region != "" {
-		keyComponents.Location = region
-	}
-
-	// Extract hierarchy (VNet name for network resources)
-	switch node.NodeType {
-	case core.NodeTypeVPC:
-		// For VNet nodes themselves, leave hierarchy empty
-		keyComponents.Hierarchy = ""
-	case core.NodeTypeManagedCluster:
-		// Use service identifier
-		serviceName, _ := core.GetNodePropertyString(node, "service_name")
-		if serviceName == "Microsoft.ContainerService" {
-			keyComponents.Hierarchy = "AKS"
-		} else if serviceName != "" {
-			keyComponents.Hierarchy = serviceName
-		}
-	default:
-		vnetNameHierarchy, _ := core.GetNodePropertyString(node, "vnet_name_hierarchy")
-		if vnetNameHierarchy != "" {
-			keyComponents.Hierarchy = vnetNameHierarchy
-		} else {
-			vnetID, _ := core.GetNodePropertyString(node, "vnet_id")
-			if vnetID != "" {
-				keyComponents.Hierarchy = vnetID
-			}
-		}
-	}
+	keyComponents.Location = normalizeAzureRegion(region)
+	keyComponents.Hierarchy = resourceGroup
 
 	if err := keyComponents.Validate(); err != nil {
 		return s.BaseSource.GenerateUniqueKey(node)
@@ -241,7 +230,9 @@ func (s *AzureSource) fetchAzureResources(ctx context.Context, req *core.SourceB
 		query += " AND cr.is_active = true"
 	}
 
-	query += " ORDER BY cr.type, cr.name"
+	// cr.id breaks ties so that, if two resources ever share a key, the same one
+	// wins the merge on every build.
+	query += " ORDER BY cr.type, cr.name, cr.id"
 
 	var resources []sources.CloudResourceRow
 	err = dbManager.Db.Select(&resources, query, args...)
@@ -340,6 +331,12 @@ func (s *AzureSource) convertResourcesToGraph(reqCtx *security.RequestContext, r
 	// cross-account enricher (Phase 2.1), since a zone and its linked VNet are
 	// frequently in different subscriptions and only the unified graph can match
 	// them.
+
+	if collided := markKeyCollisions(nodes); collided > 0 {
+		s.logger.Warn("Azure resources share a unique key and will merge into one node",
+			"collided_keys", collided,
+			"cloud_account_id", req.CloudAccountID)
+	}
 
 	return nodes, edges
 }

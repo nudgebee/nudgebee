@@ -7,6 +7,7 @@ from qdrant_client.http.exceptions import ResponseHandlingException
 
 from rag.qdrant.client import get_qdrant_client
 from rag.qdrant.client import list_collections_optimized
+from rag.core import replica_broadcast
 from rag.core.documents import source_store
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,7 @@ def set_collection_scope(collection_name: str, account_id: str | None, tenant_id
 
     get_collection_list_cache().invalidate()
     get_metadata_cache().invalidate(collection_name)
+    replica_broadcast.replica_broadcast(replica_broadcast.CHANGE_RAG_COLLECTIONS, collection_name)
     return True
 
 
@@ -280,6 +282,7 @@ def delete_collection(collection_name: str):
 
         get_collection_list_cache().invalidate()
         get_metadata_cache().invalidate()
+        replica_broadcast.replica_broadcast_all(replica_broadcast.CHANGE_RAG_COLLECTIONS)
     except ValueError:
         gone = True
         logger.warning(f"Failed to delete collection {collection_name}, as it does not exist.")
@@ -311,6 +314,7 @@ def delete_module_collections(module_name: str):
 
         get_collection_list_cache().invalidate()
         get_metadata_cache().invalidate()
+        replica_broadcast.replica_broadcast_all(replica_broadcast.CHANGE_RAG_COLLECTIONS)
     except ValueError:
         logger.warning(f"Failed to delete collection {module_name}, as it does not exist.")
     except Exception as e:
@@ -333,6 +337,7 @@ def delete_all_collections():
 
         get_collection_list_cache().invalidate()
         get_metadata_cache().invalidate()
+        replica_broadcast.replica_broadcast_all(replica_broadcast.CHANGE_RAG_COLLECTIONS)
     except Exception as e:
         logger.error(f"Failed to delete collections: {e}")
 

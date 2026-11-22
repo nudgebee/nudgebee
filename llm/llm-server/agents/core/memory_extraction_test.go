@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestRetrieveAndBuildMemoryNotebook_Broadened(t *testing.T) {
@@ -118,4 +119,14 @@ func TestIsAcceptableMemoryFact(t *testing.T) {
 			assert.Equal(t, tt.expectedReason, reason, "rejection reason for %q", tt.content)
 		})
 	}
+}
+
+func TestMemoryWriteSucceeded(t *testing.T) {
+	call := func(name string, failed bool) ToolInvocation {
+		return ToolInvocation{Call: llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: name}}, Failed: failed}
+	}
+	assert.False(t, memoryWriteSucceeded(nil))
+	assert.False(t, memoryWriteSucceeded([]ToolInvocation{call("kubectl", false), {}}))
+	assert.False(t, memoryWriteSucceeded([]ToolInvocation{call("memory_write", true)}), "a refused write does not count")
+	assert.True(t, memoryWriteSucceeded([]ToolInvocation{call("kubectl", false), call("memory_write", false)}))
 }

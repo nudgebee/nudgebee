@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/runbook/internal/logsafe"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/services/security"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -163,23 +164,12 @@ func (leakyTask) Execute(ctx types.TaskContext, params map[string]any) (any, err
 	return nil, fmt.Errorf("request to %v failed", params["url"])
 }
 
-func stepParams(extra map[string]any) map[string]any {
-	p := map[string]any{
-		ParamTenantID:   "t",
-		ParamAccountID:  "acct-a",
-		ParamWorkflowID: "wf-1",
-		ParamUserID:     "last-editor",
-	}
-	for k, v := range extra {
-		p[k] = v
-	}
-	return p
-}
-
 func TestTaskWrapper_MasksSecretsInStepLogsAndErrors(t *testing.T) {
 	var buf bytes.Buffer
+	authz := stubAuthorizer(principalContext(t, []string{security.AUTH_TENANT_ADMIN_ROLE}, nil, nil), true)
 	tw := &TaskWrapper{
-		Task: leakyTask{},
+		Task:       leakyTask{},
+		Authorizer: &authz,
 		Secrets: func(_ context.Context, tenantID, accountID string) ([]string, error) {
 			assert.Equal(t, "t", tenantID)
 			assert.Equal(t, "acct-a", accountID)
@@ -192,7 +182,8 @@ func TestTaskWrapper_MasksSecretsInStepLogsAndErrors(t *testing.T) {
 	env := suite.NewTestActivityEnvironment()
 	env.RegisterActivityWithOptions(tw.Execute, activity.RegisterOptions{Name: tw.Task.GetName()})
 	_, err := env.ExecuteActivity(tw.Task.GetName(), stepParams(map[string]any{
-		"url": "https://hooks.example.com/" + scrubCanary,
+		ParamRunAsUserID: "owner",
+		"url":            "https://hooks.example.com/" + scrubCanary,
 	}))
 
 	require.Error(t, err)
@@ -203,7 +194,8 @@ func TestTaskWrapper_MasksSecretsInStepLogsAndErrors(t *testing.T) {
 }
 
 func TestTaskWrapper_WithoutALoaderMasksNothing(t *testing.T) {
-	tw := &TaskWrapper{Task: leakyTask{}}
+	authz := stubAuthorizer(principalContext(t, []string{security.AUTH_TENANT_ADMIN_ROLE}, nil, nil), true)
+	tw := &TaskWrapper{Task: leakyTask{}, Authorizer: &authz}
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestActivityEnvironment()

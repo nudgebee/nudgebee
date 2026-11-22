@@ -83,6 +83,9 @@ const formatAnswer = (answer, followupType) => {
  * A followup still WAITING once its turn has finished was never answered.
  */
 export const describeFollowup = (task) => {
+  if (task?.autoApproval) {
+    return describeAutoApproval(task);
+  }
   const response = task?.response || {};
   const config = parseConfig(response.message_config);
   const followupType = config.followupType || '';
@@ -142,6 +145,46 @@ export const describeFollowup = (task) => {
 };
 
 export const isFollowupTask = (task) => (task?.tool ?? task?.type) === 'followup-question';
+
+/**
+ * Tool calls a tool approval rule let run without asking (their metadata carries
+ * `nb_approved_by_rule`), shaped as approval-history entries so the approvals
+ * pill lists them beside the approvals people answered.
+ */
+export const collectAutoApprovals = (agents) => {
+  const entries = [];
+  (agents || []).forEach((agent) => {
+    (agent?.llm_conversation_tool_calls || []).forEach((call) => {
+      const rule = parseConfig(call?.metadata)?.nb_approved_by_rule;
+      if (rule?.rule_name) {
+        entries.push({
+          autoApproval: { ruleName: rule.rule_name, ruleRevision: rule.rule_revision || null },
+          toolName: call.tool_name || '',
+          parameters: call.parameters,
+          createdAt: call.created_at || null,
+          originalIndex: `auto-${call.id || call.tool_id || entries.length}`,
+        });
+      }
+    });
+  });
+  return entries;
+};
+
+function describeAutoApproval(entry) {
+  const parameters = typeof entry.parameters === 'string' ? entry.parameters : JSON.stringify(entry.parameters || '');
+  const { ruleName, ruleRevision } = entry.autoApproval;
+  return {
+    isApproval: true,
+    toolName: entry.toolName,
+    target: null,
+    question: '',
+    command: parameters ? unwrapCommand(parameters) : '',
+    outcome: 'auto_approved',
+    detail: `Rule: ${ruleName}${ruleRevision ? ` (revision ${ruleRevision})` : ''}`,
+    askedAt: entry.createdAt,
+    endedAt: entry.createdAt,
+  };
+}
 
 const NEEDS_ATTENTION = ['denied', 'dismissed', 'unanswered'];
 

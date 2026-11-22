@@ -63,9 +63,13 @@ const ManualDependenciesSection = ({ open, schema, refreshKey, onNodesChanged })
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
 
   // "Declare node" on an unmatched endpoint: { row, side } while the node
-  // dialog is open. The schema says which node types can be declared.
+  // dialog is open. The schema says which node types can be declared — an
+  // endpoint may also name one of the tenant's own kinds.
   const [declareFor, setDeclareFor] = useState(null);
-  const declarableTypes = useMemo(() => new Set(schema.flatMap((p) => (p.kinds ?? []).map((k) => k.node_type))), [schema]);
+  const declarableTypes = useMemo(
+    () => new Set(schema.flatMap((p) => (p.kinds ?? []).flatMap((k) => (k.free_properties ? [k.node_type, k.specific_type] : [k.node_type])))),
+    [schema]
+  );
 
   const statusFilterArray = useMemo(() => {
     if (!statusFilter || statusFilter === 'all') {
@@ -359,6 +363,7 @@ const ManualDependenciesSection = ({ open, schema, refreshKey, onNodesChanged })
           setEditDialogOpen(false);
           setEditRow(null);
         }}
+        schema={schema}
         onSaved={handleEditSaved}
       />
       <EditManualNodeDialog

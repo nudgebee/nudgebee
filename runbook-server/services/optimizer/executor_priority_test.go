@@ -54,6 +54,7 @@ func TestGenerateTasks_NamespacePriority(t *testing.T) {
 
 	// Mock Pre-flight checks (Agent)
 	mockRepo.On("GetAgent", ctx, accountID).Return(&model.Agent{Status: "Connected"}, nil)
+	mockRepo.expectNoApprovals(aoID)
 
 	// Mock SaveAutoOptimize (Execution Status update)
 	mockRepo.On("SaveAutoOptimize", ctx, mock.Anything).Return(nil)

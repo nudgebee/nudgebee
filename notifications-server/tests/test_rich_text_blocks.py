@@ -144,3 +144,17 @@ class TestMultipleDiagramNumbering:
         # The middle one fell back to the code block - it never got an
         # image, so there's nothing for a number to disambiguate.
         assert any("Flowchart" in t for t in _all_texts(groups))
+
+
+class TestGenericCodeFenceStaysIntact:
+    def test_long_fence_is_not_split_across_plain_text_chunks(self):
+        body = "\n".join(f"config_item_{i:03d}: value-{i:03d}" for i in range(108))
+        text = f"Here is the manifest:\n\n```yaml\n{body}\n```\n\nDone."
+
+        groups = render_rich_segments(text, _plain_text_leaf)
+
+        texts = _all_texts(groups)
+        fenced = [t for t in texts if "config_item_000" in t]
+        assert len(fenced) == 1
+        assert fenced[0].count("```") == 2
+        assert fenced[0] == f"```\n{body}\n```"

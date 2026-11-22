@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"nudgebee/services/internal/database"
+	"nudgebee/services/knowledge_graph/core"
 )
 
 // In-cluster datastores (databases, caches, message queues) run as ordinary K8s
@@ -15,11 +16,13 @@ import (
 // WITHOUT changing node_type — the workload stays a Workload (keeping its topology,
 // scaling, and edges) and merely gains the role it plays. See the KG service guide.
 
-// Datastore roles a workload can play. Empty = not a datastore.
+// Datastore roles a workload can play. Empty = not a datastore. They are values
+// of the node-role vocabulary (core/node_roles.go), which a user may also set
+// on a node; a user's role wins over this one.
 const (
-	roleDatabase     = "database"
-	roleCache        = "cache"
-	roleMessageQueue = "messagequeue"
+	roleDatabase     = core.NodeRoleDatabase
+	roleCache        = core.NodeRoleCache
+	roleMessageQueue = core.NodeRoleMessageQueue
 )
 
 // engineRole maps a canonical engine name to its datastore role. etcd/zookeeper are

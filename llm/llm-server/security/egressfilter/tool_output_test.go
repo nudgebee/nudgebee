@@ -63,6 +63,8 @@ func TestRedactToolOutput(t *testing.T) {
 		{"google oauth secret", "x GOCSPX-Abcdefghijklmnopqrstuvw y", "x [REDACTED] y"},
 		{"bearer header", "Authorization: Bearer abc.def.ghi-123456", "Authorization: Bearer [REDACTED]"},
 		{"upper-case bearer header", "AUTHORIZATION: Bearer abc.def.ghi-123456", "AUTHORIZATION: Bearer [REDACTED]"},
+		{"jwt as a flag value", "kubectl get pods --token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX3BhcnQ -n shop",
+			"kubectl get pods --token [REDACTED] -n shop"},
 		{"private key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEfake\n-----END RSA PRIVATE KEY-----", "[REDACTED]"},
 		{"plain text untouched", "pod/api-0 Running 3 restarts; see https://example.com/docs", "pod/api-0 Running 3 restarts; see https://example.com/docs"},
 	}

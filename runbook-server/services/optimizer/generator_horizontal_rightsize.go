@@ -31,7 +31,7 @@ func (g *HorizontalRightsizeGenerator) GenerateTasks(ctx context.Context, ao mod
 		namespace, kind, name := parts[0], parts[1], parts[2]
 
 		// Extract recommendation details
-		targetReplicas, ok := g.extractReplicas(rec.Recommendation)
+		targetReplicas, forecastFor, ok := g.extractReplicas(rec.Recommendation)
 		if !ok {
 			// Skip if data is missing or invalid type
 			continue
@@ -48,6 +48,11 @@ func (g *HorizontalRightsizeGenerator) GenerateTasks(ctx context.Context, ao mod
 			"max":           ao.Rule["max_replicas"],
 			"ticket_config": ao.Attributes.TicketConfig,
 			"gitops_config": ao.Attributes.GitOpsConfig,
+		}
+		// A forecast target is right for one hour; record which, so whoever
+		// reviews a parked plan can see how old it is by the time it applies.
+		if forecastFor != nil {
+			params["forecast_for"] = forecastFor.Format(time.RFC3339)
 		}
 
 		task := g.CreateBaseTask(ao, rec.Recommendation)
@@ -75,17 +80,19 @@ func (g *HorizontalRightsizeGenerator) GenerateTasks(ctx context.Context, ao mod
 	return tasks, nil
 }
 
-func (g *HorizontalRightsizeGenerator) extractReplicas(rec model.Recommendation) (float64, bool) {
+// extractReplicas returns the replica target and, when it comes from the
+// hourly forecast, the hour it was forecast for.
+func (g *HorizontalRightsizeGenerator) extractReplicas(rec model.Recommendation) (float64, *time.Time, bool) {
 	// 1. Simple Top-level
 	if val, ok := rec.Recommendation["recommended_replicas"].(float64); ok {
-		return val, true
+		return val, nil, true
 	}
 
 	// 2. Nested Recommendation Blob (Python Parity)
 	if replicaData, ok := rec.Recommendation["recommendation"].(map[string]any); ok {
 		// 2a. Normal nested
 		if val, ok := replicaData["recommended_replica"].(float64); ok {
-			return val, true
+			return val, nil, true
 		}
 
 		// 2b. ML Based (Time-series)
@@ -94,10 +101,10 @@ func (g *HorizontalRightsizeGenerator) extractReplicas(rec model.Recommendation)
 			nextHour := time.Now().UTC().Truncate(time.Hour).Add(time.Hour)
 			timeKey := nextHour.Format("2006-01-02T15:04:05")
 			if val, ok := recommended[timeKey].(float64); ok {
-				return val, true
+				return val, &nextHour, true
 			}
 		}
 	}
 
-	return 0, false
+	return 0, nil, false
 }

@@ -157,16 +157,6 @@ func captureClaimResponse(response *llms.ContentResponse) (string, bool) {
 	return string(data), false
 }
 
-func claimUsageID(ctx *security.RequestContext) string {
-	// An explicit ID is valid only for the single-attempt audit call.
-	preserved, _ := ctx.GetContext().Value(contextKeyPreserveInput).(bool)
-	if !preserved {
-		return ""
-	}
-	id, _ := ctx.GetContext().Value(contextKeyClaimUsageID).(string)
-	return id
-}
-
 func persistClaimCapture(ctx *security.RequestContext, record *ClaimCritiqueAuditRecord) error {
 	dao := GetConversationDao()
 	if dao == nil {

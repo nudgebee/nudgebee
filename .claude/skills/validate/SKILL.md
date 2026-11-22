@@ -39,7 +39,7 @@ Map files to services and their validation commands:
 | `ml-k8s-server/` | ml-k8s-server | `make lint && make test` | `ml-k8s-server/` |
 | `auto-pilot/` | auto-pilot | `poetry run black --check . && poetry run flake8 .` | `auto-pilot/` |
 | `auto-pilot/sidecar/` | auto-pilot-sidecar | `poetry run black --check . && poetry run flake8 .` | `auto-pilot/sidecar/` |
-| `notifications-server/` | notifications-server | `poetry run black --check . && poetry run flake8 .` | `notifications-server/` |
+| `notifications-server/` | notifications-server | `uv run black --check . && uv run flake8 .` | `notifications-server/` |
 | `app/` | frontend | `npm run lint2` | `app/` |
 
 ## Step 2: Run Validation

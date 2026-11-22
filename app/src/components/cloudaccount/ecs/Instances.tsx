@@ -1303,29 +1303,51 @@ const ECSClusterInfo = ({ clusterDetails }: { clusterDetails: any }) => {
   );
 };
 
+const CAPACITY_PROVIDER_HEADERS = ['Capacity Provider', 'Scaling Type', 'Provisioning Model', 'Update Status', 'Update Status Reason'];
+
+// AWS exposes FARGATE / FARGATE_SPOT as reserved providers with no scaling config;
+// anything else is Auto Scaling group backed. Mirror the AWS console's label.
+const capacityProviderScalingType = (detail: any): string => {
+  if (detail?.Name === 'FARGATE') return 'Fargate';
+  if (detail?.Name === 'FARGATE_SPOT') return 'Fargate Spot';
+  if (detail?.AutoScalingGroupProvider) return 'Auto Scaling group';
+  return '-';
+};
+
 const ECSClusterCapacityProviders = ({ clusterDetails }: { clusterDetails: any }) => {
+  const capacityProviderDetails = clusterDetails?.meta?.CapacityProviderDetails;
   const capacityProviders = clusterDetails?.meta?.CapacityProviders;
   const defaultStrategy = clusterDetails?.meta?.DefaultCapacityProviderStrategy;
 
-  if ((!capacityProviders || capacityProviders.length === 0) && (!defaultStrategy || defaultStrategy.length === 0)) {
+  // Prefer the enriched detail objects; fall back to bare names for clusters
+  // collected before the backend started surfacing CapacityProviderDetails.
+  const providerRows: any[] =
+    capacityProviderDetails && capacityProviderDetails.length > 0
+      ? capacityProviderDetails
+      : (capacityProviders || []).map((name: string) => ({ Name: name }));
+
+  if (providerRows.length === 0 && (!defaultStrategy || defaultStrategy.length === 0)) {
     return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No capacity providers configured for this cluster.</Typography>;
   }
+
+  const cellSx = { fontSize: ds.text.body };
+  const tableData: ICustomTableRow[][] = providerRows.map((detail: any) => [
+    { component: <Typography sx={cellSx}>{detail.Name || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{capacityProviderScalingType(detail)}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.ProvisioningModel || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.UpdateStatus || '-'}</Typography> },
+    { component: <Typography sx={cellSx}>{detail.UpdateStatusReason || '-'}</Typography> },
+  ]);
 
   return (
     <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[4]}>
-        {capacityProviders && capacityProviders.length > 0 && (
+        {providerRows.length > 0 && (
           <Box>
             <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
               Capacity Providers
             </Typography>
-            <List dense>
-              {capacityProviders.map((cp: string) => (
-                <ListItem key={cp} sx={{ py: ds.space[1] }}>
-                  <Chip size='md'>{cp}</Chip>
-                </ListItem>
-              ))}
-            </List>
+            <CustomTable id='ecs-cluster-capacity-providers-table' headers={CAPACITY_PROVIDER_HEADERS} tableData={tableData} loading={false} />
           </Box>
         )}
         {defaultStrategy && defaultStrategy.length > 0 && (

@@ -359,6 +359,13 @@ func offloadEventEvidence(ctx *security.RequestContext, wm workspace.WorkspaceMa
 	preview := buildEventEvidencePreview(investigateData)
 	capInvestigateDataEvidence(&investigateData)
 
+	// No conversation (the event pipeline reading an event before its
+	// conversation exists): no workspace a later call could read the file
+	// from, so return the key facts without saving.
+	if conversationId == "" {
+		return fmt.Sprintf("Output large (%d bytes); key facts below.\n%s", len(fullBytes), preview), nil
+	}
+
 	outputFile := EventEvidenceFileName(eventID)
 	if err := wm.SaveFile(ctx, accountId, conversationId, outputFile, string(fullBytes)); err != nil {
 		ctx.GetLogger().Error("get_event_by_id: failed to save evidence to workspace", "error", err, "path", outputFile)
@@ -657,7 +664,11 @@ func (t ListEventsTool) Description() string {
 		"range (start_time/end_time ISO8601, or relative_range like '24h'/'7d'). Returns a compact " +
 		"evidence manifest per event (available evidence types + key insights), not full raw evidence — " +
 		"use get_event_by_id or get_event_evidence to drill into a specific event afterward. Use this for " +
-		"any 'show me recent/list events matching X' question instead of writing raw SQL."
+		"any 'show me recent/list events matching X' question instead of writing raw SQL. SLO breach " +
+		"forecasts are events with aggregation_key CPUThrottlingPredicted, CPUSaturationPredicted or " +
+		"MemorySaturationPredicted (status FIRING = projected breach; the title carries the ETA); an actual breach " +
+		"is CPUThrottlingSLOBreached, CPUSaturationSLOBreached or MemorySaturationSLOBreached, whose evidence " +
+		"carries the daily climb that led to it. Memory ones name their container in the title and the container label."
 }
 
 func (t ListEventsTool) InputSchema() core.ToolSchema {
@@ -820,11 +831,11 @@ func (t ListEventsTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRequ
 	}
 	buildManifestOnlyEvidence(data)
 
-	bytesData, marshalErr := common.MarshalJson(data)
+	listed, marshalErr := sqlResultData(resp, data)
 	if marshalErr != nil {
 		return core.NBToolResponse{}, marshalErr
 	}
-	resp.Data = string(bytesData)
+	resp.Data = listed
 	resp.References = eventReferences(nbCtx, dataAccountID, data)
 	return resp, nil
 }
@@ -937,8 +948,8 @@ func (t AggregateEventsTool) InputSchema() core.ToolSchema {
 }
 
 // maxAggregateEventsRows caps the groups returned: grouping by title or
-// subject_name can make thousands.
-const maxAggregateEventsRows = 200
+// subject_name can make thousands. Kept at sqlToolMaxRows so the cap never cuts it.
+const maxAggregateEventsRows = sqlToolMaxRows
 
 func (t AggregateEventsTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (core.ToolRequestType, error) {
 	return core.ToolRequestTypeRead, nil
@@ -1022,9 +1033,16 @@ const (
 	// previewInsightBytes / previewInsightChars bound the one-line insight
 	// messages inlined from every section (deployment correlation, trace
 	// errors, ...). They are already written as summaries, so they carry the
-	// lead even when the section's raw data stays in the file.
-	previewInsightBytes = 1500
+	// lead even when the section's raw data stays in the file. Worst first,
+	// so when the budget fills it is info-level lines that are left out.
+	previewInsightBytes = 2000
 	previewInsightChars = 240
+	// previewMarkdownChars / previewMarkdownSections bound the markdown
+	// sections inlined from their start. A CI failure's only evidence is a
+	// markdown job-log excerpt that opens with the failed step and the error
+	// lines; without it the summary saw no error at all (#39716 regression).
+	previewMarkdownChars    = 2000
+	previewMarkdownSections = 2
 )
 
 // buildEventEvidencePreview summarises offloaded evidence: log summary, the
@@ -1076,6 +1094,7 @@ func buildEventEvidencePreview(id events.InvestigateData) string {
 	}
 	b.WriteString(previewMetricCards(id.MetricsData))
 	b.WriteString(previewTraces(id.Traces))
+	b.WriteString(previewMarkdowns(id.Markdowns))
 
 	sort.Slice(sections, func(i, j int) bool { return sections[i].size > sections[j].size })
 	var tail strings.Builder
@@ -1464,6 +1483,39 @@ func insightHighlights(sections []previewSection, maxBytes int) string {
 // oomKilledTitle is the block tool_event.go appends to PodEvents for OOM
 // events; it is appended last, so a cut from the front would drop it.
 const oomKilledTitle = "*Pod and Node OOMKilled data*"
+
+// previewMarkdowns inlines the start of the first markdown sections. Enrichers
+// put the failure up front (a CI job log opens with the failed step and its
+// error lines), so the head carries the cause; the rest stays in the file.
+func previewMarkdowns(markdowns []events.InvestigateDataInsight) string {
+	var b strings.Builder
+	shown := 0
+	for _, md := range markdowns {
+		if shown == previewMarkdownSections {
+			break
+		}
+		text, ok := md.Data.(string)
+		if !ok {
+			continue
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		// The ingest path sets Title to the evidence type ("markdown"); the
+		// enricher's own name for the section is in additional_info.title.
+		title := md.Title
+		if t, ok := md.AdditionalInfo["title"].(string); ok && t != "" {
+			title = t
+		}
+		if title == "" {
+			title = "markdown"
+		}
+		fmt.Fprintf(&b, "markdown_data %q (start):\n%s\n", title, truncateUTF8Safe(text, previewMarkdownChars))
+		shown++
+	}
+	return b.String()
+}
 
 // rootCauseSlice fits the part of pod_events / pod_data that explains a crash
 // into maxBytes. Each block's title and insight come first (the OOMKilled

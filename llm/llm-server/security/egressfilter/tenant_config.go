@@ -3,6 +3,7 @@ package egressfilter
 import (
 	"context"
 	"log/slog"
+	"nudgebee/llm/common"
 	"strings"
 	"sync"
 	"time"
@@ -204,9 +205,11 @@ func SetTenantConfigLoader(loader TenantConfigLoader) {
 }
 
 // tenantConfigTTL is how long a single tenant's config stays cached before
-// the next call to Resolve re-fetches from the loader. Set high — config
-// changes propagate via API-driven cache invalidation, not TTL expiry.
-var tenantConfigTTL = 5 * time.Minute
+// the next call to Resolve re-fetches from the loader. Changes reach every
+// replica through the egressfilter_changed broadcast; this short expiry is the
+// backstop for a broadcast that is lost, because a stale DLP setting is a
+// security problem (#40807).
+var tenantConfigTTL = 1 * time.Minute
 
 // tenantConfigErrorTTL is how long we suppress retries after the loader
 // returns an error. Without this, a DB outage causes every LLM call for
@@ -312,14 +315,30 @@ func Resolve(ctx context.Context) *TenantConfig {
 	return cfg
 }
 
-// InvalidateTenantConfig drops the cached entry for one tenant so the
-// next Resolve performs a fresh load. Called by the admin API after a
-// successful write. Process-local only in Stage 2a; cross-pod broadcast
-// is queued for Stage 2c.
+// InvalidateTenantConfig drops the cached entry for one tenant on every
+// replica so the next Resolve performs a fresh load. Called by the admin API
+// after a successful write.
 func InvalidateTenantConfig(tenantID uuid.UUID) {
-	tenantCacheMu.Lock()
-	delete(tenantCacheEntries, tenantID)
-	tenantCacheMu.Unlock()
+	common.ReplicaBroadcast(context.Background(), common.ChangeEgressFilter, tenantID.String())
+}
+
+func init() {
+	common.OnReplicaBroadcast(common.ChangeEgressFilter, common.ReplicaHandler{
+		OnKeys: func(tenantIDs []string) {
+			tenantCacheMu.Lock()
+			defer tenantCacheMu.Unlock()
+			for _, raw := range tenantIDs {
+				if tenantID, err := uuid.Parse(raw); err == nil {
+					delete(tenantCacheEntries, tenantID)
+				}
+			}
+		},
+		OnAll: func() {
+			tenantCacheMu.Lock()
+			defer tenantCacheMu.Unlock()
+			tenantCacheEntries = map[uuid.UUID]*tenantCacheEntry{}
+		},
+	})
 }
 
 // invalidateAllTenantConfigsForTest exists for test setup/teardown.

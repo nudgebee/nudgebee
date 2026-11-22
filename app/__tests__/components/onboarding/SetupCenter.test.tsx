@@ -127,22 +127,58 @@ jest.mock('@components/llm/KnowledgeBaseFormModal', () => ({
 // it gets the same treatment rather than being the one exception.
 jest.mock('@ui/Modal', () => ({
   __esModule: true,
+  // Mirrors the real Modal's standard Confirm/Cancel footer (shown whenever
+  // `confirmText` is set and no freeform `actionButtons` were given) closely
+  // enough to click through it — K8sAgentInstallDialog's regenerate-key
+  // confirmation step relies on this.
   Modal: ({
     open,
     title,
     children,
     actionButtons,
+    confirmText,
+    onConfirm,
+    handleClose,
+    onClose,
+    isCancelRequired = true,
+    isConfirmRequired = true,
   }: {
     open: boolean;
     title?: React.ReactNode;
     children?: React.ReactNode;
     actionButtons?: React.ReactNode;
+    confirmText?: string;
+    onConfirm?: () => void;
+    handleClose?: () => void;
+    onClose?: () => void;
+    isCancelRequired?: boolean;
+    isConfirmRequired?: boolean;
   }) =>
     open ? (
       <div data-testid='ds-modal-stub'>
         <div data-testid='ds-modal-stub-title'>{title}</div>
+        {/* The real Modal always renders this close X regardless of footer
+            config — the only way to close a dialog with no confirm footer
+            of its own, like K8sAgentInstallDialog's content step. */}
+        <button type='button' aria-label='Close' onClick={() => (handleClose ?? onClose)?.()}>
+          ×
+        </button>
         {children}
         {actionButtons}
+        {!actionButtons && confirmText !== undefined && (
+          <>
+            {isCancelRequired && (
+              <button type='button' onClick={() => (handleClose ?? onClose)?.()}>
+                Cancel
+              </button>
+            )}
+            {isConfirmRequired && (
+              <button type='button' onClick={onConfirm}>
+                {confirmText}
+              </button>
+            )}
+          </>
+        )}
       </div>
     ) : null,
 }));
@@ -658,22 +694,36 @@ describe('SetupCenter', () => {
     expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
   });
 
-  // #41112: Slack and Teams have no form of their own — connecting is a
-  // single "open this OAuth URL" action, so there's nothing to show in the
-  // modal slot at all. SetupCenter must call the real install flow directly.
-  it.each([
-    ['SLACK', 'slack', '/api/integrations/slack/install'],
-    ['MSTEAMS', 'msteams', '/api/integrations/ms-teams/install'],
-  ])('starts the %s OAuth install directly, opening no modal', async (route, provider, installUrl) => {
+  // Slack has no form of its own — connecting is a single "open this
+  // OAuth URL" action, so there's nothing to show in the modal slot at all.
+  // SetupCenter must call the real install flow directly.
+  it.each([['SLACK', 'slack', '/api/integrations/slack/install']])(
+    'starts the %s OAuth install directly, opening no modal',
+    async (route, provider, installUrl) => {
+      mockGetAllAccount.mockResolvedValue(payload([k8s]));
+      render(<SetupCenter />);
+
+      fireEvent.click(await screen.findByText('Notifications and ticketing'));
+      fireEvent.click(await screen.findByTestId(`setup-provider-${route.toLowerCase()}`));
+
+      await waitFor(() => expect(mockOpenChatOAuthInstall).toHaveBeenCalledWith(provider, installUrl, expect.any(Function)));
+      expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    }
+  );
+
+  it('opens the Teams page that says how to connect a team, with no sign-in popup', async () => {
+    const open = jest.spyOn(window, 'open').mockReturnValue(null);
     mockGetAllAccount.mockResolvedValue(payload([k8s]));
     render(<SetupCenter />);
 
     fireEvent.click(await screen.findByText('Notifications and ticketing'));
-    fireEvent.click(await screen.findByTestId(`setup-provider-${route.toLowerCase()}`));
+    fireEvent.click(await screen.findByTestId('setup-provider-msteams'));
 
-    await waitFor(() => expect(mockOpenChatOAuthInstall).toHaveBeenCalledWith(provider, installUrl, expect.any(Function)));
+    await waitFor(() => expect(open).toHaveBeenCalledWith('/accounts/account-form?cloudProvider=msteams', '_blank', 'noopener'));
+    expect(mockOpenChatOAuthInstall).not.toHaveBeenCalled();
     expect(screen.queryByTestId('integration-modal')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    open.mockRestore();
   });
 
   it('refreshes readiness once the Slack/Teams popup closes', async () => {
@@ -691,6 +741,22 @@ describe('SetupCenter', () => {
     const onClosed = mockOpenChatOAuthInstall.mock.calls[0][2];
     onClosed();
 
+    await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
+  });
+
+  // #41892: an Alertmanager webhook's first test alert, or a cloud account's
+  // first cost sync, both happen entirely outside this tab — nothing in-app
+  // to hook a refresh onto. Refetching on refocus is the cheap substitute for
+  // polling, same idea as the Slack/Teams popup refresh above, generalised to
+  // the whole page rather than one action.
+  it('refreshes readiness when the tab regains focus, catching a connection that happened elsewhere', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    await screen.findByTestId('setup-item-account');
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+
+    window.dispatchEvent(new Event('focus'));
     await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
   });
 
@@ -963,7 +1029,7 @@ describe('SetupCenter', () => {
     expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
   });
 
-  it('collapses the picker by default once more than one provider is already connected, reachable again via Add more', async () => {
+  it('collapses the picker by default once more than one provider is already connected, reachable again via its own button', async () => {
     mockGetAllAccount.mockResolvedValue(
       payload(
         [k8s],
@@ -982,8 +1048,32 @@ describe('SetupCenter', () => {
     expect(within(metricsItem).getByText('Prometheus')).toBeInTheDocument();
     expect(screen.queryByTestId('setup-picker-metrics')).not.toBeInTheDocument();
 
-    fireEvent.click(within(metricsItem).getByTestId('setup-add-metrics'));
+    // Picker collapsed: "Add more" is still an honest promise — clicking it
+    // reveals the picker, which is itself how you'd add one.
+    const addButton = within(metricsItem).getByTestId('setup-add-metrics');
+    expect(addButton).toHaveTextContent('Add more');
+    fireEvent.click(addButton);
     expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
+
+    // Picker open: the tiles are already the way to add one, so the same
+    // button's only job left is collapsing them back — "Add more" would be
+    // a stale promise at this point (#41900).
+    expect(addButton).toHaveTextContent('Hide options');
+  });
+
+  it('says "Hide options" from the start when the picker is already open by default, not "Add"', async () => {
+    // Zero connected providers defaults the picker open (no click needed) —
+    // the button sits right next to already-visible tiles from first render,
+    // so "Add" would be wrong even before any click happens.
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    render(<SetupCenter />);
+
+    fireEvent.click(await screen.findByText('Telemetry'));
+    const metricsItem = await screen.findByTestId('setup-item-metrics');
+    expect(await screen.findByTestId('setup-picker-metrics')).toBeInTheDocument();
+
+    const addButton = within(metricsItem).getByTestId('setup-add-metrics');
+    expect(addButton).toHaveTextContent('Hide options');
   });
 
   it('caps tiles at 6 for a provider list of exactly 7, moving the rest to the dropdown', async () => {
@@ -1041,7 +1131,11 @@ describe('SetupCenter', () => {
     render(<SetupCenter />);
 
     fireEvent.click(await screen.findByText('AI'));
-    fireEvent.click(await screen.findByTestId('setup-add-llm'));
+    const addButton = await screen.findByTestId('setup-add-llm');
+    // One provider, no picker to open — the button really does add directly,
+    // so "Add" is accurate here, unlike the multi-provider case (#41900).
+    expect(addButton).toHaveTextContent('Add');
+    fireEvent.click(addButton);
     expect(await screen.findByTestId('llm-modal')).toBeInTheDocument();
     expect(mockPush).not.toHaveBeenCalled();
   });
@@ -1232,8 +1326,82 @@ describe('per-account chips on the Accounts item', () => {
 
     fireEvent.click(pendingChip);
     expect(await screen.findByTestId('ds-modal-stub')).toBeInTheDocument();
+    // Regenerating invalidates whatever key already exists, so it needs an
+    // explicit confirm first — see the confirmation-step tests below.
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate key' }));
+
     await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
     expect(await screen.findByText(/new-key:new-secret/)).toBeInTheDocument();
+  });
+
+  it('shows a checking indicator on the reopened install dialog while its first agent-health poll is in flight, not a blank gap', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth
+      .mockResolvedValueOnce(agentHealth([k8s.id], 'PENDING')) // the checklist's own mount-time health check
+      .mockReturnValue(new Promise(() => {})); // the reopened dialog's own first poll — left pending on purpose
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
+
+    await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
+    expect(await screen.findByTestId('k8s-agent-install-checking')).toBeInTheDocument();
+    expect(screen.queryByTestId('k8s-agent-install-waiting')).not.toBeInTheDocument();
+  });
+
+  // Found in review: a failed key generation left `authKey` empty forever,
+  // which the checking banner above couldn't tell apart from "about to
+  // poll" — it stayed up claiming a check was running when none ever would.
+  it('does not show the checking indicator when regenerating the key itself fails', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    mockGenerateAgentToken.mockRejectedValueOnce(new Error('network error'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
+
+    await waitFor(() => expect(mockGenerateAgentToken).toHaveBeenCalledWith(k8s.id, 'k8s'));
+    await waitFor(() => expect(screen.queryByTestId('k8s-agent-install-checking')).not.toBeInTheDocument());
+  });
+
+  // #41892: the dialog polls agent health entirely on its own — closing it
+  // after it reports connected used to leave the chip stuck on stale
+  // `partial` state until a full page reload.
+  it('refreshes readiness when the K8s install dialog closes, so the chip does not need a page reload (#41892)', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Regenerate key' }));
+    await screen.findByText(/new-key:new-secret/);
+    expect(mockGetAllAccount).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    await waitFor(() => expect(mockGetAllAccount).toHaveBeenCalledTimes(2));
+  });
+
+  it('asks for confirmation before regenerating the K8s install key, and regenerates nothing on Cancel', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const accountItem = await screen.findByTestId('setup-item-account');
+    fireEvent.click(chipFor(accountItem, 'prod'));
+
+    const modal = await screen.findByTestId('ds-modal-stub');
+    expect(within(modal).getByText(/stops working the moment a new one is generated/)).toBeInTheDocument();
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
+
+    fireEvent.click(within(modal).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByTestId('ds-modal-stub')).not.toBeInTheDocument();
+    expect(mockGenerateAgentToken).not.toHaveBeenCalled();
   });
 
   it('reopens the Proxy Agent form from a pending self-hosted account chip', async () => {
@@ -1258,6 +1426,30 @@ describe('per-account chips on the Accounts item', () => {
     const accountItem = await screen.findByTestId('setup-item-account');
     const doneChip = chipFor(accountItem, 'prod');
     expect(doneChip.tagName.toLowerCase()).toBe('span');
+  });
+});
+
+describe('accounts panel "N connected" badge', () => {
+  // Was counting every provider *type* with a row (`connectedBy.length`), so
+  // a still-pending K8s account next to a done AWS one read as "2 connected".
+  it('counts only accounts whose own row is done, not every provider type with a row', async () => {
+    const aws = { id: 'aws-1', cloud_provider: 'AWS', account_name: 'prod-aws', status: 'active' };
+    mockGetAllAccount.mockResolvedValue(payload([k8s, aws]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const toggle = await screen.findByTestId('setup-panel-toggle-accounts');
+    expect(within(toggle).getByText('1 connected')).toBeInTheDocument();
+    expect(within(toggle).queryByText('2 connected')).not.toBeInTheDocument();
+  });
+
+  it('shows no badge at all once the only account is still pending', async () => {
+    mockGetAllAccount.mockResolvedValue(payload([k8s]));
+    mockListK8sAccAgentHealth.mockResolvedValue(agentHealth([k8s.id], 'PENDING'));
+    render(<SetupCenter />);
+
+    const toggle = await screen.findByTestId('setup-panel-toggle-accounts');
+    expect(within(toggle).queryByText(/connected/)).not.toBeInTheDocument();
   });
 });
 
@@ -1515,6 +1707,15 @@ describe('module chips', () => {
     render(<SetupCenter />);
 
     await screen.findByText(/You need write access/);
+    expect(screen.queryByTestId('setup-module-ts')).not.toBeInTheDocument();
+  });
+
+  it('hides the filter on a fresh tenant — nothing below it to filter until an account exists', async () => {
+    mockGetAllAccount.mockResolvedValue(payload());
+    render(<SetupCenter />);
+
+    await screen.findByText('Set up Nudgebee');
+    expect(screen.queryByText('Set up for')).not.toBeInTheDocument();
     expect(screen.queryByTestId('setup-module-ts')).not.toBeInTheDocument();
   });
 });

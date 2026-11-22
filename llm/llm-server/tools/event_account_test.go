@@ -84,3 +84,24 @@ func TestEventAccountNoteKeepsJSON(t *testing.T) {
 	require.NotPanics(t, func() { withEventAccountNote(`[null,{"id":"x"}]`, "n") }, "a null element is skipped")
 	require.Equal(t, 1, strings.Count(withEventAccountNote(`[{"a":1},{"b":2},{"c":3}]`, "n"), EventAccountNoteKey), "an evidence list carries the note once")
 }
+
+// events_execute by id is the same lookup written as SQL; it asks where the
+// event lives. Other queries are about the conversation's account.
+func TestEventsExecuteByIDAsksForTheEventsAccount(t *testing.T) {
+	prevLookup := eventOwnerLookup
+	t.Cleanup(func() { eventOwnerLookup = prevLookup })
+	asked := []string{}
+	eventOwnerLookup = func(_ *security.RequestContext, id string) (string, error) {
+		asked = append(asked, id)
+		return "", nil
+	}
+	ctx := core.NbToolContext{Ctx: security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{"dev-id"}), AccountId: "dev-id", TargetAccountId: "dev-id"}
+	id := "0b6f6c1e-1111-4222-8333-444455556666"
+
+	_, _ = EventsExecuteTool{}.Call(ctx, core.NBToolCallRequest{Command: "SELECT * FROM events WHERE id = '" + id + "'"})
+	require.Equal(t, []string{id}, asked)
+
+	asked = nil
+	_, _ = EventsExecuteTool{}.Call(ctx, core.NBToolCallRequest{Command: "SELECT * FROM events ORDER BY starts_at DESC LIMIT 5"})
+	require.Empty(t, asked)
+}

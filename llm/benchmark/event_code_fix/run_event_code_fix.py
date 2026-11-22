@@ -3,9 +3,12 @@
 log-driven scenarios. See docs/code-analysis-eval-spec.md for the full
 contract; README.md for setup and usage.
 
-Four scenario types, dispatched by each scenario.yaml's `type` field
+Five scenario types, dispatched by each scenario.yaml's `type` field
 (default "event" for backward compatibility with the original three):
   event           — alert injection -> diagnosis -> optional code fix
+  vm_event        — the same, for a VM account: fault injected on the fleet,
+                    alert posted to the account's event webhook, and the
+                    metrics/logs queries the investigation issued are scored
   explore         — direct, read-only code_analyzer query, no alert involved
   pr_followup     — harness opens a real PR, drives PRFollowupAgent, tears down
   multi_turn_repo — one Ask Nudgebee conversation; every turn must stay on the
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -35,6 +39,8 @@ from diagnosis_scorer import diagnosis_stage_metrics, score_diagnosis
 from event_rca_client import EventCodeFixClient, IngestionTimeout
 from explore_scorer import score_explore
 from scenario_loader import load_scenarios
+from telemetry_scorer import score_telemetry, telemetry_calls
+from vm_scenario import restore_commands, run_commands, unresolved_placeholders
 
 SETUP_SKIP_REASONS = {
     "skipped - no git integration configured": "skip:no_git_integration",
@@ -53,18 +59,80 @@ def run_event_pipeline(
 
     Returns (row, rca). rca is None when the run ended before a diagnosis
     worth scoring; row["bucket"] already says why.
+
+    A vm_event scenario is the same pipeline with its fault injected on the
+    fleet first and restored afterwards, and its queries scored on top.
     """
+    if scenario.get("type") != "vm_event":
+        return _run_event_pipeline(client, scenario, diagnosis_only)
+
+    missing = unresolved_placeholders(scenario)
+    if missing:
+        return {
+            "name": scenario["name"],
+            "tags": scenario.get("tags", []),
+            "bucket": "setup_error",
+            "detail": f"unset VM fleet variables: {', '.join(sorted(missing))}",
+        }, None
+
+    vm = scenario.get("vm", {})
+    row, rca = None, None
+    try:
+        try:
+            run_commands(vm.get("inject", []))
+        except (subprocess.SubprocessError, OSError) as exc:
+            # Assigned, not returned directly, so a restore failure in the
+            # finally block still lands on the row.
+            row = {
+                "name": scenario["name"],
+                "tags": scenario.get("tags", []),
+                "bucket": "setup_error",
+                "detail": f"fault injection failed: {exc}",
+            }
+            return row, None
+        # Let the fault reach the metrics and logs backends before the alert
+        # claims it, or the investigation queries a window with no signal.
+        time.sleep(vm.get("settle_seconds", 0))
+        row, rca = _run_event_pipeline(client, scenario, diagnosis_only)
+    finally:
+        client.unlink_service_repos()
+        restore_failure = restore_commands(vm.get("restore", []))
+        if restore_failure and row is not None:
+            row["restore_failed"] = restore_failure
+
+    if rca is not None and scenario.get("expected_telemetry"):
+        calls = telemetry_calls(rca, client.account_id)
+        row["telemetry"] = (
+            {
+                "status": "not_measured",
+                "detail": "APP_DATABASE_URL unset or unreachable",
+            }
+            if calls is None
+            else score_telemetry(scenario["expected_telemetry"], calls)
+        )
+    return row, rca
+
+
+def _run_event_pipeline(
+    client: EventCodeFixClient, scenario: dict, diagnosis_only: bool
+) -> tuple[dict, dict | None]:
     row = {"name": scenario["name"], "tags": scenario.get("tags", [])}
     t0 = time.monotonic()
 
-    client.post_alert(scenario)
+    fingerprint = client.inject(scenario)
     try:
-        event_id = client.wait_for_event(scenario["alert"]["fingerprint"])
+        event_id = client.wait_for_event(fingerprint)
     except IngestionTimeout as exc:
         row["bucket"] = "ingestion_timeout"
         row["detail"] = str(exc)
         row["seconds"] = round(time.monotonic() - t0, 1)
         return row, None
+
+    link = scenario.get("vm", {}).get("link_repo")
+    if link:
+        client.link_service_repo(
+            event_id, link["container_id"], link["repo"], link.get("branch", "")
+        )
 
     rca = client.run_rca(event_id)
     row["diagnosis_seconds"] = round(time.monotonic() - t0, 1)
@@ -274,7 +342,7 @@ def run_one(
     diagnosis_only: bool,
 ) -> dict:
     scenario_type = scenario.get("type", "event")
-    if scenario_type == "event":
+    if scenario_type in ("event", "vm_event"):
         return run_event_scenario(client, scenario, diagnosis_only)
     if scenario_type == "explore":
         return run_explore_scenario(code_analyzer, scenario)
@@ -283,6 +351,18 @@ def run_one(
     if scenario_type == "multi_turn_repo":
         return run_multi_turn_repo_scenario(code_analyzer, scenario)
     raise ValueError(f"unknown scenario type: {scenario_type!r}")
+
+
+def _finished(row: dict) -> bool:
+    """A row that reached a verdict. An error, a setup error or an ingestion
+    timeout says the run did not get that far, so resuming must run it again
+    and not report it as done."""
+    bucket = str(row.get("bucket", ""))
+    return not (
+        bucket == "error"
+        or bucket.startswith("error:")
+        or bucket in ("setup_error", "ingestion_timeout")
+    )
 
 
 def main() -> None:
@@ -308,7 +388,7 @@ def main() -> None:
     done = set()
     if args.out.exists():
         rows = json.loads(args.out.read_text()).get("results", [])
-        done = {r["name"] for r in rows}
+        done = {r["name"] for r in rows if _finished(r)}
         if done:
             print(f"resuming: {len(done)} already run", flush=True)
 

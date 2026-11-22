@@ -34,14 +34,30 @@ func fetchPRAddedLines(ctx *security.RequestContext, dbms *database.DatabaseMana
 	if strings.EqualFold(meta.Provider, "gitlab") {
 		integrationType = "gitlab"
 	}
-	cfg, err := loadGitIntegrationConfig(dbms, tenantID, integrationType)
+	integrations, err := loadGitIntegrationConfigs(ctx.GetLogger(), dbms, tenantID, integrationType, meta.ProviderConfig.Name)
 	if err != nil {
 		return nil, err
 	}
-	if integrationType == "gitlab" {
-		return fetchGitLabMRAddedLines(meta, cfg)
+	// The first failure is the one reported: it is the picked integration's.
+	var firstErr error
+	for _, integration := range integrations {
+		var added []string
+		if integrationType == "gitlab" {
+			added, err = fetchGitLabMRAddedLines(meta, integration.Values)
+		} else {
+			added, err = fetchGitHubPRAddedLines(ctx, meta, integration.Values)
+		}
+		if err == nil {
+			return added, nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+		if !errCredentialCannotSee(err) {
+			return nil, err
+		}
 	}
-	return fetchGitHubPRAddedLines(ctx, meta, cfg)
+	return nil, firstErr
 }
 
 type githubPRFile struct {
@@ -154,7 +170,7 @@ func githubAPIToken(ctx context.Context, cfg map[string]string) (string, error) 
 	defer cancel()
 	appToken, err := common.GetGithubAppInstallationToken(tokCtx, token)
 	if err != nil {
-		return "", fmt.Errorf("GitHub App token: %w", err)
+		return "", fmt.Errorf("%w: %w", errAppTokenFailed, err)
 	}
 	return appToken, nil
 }
@@ -174,7 +190,7 @@ func getJSONInto(url string, headers map[string]string, out any) error {
 		return err
 	}
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("%s returned %d", strings.SplitN(url, "?", 2)[0], resp.StatusCode)
+		return &providerStatusError{endpoint: strings.SplitN(url, "?", 2)[0], status: resp.StatusCode}
 	}
 	return common.UnmarshalJson(raw, out)
 }

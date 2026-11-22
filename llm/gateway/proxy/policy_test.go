@@ -263,26 +263,60 @@ func TestPolicyStage_TokenCountersAlwaysAllowed(t *testing.T) {
 
 // Ticket #40087: a provider's model list is unfiltered, so a restricted key is refused there
 // and reads the filtered /v1/models instead. An unrestricted key still reads it.
-func TestPolicyStage_RestrictedKeyCannotReadProviderModelCatalog(t *testing.T) {
+// #40087: a restricted caller lists a provider's models filtered, and reads one model only
+// when it may use that model; an unrestricted key's list is passed through untouched.
+func TestPolicyStage_RestrictedKeyReadsOnlyPermittedProviderModels(t *testing.T) {
 	router := routing.NewEngine(nil)
+	policy := auth.KeyPolicy{Models: []string{"gpt-4o-mini", "anthropic/claude-haiku-4-5", "google/gemini-2.5-flash"}, Endpoints: []string{auth.EndpointChat}}
 	for _, tc := range []struct {
-		p    schemas.ModelProvider
-		path string
+		p            schemas.ModelProvider
+		path, denied string // denied: a phrase of the refusal message
+		filter       bool
 	}{
-		{schemas.OpenAI, "/v1/models"},
-		{schemas.OpenAI, "/v1/models/ft:gpt-4o-mini:acme::abc123"},
-		{schemas.Anthropic, "/v1/models"},
-		{schemas.Gemini, "/models"},
-		{schemas.Gemini, "/models/gemini-2.5-pro"},
+		{schemas.OpenAI, "/v1/models", "", true},
+		{schemas.Anthropic, "/v1/models", "", true},
+		{schemas.Gemini, "/models", "", true},
+		{schemas.OpenAI, "/v1/models/gpt-4o-mini", "", false},
+		{schemas.Anthropic, "/v1/models/claude-haiku-4-5", "", false},
+		{schemas.Gemini, "/models/gemini-2.5-flash", "", false},
+		{schemas.OpenAI, "/v1/models/ft:gpt-4o-mini:acme::abc123", "not allowed to use model", false},
+		{schemas.Anthropic, "/v1/models/claude-opus-4-8", "not allowed to use model", false},
+		{schemas.Gemini, "/models/gemini-2.5-pro", "not allowed to use model", false},
+		// The entry pins Anthropic, so the same id is not readable on another mount.
+		{schemas.OpenAI, "/v1/models/claude-haiku-4-5", "not allowed to use model", false},
+		// A read whose id has more segments names no single model the policy can judge.
+		{schemas.OpenAI, "/v1/models/gpt-4o-mini/x", "cannot read", false},
 	} {
-		rc, rec := newPolicyTestContext(tc.p, "GET", tc.path, "", chatOnlyMini)
-		require.True(t, runRouteAndPolicy(t, router, rc), tc.path)
-		assert.Equal(t, http.StatusForbidden, rec.Code, tc.path)
-		assert.Contains(t, rec.Body.String(), "/v1/models", tc.path)
+		rc, rec := newPolicyTestContext(tc.p, "GET", tc.path, modelFromPath(tc.p, tc.path), policy)
+		stop := runRouteAndPolicy(t, router, rc)
+		if tc.denied != "" {
+			require.True(t, stop, tc.path)
+			assert.Equal(t, http.StatusForbidden, rec.Code, tc.path)
+			assert.Contains(t, rec.Body.String(), tc.denied, tc.path)
+			continue
+		}
+		assert.False(t, stop, tc.path)
+		assert.Equal(t, tc.filter, rc.FilterModelList, tc.path)
 
-		rc, _ = newPolicyTestContext(tc.p, "GET", tc.path, "", auth.KeyPolicy{})
+		rc, _ = newPolicyTestContext(tc.p, "GET", tc.path, modelFromPath(tc.p, tc.path), auth.KeyPolicy{})
 		assert.False(t, runRouteAndPolicy(t, router, rc), tc.path)
+		assert.False(t, rc.FilterModelList, tc.path)
 	}
+
+	// A provider the caller may not use is refused outright, list or read.
+	anthropicOnly := auth.KeyPolicy{Providers: []string{"anthropic"}}
+	for _, path := range []string{"/v1/models", "/v1/models/gpt-4o-mini"} {
+		rc, rec := newPolicyTestContext(schemas.OpenAI, "GET", path, "", anthropicOnly)
+		require.True(t, runRouteAndPolicy(t, router, rc), path)
+		assert.Equal(t, "provider_not_allowed", errorCode(t, rec), path)
+	}
+
+	// The user's rule binds a model read too.
+	rc, rec := newPolicyTestContext(schemas.OpenAI, "GET", "/v1/models/gpt-5", "", auth.KeyPolicy{})
+	rc.Identity.UserPolicy = auth.KeyPolicy{Models: []string{"gpt-4o-mini"}}
+	require.True(t, runRouteAndPolicy(t, router, rc))
+	assert.Equal(t, "model_not_allowed", errorCode(t, rec))
+	assert.Equal(t, "user_policy", rc.RejectReason)
 }
 
 // Review finding: the model-list shortcut held for every method, so a restricted key could
@@ -597,16 +631,15 @@ func TestPolicyStage_UserPolicyPrunesFallbacks(t *testing.T) {
 	assert.Empty(t, rc.Decision.Fallbacks)
 }
 
-// #40087 at the user layer: a provider's unfiltered model list is refused to a restricted user too.
-func TestPolicy_RestrictedUserRefusedOnNativeModelList(t *testing.T) {
-	rc, rec := newUserPolicyTestContext(schemas.OpenAI, "GET", "/v1/models", "", chatOnlyMini, auth.KeyPolicy{})
-	require.True(t, runRouteAndPolicy(t, routing.NewEngine(nil), rc))
-	assert.Equal(t, http.StatusForbidden, rec.Code)
-	assert.Equal(t, "user_policy", rc.RejectReason)
-	assert.Contains(t, rec.Body.String(), "Your user account is restricted; list the models it may use at /v1/models.")
+// #40087 at the user layer: a restricted user's provider model list is filtered too.
+func TestPolicy_RestrictedUserGetsFilteredNativeModelList(t *testing.T) {
+	rc, _ := newUserPolicyTestContext(schemas.OpenAI, "GET", "/v1/models", "", chatOnlyMini, auth.KeyPolicy{})
+	require.False(t, runRouteAndPolicy(t, routing.NewEngine(nil), rc))
+	assert.True(t, rc.FilterModelList)
 
 	rc, _ = newUserPolicyTestContext(schemas.OpenAI, "GET", "/v1/models", "", auth.KeyPolicy{}, auth.KeyPolicy{})
 	assert.False(t, runRouteAndPolicy(t, routing.NewEngine(nil), rc), "an unrestricted caller still reads it")
+	assert.False(t, rc.FilterModelList, "and reads it unfiltered")
 }
 
 // #40090 at the user layer: user-policy refusals and suspensions share the key's cap, so a

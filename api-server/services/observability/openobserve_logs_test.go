@@ -86,6 +86,115 @@ func TestOpenObserveLogSource_QueryLogs(t *testing.T) {
 	assert.Equal(t, "body", s.GetLabelMapping()["message"])
 }
 
+// A query typed in Code mode must reach OpenObserve as written. It used to be dropped
+// and replaced by an unfiltered SELECT, so every typed filter returned the whole stream
+// (#41492).
+func TestOpenObserveLogSource_SearchSQL(t *testing.T) {
+	s := &OpenObserveLogSource{}
+	typed := `SELECT * FROM "qa_logs" WHERE service = 'nonexistent'`
+
+	t.Run("typed query runs as written, bounded by size", func(t *testing.T) {
+		sql, size, err := s.searchSQL(FetchLogRequest{Query: "  " + typed + "; ", Limit: 50}, "default")
+		require.NoError(t, err)
+		assert.Equal(t, typed, sql)
+		assert.Equal(t, 50, size)
+	})
+
+	t.Run("typed query without a limit gets the default bound", func(t *testing.T) {
+		_, size, err := s.searchSQL(FetchLogRequest{Query: typed}, "default")
+		require.NoError(t, err)
+		assert.Equal(t, 100, size)
+
+		_, size, err = s.searchSQL(FetchLogRequest{Query: typed, Limit: 50000}, "default")
+		require.NoError(t, err)
+		assert.Equal(t, 10000, size)
+	})
+
+	t.Run("builder query is sent unchanged", func(t *testing.T) {
+		req := FetchLogRequest{
+			QueryRequest: LogsQueryBuilderRequest{Where: query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"level": {query.Eq: "error"}},
+			}},
+			Limit: 50,
+		}
+		generated, err := s.buildSQL(req, "default")
+		require.NoError(t, err)
+		// FetchLogs stores the GetQuery result in Query before QueryLogs runs.
+		req.Query = generated
+
+		sql, size, err := s.searchSQL(req, "default")
+		require.NoError(t, err)
+		assert.Equal(t, generated, sql)
+		assert.Equal(t, 0, size, "the generated statement carries its own LIMIT")
+	})
+
+	t.Run("no query and no filter is the plain stream read", func(t *testing.T) {
+		sql, size, err := s.searchSQL(FetchLogRequest{Limit: 10}, "default")
+		require.NoError(t, err)
+		assert.Equal(t, `SELECT * FROM "default" ORDER BY _timestamp DESC LIMIT 10`, sql)
+		assert.Equal(t, 0, size)
+
+		// A whitespace-only query is no query, not an empty statement to run.
+		blank, _, err := s.searchSQL(FetchLogRequest{Query: " \n\t ", Limit: 10}, "default")
+		require.NoError(t, err)
+		assert.Equal(t, sql, blank)
+	})
+
+	t.Run("default filters are not added to a typed query", func(t *testing.T) {
+		req := FetchLogRequest{
+			Query: typed,
+			QueryRequest: LogsQueryBuilderRequest{Where: query.QueryWhereClause{
+				Binary: query.BinaryWhereClause{"cluster_id": {query.Eq: "c-1"}},
+			}},
+		}
+		sql, _, err := s.searchSQL(req, "default")
+		require.NoError(t, err)
+		assert.Equal(t, typed, sql)
+	})
+}
+
+// Drives Code mode through QueryLogs against a fake OpenObserve: the typed SQL is what
+// the search POST carries, and the time window and row bound travel beside it.
+func TestOpenObserveLogSource_QueryLogs_RunsTypedSQL(t *testing.T) {
+	var captured openObserveSearchRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/test-org/_search", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&captured))
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(openObserveSearchResponse{Hits: []map[string]any{
+			{"_timestamp": float64(1700000000000000), "body": "boom", "level": "error"},
+		}})
+	}))
+	defer server.Close()
+
+	patches := gomonkey.NewPatches()
+	defer patches.Reset()
+	patches.ApplyFunc(integrations.GetOpenObserveConfigs,
+		func(_ *security.RequestContext, _ string) (integrations.OpenObserveConfig, error) {
+			return integrations.OpenObserveConfig{
+				URL: server.URL, OrgID: "test-org", Username: "user", Password: "pass",
+				LogStream: integrations.OpenObserveDefaultLogStream,
+			}, nil
+		})
+
+	typed := `SELECT * FROM "qa_logs" WHERE level = 'error'`
+	out, err := (&OpenObserveLogSource{}).QueryLogs(mockRequestContext(), FetchLogRequest{
+		AccountId: "acct-1",
+		Query:     typed,
+		StartTime: 1699999000000, // ms
+		EndTime:   1700000600000, // ms
+		Limit:     25,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, typed, captured.Query.SQL)
+	assert.Equal(t, 25, captured.Query.Size)
+	assert.Equal(t, int64(1699999000000000), captured.Query.StartTime)
+	assert.Equal(t, int64(1700000600000000), captured.Query.EndTime)
+	require.Len(t, out, 1)
+	assert.Equal(t, "error", out[0].Severity)
+}
+
 // The stream is per-account config, not a constant — a collector writing to a
 // differently-named stream must be queryable without a code change.
 func TestOpenObserveLogSource_BuildSQLUsesConfiguredStream(t *testing.T) {

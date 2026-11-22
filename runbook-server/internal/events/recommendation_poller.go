@@ -102,6 +102,10 @@ func (p *RecommendationPoller) poll(ctx context.Context) {
 		}
 
 		for _, rule := range matches {
+			// Match also returns wildcard event rules (no event_type); only optimization triggers fire here.
+			if rule.TriggerType != model.WorkflowTriggerOptimization {
+				continue
+			}
 			reqCtx := security.NewRequestContextForTenantAccountAdmin(rule.TenantID, "00000000-0000-0000-0000-000000000000", []string{rule.AccountID})
 			inputs := map[string]any{
 				"event": event,

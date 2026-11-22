@@ -11,6 +11,7 @@ import { describeFollowup } from '../utils/followupRecord';
 
 const OUTCOME = {
   approved: { text: 'Approved', tone: 'success' },
+  auto_approved: { text: 'Auto-approved', tone: 'success' },
   denied: { text: 'Denied', tone: 'critical' },
   answered: { text: 'Answered', tone: 'info' },
   dismissed: { text: 'Dismissed', tone: 'warning' },
@@ -43,7 +44,10 @@ const FollowupRow = ({ followup }) => {
   const outcome = OUTCOME[record.outcome];
   const askedAt = formatTime(record.askedAt);
   const endedAt = formatTime(record.endedAt);
-  const kind = record.isApproval ? 'Approval requested' : 'Clarification';
+  let kind = record.isApproval ? 'Approval requested' : 'Clarification';
+  if (record.outcome === 'auto_approved') {
+    kind = 'Approved by rule';
+  }
   // For an approval the command is what the user judged; the "Tool(x) is trying to…"
   // preamble only repeats the tool name, so show it only when there is no command.
   const showQuestion = record.question && !(record.isApproval && record.command);

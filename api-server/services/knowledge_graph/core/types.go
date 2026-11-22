@@ -3,6 +3,7 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -93,6 +94,35 @@ const (
 	// Opsgenie/VictorOps or other on-call SaaS later)
 	NodeTypeOnCallService NodeType = "OnCallService" // A pageable service/unit of on-call responsibility (e.g. PagerDuty service)
 )
+
+// knownNodeTypes is every NodeType constant above. TestKnownNodeTypesIsComplete
+// reads this file and fails when a constant is missing here.
+var knownNodeTypes = map[NodeType]bool{
+	NodeTypeService: true, NodeTypeWorkload: true, NodeTypeDatabase: true, NodeTypeMessageQueue: true,
+	NodeTypeQueue: true, NodeTypeTopic: true, NodeTypeCache: true, NodeTypeExternalService: true,
+	NodeTypeComputeInstance: true, NodeTypeComputeInstancePool: true,
+	NodeTypeCluster: true, NodeTypeNamespace: true, NodeTypePod: true, NodeTypeNode: true,
+	NodeTypeJob: true, NodeTypeCronJob: true, NodeTypeCRD: true,
+	NodeTypeLoadBalancer: true, NodeTypeBackendPool: true, NodeTypeStorage: true, NodeTypeVPC: true,
+	NodeTypeSecurityGroup: true, NodeTypeSubnet: true, NodeTypeNetworkInterface: true, NodeTypeRouteTable: true,
+	NodeTypeCloudResource: true, NodeTypeInfraStack: true,
+	NodeTypeContainerRegistry: true, NodeTypeContainerImage: true, NodeTypeArtifact: true, NodeTypeDNSZone: true,
+	NodeTypeDNSRecord: true, NodeTypeCDN: true, NodeTypeNetworkGateway: true, NodeTypePrivateEndpoint: true,
+	NodeTypeAPIGateway: true, NodeTypeSecretVault: true, NodeTypeEncryptionKey: true, NodeTypeMonitoringService: true,
+	NodeTypeLogAggregator: true, NodeTypeServerlessFunction: true, NodeTypeManagedCluster: true,
+	NodeTypeBackupVault: true, NodeTypeBackupPolicy: true, NodeTypePublicIP: true, NodeTypeSecurityService: true,
+	NodeTypeEmailService: true, NodeTypeAIService: true, NodeTypeServiceIdentity: true,
+	NodeTypeK8sService: true, NodeTypeIngress: true, NodeTypeNetworkPolicy: true, NodeTypeConfigMap: true,
+	NodeTypeK8sSecret: true, NodeTypeK8sServiceAccount: true, NodeTypePVC: true, NodeTypePV: true,
+	NodeTypeHelmChart: true, NodeTypeHelmRelease: true, NodeTypeConfiguration: true, NodeTypeRepository: true,
+	NodeTypeSourceControlOrg: true, NodeTypeUserAccount: true, NodeTypeUserGroup: true,
+	NodeTypeOnCallService: true,
+}
+
+// IsKnownNodeType reports whether name is one of the NodeType constants.
+func IsKnownNodeType(name string) bool {
+	return knownNodeTypes[NodeType(name)]
+}
 
 // NodeCategory represents the category of a node (infrastructure vs non-infrastructure)
 type NodeCategory string
@@ -238,6 +268,14 @@ var InfraAuthoritativeNodeTypes = map[NodeType]bool{
 	NodeTypeOnCallService:     true, // pagerduty source is authoritative; tombstone if not re-stamped
 }
 
+// FlowAuthoritativeProperty marks a node a flow source created because the
+// account has no static inventory to check it against, so the flow source is
+// the only authority for it. markInactiveNodes refuses to retire these on sync
+// version: with no inventory there is nothing that can distinguish a deleted
+// workload from one that is merely quiet, and the observation window a flow
+// source reports over makes both look identical.
+const FlowAuthoritativeProperty = "flow_authoritative"
+
 // IsInfraAuthoritative reports whether static infra sources are the ground-truth oracle
 // for this node type. Deliberately distinct from IsInfrastructure — CronJob and Job are
 // tagged NonInfrastructure in nodeCategoryMap for UX taxonomy reasons, but are
@@ -255,6 +293,11 @@ const (
 	RelationshipPublishesTo  RelationshipType = "PUBLISHES_TO"
 	RelationshipSubscribesTo RelationshipType = "SUBSCRIBES_TO"
 	RelationshipRunsOn       RelationshipType = "RUNS_ON"
+
+	// User-declared only (manual dependencies touching a node declared outside
+	// any account): a physical/network link, and a generic dependency.
+	RelationshipConnectedTo RelationshipType = "CONNECTED_TO" // undirected: traversals follow it both ways
+	RelationshipDependsOn   RelationshipType = "DEPENDS_ON"   // A depends on B
 
 	// Network-flow relationships (VPC Flow Logs). ACCEPT traffic is modeled as
 	// CALLS (a live dependency); REJECT traffic gets its own edge type so a
@@ -289,7 +332,7 @@ const (
 	RelationshipProvidesStorage RelationshipType = "PROVIDES_STORAGE" // PV → Storage backend
 
 	// Networking
-	RelationshipExposes         RelationshipType = "EXPOSES"           // K8sService → Workload
+	RelationshipExposes         RelationshipType = "EXPOSES"           // Workload → K8sService
 	RelationshipRoutesToService RelationshipType = "ROUTES_TO_SERVICE" // Ingress → K8sService
 	RelationshipRoutesToBackend RelationshipType = "ROUTES_TO_BACKEND" // LoadBalancer → Service
 	RelationshipProtects        RelationshipType = "PROTECTS"          // NetworkPolicy → Workload
@@ -314,11 +357,17 @@ const (
 	RelationshipRunsAs      RelationshipType = "RUNS_AS"       // Compute resource (Lambda/EC2/ECS) uses this IAM identity
 	RelationshipAssumes     RelationshipType = "ASSUMES"       // ServiceIdentity can assume another ServiceIdentity (trust policy)
 	RelationshipHasAccessTo RelationshipType = "HAS_ACCESS_TO" // ServiceIdentity is IAM-granted access to a data resource (BigQuery/Storage/SecretVault/…)
-	RelationshipSameAs      RelationshipType = "SAME_AS"       // Per-integration identity (GitHubUser, GitLabUser, …) → canonical NudgebeeUser
+	RelationshipSameAs      RelationshipType = "SAME_AS"       // Two nodes for one entity: per-integration identity (GitHubUser, …) → canonical NudgebeeUser, and a self-hosted VM ↔ its cloud instance (both directions)
 
 	// Deprecated - kept for reference (removed in favor of IS_ENCRYPTED_BY)
 	// RelationshipEncryptedBy RelationshipType = "ENCRYPTED_BY"
 )
+
+// VMServiceMapSourceName is the flow-source name stamped on nodes/edges the
+// VM service-map flow source creates (flow_sources.VMServiceMapFlowSource).
+// Shared with the stale-node sweep (MarkStaleVMServiceNodesInactive) here in
+// core, which flow_sources cannot stamp itself since it imports core.
+const VMServiceMapSourceName = "vm_service_map"
 
 type KnowledgeGraph struct {
 	Nodes       []KgNode  `json:"nodes"`
@@ -425,6 +474,21 @@ var DefaultBehavioralEdgeTypes = map[RelationshipType]bool{
 	RelationshipPublishesTo:        true,
 	RelationshipSubscribesTo:       true,
 	RelationshipConnectionRejected: true, // VPC-flow REJECT edges are observed & intermittent — grace period, not immediate tombstone
+}
+
+// undirectedRelationshipTypes are links with no direction (a cable between a
+// switch and a server): directional traversals (upstream, downstream, impact)
+// follow them from either end.
+var undirectedRelationshipTypes = []string{string(RelationshipConnectedTo)}
+
+// IsUndirectedRelationship reports whether traversals follow rt both ways.
+func IsUndirectedRelationship(rt RelationshipType) bool {
+	for _, t := range undirectedRelationshipTypes {
+		if t == string(rt) {
+			return true
+		}
+	}
+	return false
 }
 
 // KgNodeSlim is a lightweight node for graph traversal API responses
@@ -1115,20 +1179,42 @@ var QueryablePropertiesMap = map[NodeType][]string{
 	},
 }
 
-// GetQueryableProperties returns the list of queryable properties for a given node type
+// CommonQueryableProperties are hoisted into query_attributes for EVERY node
+// type, on top of that type's own entry in QueryablePropertiesMap.
+//
+// "region" belongs here rather than in each map entry: it was listed on only 8
+// of the node types, so an Attribute filter on region matched those 8 and
+// silently dropped EC2, RDS, S3, Lambda, EBS, load balancers, VPCs and the
+// rest — nodes whose Node Details pane showed the very region being filtered
+// on, because that pane reads properties while the filter reads
+// query_attributes (#41137).
+var CommonQueryableProperties = []string{"name", "environment", "region"}
+
+// GetQueryableProperties returns every queryable property for a node type:
+// CommonQueryableProperties plus the type's own entry in QueryablePropertiesMap,
+// deduplicated. It is the single source of truth for "can this be filtered on",
+// so a caller cannot see a type-specific list that silently omits the common keys.
 func GetQueryableProperties(nodeType NodeType) []string {
-	if props, ok := QueryablePropertiesMap[nodeType]; ok {
-		return props
+	props, ok := QueryablePropertiesMap[nodeType]
+	if !ok {
+		return CommonQueryableProperties
 	}
-	// Return common queryable properties if node type not found
-	return []string{"name", "environment"}
+	out := make([]string, 0, len(CommonQueryableProperties)+len(props))
+	out = append(out, CommonQueryableProperties...)
+	for _, p := range props {
+		if !slices.Contains(CommonQueryableProperties, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ExtractQueryAttributes extracts queryable properties from a properties map.
 //
-// The per-NodeType QueryablePropertiesMap is the safety-net; the per-specific_type
+// GetQueryableProperties supplies CommonQueryableProperties (every node type)
+// plus the per-NodeType QueryablePropertiesMap safety-net; the per-specific_type
 // concrete schema (schema_registry.go) drives additional Indexed fields
-// when one is registered for specificType. The two are UNIONed so no existing
+// when one is registered for specificType. The three are UNIONed so no existing
 // filter can regress and un-schema'd / synthesized / defaulted nodes (which have
 // no registered schema — e.g. in core-only tests that don't import the source
 // packages) still get their query_attributes from the map.
@@ -1177,6 +1263,7 @@ type SearchNodesParams struct {
 	ResourceID    string            `json:"resource_id,omitempty"`
 	NodeTypes     []NodeType        `json:"node_types,omitempty"`
 	SpecificTypes []string          `json:"specific_types,omitempty"` // Filter by concrete cloud/native types (e.g. EC2Instance)
+	Roles         []string          `json:"roles,omitempty"`          // Acts as one of these roles: carried (a tagged workload) or by type (an RDS Database); ANDed with NodeTypes, so pass alone
 	Source        string            `json:"source,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	AccountIDs    []string          `json:"account_ids,omitempty"`

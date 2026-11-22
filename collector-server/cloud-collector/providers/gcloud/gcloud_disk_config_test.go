@@ -1,6 +1,7 @@
 package gcloud
 
 import (
+	"errors"
 	"testing"
 
 	"nudgebee/collector/cloud/providers"
@@ -219,4 +220,11 @@ func TestGcloudProjectFromResourceID(t *testing.T) {
 	assert.Equal(t, "my-project", gcloudProjectFromResourceID("projects/my-project/zones/us-central1-a/disks/d"))
 	assert.Equal(t, "", gcloudProjectFromResourceID("data-disk-1"))
 	assert.Equal(t, "", gcloudProjectFromResourceID(""))
+}
+
+// The networking metrics stub reports "not built", so the metrics sync can tell it
+// from a real failure and leave it out of the error log.
+func TestNetworkingMetricsReportUnsupported(t *testing.T) {
+	_, err := (&networkingService{}).GetMetrices(nil, providers.Account{}, providers.QueryMetricsRequest{})
+	assert.ErrorIs(t, err, errors.ErrUnsupported)
 }

@@ -160,7 +160,7 @@ func hasInProgressRecommendation(existingRecommendations []models.Recommendation
 }
 
 func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApplyRequest) (RecommendationApplyResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 	if query.ProviderConfig == nil {
@@ -492,6 +492,9 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	// no re-scan can reopen, so an IAM denial or a throttled call silently
 	// deleted a live savings opportunity. The coordinator hands a failed attempt
 	// back for retry instead.
+	// What the caller and the notification are told: the settled outcome when
+	// the settle was applied, otherwise the resolution as it was created.
+	responseResolution := resolution
 	if resp.Status == adapter.RecommendationResolutionStatusSuccess || resp.Status == adapter.RecommendationResolutionStatusFailed {
 		settled, err := coordinator.SettleResolution(ctx, resolution.Id,
 			models.RecommendationResolutionStatus(string(resp.Status)), resp.StatusMessage, coordinator.SourceUser)
@@ -504,6 +507,10 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 		recommendationStatus = settled.RecommendationStatus
 		if recommendationStatus == "" {
 			recommendationStatus = r.Status
+		}
+
+		if settled.Applied {
+			responseResolution = withSettledStatus(resolution, resp.Status)
 		}
 
 		if userId != "" && settled.Applied {
@@ -531,13 +538,13 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	}
 
 	// trigger notification
-	err = notification.TriggerNotificationForRecommendationResolution(ctx, r, resolution)
+	err = notification.TriggerNotificationForRecommendationResolution(ctx, r, responseResolution)
 	if err != nil {
 		ctx.GetLogger().Error("error triggering notification", "error", err)
 	}
 	applyResponse := RecommendationApplyResponse{
 		Data:       []any{resp.Data},
-		Resolution: resolution,
+		Resolution: responseResolution,
 		Status:     models.RecommendationStatus(string(recommendationStatus)),
 	}
 	if resolutionType == models.RecommendationResolutionTypePullRequest {
@@ -546,12 +553,15 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	return applyResponse, nil
 }
 
+// withSettledStatus is the resolution as it now stands after a terminal apply
+// outcome, so a failed apply no longer reads as InProgress in its own reply.
+func withSettledStatus(resolution models.RecommendationResolution, outcome adapter.RecommendationResolutionStatus) models.RecommendationResolution {
+	resolution.Status = models.RecommendationResolutionStatus(string(outcome))
+	return resolution
+}
+
 // RetryRecommendationResolution retries a failed recommendation resolution
 func RetryRecommendationResolution(ctx *security.RequestContext, query RetryRecommendationResolutionRequest) (RetryRecommendationResolutionResponse, error) {
-	// if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
-	// 	return RetryRecommendationResolutionResponse{}, common.ErrorUnauthorized("error: account access not found")
-	// }
-
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return RetryRecommendationResolutionResponse{}, err
@@ -582,6 +592,12 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 	if err != nil {
 		ctx.GetLogger().Error("error getting recommendation", "error", err)
 		return RetryRecommendationResolutionResponse{}, err
+	}
+	// The resolution is looked up by id alone; refuse one whose recommendation is
+	// not on the account the caller was authorized for (the handler checked
+	// that account belongs to the caller).
+	if r.CloudAccountId != query.AccountId {
+		return RetryRecommendationResolutionResponse{}, fmt.Errorf("resolution not found: %s", query.ResolutionId)
 	}
 
 	// Get the account
@@ -720,7 +736,9 @@ func RetryRecommendationResolution(ctx *security.RequestContext, query RetryReco
 
 func ScanImage(ctx *security.RequestContext, query RecommendationScanImageRequest) (RecommendationApplyResponse, error) {
 
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	// Grant-aware: a custom role holding the action's grant on this account
+	// (automation accounts hold one) may scan, not only the built-in roles.
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationApplyResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -893,7 +911,7 @@ var recommendationJobProviderMap = map[string]string{
 func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJobCreateRequest) (RecommendationJobCreateResponse, error) {
 	ctx.GetLogger().Info("Creating recommendation job", "query", slog.AnyValue(query))
 
-	if !ctx.GetSecurityContext().HasAccountAccess(query.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(query.AccountId, security.SecurityAccessTypeCreate) {
 		return RecommendationJobCreateResponse{}, common.ErrorUnauthorized("error: account access not found")
 	}
 

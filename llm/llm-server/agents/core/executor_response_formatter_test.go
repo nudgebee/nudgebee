@@ -197,14 +197,46 @@ func TestConvertMarkdownToSlackMarkdown(t *testing.T) {
 			input:    "This is *_my_bucket_name_* here.",
 			expected: "This is _my_bucket_name_ here.",
 		},
+		{
+			// A #task-<id> target only resolves in the app; as a Slack link
+			// it shows up as raw "<#task-<id>|Shell Execute - E3>".
+			name:     "Step citations keep only their label",
+			input:    "1. [Shell Execute - E3](#task-a627508a-da6a-431a-8a21-ea8b4b54f54b) & [Events - E13](#task-E13) -> see [docs](https://example.com)",
+			expected: "1. [Shell Execute - E3] & [Events - E13] -> see <https://example.com|docs>",
+		},
+		{
+			name:     "Text in parentheses right after a step citation is not read as a link",
+			input:    "cause [Tool - E3](#task-abc)(see docs) x",
+			expected: "cause [Tool - E3](see docs) x",
+		},
+		{
+			name:     "Step citation without a label is dropped",
+			input:    "Ingress routes /status [](#task-E3).",
+			expected: "Ingress routes /status .",
+		},
+		{
+			name:     "Step citation inside inline code is left alone",
+			input:    "Literal `[Tool - E1](#task-E1)` here.",
+			expected: "Literal `[Tool - E1](#task-E1)` here.",
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			actual := convertMarkdownToSlackMarkdown(tc.input)
+			actual := convertMarkdownToSlackMarkdown(tc.input, "")
 			assert.Equal(t, tc.expected, actual)
 		})
 	}
+}
+
+// TestConvertMarkdownToSlackMarkdown_LinksStepCitations: with the app page
+// known, a citation of a stored step links to that step there; an old
+// step-number citation has no step to open and keeps its label.
+func TestConvertMarkdownToSlackMarkdown_LinksStepCitations(t *testing.T) {
+	const page = "https://app.example.com/ask-nudgebee?accountId=acc&session_id=C0123456789-1.2"
+	input := "Pods are fine [Shell **Execute** - E3](#task-A627508A-da6a-431a-8a21-ea8b4b54f54b)(see note) and [Logs - E4](#task-E4), docs [here](https://example.com)."
+	expected := "Pods are fine <" + page + "#task-A627508A-da6a-431a-8a21-ea8b4b54f54b|Shell **Execute** - E3>(see note) and [Logs - E4], docs <https://example.com|here>."
+	assert.Equal(t, expected, convertMarkdownToSlackMarkdown(input, page))
 }
 
 // TestResolveEffectivePlannerType pins the declared→runtime planner mapping:

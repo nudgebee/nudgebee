@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,35 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-const (
-	lambdaTestAccount = "123456789012"
-	lambdaTestRegion  = "us-east-1"
-)
-
-// serveLambdaAPI points every AWS SDK client the provider builds at handler, with
-// static test credentials, for the duration of the test.
-func serveLambdaAPI(t *testing.T, handler http.Handler) {
-	t.Helper()
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
-
-	emptyFile := filepath.Join(t.TempDir(), "empty")
-	require.NoError(t, os.WriteFile(emptyFile, nil, 0o600))
-	for k, v := range map[string]string{
-		"AWS_ENDPOINT_URL":            server.URL,
-		"AWS_ACCESS_KEY_ID":           "test",
-		"AWS_SECRET_ACCESS_KEY":       "test",
-		"AWS_SESSION_TOKEN":           "",
-		"AWS_PROFILE":                 "",
-		"CLOUD_COLLECTOR_AWS_PROFILE": "",
-		"AWS_CONFIG_FILE":             emptyFile,
-		"AWS_SHARED_CREDENTIALS_FILE": emptyFile,
-		"AWS_EC2_METADATA_DISABLED":   "true",
-	} {
-		t.Setenv(k, v)
-	}
-}
 
 // fakeLambdaAPI serves the Lambda REST calls the lister makes and records them as
 // "<METHOD> <path>". Function "tagged" has tags and reserved concurrency 5,
@@ -108,10 +76,10 @@ func isTagsOrConcurrencyCall(call string) bool {
 // with the customer's own tooling.
 func TestLambdaGetResourcesTakesTagsAndConcurrencyFromGetFunction(t *testing.T) {
 	api := &fakeLambdaAPI{}
-	serveLambdaAPI(t, api)
+	pointAwsSdkAt(t, api)
 	ctx := &targetedFetchTestCtx{ctx: context.Background()}
 
-	got, err := (&awsLambda{}).GetResources(ctx, providers.Account{AccountNumber: lambdaTestAccount}, lambdaTestRegion)
+	got, err := (&awsLambda{}).GetResources(ctx, providers.Account{AccountNumber: fakeAwsAccount}, fakeAwsRegion)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
@@ -132,10 +100,10 @@ func TestLambdaGetResourcesTakesTagsAndConcurrencyFromGetFunction(t *testing.T) 
 // The targeted lookup already has the GetFunction output and must not fetch it again.
 func TestLambdaGetResourcesByIdsReusesItsGetFunction(t *testing.T) {
 	api := &fakeLambdaAPI{}
-	serveLambdaAPI(t, api)
+	pointAwsSdkAt(t, api)
 	ctx := &targetedFetchTestCtx{ctx: context.Background()}
 
-	got, err := (&awsLambda{}).GetResourcesByIds(ctx, providers.Account{AccountNumber: lambdaTestAccount}, lambdaTestRegion, []string{"tagged"})
+	got, err := (&awsLambda{}).GetResourcesByIds(ctx, providers.Account{AccountNumber: fakeAwsAccount}, fakeAwsRegion, []string{"tagged"})
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	assert.Equal(t, map[string][]string{"team": {"sre"}}, got[0].Tags)

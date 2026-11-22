@@ -32,6 +32,16 @@ type EventConfig struct {
 	// rules do. Set for auto-registered native event-type rows (Anomaly,
 	// k8s-failure enrichers) which have no playbook to run.
 	SkipPlaybook bool `json:"-"`
+	// ExternalRuleID is the rule's id in the system that evaluates it, when the
+	// caller already knows it. A provider create answers with one, so only a
+	// parser that reads the id out of an incoming payload needs to pass it —
+	// SolarWinds sends alertDefinitionId on every delivery, and that is the only
+	// way its rules are ever identified, because its API cannot be enumerated.
+	//
+	// json:"-" on purpose: like SkipPlaybook this is for in-process callers. It
+	// decides which upstream rule a later edit writes to, so it must not be
+	// settable from a gateway request.
+	ExternalRuleID string `json:"-"`
 }
 
 type DisableEventConfig struct {

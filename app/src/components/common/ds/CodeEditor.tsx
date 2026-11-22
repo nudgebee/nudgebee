@@ -96,7 +96,9 @@ export function languageExtension(language: CodeEditorLanguage): Extension[] {
     case 'markdown':
       return [markdown()];
     case 'shell':
-      return [StreamLanguage.define(shell)];
+      // `shell`'s StreamParser (from @codemirror/legacy-modes) is structurally identical but
+      // nominally distinct from StreamLanguage.define()'s own -- cast is intentional.
+      return [StreamLanguage.define(shell as unknown as Parameters<typeof StreamLanguage.define>[0])];
     case 'text':
     default:
       return [];

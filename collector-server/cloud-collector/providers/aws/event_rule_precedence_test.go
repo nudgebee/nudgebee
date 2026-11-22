@@ -86,6 +86,86 @@ func TestRulePrecedence_MostSpecificEmittingRuleWins(t *testing.T) {
 
 // Every emitting rule needs a sample above (or an exemption), so a new rule
 // placed below a catch-all that shadows it fails here instead of never firing.
+// A sidecar's or injected agent's clean exit must not hide a crash, and a
+// sidecar killed while a finished task is torn down must not raise one.
+func TestRulePrecedence_TaskStopByContainerExits(t *testing.T) {
+	const (
+		crashed = "ECS_Task_Stopped_Unexpectedly_EventBridge"
+		normal  = "ECS_Task_All_Events_EventBridge"
+	)
+	cases := []struct {
+		name       string
+		containers string
+		wantRule   string
+	}{
+		{"app crashed, sidecar exited 0", `{"name": "app", "exitCode": 1}, {"name": "collector", "exitCode": 0}`, crashed},
+		{"sidecar exited 0, app crashed", `{"name": "collector", "exitCode": 0}, {"name": "app", "exitCode": 1}`, crashed},
+		{"app crashed, agent killed, injected agent exited 0",
+			`{"name": "agent", "exitCode": 137}, {"name": "app", "exitCode": 1}, {"name": "aws-guardduty-agent-abc", "exitCode": 0}`, crashed},
+		{"nothing finished", `{"name": "app", "exitCode": 137}, {"name": "agent", "exitCode": 137}`, crashed},
+		{"all exited 0", `{"name": "app", "exitCode": 0}, {"name": "collector", "exitCode": 0}`, normal},
+		{"app finished, agent killed", `{"name": "app", "exitCode": 0}, {"name": "agent", "exitCode": 137}`, normal},
+		{"app finished, agent terminated", `{"name": "app", "exitCode": 0}, {"name": "agent", "exitCode": 143}`, normal},
+		{"app and agent killed, injected agent exited 0",
+			`{"name": "app", "exitCode": 137}, {"name": "agent", "exitCode": 137}, {"name": "aws-guardduty-agent-abc", "exitCode": 0}`, normal},
+	}
+	seedAccountTenantForTest(t)
+	rules, err := GetEventRules("")
+	require.NoError(t, err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			processor := NewTemplatedEventBridgeProcessor(rules, &dummyAwsProvider{})
+			body := ecsTaskStoppedWithContainers("EssentialContainerExited", "Essential container in task exited", tc.containers)
+			assert.Equal(t, tc.wantRule, emittedRule(t, processor, rules, body))
+		})
+	}
+}
+
+func TestTaskContainersFailed_UsesTaskDefinition(t *testing.T) {
+	defs := []any{
+		map[string]any{"Name": "app", "Essential": true},
+		map[string]any{"Name": "agent", "Essential": false},
+	}
+	container := func(name string, code int) any { return map[string]any{"name": name, "exitCode": code} }
+
+	assert.True(t, taskContainersFailed([]any{container("app", 1), container("agent", 0)}, defs),
+		"the Essential container crashed")
+	assert.False(t, taskContainersFailed([]any{container("app", 0), container("agent", 1)}, defs),
+		"a non-Essential container's exit does not fail the task")
+	assert.False(t, taskContainersFailed([]any{container("app", 0), container("aws-guardduty-agent-abc", 1)}, defs),
+		"a container the task definition does not declare is not the task's own work")
+	assert.True(t, taskContainersFailed([]any{container("app", 0), container("agent", 1)}),
+		"without the task definition any crash counts")
+	omitted := []any{map[string]any{"Name": "app"}, map[string]any{"Name": "agent", "Essential": nil}}
+	assert.True(t, taskContainersFailed([]any{container("app", 1), container("agent", 0)}, omitted),
+		"ECS treats an omitted Essential as true")
+}
+
+func TestPickFailingContainer_CrashOutranksKilledSidecar(t *testing.T) {
+	processor := NewTemplatedEventBridgeProcessor(EventRuleSet{}, nil)
+	data := map[string]any{
+		"Containers": []any{
+			map[string]any{"name": "agent", "exitCode": 137},
+			map[string]any{"name": "app", "exitCode": 1},
+		},
+		"Defs": []any{
+			map[string]any{"Name": "agent", "Essential": true},
+			map[string]any{"Name": "app", "Essential": true},
+		},
+	}
+	for name, tpl := range map[string]string{
+		"with task definition":    `{{ $fc := pickFailingContainer .Containers .Defs }}{{ safeIndex $fc "name" }}`,
+		"without task definition": `{{ $fc := pickFailingContainer .Containers }}{{ safeIndex $fc "name" }}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := processor.renderTemplateValue(nil, "test", tpl, data)
+			require.NoError(t, err)
+			assert.Equal(t, "app", got)
+		})
+	}
+}
+
 func TestRulePrecedence_EveryEmittingRuleHasASample(t *testing.T) {
 	rules, err := GetEventRules("")
 	require.NoError(t, err)
@@ -174,6 +254,10 @@ func ecsTaskStoppedSample(stopCode, stoppedReason, exitCode string) string {
 	if exitCode != "" {
 		container += ", " + exitCode
 	}
+	return ecsTaskStoppedWithContainers(stopCode, stoppedReason, "{"+container+"}")
+}
+
+func ecsTaskStoppedWithContainers(stopCode, stoppedReason, containers string) string {
 	return fmt.Sprintf(`{"id": "evt-task-stopped", "detail-type": "ECS Task State Change", "source": "aws.ecs", "account": "123456789012", "time": "2026-09-28T10:00:00Z", "region": "us-east-1",
 		"resources": ["arn:aws:ecs:us-east-1:123456789012:task/prod-cluster/abc123"],
 		"detail": {
@@ -185,8 +269,8 @@ func ecsTaskStoppedSample(stopCode, stoppedReason, exitCode string) string {
 			"desiredStatus": "STOPPED",
 			"stopCode": %q,
 			"stoppedReason": %q,
-			"containers": [{%s}]
-		}}`, stopCode, stoppedReason, container)
+			"containers": [%s]
+		}}`, stopCode, stoppedReason, containers)
 }
 
 func alarmSample(alarmName, state, namespace, metricName, dimensions string) string {

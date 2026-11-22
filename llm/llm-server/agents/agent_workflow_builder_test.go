@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
@@ -1861,7 +1862,7 @@ func TestClarificationPrompt_AsksForTheSlackChannelWithoutNamingAny(t *testing.T
 	assert.NotRegexp(t, `(?i)do not ask which slack channel`, prompt)
 
 	// (3) The placeholder survives only as what happens when the user skips the question.
-	assert.Regexp(t, `(?i)if the user skips, the workflow uses \{\{ Configs\.slack_channel \}\}`, prompt)
+	assert.Regexp(t, `(?i)if the user skips, the step that posts uses \{\{ Configs\.slack_channel \}\}`, prompt)
 }
 
 // TestParseClarifyingQuestionsJSON covers the shared post-processing used by both the create- and
@@ -2133,7 +2134,7 @@ func TestToolInitWorkflow_TriggerShape(t *testing.T) {
 			trigger: map[string]interface{}{"type": "manual"},
 		},
 		{
-			name:    "optimization with all-optional params omitted",
+			name:    "optimization missing its filter is not a shape error",
 			trigger: map[string]interface{}{"type": "optimization"},
 		},
 		{
@@ -2375,7 +2376,7 @@ func TestTurnIntentClassification(t *testing.T) {
 		call, task := turnIntentClassification(request, hasWorkflow)
 
 		// Stays on today's model; the classification tier is a separate switch.
-		assert.Equal(t, core.ModelTierRetrieval, call.Tier)
+		assert.Equal(t, llmruntime.ModelTierRetrieval, call.Tier)
 		assert.Equal(t, "agent", call.AgentId, "agent id keys LLM config and cost")
 		assert.True(t, call.TrackContent)
 

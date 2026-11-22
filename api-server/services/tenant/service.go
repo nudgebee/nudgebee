@@ -39,9 +39,13 @@ const FEATURE_ANOMALY_DETECTION = "ANOMALY_DETECTION"
 const FEATURE_ANOMALY_DETECTION_ERROR_RATE = "ANOMALY_DETECTION_ERROR_RATE"
 
 // FEATURE_TRIAGE_LLM_SCORING gates the LLM-assisted per-class triage scoring path (real P0–P3)
-// vs the legacy severity×environment formula. Rolled out per-tenant via Tenant Settings.
+// vs the legacy severity×environment formula. On by default; switched per tenant in Tenant Settings.
 const FEATURE_TRIAGE_LLM_SCORING = "TRIAGE_LLM_SCORING"
 const FEATURE_WEBHOOK_LLM_RESOLUTION = "WEBHOOK_LLM_RESOLUTION"
+
+// FEATURE_EVENT_REMEDIATION_LOOP turns the alert remediation loop on for a tenant (tenant-wide row only; off
+// without one). llm-server reads the same flag (events.RemediationLoopFeature).
+const FEATURE_EVENT_REMEDIATION_LOOP = "EVENT_REMEDIATION_LOOP"
 
 // FEATURE_OPENCOST_SERVER_SIDE_SPEND is a default-ON kill-switch for the
 // server-side OpenCost spend-sync cron. Enrollment is automatic: the cron runs
@@ -59,6 +63,18 @@ func init() {
 	cacheClientLocal, _ := bigcache_store.New(context.Background(), defaultConfig)
 	bigcacheStore := bigcache.NewBigcache(cacheClientLocal)
 	featureFlagCache = cache.New[[]byte](bigcacheStore)
+	common.OnReplicaBroadcast(common.ChangeFeatureFlag, common.ReplicaHandler{
+		OnKeys: func([]string) { clearFeatureFlagCache() },
+		OnAll:  clearFeatureFlagCache,
+	})
+}
+
+// clearFeatureFlagCache drops every cached flag on this replica. A change is
+// rare and the cache refills one row lookup per key, so clearing everything is
+// simpler than working out which tenant, default, explicit and account keys a
+// write touched.
+func clearFeatureFlagCache() {
+	_ = featureFlagCache.Clear(context.Background())
 }
 
 func ListTenants(context *security.RequestContext) ([]models.Tenant, error) {
@@ -94,12 +110,27 @@ func ListTenants(context *security.RequestContext) ([]models.Tenant, error) {
 	return tenants, nil
 }
 
-func ListTenantsWithActiveAccounts(context *security.RequestContext) ([]models.Tenant, error) {
+// ListTenantsWithActiveAccounts returns tenants with at least one active
+// account. When includeCloudAccounts is false (the original behavior), a
+// tenant qualifies only via a K8s account with a CONNECTED agent — cloud-only
+// tenants (AWS/Azure/GCP with no Kubernetes cluster) are excluded. When true,
+// any active account of any cloud_provider qualifies the tenant, except a K8s
+// account whose agent isn't CONNECTED (mirrors account.ListActiveAccountsWithConnectedAgents).
+func ListTenantsWithActiveAccounts(context *security.RequestContext, includeCloudAccounts bool) ([]models.Tenant, error) {
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return []models.Tenant{}, err
 	}
-	rows, err := manager.Db.Queryx("SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant JOIN agent ag ON ca.id = ag.cloud_account_id WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ag.status = 'CONNECTED'")
+	query := "SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant JOIN agent ag ON ca.id = ag.cloud_account_id WHERE ca.cloud_provider = 'K8s' AND ca.status = 'active' AND ag.status = 'CONNECTED'"
+	if includeCloudAccounts {
+		query = `SELECT DISTINCT t.id, t.name FROM tenant t JOIN cloud_accounts ca ON t.id = ca.tenant
+			WHERE ca.status = 'active'
+				AND (
+					ca.cloud_provider <> 'K8s'
+					OR EXISTS (SELECT 1 FROM agent ag WHERE ag.cloud_account_id = ca.id AND ag.status = 'CONNECTED')
+				)`
+	}
+	rows, err := manager.Db.Queryx(query)
 	if err != nil {
 		return []models.Tenant{}, err
 	}
@@ -649,7 +680,7 @@ func UpsertTenantUserRole(ctx *security.RequestContext, request TenantUserRoleUp
 		_, err := manager.Db.Exec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)", ctx.GetSecurityContext().GetUserId(), ctx.GetSecurityContext().GetTenantId(), "tenant", request.Role, request.UserId, ctx.GetSecurityContext().GetTenantId())
 		if err != nil {
 			ctx.GetLogger().Error("Error inserting user role", "error", err)
-			return TenantUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+			return TenantUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 		}
 		audit.LogChange(ctx, audit.ChangeInput{
 			EventCategory: audit.EventCategoryRole,
@@ -922,7 +953,7 @@ func UpsertAccountUserRole(ctx *security.RequestContext, request AccountUserRole
 	_, err = manager.Db.NamedExec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES (:created_by, :entity_id, :entity_type, :role, :user_id, :tenant_id)", rolesToInsert)
 	if err != nil {
 		ctx.GetLogger().Error("Error inserting user role", "error", err)
-		return AccountUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+		return AccountUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 	}
 	for _, role := range request.AccountRoles {
 		audit.LogChange(ctx, audit.ChangeInput{
@@ -1156,7 +1187,7 @@ func UpsertK8sAccountNamespaceUserRole(ctx *security.RequestContext, request K8s
 	_, err = manager.Db.NamedExec("INSERT INTO user_roles (created_by, entity_id, entity_type, role, user_id, tenant_id) VALUES (:created_by, :entity_id, :entity_type, :role, :user_id, :tenant_id)", rolesToInsert)
 	if err != nil {
 		ctx.GetLogger().Error("Error inserting user role", "error", err)
-		return AccountUserRoleUpsertResponse{}, common.ErrorInternal("Error updating user role")
+		return AccountUserRoleUpsertResponse{}, common.ErrorRefusedOr(err, "Error updating user role")
 	}
 	for _, role := range request.K8sAccountNamespaceRoles {
 		audit.LogChange(ctx, audit.ChangeInput{
@@ -1254,6 +1285,14 @@ func UpsertK8sAccountNamespaceGroupRole(ctx *security.RequestContext, request Ac
 	}, nil
 }
 
+// groupAddLookupQuery resolves usernames to add to a group, among the caller's
+// tenant's members only. Args: tenant id, usernames.
+const groupAddLookupQuery = `SELECT u.id, u.username FROM users u JOIN tenant_users tu ON tu."user" = u.id AND tu.tenant = ? WHERE u.username IN (?)`
+
+// groupRemoveLookupQuery resolves usernames to remove from a group, among that
+// group's current members only. Args: group id, usernames.
+const groupRemoveLookupQuery = `SELECT u.id, u.username FROM users u JOIN usergroup_users ugu ON ugu."user" = u.id AND ugu."group" = ? WHERE u.username IN (?)`
+
 func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequest) (ManageGroupUsersResponse, error) {
 	ctx.GetLogger().Info("manage group users", "request", slog.AnyValue(request))
 	// tenant_admin or a usergroups:Write grant. The privilege check that keeps the
@@ -1304,7 +1343,11 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 			Id       string `db:"id"`
 			Username string `db:"username"`
 		}
-		inQuery, inArgs, err := sqlx.In("SELECT id, username FROM users WHERE username IN (?)", request.AddUsernames)
+		// Only members of this tenant may join its groups. Resolving the username
+		// across every tenant let an admin add anyone with a login, from any
+		// organisation, and "not found" versus success told them whether an email
+		// had an account at all (#43747).
+		inQuery, inArgs, err := sqlx.In(groupAddLookupQuery, ctx.GetSecurityContext().GetTenantId(), request.AddUsernames)
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error building user lookup query")
 		}
@@ -1321,7 +1364,9 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		for _, username := range request.AddUsernames {
 			id, ok := usernameToId[username]
 			if !ok {
-				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User not found: " + username)
+				// One answer for "no such login" and "a login in another tenant", so
+				// the response says nothing about who exists elsewhere.
+				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User is not a member of this organization: " + username)
 			}
 			addUserIds = append(addUserIds, id)
 		}
@@ -1338,7 +1383,7 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		_, err = manager.Db.NamedExec("INSERT INTO usergroup_users (\"group\", \"user\", \"created_by\", \"updated_by\") VALUES (:group_id, :user_id, :created_by, :updated_by) ON CONFLICT (\"user\", \"group\") DO NOTHING", userGroupObjs)
 		if err != nil {
 			ctx.GetLogger().Error("Error inserting user group users", "error", err)
-			return ManageGroupUsersResponse{}, common.ErrorInternal("Error adding users to group")
+			return ManageGroupUsersResponse{}, common.ErrorRefusedOr(err, "Error adding users to group")
 		}
 		for _, userId := range addUserIds {
 			// Invalidate security cache for affected users (replaces pre_audit_hook)
@@ -1362,7 +1407,11 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 			Id       string `db:"id"`
 			Username string `db:"username"`
 		}
-		inQuery, inArgs, err := sqlx.In("SELECT id, username FROM users WHERE username IN (?)", request.RemoveUsernames)
+		// Resolved against this group's members, not every login on the platform:
+		// removing someone who is not in the group is a no-op, whether or not the
+		// email has an account, so this path cannot test emails either (#43747).
+		// A member added from another tenant before that fix can still be removed.
+		inQuery, inArgs, err := sqlx.In(groupRemoveLookupQuery, request.GroupId, request.RemoveUsernames)
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error building user lookup query")
 		}
@@ -1372,16 +1421,12 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 		if err != nil {
 			return ManageGroupUsersResponse{}, common.ErrorInternal("Error looking up users")
 		}
-		usernameToId := lo.SliceToMap(userRows, func(r userIdUsername) (string, string) {
-			return r.Username, r.Id
-		})
-		removeUserIds := make([]string, 0, len(request.RemoveUsernames))
-		for _, username := range request.RemoveUsernames {
-			id, ok := usernameToId[username]
-			if !ok {
-				return ManageGroupUsersResponse{}, common.ErrorBadRequest("User not found: " + username)
-			}
-			removeUserIds = append(removeUserIds, id)
+		removeUserIds := lo.Map(userRows, func(r userIdUsername, _ int) string { return r.Id })
+		if len(removeUserIds) == 0 {
+			return ManageGroupUsersResponse{
+				Status:  "success",
+				Message: "Group users updated successfully",
+			}, nil
 		}
 
 		query, args, err := sqlx.In("DELETE FROM usergroup_users WHERE \"group\" = ? AND \"user\" IN (?)", request.GroupId, removeUserIds)
@@ -1416,6 +1461,17 @@ func ManageGroupUsers(ctx *security.RequestContext, request ManageGroupUsersRequ
 	}, nil
 }
 
+// eeAttributeValidators check EE-only tenant attributes on write; OSS never
+// names them. EE code adds them via RegisterEEAttributeValidator.
+var eeAttributeValidators []func(sc *security.SecurityContext, attr AttributeObject) error
+
+// RegisterEEAttributeValidator adds a check UpsertTenantAttributes runs on
+// every attribute written, after the tenants:Write check. It returns nil for
+// attributes it does not own.
+func RegisterEEAttributeValidator(validate func(sc *security.SecurityContext, attr AttributeObject) error) {
+	eeAttributeValidators = append(eeAttributeValidators, validate)
+}
+
 func UpsertTenantAttributes(ctx *security.RequestContext, request TenantAttributeUpsertRequest) ([]models.TenantAttributes, error) {
 	// Tenant config (non-privilege): tenant_admin OR a custom-role grant.
 	if !ctx.GetSecurityContext().CanManage("tenants", "Write") {
@@ -1427,6 +1483,13 @@ func UpsertTenantAttributes(ctx *security.RequestContext, request TenantAttribut
 		for _, attr := range request.Object {
 			if isPrivilegedTenantAttribute(attr.Name) {
 				return nil, common.ErrorUnauthorized("Setting '" + attr.Name + "' requires a tenant admin")
+			}
+		}
+	}
+	for _, attr := range request.Object {
+		for _, validate := range eeAttributeValidators {
+			if err := validate(ctx.GetSecurityContext(), attr); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -1731,13 +1794,8 @@ func UpsertFeatureFlags(ctx *security.RequestContext, request FeatureFlagUpsertR
 		return FeatureFlagUpsertResponse{}, common.ErrorInternal("Error committing feature flag transaction")
 	}
 
-	// Invalidate caches — account-scoped entry only when upsert was account-scoped.
+	common.ReplicaBroadcast(ctx.GetContext(), common.ChangeFeatureFlag, tenantId)
 	for _, f := range request.Features {
-		_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":"+tenantId)
-		_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":default:"+tenantId)
-		if f.AccountId != "" {
-			_ = featureFlagCache.Delete(context.Background(), f.FeatureId+":default:"+tenantId+":"+f.AccountId)
-		}
 		// CUSTOM_ROLES is read while BUILDING a security context, and contexts are
 		// cached for 30 minutes — so without this drop, turning dynamic RBAC off (or
 		// on) would keep leaking the old answer for up to half an hour. Dropping the
@@ -1888,12 +1946,17 @@ func UpdateIntegrationStatusByPk(ctx *security.RequestContext, request Integrati
 	}
 
 	// Verify integration belongs to tenant
-	var count int64
-	err = manager.Db.Get(&count, "SELECT count(*) FROM integrations WHERE tenant_id = $1 AND id = $2", ctx.GetSecurityContext().GetTenantId(), request.Id)
-	if err != nil || count == 0 {
+	var integrationType string
+	err = manager.Db.Get(&integrationType, "SELECT type FROM integrations WHERE tenant_id = $1 AND id = $2", ctx.GetSecurityContext().GetTenantId(), request.Id)
+	if err != nil {
 		return IntegrationUpdateStatusByPkResponse{}, common.ErrorBadRequest("Integration not found")
 	}
+	if common.IsMsTeamsOwnedIntegrationType(integrationType) {
+		return IntegrationUpdateStatusByPkResponse{}, common.ErrMsTeamsDisconnectOnly
+	}
 
+	// A status change resets integrations.health in the database (trigger,
+	// V1025, #40994).
 	_, err = manager.Db.Exec("UPDATE integrations SET status = $1 WHERE id = $2", request.Status, request.Id)
 	if err != nil {
 		ctx.GetLogger().Error("Error updating integration status", "error", err)
@@ -1935,8 +1998,8 @@ func DeleteNotificationRule(ctx *security.RequestContext, request NotificationRu
 // (platform, teamID, channelID), for a specific unique-violation message.
 // excludeID skips a given mapping id (an update never conflicts with itself).
 // Returns empty strings if the owning row can't be resolved (e.g. dangling FK).
-func conflictingChannelMapping(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) (accountName, tenantName string) {
-	query := `SELECT ca.account_name, t.name
+func conflictingChannelMapping(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) (accountName, tenantName, tenantID string) {
+	query := `SELECT ca.account_name, t.name, m.tenant_id::text
 		FROM notification_channel_account_mappings m
 		JOIN cloud_accounts ca ON ca.id = m.account_id
 		JOIN tenant t ON t.id = m.tenant_id
@@ -1947,22 +2010,42 @@ func conflictingChannelMapping(manager *database.DatabaseManager, platform, team
 		args = append(args, excludeID)
 	}
 	query += " LIMIT 1"
-	if err := manager.Db.QueryRowx(query, args...).Scan(&accountName, &tenantName); err != nil {
-		return "", ""
+	if err := manager.Db.QueryRowx(query, args...).Scan(&accountName, &tenantName, &tenantID); err != nil {
+		return "", "", ""
 	}
-	return accountName, tenantName
+	return accountName, tenantName, tenantID
 }
 
 // channelMappingConflictError builds the "already mapped" message for a
 // unique-violation on notification_channel_account_mappings, naming the
-// account and tenant that already hold the mapping when they can be
-// resolved, falling back to a generic message otherwise.
-func channelMappingConflictError(manager *database.DatabaseManager, platform, teamID, channelID, excludeID string) error {
-	accountName, tenantName := conflictingChannelMapping(manager, platform, teamID, channelID, excludeID)
-	if accountName == "" {
+// account and tenant that already hold the mapping when they are the caller's
+// own, falling back to a generic message otherwise: another tenant's account
+// and name are never shown.
+func channelMappingConflictError(manager *database.DatabaseManager, callerTenantID, platform, teamID, channelID, excludeID string) error {
+	accountName, tenantName, tenantID := conflictingChannelMapping(manager, platform, teamID, channelID, excludeID)
+	if accountName == "" || tenantID != callerTenantID {
 		return common.ErrorConflict("This channel is already mapped")
 	}
 	return common.ErrorConflict(fmt.Sprintf("%s is already mapped with account %s in %s tenant", channelID, accountName, tenantName))
+}
+
+// requireOwnTeamsTeam refuses a Microsoft Teams mapping to a team that isn't
+// bound to the caller's tenant.
+func requireOwnTeamsTeam(manager *database.DatabaseManager, tenantID, platform, teamID string) error {
+	if !strings.EqualFold(platform, "ms_teams") {
+		return nil
+	}
+	var count int64
+	err := manager.Db.Get(&count,
+		`SELECT count(*) FROM integrations WHERE tenant_id = $1 AND type = 'ms_teams_team' AND name = $2 AND status = 'enabled'`,
+		tenantID, teamID)
+	if err != nil {
+		return common.ErrorInternal("Error checking the Microsoft Teams team")
+	}
+	if count == 0 {
+		return common.ErrorBadRequest("This Microsoft Teams team isn't connected to this workspace")
+	}
+	return nil
 }
 
 func CreateNotificationChannelMapping(ctx *security.RequestContext, request NotificationChannelMappingCreateRequest) (NotificationChannelMappingCreateResponse, error) {
@@ -1981,6 +2064,9 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	if err != nil {
 		return NotificationChannelMappingCreateResponse{}, err
 	}
+	if err := requireOwnTeamsTeam(manager, ctx.GetSecurityContext().GetTenantId(), request.Platform, request.TeamId); err != nil {
+		return NotificationChannelMappingCreateResponse{}, err
+	}
 
 	var resp NotificationChannelMappingCreateResponse
 	err = manager.Db.QueryRowx(
@@ -1992,7 +2078,7 @@ func CreateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	).StructScan(&resp)
 	if err != nil {
 		if pgUniqueViolation(err) {
-			return NotificationChannelMappingCreateResponse{}, channelMappingConflictError(manager, request.Platform, request.TeamId, request.ChannelId, "")
+			return NotificationChannelMappingCreateResponse{}, channelMappingConflictError(manager, ctx.GetSecurityContext().GetTenantId(), request.Platform, request.TeamId, request.ChannelId, "")
 		}
 		ctx.GetLogger().Error("Error creating notification channel mapping", "error", err)
 		return NotificationChannelMappingCreateResponse{}, common.ErrorInternal("Error creating notification channel mapping")
@@ -2045,6 +2131,16 @@ func UpdateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	if err != nil {
 		return NotificationChannelMappingUpdateResponse{}, err
 	}
+	// Platform isn't part of the update request (it never changes), so it is
+	// read from the row being updated.
+	var platform string
+	if err := manager.Db.Get(&platform, "SELECT platform FROM notification_channel_account_mappings WHERE id = $1 AND tenant_id = $2",
+		request.Id, ctx.GetSecurityContext().GetTenantId()); err != nil {
+		return NotificationChannelMappingUpdateResponse{}, common.ErrorBadRequest("Notification channel mapping not found")
+	}
+	if err := requireOwnTeamsTeam(manager, ctx.GetSecurityContext().GetTenantId(), platform, request.TeamId); err != nil {
+		return NotificationChannelMappingUpdateResponse{}, err
+	}
 
 	var resp NotificationChannelMappingUpdateResponse
 	err = manager.Db.QueryRowx(
@@ -2057,11 +2153,7 @@ func UpdateNotificationChannelMapping(ctx *security.RequestContext, request Noti
 	).StructScan(&resp)
 	if err != nil {
 		if pgUniqueViolation(err) {
-			// Platform isn't part of the update request (it never changes), so
-			// resolve it from the row being updated to look up the conflict.
-			var platform string
-			_ = manager.Db.Get(&platform, "SELECT platform FROM notification_channel_account_mappings WHERE id = $1", request.Id)
-			return NotificationChannelMappingUpdateResponse{}, channelMappingConflictError(manager, platform, request.TeamId, request.ChannelId, request.Id)
+			return NotificationChannelMappingUpdateResponse{}, channelMappingConflictError(manager, ctx.GetSecurityContext().GetTenantId(), platform, request.TeamId, request.ChannelId, request.Id)
 		}
 		ctx.GetLogger().Error("Error updating notification channel mapping", "error", err)
 		return NotificationChannelMappingUpdateResponse{}, common.ErrorInternal("Error updating notification channel mapping")
@@ -2109,6 +2201,7 @@ func DeleteFeature(context *security.RequestContext, request DeleteFeatureReques
 			"status": "error",
 		}, err
 	}
+	common.ReplicaBroadcast(context.GetContext(), common.ChangeFeatureFlag, context.GetSecurityContext().GetTenantId())
 
 	return map[string]string{
 		"status": "success",
@@ -2273,7 +2366,7 @@ func UpsertCloudResourceAttributes(ctx *security.RequestContext, request CloudRe
 	// (Replaces a blanket IsTenantAdmin check — this also enforces that each
 	// object's account actually belongs to the caller's tenant.)
 	for _, obj := range request.Objects {
-		if !ctx.GetSecurityContext().HasAccountAccess(obj.AccountId, security.SecurityAccessTypeUpdate) {
+		if !ctx.GetSecurityContext().CanAccessAccount(obj.AccountId, security.SecurityAccessTypeUpdate) {
 			return CloudResourceAttributesUpsertResponse{}, common.ErrorUnauthorized("Not Allowed")
 		}
 	}
@@ -2552,7 +2645,14 @@ func DeleteTenant(ctx *security.RequestContext, request TenantDeleteRequest) (Te
 		{name: "llm_conversations"},
 		{name: "llm_global_contexts"},
 		{name: "llm_knowledgebases"},
+		// After llm_knowledgebases: synced skills reference their source.
+		{name: "llm_kb_skill_sources"},
 		{name: "llm_rags"},
+		// Custom agents and tools: organisation ones (#41073) have no account,
+		// so account deletion does not reach them. Their per-account switches
+		// cascade.
+		{name: "llm_agents"},
+		{name: "llm_tools"},
 		// marketplace (EE-only data; table is empty in OSS so the delete
 		// is a no-op there). Listed here rather than under ee/ because
 		// the tenant-delete table list is a hardcoded array with no

@@ -260,11 +260,78 @@ describe('AnchorComponent', () => {
     it('calls onChangeFilter on initial render with tab 0 and subtab 0', () => {
       const onChangeFilter = jest.fn();
       render(<AnchorComponent filterOptions={baseOptions} onChangeFilter={onChangeFilter} />);
-      expect(onChangeFilter).toHaveBeenCalledWith(0, 0, { tab: 0, subtab: 0 });
+      expect(onChangeFilter).toHaveBeenCalledWith(0, 0, { tab: 0, subtab: 0, blocked: null });
     });
 
     it('does not throw when onChangeFilter is not provided', () => {
       expect(() => render(<AnchorComponent filterOptions={baseOptions} />)).not.toThrow();
+    });
+  });
+
+  describe('disabled tabs reachable via the URL hash', () => {
+    const optionsWithDisabled = [
+      { value: 0, name: 'Summary', fragment: 'summary' },
+      { value: 1, name: 'Security', fragment: 'security', disabled: true },
+    ];
+
+    it('highlights a disabled tab on mount when the hash points at it, so its content area can show a permission-denied placeholder', () => {
+      window.location.hash = '#security';
+      render(<AnchorComponent manageRoute={true} filterOptions={optionsWithDisabled} onChangeFilter={jest.fn()} />);
+
+      expect(document.querySelector('a[href*="summary"]')).toHaveAttribute('data-tab-selected', 'false');
+      expect(document.querySelector('a[href*="security"]')).toHaveAttribute('data-tab-selected', 'true');
+    });
+
+    it('highlights a disabled tab on a native hashchange and reports it via onChangeFilter as blocked', () => {
+      window.location.hash = '#summary';
+      const onChangeFilter = jest.fn();
+      render(<AnchorComponent manageRoute={true} filterOptions={optionsWithDisabled} onChangeFilter={onChangeFilter} />);
+      onChangeFilter.mockClear();
+
+      act(() => {
+        window.location.hash = '#security';
+        fireEvent(window, new Event('hashchange'));
+      });
+
+      expect(document.querySelector('a[href*="security"]')).toHaveAttribute('data-tab-selected', 'true');
+      expect(onChangeFilter).toHaveBeenCalledWith(1, 0, { tab: 1, subtab: 0, blocked: optionsWithDisabled[1] });
+    });
+
+    // Sub-tabs get `disabled: true` for permission gating, e.g. Kubernetes details
+    // (see [KubernetesDetails].jsx's anchorFilterOptions) — not just "not built yet".
+    const optionsWithDisabledChild = [
+      {
+        value: 0,
+        name: 'Optimize',
+        fragment: 'optimize',
+        tabOptions: [
+          { id: 'summary', text: 'Summary', value: 0, fragment: 'summary' },
+          { id: 'cluster-upgrade', text: 'Cluster Upgrade', value: 1, fragment: 'cluster-upgrade', disabled: true },
+        ],
+      },
+    ];
+
+    it('selects a disabled sub-tab on mount when the hash points at it', () => {
+      window.location.hash = '#optimize/cluster-upgrade';
+      render(<AnchorComponent manageRoute={true} filterOptions={optionsWithDisabledChild} onChangeFilter={jest.fn()} />);
+
+      expect(screen.getByTestId('subtab-0')).toHaveAttribute('aria-selected', 'false');
+      expect(screen.getByTestId('subtab-1')).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('selects a disabled sub-tab on a native hashchange and reports it via onChangeFilter as blocked', () => {
+      window.location.hash = '#optimize/summary';
+      const onChangeFilter = jest.fn();
+      render(<AnchorComponent manageRoute={true} filterOptions={optionsWithDisabledChild} onChangeFilter={onChangeFilter} />);
+      onChangeFilter.mockClear();
+
+      act(() => {
+        window.location.hash = '#optimize/cluster-upgrade';
+        fireEvent(window, new Event('hashchange'));
+      });
+
+      expect(screen.getByTestId('subtab-1')).toHaveAttribute('aria-selected', 'true');
+      expect(onChangeFilter).toHaveBeenCalledWith(0, 1, { tab: 0, subtab: 1, blocked: optionsWithDisabledChild[0].tabOptions[1] });
     });
   });
 

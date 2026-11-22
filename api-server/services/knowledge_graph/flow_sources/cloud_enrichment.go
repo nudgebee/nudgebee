@@ -748,6 +748,20 @@ func (e *CloudEnricher) enrichLoadBalancerWithTargets(
 			continue
 		}
 
+		// Membership the collector already captured on this load balancer's row.
+		// Only a target group whose membership was never captured needs a live
+		// call; nothing here reads health state.
+		if memberIDs, fromRow := TargetGroupMemberIDs(tg); fromRow {
+			for _, targetID := range memberIDs {
+				if strings.HasPrefix(targetID, "i-") {
+					instanceIDs[targetID] = true
+				} else {
+					uniqueIPs[targetID] = true
+				}
+			}
+			continue
+		}
+
 		healthCommand := fmt.Sprintf(
 			"aws elbv2 describe-target-health --region %s --target-group-arn %s --output json",
 			region, tgArn,

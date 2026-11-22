@@ -47,6 +47,8 @@ func NewNBLogToolV2(accountId string) (*NBLogToolV2, error) {
 }
 
 type NBLogToolV2 struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
 	accountId   string
 	logProvider services_server.ObservabilityProvider
 }

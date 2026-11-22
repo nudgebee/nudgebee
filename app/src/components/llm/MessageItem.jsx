@@ -19,6 +19,7 @@ import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import { useTenantBranding, getNubiIconUrl } from '@hooks/useTenantBranding';
 import { Modal } from '@ui/Modal';
 import ExecutedTargetChip from './common/ExecutedTargetChip';
+import ApprovedByRuleChip from './common/ApprovedByRuleChip';
 
 const QUESTION_PREVIEW_LINES = 6;
 
@@ -112,9 +113,6 @@ const getCardTitle = (data, { indented = false } = {}) => {
   // it for the flat main message stream (indented=false), drop it in the nested drawer.
   if (!indented && data?.parentAgents?.length > 0) {
     response = data.parentAgents.join(' -> ') + ' -> ' + response;
-  }
-  if (!indented && data?.plannerId) {
-    response = '(' + data.plannerId + ') ' + response;
   }
 
   return response;
@@ -543,6 +541,7 @@ const MessageItem = ({
                       sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', fontFamily: ds.font.sans, flex: 1, minWidth: 0 }}
                     />
                     <ExecutedTargetChip metadata={message.metadata} status={message.response_status} />
+                    <ApprovedByRuleChip metadata={message.metadata} />
                     {parsedReferences.length > 0 && (
                       <Box
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}

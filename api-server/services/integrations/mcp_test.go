@@ -400,3 +400,13 @@ func TestMCP_ValidateConfig_Direct_LiveTest_OAuth2TokenEndpointError(t *testing.
 	require.Len(t, errs, 1)
 	assert.Contains(t, errs[0].Error(), "oauth2: token endpoint returned 400")
 }
+
+// write_tools is declared so the form can save it (unknown keys are rejected)
+// and llm-server can read which tools ask for approval (#40399).
+func TestMCP_ConfigSchema_DeclaresWriteTools(t *testing.T) {
+	field, ok := MCP{}.ConfigSchema().Properties["write_tools"]
+	require.True(t, ok)
+	assert.Equal(t, core.ToolSchemaTypeString, field.Type)
+	assert.Equal(t, "mcp_write_tools", field.Widget)
+	assert.False(t, field.IsEncrypted, "llm-server reads it as a plain setting")
+}

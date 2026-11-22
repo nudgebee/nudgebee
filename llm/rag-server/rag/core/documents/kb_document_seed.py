@@ -14,22 +14,25 @@ document order speaks for it; figure chunks never do while a text chunk is label
 chunk's ``parent_id`` for a split page, or the chunk's own id for a page that fit in
 one chunk (the id IS that hash). It is NULL where it cannot be recovered and for
 manual KBs, whose rows are deleted on every data change instead of compared. ON
-CONFLICT keeps an existing row as it is, apart from filling in empty capabilities; a label
-written by a later classification is never overwritten.
+CONFLICT updates an existing row whose labels differ, so a row follows its page's chunks
+(db_query.upsert_kb_document_labels): nothing else writes these rows.
 
 Only KBs that are active and enabled, with a resolvable account, are listed
 (kb_capability_backfill._pending_knowledgebases): a KB that is disabled when the seed
 runs is not seeded, so enable it, or run the seed again, before this job is removed.
 
 This is the ONE sanctioned read of labels from Qdrant (docs/kb-label-ownership-spec.md):
-a one-time import, to be deleted once every environment has run it.
+a copy for the documents modal, to be deleted once that writer ships.
 
 ON by default (RAG_KB_DOCUMENT_SEED_ENABLED=false turns it off). It runs at every
 startup, not once: each run reads every labelled chunk's metadata (never page text),
-inserts only the rows that are missing, and makes no LLM call. Running it each time is
-deliberate: labels the classification backfill stamps on chunks after an earlier run are
-imported on the next restart, which keeps the documents modal filled until a single
-writer puts new labels into Postgres directly. It is deleted once that writer ships.
+writes the rows that are missing or stale, and makes no LLM call.
+
+Labels stamped after startup do not wait for the next restart:
+processing.refresh_kb_collection_summary, which runs after every ingest, prune and
+backfill, derives the same rows (keep_page_point / rows_from_pages) in the scan it
+already makes for the collection rollup. This module's startup run catches up whatever
+that path missed. Both are deleted once a single writer puts labels into Postgres directly.
 """
 
 import logging
@@ -47,7 +50,7 @@ INSERT_BATCH = 500
 _KINDS = ("sop", "knowledge")
 # Everything the seed needs from a chunk, and nothing else: a legacy chunk's payload can
 # carry the whole page's text, which a scroll with the full payload would drag along.
-_PAYLOAD_FIELDS = [
+PAYLOAD_FIELDS = [
     f"metadata.{key}"
     for key in (
         "kind",
@@ -100,7 +103,7 @@ def _labelled_points(client, collection_name: str):
             scroll_filter=scroll_filter,
             limit=SCROLL_BATCH,
             offset=offset,
-            with_payload=models.PayloadSelectorInclude(include=_PAYLOAD_FIELDS),
+            with_payload=models.PayloadSelectorInclude(include=PAYLOAD_FIELDS),
             with_vectors=False,
         )
         yield from batch
@@ -118,23 +121,25 @@ def _version(point, metadata: Dict[str, Any]) -> Optional[str]:
     return str(point.id).replace("-", "")
 
 
-def page_rows(client, collection_name: str) -> List[Dict[str, Any]]:
-    """One label row per keyable, labelled page of a collection (one row for a manual KB)."""
+def keep_page_point(best: Dict[str, tuple], collection_name: str, point) -> None:
+    """Fold one labelled chunk into ``best``, which keeps the chunk that speaks for each page."""
+    payload = point.payload if isinstance(point.payload, dict) else {}
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return  # one malformed legacy point must not fail the whole collection
+    url = metadata.get("url")
+    key = label_key(collection_name, metadata, url if isinstance(url, str) else None)
+    if not key:
+        return
+    # A text chunk outranks a figure chunk; then the lowest position wins.
+    rank = (bool(metadata.get("is_figure")), _position(metadata))
+    if key not in best or rank < best[key][0]:
+        best[key] = (rank, point, metadata)
+
+
+def rows_from_pages(collection_name: str, best: Dict[str, tuple]) -> List[Dict[str, Any]]:
+    """One label row per page ``keep_page_point`` collected (one row for a manual KB)."""
     manual = collection_name.startswith("kb_")
-    best: Dict[str, tuple] = {}
-    for point in _labelled_points(client, collection_name):
-        payload = point.payload if isinstance(point.payload, dict) else {}
-        metadata = payload.get("metadata")
-        if not isinstance(metadata, dict):
-            continue  # one malformed legacy point must not fail the whole collection
-        url = metadata.get("url")
-        key = label_key(collection_name, metadata, url if isinstance(url, str) else None)
-        if not key:
-            continue
-        # A text chunk outranks a figure chunk; then the lowest position wins.
-        rank = (bool(metadata.get("is_figure")), _position(metadata))
-        if key not in best or rank < best[key][0]:
-            best[key] = (rank, point, metadata)
     return [
         {
             "collection_name": collection_name,
@@ -148,9 +153,17 @@ def page_rows(client, collection_name: str) -> List[Dict[str, Any]]:
     ]
 
 
+def page_rows(client, collection_name: str) -> List[Dict[str, Any]]:
+    """One label row per keyable, labelled page of a collection (one row for a manual KB)."""
+    best: Dict[str, tuple] = {}
+    for point in _labelled_points(client, collection_name):
+        keep_page_point(best, collection_name, point)
+    return rows_from_pages(collection_name, best)
+
+
 def run(client) -> Dict[str, int]:
     from rag.core.documents.kb_capability_backfill import _pending_knowledgebases
-    from rag.core.utils.db_query import seed_kb_document_labels
+    from rag.core.utils.db_query import upsert_kb_document_labels
 
     summary = {"collections_scanned": 0, "pages_seen": 0, "rows_inserted": 0, "errors": 0}
     try:
@@ -173,7 +186,7 @@ def run(client) -> Dict[str, int]:
             rows = page_rows(client, kb.name)
             summary["pages_seen"] += len(rows)
             for start in range(0, len(rows), INSERT_BATCH):
-                summary["rows_inserted"] += seed_kb_document_labels(rows[start : start + INSERT_BATCH])
+                summary["rows_inserted"] += upsert_kb_document_labels(rows[start : start + INSERT_BATCH])
         except Exception:
             summary["errors"] += 1
             logger.exception("kb_document_seed: %s failed", kb.name)

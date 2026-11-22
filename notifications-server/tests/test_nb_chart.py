@@ -207,6 +207,41 @@ class TestRenderNbChart:
         assert "20 of 25 data points" in note.text
         assert not any(isinstance(b, LinksBlock) for b in blocks)
 
+    def test_line_chart_keeps_whole_time_range(self):
+        # #40909: a 120-point trend spreads Slack's 20 points over the whole range
+        # instead of keeping only its earliest 20.
+        labels = [f'"t{i}"' for i in range(120)]
+        series = '[{"key":"a","data":' + str(list(range(120))) + "}]"
+        code = '{"type":"line","title":"T","labels":[' + ",".join(labels) + '],"series":' + series + "}"
+        blocks = render_nb_chart(code)
+
+        categories = blocks[0].chart["axis_config"]["categories"]
+        points = blocks[0].chart["series"][0]["data"]
+        assert len(categories) == 20
+        assert categories[0] == "t0" and categories[-1] == "t119"
+        assert [p["value"] for p in points][:3] == [0.0, 6.0, 13.0]
+        assert all(p["label"] == f"t{int(p['value'])}" for p in points), "each value stays on its own label"
+        note = next(b for b in blocks if isinstance(b, ContextBlock))
+        assert "20 evenly spaced of 120 data points" in note.text
+
+    def test_byte_chart_is_scaled_and_labelled(self):
+        # #40909: a memory chart in bytes reads as MiB on the axis, not 152,043,520.
+        series = '[{"key":"p","data":[152043520,104857600]}]'
+        code = '{"type":"line","title":"T","labels":["a","b"],"format":"bytes","series":' + series + "}"
+        chart = render_nb_chart(code)[0].chart
+
+        assert chart["axis_config"]["y_label"] == "MiB"
+        assert [p["value"] for p in chart["series"][0]["data"]] == [145.0, 100.0]
+
+    def test_duration_chart_keeps_small_values_readable(self):
+        code = (
+            '{"type":"line","title":"T","labels":["a","b"],"format":"seconds","series":[{"key":"p","data":[0.25,0.5]}]}'
+        )
+        chart = render_nb_chart(code)[0].chart
+
+        assert chart["axis_config"]["y_label"] == "ms"
+        assert [p["value"] for p in chart["series"][0]["data"]] == [250.0, 500.0]
+
     def test_truncation_note_includes_link_when_view_url_given(self):
         labels = [f'"c{i}"' for i in range(25)]
         code = (

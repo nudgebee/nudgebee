@@ -8,6 +8,8 @@ import Datetime from '@shared/format/Datetime';
 import { toSeverityLevel } from '@utils/common';
 import apiVm, { SEVERITY_ORDER, VmVulnerabilityGroup } from '@api1/vm';
 import { severityFromWeight, sumSeverities, useLatestRequest } from './common';
+import VmEventsCard from './VmEventsCard';
+import VmUtilizationCard from './VmUtilizationCard';
 import { ds } from '@utils/colors';
 
 interface VmSummaryState {
@@ -113,6 +115,24 @@ const RankBar = ({
     <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[700], minWidth: ds.space[6], textAlign: 'right' }}>
       {count}
     </Typography>
+  </Box>
+);
+
+/**
+ * One cell of the Security bento grid. Placed by column / row span from md up, and
+ * stretched so a short card and a tall neighbour end on the same line.
+ */
+const Tile = ({ cols, rows = 1, children }: { cols: number; rows?: number; children: React.ReactNode }) => (
+  <Box
+    sx={{
+      gridColumn: { xs: 'auto', md: `span ${cols}` },
+      gridRow: { xs: 'auto', md: `span ${rows}` },
+      display: 'flex',
+      minWidth: 0,
+      '& > *': { flex: 1, minWidth: 0 },
+    }}
+  >
+    {children}
   </Box>
 );
 
@@ -282,59 +302,83 @@ const VmSummary = ({ accountId }: { accountId: string }) => {
         </Box>
       </Card>
 
-      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: ds.space[5] }}>
-        <Card size='md' header={<CardHeading text='Vulnerabilities by severity' />}>
-          {presentSeverities.length ? (
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
-              {presentSeverities.map((severity) => (
-                <RankBar
-                  key={severity}
-                  label={severity}
-                  severity={severity}
-                  count={summary.severities[severity] || 0}
-                  max={maxSeverityCount}
-                  bar
-                  onClick={() => openTab('vulnerabilities', { severity })}
-                />
-              ))}
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '2fr 3fr' }, gap: ds.space[5], alignItems: 'stretch' }}>
+        <VmUtilizationCard accountId={accountId} />
+        <VmEventsCard accountId={accountId} onViewAll={() => openTab('alerts')} />
+      </Box>
+
+      <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Security</Typography>
+
+      <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'repeat(12, 1fr)' }, gap: ds.space[5] }}>
+        <Tile cols={5} rows={2}>
+          <Card size='md' header={<CardHeading text='Vulnerabilities by severity' />}>
+            {presentSeverities.length ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
+                {presentSeverities.map((severity) => (
+                  <RankBar
+                    key={severity}
+                    label={severity}
+                    severity={severity}
+                    count={summary.severities[severity] || 0}
+                    max={maxSeverityCount}
+                    bar
+                    onClick={() => openTab('vulnerabilities', { severity })}
+                  />
+                ))}
+              </Box>
+            ) : (
+              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
+                {loading ? 'Loading…' : 'No open findings. Scan a VM to match its packages against the CVE database.'}
+              </Typography>
+            )}
+          </Card>
+        </Tile>
+
+        <Tile cols={3}>
+          <Card size='md' header={<CardHeading text='Scan coverage' />}>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[5] }}>
+              <Stat id='vm-summary-scanned' label='Inventoried' value={summary.scannedVms} size='md' sub='has package inventory' />
+              <Stat id='vm-summary-never-scanned' label='Never scanned' value={neverScanned} size='md' sub='no inventory collected yet' />
             </Box>
-          ) : (
-            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
-              {loading ? 'Loading…' : 'No open findings. Scan a VM to match its packages against the CVE database.'}
-            </Typography>
-          )}
-        </Card>
+          </Card>
+        </Tile>
 
-        <Card size='md' header={<CardHeading text='Scan coverage' />}>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[7] }}>
-            <Stat id='vm-summary-scanned' label='Inventoried' value={summary.scannedVms} size='md' sub='has package inventory' />
-            <Stat id='vm-summary-never-scanned' label='Never scanned' value={neverScanned} size='md' sub='no inventory collected yet' />
-          </Box>
-        </Card>
+        <Tile cols={4}>
+          <RankCard
+            heading='Operating systems'
+            rows={summary.operatingSystems}
+            loading={loading}
+            empty='No OS reported yet — it is collected with the package inventory.'
+          />
+        </Tile>
 
-        <RankCard heading='Most vulnerable VMs' rows={toRankRows(summary.topVms, 'vmId')} loading={loading} empty='No open findings on any VM yet.' />
+        <Tile cols={7}>
+          <RankCard
+            heading='Most vulnerable VMs'
+            rows={toRankRows(summary.topVms, 'vmId')}
+            loading={loading}
+            empty='No open findings on any VM yet.'
+          />
+        </Tile>
 
-        <RankCard
-          heading='Most affected packages'
-          rows={toRankRows(summary.topPackages, 'packageName')}
-          loading={loading}
-          empty='No package has an open finding yet.'
-        />
+        <Tile cols={6}>
+          <RankCard
+            heading='Most affected packages'
+            rows={toRankRows(summary.topPackages, 'packageName')}
+            loading={loading}
+            empty='No package has an open finding yet.'
+          />
+        </Tile>
 
-        <RankCard
-          heading='Most common vulnerabilities'
-          rows={toRankRows(summary.topVulnerabilities, 'vulnId')}
-          loading={loading}
-          empty='No CVE has matched an installed package yet.'
-          mono
-        />
-
-        <RankCard
-          heading='Operating systems'
-          rows={summary.operatingSystems}
-          loading={loading}
-          empty='No OS reported yet — it is collected with the package inventory.'
-        />
+        <Tile cols={6}>
+          <RankCard
+            heading='Most common vulnerabilities'
+            rows={toRankRows(summary.topVulnerabilities, 'vulnId')}
+            loading={loading}
+            empty='No CVE has matched an installed package yet.'
+            mono
+          />
+        </Tile>
       </Box>
     </Box>
   );

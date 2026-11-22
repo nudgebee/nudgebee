@@ -8,7 +8,8 @@ import { TroubleshootLocators } from "../TroubleshootLocators";
 // at rung 1. The filter dropdowns are `@ui/FilterDropdown` instances, which render no
 // testid at all (`grep -c data-testid app/src/components/common/ds/FilterDropdown.jsx`
 // returns 0) — see the note on filterAccount below for why those take an id primary.
-export const KG_RELATIONSHIP_LABELS = ["CALLS", "ROUTES_THROUGH", "RUNS_ON", "MOUNTS"] as const;
+// Legend renders each type via relationshipTypeLabel (snake_case to Title Case).
+export const KG_RELATIONSHIP_LABELS = ["Calls", "Routes Through", "Runs On", "Mounts"] as const;
 
 // Traversal depths, static in the module (KnowledgeGraph.jsx:112-114).
 export const KG_LEVEL_OPTIONS = ["1 - Direct neighbors", "2 - 2 hops", "3 - 3 hops"] as const;

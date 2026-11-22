@@ -110,13 +110,37 @@ func TestFetchAllMeasurements_ReturnsBucketSize(t *testing.T) {
 		return []byte(`{"groupings":[{"attributes":[],"measurements":[{"time":"2026-10-07T10:00:00Z","value":1}]}],"bucketSizeInSeconds":300,"pageInfo":{"nextPage":""}}`), http.StatusOK, nil
 	}
 
-	groupings, bucket, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements",
+	groupings, bucket, capped, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements",
 		swMeasurementQuery{aggregateBy: "SUM", preGroupBy: "k8s.node.name", preGroupByMethod: "AVG"})
 	require.NoError(t, err)
 	assert.Len(t, groupings, 1)
 	assert.Equal(t, int64(300), bucket)
+	assert.False(t, capped)
 	assert.Equal(t, "k8s.node.name", sent["preGroupBy"])
 	assert.Equal(t, "AVG", sent["preGroupByMethod"])
+}
+
+// A query that still has a next page after swMaxPages reports it, and the result
+// carries the page-cap Note (#39201).
+func TestFetchAllMeasurements_ReportsPageCap(t *testing.T) {
+	orig := solarWindsDoGET
+	defer func() { solarWindsDoGET = orig }()
+	calls := 0
+	solarWindsDoGET = func(_, _, _ string, _ map[string]string) ([]byte, int, error) {
+		calls++
+		return []byte(`{"groupings":[{"attributes":[],"measurements":[{"time":"2026-10-07T10:00:00Z","value":1}]}],"pageInfo":{"nextPage":"/v1/metrics/m/measurements?skipToken=more"}}`), http.StatusOK, nil
+	}
+
+	groupings, _, capped, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
+	require.NoError(t, err)
+	assert.True(t, capped)
+	assert.Equal(t, swMaxPages, calls)
+	assert.Len(t, groupings, swMaxPages)
+
+	qr, err := swFetchQueryResult("tok", swTestBaseURL, "/v1/metrics/m/measurements", "k", "m", swMeasurementQuery{aggregateBy: "AVG"}, false)
+	require.NoError(t, err)
+	assert.True(t, qr.pagesCapped)
+	assert.Equal(t, "SolarWinds returned more than 50 pages; only the first 50 were read, so some series are missing. Narrow the filters.", swPageCapNote)
 }
 
 // ============================================================================

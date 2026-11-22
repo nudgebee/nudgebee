@@ -21,6 +21,7 @@ func TestSpecificTypeHasSchema(t *testing.T) {
 		"KubernetesStatefulSet",
 		"KubernetesDaemonSet",
 		"KubernetesReplicaSet",
+		"KubernetesRollout",
 		"KubernetesJob",
 		"KubernetesCronJob",
 		"KubernetesPod",

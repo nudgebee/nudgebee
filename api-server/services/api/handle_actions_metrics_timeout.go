@@ -37,6 +37,11 @@ const (
 	observabilityLogsQueryTimeout      = 240 * time.Second
 )
 
+// observabilityStatusActionTimeout bounds a status check: a connection test (up to
+// 25s through a forager) followed by one query. More than a metadata lookup, far
+// less than a data query.
+const observabilityStatusActionTimeout = 60 * time.Second
+
 // runObservabilityActionWithTimeout enforces a wall-clock bound on a single
 // observability RPC action handler (metrics_* / logs_*) by racing the action
 // against a deadline in a goroutine and returning to the caller as soon as

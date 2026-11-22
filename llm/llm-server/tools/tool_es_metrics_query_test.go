@@ -355,14 +355,17 @@ func TestInlineESResponse_NotesEveryResultWithSeries(t *testing.T) {
 	defer func() { wm = orig }()
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
 
-	out, refs := inlineESResponse(ctx, esTestResponse(5, 3), "splunk_metrics_query", "Splunk")
+	out, refs, meta := inlineESResponse(ctx, esTestResponse(5, 3), "splunk_metrics_query", "Splunk")
 	assert.Nil(t, refs, "within the limits nothing is saved")
+	require.NotNil(t, meta, "#40909: a chart of the result rides in the response metadata")
+	assert.Len(t, meta.Charts, 1)
+	assert.Contains(t, out, "chart_note")
 	b, _ := json.Marshal(out)
 	assert.NotContains(t, string(b), "file_ref")
 
 	big := esTestResponse(43, 60)
 	big.Results = append(big.Results, core.ObservabilityMetricsQueryResult{QueryKey: "empty"})
-	out, refs = inlineESResponse(ctx, big, "splunk_metrics_query", "Splunk")
+	out, refs, _ = inlineESResponse(ctx, big, "splunk_metrics_query", "Splunk")
 	require.Len(t, refs, 1)
 	assert.Equal(t, "Full Splunk metrics query results", refs[0].Description)
 	b, _ = json.Marshal(out)
@@ -413,7 +416,7 @@ func TestInlineESResponse_StaysWithinByteBudget(t *testing.T) {
 	ctx := core.NbToolContext{Ctx: security.NewRequestContextForSuperAdmin(), AccountId: "a", ConversationId: "c"}
 
 	t.Run("many series", func(t *testing.T) {
-		out, refs := inlineESResponse(ctx, esWideLabelResponse(400, 2), "es_metrics_query", "Elasticsearch")
+		out, refs, _ := inlineESResponse(ctx, esWideLabelResponse(400, 2), "es_metrics_query", "Elasticsearch")
 		b, err := json.Marshal(out)
 		require.NoError(t, err)
 		assert.LessOrEqual(t, len(b), maxESInlineBytes+1024, "inline result stays near the budget (notes and query text ride on top)")
@@ -427,13 +430,13 @@ func TestInlineESResponse_StaysWithinByteBudget(t *testing.T) {
 	t.Run("few points, heavy labels", func(t *testing.T) {
 		resp := esWideLabelResponse(140, 1) // under the series and point limits, over the byte budget
 		require.False(t, esOversized(resp))
-		out, refs := inlineESResponse(ctx, resp, "splunk_metrics_query", "Splunk")
+		out, refs, _ := inlineESResponse(ctx, resp, "splunk_metrics_query", "Splunk")
 		require.Len(t, refs, 1, "too large to inline is saved even under the count limits")
 		b, _ := json.Marshal(out)
 		assert.LessOrEqual(t, len(b), maxESInlineBytes+1024)
 	})
 	t.Run("small result unchanged", func(t *testing.T) {
-		out, refs := inlineESResponse(ctx, esTestResponse(3, 5), "es_metrics_query", "Elasticsearch")
+		out, refs, _ := inlineESResponse(ctx, esTestResponse(3, 5), "es_metrics_query", "Elasticsearch")
 		assert.Nil(t, refs)
 		var s esSummary
 		b, _ := json.Marshal(out)

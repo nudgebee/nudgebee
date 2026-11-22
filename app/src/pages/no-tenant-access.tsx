@@ -1,7 +1,7 @@
 import { error404Image } from '@assets';
 import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { signOut } from 'next-auth/react';
+import { logout } from '@lib/logout';
 import { useRouter } from 'next/router';
 import { ds } from '@utils/colors';
 
@@ -12,8 +12,7 @@ export default function NoTenantAccess() {
   const errorMessage = Array.isArray(message) ? message[0] : message;
 
   const handleSignOut = async () => {
-    await signOut({ redirect: false });
-    router.push('/signin');
+    await logout('/signin');
   };
 
   return (

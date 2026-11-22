@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	llmruntime "nudgebee/llm/llms/runtime"
 )
 
 // TestSanitizeErrorForUser_NoLLMConfiguration guards a real regression: before
@@ -71,9 +73,9 @@ func TestSanitizeErrorForUser_PlannerInternalsAreHidden(t *testing.T) {
 		"text tool call after the re-prompt": {fmt.Errorf("react4: %w (no tool ran): %w", errReact4TextToolCall, ErrParseFailure), runStoppedEarlyMessage},
 		"summary wrote a plan":               {errSummaryTextToolCall, runStoppedEarlyMessage},
 		"raw provider 400": {fmt.Errorf("react4: llm generate: %w",
-			ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 400: Extra data: line 1 column 58 (char 57)"))), providerErrorMessage},
+			llmruntime.ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 400: Extra data: line 1 column 58 (char 57)"))), providerErrorMessage},
 		"parse failure mentioning a status code":      {fmt.Errorf("react4: reply was 500 chars: %w", ErrParseFailure), runStoppedEarlyMessage},
-		"classified provider error keeps its message": {fmt.Errorf("react4: llm generate: %w", ErrLLMServiceUnavailable), ErrLLMServiceUnavailable.Error()},
+		"classified provider error keeps its message": {fmt.Errorf("react4: llm generate: %w", llmruntime.ErrLLMServiceUnavailable), llmruntime.ErrLLMServiceUnavailable.Error()},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := sanitizeErrorForUser(tc.err)
@@ -101,11 +103,11 @@ func TestSanitizeErrorForUser_OutOfCreditIsNamed(t *testing.T) {
 		"openai quota":        "API returned unexpected status code: 429: insufficient_quota: You exceeded your current quota, please check your plan and billing details.",
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := sanitizeErrorForUser(fmt.Errorf("react4: llm generate: %w", ErrLlmUnableToGenerate(errors.New(raw))))
-			assert.Equal(t, ErrLLMOutOfCredit.Error(), got)
+			got := sanitizeErrorForUser(fmt.Errorf("react4: llm generate: %w", llmruntime.ErrLlmUnableToGenerate(errors.New(raw))))
+			assert.Equal(t, llmruntime.ErrLLMOutOfCredit.Error(), got)
 		})
 	}
 	// A plain rate limit is still a rate limit.
-	rl := fmt.Errorf("react4: llm generate: %w", ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 429: Too Many Requests")))
-	assert.Equal(t, ErrLLMRateLimited.Error(), sanitizeErrorForUser(rl))
+	rl := fmt.Errorf("react4: llm generate: %w", llmruntime.ErrLlmUnableToGenerate(errors.New("API returned unexpected status code: 429: Too Many Requests")))
+	assert.Equal(t, llmruntime.ErrLLMRateLimited.Error(), sanitizeErrorForUser(rl))
 }

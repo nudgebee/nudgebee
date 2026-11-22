@@ -84,9 +84,9 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 		status = model.WorkflowStatusPaused
 	}
 	_, err = tx.ExecContext(ctx, `
-		INSERT INTO workflows (id, tenant_id, account_id, name, description, definition, tags, status, ai_invocable, ai_auto_approve, created_by, updated_by, created_from_session_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-	`, id, tenantID, accountID, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, status, wf.AIInvocable, wf.AIAutoApprove, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
+		INSERT INTO workflows (id, tenant_id, account_id, name, description, definition, tags, status, ai_invocable, ai_auto_approve, created_by, updated_by, created_from_session_id, run_as_user_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14::text, '')::uuid)
+	`, id, tenantID, accountID, wf.Name, nullableString(wf.Description), wfBytes, tagBytes, status, wf.AIInvocable, wf.AIAutoApprove, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID, wf.CreatedBy)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to save workflow: %w", err)
 	}
@@ -143,8 +143,8 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID string, accountIDs []st
 
 	// Build the base WHERE clause with filters (shared by both queries)
 	// Note: Main query uses 'w.' prefix, count query uses no prefix
-	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2)"
-	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2)"
+	whereClause := "WHERE tenant_id = $1 AND account_id = ANY($2) AND " + notHiddenBoundTrigger("")
+	whereClauseWithAlias := "WHERE w.tenant_id = $1 AND w.account_id = ANY($2) AND " + notHiddenBoundTrigger("w.")
 	baseArgs := []any{tenantID, pq.Array(accountIDs)}
 	argId := 3
 
@@ -416,6 +416,8 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var draftVersionNumber sql.NullInt64
 	var draftVersionName sql.NullString
 	var draftDiffersFromLive bool
+	var runAsUserID sql.NullString
+	var beeBytes []byte
 
 	// draft_differs_from_live: JSONB semantic comparison (key order irrelevant)
 	// between the draft and the live snapshot. IS DISTINCT FROM makes a missing
@@ -425,7 +427,8 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.ai_auto_approve, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
 		       w.draft_version_id::text, dv.version_number, dv.name,
-		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live
+		       (w.definition IS DISTINCT FROM lv.definition) AS draft_differs_from_live,
+		       w.run_as_user_id::text, w.bee
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -437,7 +440,7 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
 		&draftVersionID, &draftVersionNumber, &draftVersionName,
-		&draftDiffersFromLive,
+		&draftDiffersFromLive, &runAsUserID, &beeBytes,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow: %w", err)
@@ -484,8 +487,65 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
 		draftVersionID, draftVersionNumber, draftVersionName)
 	wf.DraftDiffersFromLive = draftDiffersFromLive
+	wf.RunAsUserID = runAsUserID.String
+	if wf.Binding, err = decodeBinding(beeBytes); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
+}
+
+// notHiddenBoundTrigger is the condition that keeps an agent's trigger
+// automations out of automation lists and counts. They still fire: trigger
+// matching reads every ACTIVE workflow. Bound automations stay listed (they are
+// ordinary automations), but never in the AI assistant's search
+// (ListAIInvocableWorkflows).
+func notHiddenBoundTrigger(alias string) string {
+	return "(" + alias + "bee IS NULL OR COALESCE(" + alias + "bee->>'role', '') <> '" + model.BindingRoleTrigger + "')"
+}
+
+// decodeBinding reads workflows.bee; NULL is no binding.
+func decodeBinding(raw []byte) (*model.WorkflowBinding, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var b model.WorkflowBinding
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal workflow binding: %w", err)
+	}
+	return &b, nil
+}
+
+// GetRunAsUserID returns the user a workflow's unattended runs act as, or ""
+// when none is recorded (the owner was deleted).
+func (s *WorkflowDao) GetRunAsUserID(ctx context.Context, tenantID, workflowID string) (string, error) {
+	var runAs sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT run_as_user_id::text FROM workflows WHERE tenant_id = $1 AND id = $2`,
+		tenantID, workflowID).Scan(&runAs)
+	if err != nil {
+		return "", fmt.Errorf("failed to read workflow owner: %w", err)
+	}
+	return runAs.String, nil
+}
+
+// SetRunAsUserID records the user a workflow's unattended runs act as. Called
+// on publish and make-live, which are the deliberate "this is now mine" acts;
+// pause/resume and draft edits never call it.
+func (s *WorkflowDao) SetRunAsUserID(ctx context.Context, tenantID, accountID, workflowID, userID string) error {
+	if userID == "" {
+		return fmt.Errorf("workflow owner must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE workflows SET run_as_user_id = $1 WHERE id = $2 AND tenant_id = $3 AND account_id = $4`,
+		userID, workflowID, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to set workflow owner: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("workflow %s not found", workflowID)
+	}
+	return nil
 }
 
 // uuidsOnly drops the ids Postgres cannot cast to uuid.
@@ -556,7 +616,7 @@ func (s *WorkflowDao) ListWorkflowIDNames(ctx context.Context, tenantID string, 
 		return nil, fmt.Errorf("tenantID and at least one accountID are required")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) ORDER BY id LIMIT $3`,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND `+notHiddenBoundTrigger("")+` ORDER BY id LIMIT $3`,
 		tenantID, pq.Array(accountIDs), limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workflow names: %w", err)
@@ -631,12 +691,13 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 	}
 
 	const query = `
-		SELECT w.id::text, w.name, w.description, w.ai_auto_approve, lv.definition
+		SELECT w.id::text, w.name, w.description, w.ai_auto_approve, w.live_version_id::text, lv.definition
 		FROM workflows w
 		JOIN workflow_versions lv ON lv.id = w.live_version_id
 		WHERE w.tenant_id = $1 AND w.account_id = $2
 		  AND w.ai_invocable
 		  AND w.status = $3
+		  AND ` + aiToolNotBound + `
 		ORDER BY w.name
 	`
 
@@ -656,9 +717,10 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 			id, name    string
 			desc        sql.NullString
 			autoApprove bool
+			version     string
 			defBytes    []byte
 		)
-		if err := rows.Scan(&id, &name, &desc, &autoApprove, &defBytes); err != nil {
+		if err := rows.Scan(&id, &name, &desc, &autoApprove, &version, &defBytes); err != nil {
 			return nil, fmt.Errorf("failed to scan AI-invocable workflow: %w", err)
 		}
 		var def model.WorkflowDefinition
@@ -673,6 +735,7 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 			Name:        name,
 			Description: desc.String,
 			AutoApprove: autoApprove,
+			Version:     version,
 			Definition:  def,
 		})
 	}
@@ -680,6 +743,93 @@ func (s *WorkflowDao) ListAIInvocableWorkflows(ctx context.Context, tenantID, ac
 		return nil, fmt.Errorf("failed to iterate AI-invocable workflows: %w", err)
 	}
 	return out, nil
+}
+
+// aiToolNotBound keeps an agent's automations out of everything offered to the
+// AI assistant as a tool, and out of the list of what could be.
+const aiToolNotBound = "w.bee IS NULL"
+
+// ListAIToolCandidates returns the automations across accountIDs that are or
+// could be offered to the AI assistant: not an agent's, and either opted in or
+// with an AI description in the draft (the one precondition only an author can
+// meet). LEFT JOIN on the live version so an unpublished one is listed too,
+// with a nil Live, and the caller can say why it is not offered.
+func (s *WorkflowDao) ListAIToolCandidates(ctx context.Context, tenantID string, accountIDs []string) ([]model.AIToolCandidate, error) {
+	if tenantID == "" || len(accountIDs) == 0 {
+		return nil, fmt.Errorf("tenantID and at least one accountID must not be empty")
+	}
+
+	query := `
+		SELECT w.id::text, w.name, COALESCE(w.description, ''), w.account_id::text, w.status, w.ai_invocable, w.ai_auto_approve,
+			cu.id::text, cu.display_name, cu.username, lv.definition
+		FROM workflows w
+		LEFT JOIN users cu ON w.created_by = cu.id
+		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		WHERE w.tenant_id = $1 AND w.account_id = ANY($2)
+		  AND ` + aiToolNotBound + `
+		  AND (w.ai_invocable OR btrim(COALESCE(w.definition->>'llm_description', '')) <> '')
+		ORDER BY w.name
+	`
+	rows, err := s.db.QueryContext(ctx, query, tenantID, pq.Array(accountIDs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list AI tool candidates: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("failed to close rows: %v", err)
+		}
+	}()
+
+	var out []model.AIToolCandidate
+	for rows.Next() {
+		var (
+			c                             model.AIToolCandidate
+			userID, displayName, username sql.NullString
+			liveBytes                     []byte
+		)
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.AccountID, &c.Status, &c.AIInvocable, &c.AIAutoApprove,
+			&userID, &displayName, &username, &liveBytes); err != nil {
+			return nil, fmt.Errorf("failed to scan AI tool candidate: %w", err)
+		}
+		if userID.Valid {
+			c.CreatedBy = &model.WorkflowUser{ID: userID.String, DisplayName: displayName.String, Username: username.String}
+		}
+		if len(liveBytes) > 0 {
+			var live model.WorkflowDefinition
+			if err := json.Unmarshal(liveBytes, &live); err != nil {
+				// Listed as unpublished rather than dropped: the row still needs
+				// to be visible to the admin looking for it.
+				log.Printf("AI tool candidate %s: failed to unmarshal live definition: %v", c.ID, err)
+			} else {
+				c.Live = &live
+			}
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate AI tool candidates: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateAISettings sets only the two AI flags, bumping updated_at/updated_by as
+// any user edit does. It returns sql.ErrNoRows when no such workflow exists.
+func (s *WorkflowDao) UpdateAISettings(ctx context.Context, tenantID, accountID, id, updatedBy string, aiInvocable, aiAutoApprove bool) error {
+	if tenantID == "" || accountID == "" {
+		return fmt.Errorf("tenantID and accountID must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE workflows
+		SET ai_invocable = $1, ai_auto_approve = $2, updated_at = now(), updated_by = $3
+		WHERE id = $4 AND tenant_id = $5 AND account_id = $6
+	`, aiInvocable, aiAutoApprove, updatedBy, id, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to update workflow AI settings: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // nullableString maps an optional string field to a NULL-able column value, so
@@ -730,6 +880,16 @@ func applyVersionRefs(
 	}
 }
 
+// FindAccountID resolves a workflow id to its account, for links that carry no account.
+func (s *WorkflowDao) FindAccountID(ctx context.Context, tenantID, id string) (string, error) {
+	var accountID string
+	err := s.db.QueryRowContext(ctx, "SELECT account_id FROM workflows WHERE tenant_id = $1 AND id = $2", tenantID, id).Scan(&accountID)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve workflow account: %w", err)
+	}
+	return accountID, nil
+}
+
 func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name string) (*model.Workflow, error) {
 	var id string
 	var wfName string
@@ -752,11 +912,12 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var draftVersionID sql.NullString
 	var draftVersionNumber sql.NullInt64
 	var draftVersionName sql.NullString
+	var beeBytes []byte
 
 	query := `
 		SELECT w.id::text, w.name, w.description, w.ai_invocable, w.ai_auto_approve, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.last_execution_version, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
-		       w.draft_version_id::text, dv.version_number, dv.name
+		       w.draft_version_id::text, dv.version_number, dv.name, w.bee
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
 		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
@@ -767,7 +928,7 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &lastExecutionVersion,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
-		&draftVersionID, &draftVersionNumber, &draftVersionName,
+		&draftVersionID, &draftVersionNumber, &draftVersionName, &beeBytes,
 	)
 	if err != nil {
 		return nil, err // sql.ErrNoRows will be returned here if not found
@@ -813,6 +974,9 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	applyVersionRefs(&wf,
 		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
 		draftVersionID, draftVersionNumber, draftVersionName)
+	if wf.Binding, err = decodeBinding(beeBytes); err != nil {
+		return nil, err
+	}
 
 	return &wf, nil
 }
@@ -1038,7 +1202,7 @@ func (s *WorkflowDao) GetState(ctx context.Context, workflowID string) ([]model.
 	return items, nil
 }
 
-func (s *WorkflowDao) SetState(ctx context.Context, workflowID string, updates []model.WorkflowStateUpdate) error {
+func (s *WorkflowDao) SetState(ctx context.Context, workflowID string, updates []model.WorkflowStateUpdate) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1200,7 +1364,7 @@ func (s *WorkflowDao) UpdateInternal(ctx context.Context, tenantID, accountID, i
 	return nil
 }
 
-func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string) error {
+func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1229,7 +1393,7 @@ func (s *WorkflowDao) Delete(ctx context.Context, tenantID, accountID, id string
 	return nil
 }
 
-func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status model.WorkflowStatus) error {
+func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status model.WorkflowStatus) (err error) {
 	// Multi-tenant fail-fast: blank scoping IDs would collapse the WHERE clause
 	// on the UPDATE to "WHERE id=… AND tenant_id='' AND account_id=''", which
 	// matches no production row but is a noisy footgun in tests / fixtures and
@@ -1275,7 +1439,7 @@ func (s *WorkflowDao) UpdateWorkflowStatus(ctx context.Context, tenantID, accoun
 	return nil
 }
 
-func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
+func (s *WorkflowDao) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) (err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -1564,7 +1728,7 @@ func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID string, accou
 	}
 
 	// Build the query with dynamic filters
-	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2)`
+	query := `SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND ` + notHiddenBoundTrigger("")
 	args := []any{tenantID, pq.Array(accountIDs)}
 	argID := 3
 

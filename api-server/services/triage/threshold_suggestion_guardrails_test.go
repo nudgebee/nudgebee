@@ -1,6 +1,7 @@
 package triage
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -332,5 +333,43 @@ func TestValidateSuggestion_TighteningCapacityLimitStaysSafe(t *testing.T) {
 	}
 	if risk := ValidateSuggestion(suggestion, alertDef, nil); risk.Level != "safe" {
 		t.Errorf("expected 'safe' when the limit is tightened, got %q (%v)", risk.Level, risk.Warnings)
+	}
+}
+
+func TestValidateSuggestion_ScaleMismatchIsNotATuning(t *testing.T) {
+	cases := []struct {
+		name          string
+		op            string
+		current, sugg float64
+	}{
+		{"raised a million-fold", ">", 0.5, 1124986.05},
+		{"raised a hundred-fold", ">", 2, 200},
+		{"lowered a hundred-fold", "<", 100, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ad := &AlertDefinition{Operator: tc.op, CurrentThreshold: tc.current}
+			s := &ThresholdSuggestion{RecommendationType: "tune_threshold", SuggestedThreshold: tc.sugg, EstimatedReduction: 60, Confidence: "medium", MetricP50: tc.current, Diagnosis: "mistuned"}
+			risk := ValidateSuggestion(s, ad, nil)
+			if s.RecommendationType != "review_alert" || risk.Level != "dangerous" {
+				t.Fatalf("got type=%q risk=%q warnings=%v", s.RecommendationType, risk.Level, risk.Warnings)
+			}
+		})
+	}
+}
+
+func TestValidateSuggestion_LargeButSameScaleChangeStaysATuning(t *testing.T) {
+	// A queue threshold of 100 against bursts of ~1,400 ready messages: a large move, offered for
+	// review, without claiming the definition is wrong.
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
+	s := &ThresholdSuggestion{RecommendationType: "tune_threshold", SuggestedThreshold: 1541.1, EstimatedReduction: 62, Confidence: "high", MetricP50: 0, Diagnosis: "mistuned"}
+	risk := ValidateSuggestion(s, ad, nil)
+	if s.RecommendationType != "tune_threshold" || risk.Level != "review" || s.Confidence != "medium" {
+		t.Fatalf("got type=%q risk=%q confidence=%q", s.RecommendationType, risk.Level, s.Confidence)
+	}
+	for _, w := range risk.Warnings {
+		if strings.Contains(w, "definition") {
+			t.Errorf("a value still offered must not be called a definition problem: %s", w)
+		}
 	}
 }

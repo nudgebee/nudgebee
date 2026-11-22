@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/google/uuid"
@@ -203,7 +204,7 @@ const finalIterationsWarning = 2
 // path, instead of the executor's fallback summary writing it unreviewed
 // (#40774). ok is false when the executor set no budget or more remains.
 func finalIterationsNote(ctx context.Context) (string, bool) {
-	left, set := ctx.Value(contextKeyIterationsLeft).(int)
+	left, set := ctx.Value(llmruntime.ContextKeyIterationsLeft).(int)
 	if !set || left > finalIterationsWarning {
 		return "", false
 	}

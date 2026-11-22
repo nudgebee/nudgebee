@@ -13,10 +13,9 @@ import CustomHeatMap from '@shared/charts/CustomHeatMap';
 import dayjs from 'dayjs';
 import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
-import { Textarea } from '@components/k8s/common/TextArea';
-import apiAutoPilot from '@api1/autoPilot';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
+import { Switch } from '@ui/Switch';
 
 const HEAT_MAP_METRIC_OPTIONS = [
   { value: 'cpu', label: 'CPU' },
@@ -97,13 +96,13 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
   isLoading,
   setIsLoading,
   reviewAutoOptimize = false,
-  approvalData = {},
   accountOptions = [],
   defaultAccountId = '',
   // data,
   // currentData,
 }) => {
   const [activeButton, setActiveButton] = useState('');
+  const [requireApproval, setRequireApproval] = useState(autoOptimizeData?.attributes?.require_approval ?? false);
 
   const [notificationData, setNotificationData] = useState({
     email: autoOptimizeData?.notification?.email?.enabled || false,
@@ -146,7 +145,6 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
   const [selectedHeatMapMetric, setSelectedHeatMapMetric] = useState('cpu');
   const [heatMapData, setHeatMapData] = useState([]);
   const [metricsData, setMetricsData] = useState({});
-  const [reviewComment, setReviewComment] = useState('');
   useEffect(() => {
     if (msTeamName) {
       filterChannelsName(msTeamName);
@@ -164,10 +162,6 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
   };
 
   useEffect(() => {
-    if (approvalData?.reviewer_comments) {
-      setReviewComment(approvalData.reviewer_comments);
-    }
-
     const fetchSlackChannels = async () => {
       setIsLoadingSlackChannels(true);
       try {
@@ -280,6 +274,7 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
       },
       ticket_config: autoOptimizeData?.attributes?.ticket_config || {},
       dryrun: false,
+      require_approval: requireApproval,
     };
     if (!autoOptimizeData.id) {
       k8sApi
@@ -343,46 +338,6 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
     }
   };
 
-  const handleReviewAction = (status) => {
-    if (status == 'REJECTED') {
-      if (!reviewComment) {
-        setDisplayErrorsDesc({ ...displayErrorsDesc, reviewComment: 'Please add a review comment if you wish to reject the runbook' });
-        return;
-      }
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId ?? autoOptimizeData?.account_id ?? selectedCluster?.value,
-          reviewComment,
-          'REJECTED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true, 'REJECTED');
-            snackbar.success('Auto Optimize Rule Rejected Successfully');
-          } else {
-            snackbar.error(`Failed to reject Auto Optimize !`);
-          }
-        });
-    } else if (status == 'APPROVED') {
-      apiAutoPilot
-        .updateAutoPilotApprovalStatus(
-          approvalData?.id,
-          autoOptimizeData?.accountId ?? autoOptimizeData?.account_id ?? selectedCluster?.value,
-          reviewComment,
-          'APPROVED'
-        )
-        .then((res) => {
-          if (res?.data?.update_status_auto_pilot_approval?.id) {
-            closeAutoPilotSingleConfigModal(true, 'APPROVED');
-            snackbar.success('Auto Optimize Rule Approved Successfully');
-          } else {
-            snackbar.error(`Failed to approve Auto Optimize !`);
-          }
-        });
-    }
-  };
-
   const autoPilotSingleConfigButton = [
     {
       label: 'Cancel',
@@ -391,20 +346,7 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
     },
   ];
 
-  if (reviewAutoOptimize) {
-    autoPilotSingleConfigButton.push({
-      isDisabled: !Object.keys(approvalData).length || approvalData.status == 'REJECTED',
-      label: 'Reject',
-      backgroundColor: ds.blue[500],
-      onClick: () => handleReviewAction('REJECTED'),
-    });
-    autoPilotSingleConfigButton.push({
-      isDisabled: !Object.keys(approvalData).length || approvalData.status == 'APPROVED',
-      label: 'Approve',
-      backgroundColor: ds.blue[500],
-      onClick: () => handleReviewAction('APPROVED'),
-    });
-  } else {
+  if (!reviewAutoOptimize) {
     autoPilotSingleConfigButton.push({
       label: !autoOptimizeData.id ? 'Create Auto Optimize Rule' : 'Update Auto Optimize Rule',
       backgroundColor: ds.blue[500],
@@ -540,6 +482,31 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
               loading={isLoading ?? false}
             />
           </Box>
+          <Box
+            sx={{
+              borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
+              borderTop: `1px solid ${ds.blue[200]}`,
+              background: ds.blue[100],
+              padding: `${ds.space[2]} ${ds.space[4]}`,
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3] }}>
+              <Switch
+                checked={requireApproval}
+                onChange={(event) => setRequireApproval(event.target.checked)}
+                name='requireApproval'
+                size='md'
+                disabled={reviewAutoOptimize}
+                aria-label='Require approval'
+              />
+              <Typography sx={{ color: ds.brand[500], fontSize: 'var(--ds-text-title)', fontWeight: ds.weight.semibold }}>
+                {'Require approval'}
+              </Typography>
+            </Box>
+            <Typography sx={{ color: ds.gray[400], fontSize: 'var(--ds-text-small)', fontWeight: ds.weight.regular }}>
+              Each run lists its planned changes under Approvals and applies them only after an account editor approves.
+            </Typography>
+          </Box>
           <NotificationForm
             msTeamsData={msTeamsData}
             msChannelListOption={msChannelListOption}
@@ -566,23 +533,6 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
           />
         </Box>
       </Box>
-      {reviewAutoOptimize && (
-        <Box sx={{ display: 'flex', flexDirection: 'column', marginTop: ds.space[4] }}>
-          <Textarea
-            value={reviewComment}
-            placeholder='Please comment if you wish to reject this PR'
-            onChange={(e) => setReviewComment(e.target.value)}
-            minRows={2}
-            maxRows={4}
-            maxLength={250}
-          />
-          <Box>
-            {displayErrorsDesc.reviewComment ? (
-              <Typography sx={{ color: ds.red[500], fontSize: ds.text.body, marginTop: ds.space[1] }}>{displayErrorsDesc.reviewComment}</Typography>
-            ) : null}
-          </Box>
-        </Box>
-      )}
       <ActionButtons buttons={autoPilotSingleConfigButton} activeButton={activeButton} setActiveButton={setActiveButton} />
     </Box>
   );
@@ -597,7 +547,6 @@ HorizontalAutoOptimizeSingleConfiguration.propTypes = {
   isLoading: PropTypes.bool,
   setIsLoading: PropTypes.func,
   reviewAutoOptimize: PropTypes.bool,
-  approvalData: PropTypes.object,
   isMsTeamsLoading: PropTypes.bool,
   isGoogleChannelsLoading: PropTypes.bool,
   // data: PropTypes.object,

@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse
 
 from notifications_server import sync_engine, teams_app, slack_app
 from notifications_server.security.webhook_auth import internal_token_valid, slack_signature_valid
+from notifications_server.services import remediation_actions
 from notifications_server.services.actions_common import (
     SlackInteractiveActionsService,
     SlackEventsService,
@@ -78,7 +79,8 @@ async def handle_slack_interactive_action(request: Request, background_tasks: Ba
         if payload is None:
             raise HTTPException(status_code=400, detail="Invalid JSON")
     actions = payload.get("actions") if isinstance(payload, dict) else None
-    if not isinstance(actions, list) or len(actions) == 0:
+    # A remediation modal's submit (#40734) has no actions list; every other payload without one is refused as before.
+    if not remediation_actions.is_view_submission(payload) and (not isinstance(actions, list) or len(actions) == 0):
         msg = f"Illegal trigger request {payload}"
         raise HTTPException(status_code=400, detail={"error": msg, "actions": actions})
 

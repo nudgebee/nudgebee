@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -12,7 +13,7 @@ func init() {
 	toolInput := "Provide hosts data question in natural language"
 	toolOutput := "The tool will return hosts data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(AgentDatadogHostsName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(AgentDatadogHostsName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogHostsAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -63,7 +64,7 @@ func (l DatadogHostsAgent) GetSystemPrompt(ctx *security.RequestContext, query c
 			"Input: datadog host query",
 			"Output: JSON response containing host details from Datadog.",
 		},
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool for reasoning, generating the initial Datadog event query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -100,7 +101,7 @@ func (l DatadogHostsAgent) GetSystemPrompt(ctx *security.RequestContext, query c
 }
 
 func (p DatadogHostsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	toolsList := []string{tools.ToolDatadogHosts, core.ToolLlm}
+	toolsList := []string{tools.ToolDatadogHosts, llmruntime.ToolLlm}
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

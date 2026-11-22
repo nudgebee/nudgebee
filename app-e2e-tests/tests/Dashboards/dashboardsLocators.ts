@@ -90,7 +90,12 @@ export class DashboardsLocators extends CommonLocators {
     this.rows = this.tableBody.locator("tr");
     this.emptyStateHeading = this.listingRoot.getByRole("heading", { name: "No Data Available" });
 
-    this.dashboardsNavBtn = page.locator("#dashboards-sidenavbutton");
+    // Dashboards was folded into the Home rail button's hover flyout — the
+    // #dashboards-sidenavbutton top-level id is gone, same move Infra made for
+    // K8s/Cloud (see GlobalLocators.openInfraSection). Builds from before that
+    // still have both buttons, Dashboards after Home, so `.last()` picks
+    // Dashboards there and Home (the only match) on newer builds.
+    this.dashboardsNavBtn = page.locator("#dashboards-sidenavbutton").or(page.locator("#home-sidenavbutton")).last();
     this.sidenavDashboardList = page.locator("#sidenav-dashboards-list");
     this.sidenavDashboardGroups = page.locator("#sidenav-dashboards-groups");
     this.groupingRoot = page.locator("#k8s-grouping");
@@ -109,7 +114,8 @@ export class DashboardsLocators extends CommonLocators {
     this.exitDialogSaveBtn = page.locator("#dashboard-exit-save-btn");
 
     this.dialog = page.getByRole("dialog");
-    this.dialogTitle = page.locator("#alert-dialog-title");
+    // The closed "Create a New Dashboard" chooser stays mounted with its own #alert-dialog-title, so the newest (last-portaled) dialog's title is the one read.
+    this.dialogTitle = page.locator("#alert-dialog-title:visible").last();
     this.dialogCancelBtn = this.dialog.locator("#cancel");
     this.dialogConfirmBtn = this.dialog.locator("#submit");
 

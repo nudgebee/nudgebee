@@ -82,6 +82,23 @@ var azureOntology = map[string]OntologyNodeSpec{
 		{OntologyField: "state", NodeField: "status"},
 		// runtime, memory: not extracted — omitted.
 	}},
+	"AzureAppService": {NodeType: NodeTypeServerlessFunction, Fields: []OntologyField{
+		{OntologyField: "name", NodeField: "name", Required: true},
+		{OntologyField: "location", NodeField: "region"},
+		{OntologyField: "state", NodeField: "status"},
+	}},
+	"AzureLogicApp": {NodeType: NodeTypeServerlessFunction, Fields: []OntologyField{
+		{OntologyField: "name", NodeField: "name", Required: true},
+		{OntologyField: "location", NodeField: "region"},
+		{OntologyField: "state", NodeField: "status"},
+	}},
+	// AzureAppServicePlan: the workers web/function apps run on. node_count
+	// (sku.capacity) is not extracted — omitted.
+	"AzureAppServicePlan": {NodeType: NodeTypeComputeInstancePool, Fields: []OntologyField{
+		{OntologyField: "name", NodeField: "name", Required: true},
+		{OntologyField: "region", NodeField: "region"},
+		{OntologyField: "state", NodeField: "status"},
+	}},
 
 	// ---- Load balancing ----
 	"AzureLoadBalancer": {NodeType: NodeTypeLoadBalancer, Fields: []OntologyField{

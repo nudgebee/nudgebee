@@ -1,6 +1,7 @@
 package gcloud
 
 import (
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"strings"
@@ -222,7 +223,7 @@ func (s *networkingService) GetMetrices(ctx providers.CloudProviderContext, acco
 	// Networking metrics would come from Cloud Monitoring
 	return providers.QueryMetricsResponse{
 		Items: []providers.MetricItem{},
-	}, fmt.Errorf("networking metrics not implemented")
+	}, fmt.Errorf("networking metrics not implemented: %w", errors.ErrUnsupported)
 }
 
 func (s *networkingService) GetRecommendations(ctx providers.CloudProviderContext, account providers.Account, filter providers.ListRecommendationsRequest, existingResources []providers.Resource) ([]providers.Recommendation, error) {

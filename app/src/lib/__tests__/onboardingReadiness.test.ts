@@ -547,6 +547,11 @@ describe('integration matching', () => {
     expect(itemOf(viaIntegration, 'delivery', 'chat')?.connectedBy).toEqual(['Microsoft Teams']);
   });
 
+  it('never counts a legacy Microsoft Teams row as a connection', () => {
+    const r = evaluateOnboarding({ messagingPlatforms: [{ platform: 'ms_teams' }] });
+    expect(itemOf(r, 'delivery', 'chat')?.state).not.toBe('done');
+  });
+
   // Review finding: Slack/Teams come from a list with no `source` field, so
   // the chat item always read "Auto-detected" — even for an app a person
   // deliberately installed — since nothing ever proved a person did it.

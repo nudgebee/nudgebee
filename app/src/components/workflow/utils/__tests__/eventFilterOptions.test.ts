@@ -1,5 +1,6 @@
 import {
   accountsSilencedByFilter,
+  eventTypeLabel,
   mergeFilterOptions,
   namespaceFieldCopy,
   silencedAccountsMessage,
@@ -42,7 +43,16 @@ describe('mergeFilterOptions', () => {
 
   it('formats labels without changing values', () => {
     const [first] = mergeFilterOptions('event_type', accounts, byAccount, [], (v) => v.toLowerCase());
-    expect(first).toEqual({ value: 'KubePodCrashLooping', label: 'kubepodcrashlooping' });
+    expect(first).toEqual({ value: 'KubePodCrashLooping', label: 'kubepodcrashlooping', searchText: 'KubePodCrashLooping' });
+  });
+
+  // #40526: `job_failure` showed as JobFailure, so searching the real name found nothing.
+  it('keeps the raw event type searchable when the label reformats it', () => {
+    const jobs = { a: { event_type: ['job_failure'], namespace: [], source: [] } };
+    expect(mergeFilterOptions('event_type', accounts, jobs, ['image_pull_backoff'], eventTypeLabel)).toEqual([
+      { value: 'image_pull_backoff', label: 'ImagePullBackoff · not seen', searchText: 'image_pull_backoff' },
+      { value: 'job_failure', label: 'JobFailure', searchText: 'job_failure' },
+    ]);
   });
 });
 
@@ -96,5 +106,49 @@ describe('silencedAccountsMessage', () => {
     expect(silencedAccountsMessage(silenced, 30, label)).toBe(
       "Events from 5 of 30 accounts (a, b, c and 2 more) won't trigger this automation: none of the picked event type values have been seen there."
     );
+  });
+});
+
+describe('eventTypeLabel', () => {
+  it('splits a cloud alarm key into the alert name and the load balancer name', () => {
+    expect(
+      eventTypeLabel(
+        'AwsAlbHttpErrorRateAlarmMissing-arn:aws:elasticloadbalancing:us-east-1:888888888888:loadbalancer/app/e05-catalog-alb/edf4ec342a2e3034'
+      )
+    ).toBe('AwsAlbHttpErrorRateAlarmMissing · e05-catalog-alb');
+  });
+
+  it('names a target group rather than its random id', () => {
+    expect(eventTypeLabel('AwsTgUnhealthyHosts-arn:aws:elasticloadbalancing:us-east-1:888888888888:targetgroup/orders-tg/7315f04ab47543d1')).toBe(
+      'AwsTgUnhealthyHosts · orders-tg'
+    );
+  });
+
+  it('uses the last ARN segment for other resource shapes', () => {
+    expect(eventTypeLabel('aws_rds_cpu_alarm_missing-arn:aws:rds:us-east-1:888888888888:db:orders-db')).toBe('AwsRdsCpuAlarmMissing · orders-db');
+  });
+
+  it('handles ARNs with an empty or non-numeric account field', () => {
+    expect(eventTypeLabel('AwsS3PublicAccess-arn:aws:s3:::orders-bucket')).toBe('AwsS3PublicAccess · orders-bucket');
+    expect(eventTypeLabel('AwsIamPolicyTooBroad-arn:aws:iam::aws:policy/AdministratorAccess')).toBe('AwsIamPolicyTooBroad · AdministratorAccess');
+  });
+
+  it('leaves names without an ARN as before', () => {
+    expect(eventTypeLabel('KubePodCrashLooping')).toBe('KubePodCrashLooping');
+    expect(eventTypeLabel('pod_oom_killer_enricher')).toBe('PodOOMKill');
+    expect(eventTypeLabel('AwsEc2CpuAlarm-i-0abc123')).toBe('AwsEc2CpuAlarm-i-0abc123');
+    expect(eventTypeLabel('my-arn:not-really')).toBe('My-arn:not-really');
+  });
+
+  it('keeps the same alert type’s resources next to each other, values intact', () => {
+    const arn = (lb: string) => `AwsAlbHttpErrorRateAlarmMissing-arn:aws:elasticloadbalancing:us-east-1:1:loadbalancer/app/${lb}/abc`;
+    const byAccount: FilterValuesByAccount = {
+      a: { event_type: [arn('web-alb'), 'KubePodCrashLooping', arn('api-alb')], namespace: [], source: [] },
+    };
+    expect(mergeFilterOptions('event_type', [accounts[0]], byAccount, [], eventTypeLabel)).toEqual([
+      { value: arn('api-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · api-alb', searchText: arn('api-alb') },
+      { value: arn('web-alb'), label: 'AwsAlbHttpErrorRateAlarmMissing · web-alb', searchText: arn('web-alb') },
+      { value: 'KubePodCrashLooping', label: 'KubePodCrashLooping' },
+    ]);
   });
 });

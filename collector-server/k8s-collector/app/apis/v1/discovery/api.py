@@ -1,9 +1,8 @@
-import gzip
 import json
 
 from flask import request
 
-from apis.base.api import BaseAuthApi
+from apis.base.api import BaseAuthApi, read_json_body
 from controllers.discovery_controller import DiscoveryController
 
 
@@ -15,12 +14,7 @@ class Discovery(BaseAuthApi):
         return DiscoveryController
 
     def post(self):
-        if request.headers.get("Content-Encoding") == "gzip":
-            compressed_data = request.get_data()
-            decompressed_data = gzip.decompress(compressed_data)
-            event_data = json.loads(decompressed_data.decode("utf-8"))
-        else:
-            event_data = request.get_json()
+        event_data = read_json_body()
         cloud_account_id = request.cloud_account_id
         tenant = request.tenant
         self.controller.post_async(tenant, cloud_account_id, event_data)

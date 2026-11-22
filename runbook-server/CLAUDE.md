@@ -39,12 +39,17 @@ make swag              # regenerate OpenAPI after changing handler annotations
    result it can prove succeeded — never `COMPLETED` with `data: null`. Keep the
    `map[string]any` output contract (plain strings wrap as `{"data": ...}`).
 5. **Tenant scoping comes from headers.** Every record carries `TenantID` + `AccountID`; the API
-   trusts `x-tenant-id` / `x-user-id` from the in-cluster gateway. Never return data across
-   tenants, and don't add an unauthenticated route without middleware.
+   reads `x-tenant-id` / `x-user-id` from callers that hold the service token. A missing user is
+   refused, never admin. Never return data across tenants, and don't add a route that skips the
+   token without its own credential.
 6. **Bundled templates re-sync on startup** (`internal/templatesource/`). Editing a template YAML
    changes every tenant's copy on the next deploy — test it in `bundled_test.go`.
 7. **Every task needs a real `GetDescription()`** stating purpose, inputs and outputs — it is
    what `GET /tasks`, the builder UI and LLM authoring see.
+8. **Every step runs as the run's principal.** A new task type must declare its
+   `{module, class}` in `internal/tasks/authz.go`, or it is refused at run time (a test fails first).
+   The same entry declares its tier (read / change / unrestricted: how much the step can change,
+   a different question from who may run it); a run with a tier ceiling refuses steps above it.
 
 ## Keep the docs current
 

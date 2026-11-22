@@ -1,15 +1,16 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
 import { authenticateRequest } from '@lib/rpcGateway';
 import { loadRpcRoutes } from '@lib/rpcRoutes';
-import { buildCatalog, type CatalogEntry, type PermissionClass } from '@lib/permissionCatalog';
+import { buildCatalog, withRunTimeGrants, type CatalogEntry, type PermissionClass } from '@lib/permissionCatalog';
 import { deriveSystemRoleGrants, DERIVED_SYSTEM_ROLE_KEYS, SYSTEM_ROLE_LABELS } from '@lib/systemRoleGrants';
+import { providerGrantCatalogEntries } from '@lib/integrationProviderGrants';
 
 // Returns the permission catalog the Roles & Permissions UI renders:
 //   - `catalog`     — the module × {Read,Write,Execute} matrix derived from
 //                     actions.yaml (the grant surface a custom role can grant).
 //   - `systemRoles` — the built-in roles' grant sets, derived from each role's
 //                     actions.yaml `permissions:` entries (same source as the
-//                     V766 seed via systemRoleGrants.ts). Rendered READ-ONLY so
+//                     systemRoleGrants.ts derivation). Rendered READ-ONLY so
 //                     admins see what each built-in role grants in the same
 //                     vocabulary as custom roles.
 // Both are computed from actions.yaml (same classifyAction the gateway uses), so
@@ -47,7 +48,17 @@ function getCatalog(): CatalogResponse {
   }));
   // Feed the yaml `comment:` through so each grant can be explained in the
   // editor; buildCatalog falls back to the action name where none exists.
-  cache = { catalog: buildCatalog(actionNames.map((name) => ({ name, comment: routes[name].comment }))), systemRoles };
+  // Integration grants and run-time classes are not derived from action names,
+  // so they are added here — and only here: the token catalog must not offer
+  // them.
+  const comments = Object.fromEntries(actionNames.map((name) => [name, routes[name].comment]));
+  cache = {
+    catalog: [
+      ...withRunTimeGrants(buildCatalog(actionNames.map((name) => ({ name, comment: comments[name] })))),
+      ...providerGrantCatalogEntries(comments),
+    ],
+    systemRoles,
+  };
   return cache;
 }
 

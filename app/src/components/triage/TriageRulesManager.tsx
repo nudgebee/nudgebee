@@ -29,6 +29,7 @@ import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 
 interface TriageRulesManagerProps {
   accountId?: string;
+  provider?: string;
 }
 
 interface AccountOption {
@@ -80,7 +81,7 @@ const parseScoreAdjustment = (actionValue: string | undefined, isSystemRule?: bo
   }
 };
 
-const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) => {
+const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId, provider }) => {
   const router = useRouter();
   const tableId = 'triageRulesManager';
   const isMultiAccountView = !accountId;
@@ -268,6 +269,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     const previousOverriddenState = rule.is_overridden;
     const newDisabledState = !previousOverriddenState;
     patchRule(rule.id, { is_overridden: newDisabledState }); // optimistic update
+    snackbar.success(`Rule "${rule.name || 'Unnamed'}" ${newDisabledState ? 'disabled' : 'enabled'}`);
 
     try {
       const result = await apiTriage.toggleSystemRuleOverride({
@@ -276,10 +278,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         disabled: newDisabledState,
       });
 
-      if (result?.success) {
-        // optimistic update already applied — no snackbar needed
-        console.log('System rule override toggled', { rule: rule.name || 'Unnamed', state: newDisabledState ? 'disabled' : 'enabled' });
-      } else {
+      if (!result?.success) {
         patchRule(rule.id, { is_overridden: previousOverriddenState }); // revert on failure response
         snackbar.error(result?.error || 'Failed to toggle system rule');
       }
@@ -475,13 +474,11 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
 
     // Disable is implemented as a soft delete (hard_delete=false).
     patchRule(rule.id, { enabled: false }); // optimistic update
+    snackbar.success(`Rule "${rule.name || 'Unnamed'}" disabled`);
 
     try {
       const result = await apiTriage.deleteTriageRule({ cloud_account_id: ruleAccountId, rule_id: rule.id, hard_delete: false });
-      if (result?.success) {
-        // optimistic update already applied — no snackbar needed
-        console.log('Rule disabled', { rule: rule.name || 'Unnamed' });
-      } else {
+      if (!result?.success) {
         patchRule(rule.id, { enabled: true }); // revert
         snackbar.error(result?.error || 'Failed to update rule');
       }
@@ -513,6 +510,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     }
 
     patchRule(rule.id, { enabled: true }); // optimistic update
+    snackbar.success(`Rule "${rule.name || 'Unnamed'}" enabled`);
 
     try {
       const payload: UpdateTriageRuleInput = {
@@ -541,7 +539,6 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         if (result.rule) {
           patchRule(rule.id, result.rule);
         }
-        console.log('Rule enabled', { name: rule.name || 'Unnamed' });
       } else {
         patchRule(rule.id, { enabled: false }); // revert
         snackbar.error(result?.error || 'Failed to enable rule');
@@ -655,6 +652,8 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
         open={isRuleModalOpen}
         handleClose={handleCloseRuleModal}
         accountId={selectedRule?.account_id || accountId}
+        // Multi-account view derives the provider from the rule's own account.
+        provider={provider ?? accounts.find((acc) => (acc.id || acc.value) === (selectedRule?.account_id || accountId))?.cloud_provider}
         rule={selectedRule}
         isCreate={isCreateMode}
         onSuccess={handleRuleSuccess}

@@ -253,3 +253,35 @@ def test_build_llm_payload_always_sets_reply_ref():
     entry = {"text": "hi", "account_id": "a", "user_id": "u", "session_id": "s", "channel_id": "C1"}
     payload = Events.build_llm_payload(entry, "1786000000.000200")
     assert payload["reply_ref"] == "C1-1786000000.000200"
+
+
+def test_build_llm_payload_snapshots_asker_ref_from_slack_user_id():
+    """#42744: asker_ref must be this question's own snapshot of the cache entry's
+    slack_user_id, taken when the request is built -- not re-read later from a
+    thread's shared cache entry that a subsequent message could overwrite."""
+    from notifications_server.services.events import Events
+
+    entry = {
+        "text": "hi",
+        "account_id": "a",
+        "user_id": "u",
+        "session_id": "s",
+        "channel_id": "C1",
+        "slack_user_id": "U_ASKER",
+    }
+    payload = Events.build_llm_payload(entry, "1786000000.000200")
+    assert payload["asker_ref"] == "U_ASKER"
+
+    # The thread's shared cache entry is later overwritten by a different asker
+    # (simulating a second user writing in the same thread); a dict already built
+    # for the first question must not be affected.
+    entry["slack_user_id"] = "U_OTHER"
+    assert payload["asker_ref"] == "U_ASKER"
+
+
+def test_build_llm_payload_omits_asker_ref_when_cache_entry_has_none():
+    from notifications_server.services.events import Events
+
+    entry = {"text": "hi", "account_id": "a", "user_id": "u", "session_id": "s", "channel_id": "C1"}
+    payload = Events.build_llm_payload(entry, "1786000000.000200")
+    assert "asker_ref" not in payload

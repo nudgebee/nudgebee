@@ -72,17 +72,32 @@ export interface GatewayRoutingRule {
   target: GatewayTarget;
 }
 
-export type GatewayMetric = 'requests' | 'tokens' | 'cost';
-export type GatewayPeriod = 'minute' | 'hour' | 'day' | 'month';
+export type GatewayMetric = 'requests' | 'tokens' | 'cost' | 'concurrent';
+/** '' only for the concurrent metric, which has no window. */
+export type GatewayPeriod = 'minute' | 'hour' | 'day' | 'month' | '';
 
 export interface GatewayRateLimit {
   id: string;
   /** Empty string = tenant-wide scope; otherwise a specific user_id. */
   user_id: string;
+  /** Set when the quota belongs to one API key; such rows are edited on the key. */
+  api_key_id?: string;
+  api_key_name?: string;
+  /** Set when the quota caps one model only. */
+  model?: string;
   metric: GatewayMetric;
   period: GatewayPeriod;
   limit_value: number;
   enabled: boolean;
+  /** Warn level, a percent (1–99) of limit_value. Never blocks. Not on concurrent. */
+  soft_pct?: number | null;
+  /** Settled use in the current window (count, tokens or USD) and when the window resets.
+   * Read-only, from the list call; absent for concurrent limits. */
+  used?: number;
+  resets_at?: string;
+  /** A concurrent limit each gateway pod enforces on its own (no Redis): the real cap is
+   * the limit times the number of pods. Read-only, from the list call. */
+  per_pod?: boolean;
 }
 
 /** Provider enum for the substitution TARGET / tier-mapping forms. Empty = "any"
@@ -110,7 +125,14 @@ export const GATEWAY_MATCH_PROVIDER_OPTIONS: { value: string; label: string }[] 
 export type GatewayAffinity = 'single' | 'prefix_hash';
 export const GATEWAY_AFFINITIES: GatewayAffinity[] = ['single', 'prefix_hash'];
 
-export const GATEWAY_METRICS: GatewayMetric[] = ['requests', 'tokens', 'cost'];
+export const GATEWAY_METRICS: GatewayMetric[] = ['requests', 'tokens', 'cost', 'concurrent'];
+/** Unit a limit value is metered in, for field labels; the gateway meters cost in USD. */
+export const GATEWAY_METRIC_UNIT: Record<GatewayMetric, string> = {
+  requests: 'requests',
+  tokens: 'tokens',
+  cost: 'USD',
+  concurrent: 'requests at once',
+};
 export const GATEWAY_PERIODS: GatewayPeriod[] = ['minute', 'hour', 'day', 'month'];
 
 // ─── Routing rules ─────────────────────────────────────────────────────────────

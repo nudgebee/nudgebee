@@ -279,3 +279,69 @@ func TestArchiveOpenRecommendationsQuery(t *testing.T) {
 		assert.Equal(t, pq.Array(keys), args[2])
 	})
 }
+
+func TestRecommendationResourcesQuery(t *testing.T) {
+	const base = `select resourse_created_on, created_at, resourse_id, name, type, status, region, arn, tags::text, meta::text, service_name
+	from cloud_resourses
+	where account = $1`
+
+	tests := []struct {
+		name     string
+		provider string
+		service  string
+		where    string
+		args     []any
+	}{
+		{
+			// An unattached disk is stored Inactive and is what the
+			// remove-disk rule is about, so only deleted disks are left out.
+			name:     "azure disks keep inactive rows",
+			provider: "Azure",
+			service:  "microsoft.compute/disks",
+			where:    ` and lower(status) != 'deleted' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/disks"},
+		},
+		{
+			name:     "other azure services stay active only",
+			provider: "Azure",
+			service:  "microsoft.compute/virtualmachines",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/virtualmachines"},
+		},
+		{
+			name:     "a disk service on another provider stays active only",
+			provider: "AWS",
+			service:  "microsoft.compute/disks",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "microsoft.compute/disks"},
+		},
+		{
+			name:     "aws services stay active only",
+			provider: "AWS",
+			service:  "AmazonEC2",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "amazonec2"},
+		},
+		{
+			name:     "gcp recommender reads every non-deleted row",
+			provider: "GCP",
+			service:  "recommender",
+			where:    ` and lower(status) != 'deleted'`,
+			args:     []any{"acc-1"},
+		},
+		{
+			name:     "recommender on another provider stays scoped to its service",
+			provider: "Azure",
+			service:  "recommender",
+			where:    ` and lower(status) = 'active' and lower(service_name) = $2`,
+			args:     []any{"acc-1", "recommender"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			query, args := recommendationResourcesQuery("acc-1", tt.provider, tt.service)
+			assert.Equal(t, base+tt.where, query)
+			assert.Equal(t, tt.args, args)
+		})
+	}
+}

@@ -39,7 +39,7 @@ func TestCallNbTool_NamedCloudAccountFromClusterConversation(t *testing.T) {
 		configs, err := toolcore.ListToolConfigs(sc, accountId, tool)
 		require.NoError(t, err)
 		require.Empty(t, configs, "the conversation's account must have no %s config of its own, or this does not reproduce #39826", toolName)
-		resp, err := callNbTool(sc, request(), "named-target-e2e", tool, input, nil, "", uuid.NewString(), "")
+		resp, err := callNbTool(sc, request(), "named-target-e2e", tool, input, nil, "", uuid.NewString(), "", toolcore.ToolRequestTypeRead)
 		t.Logf("%s: status=%s err=%v data=%.300q", toolName, resp.Status, err, fmt.Sprint(resp.Data))
 		require.NoError(t, err)
 		return resp
@@ -80,7 +80,7 @@ func TestCallNbTool_NamedCloudAccountFromClusterConversation(t *testing.T) {
 		t.Logf("prepared input: %s", prepared.ToolInput)
 		req := request()
 		req.QueryConfig.DelegatedTarget = handed
-		resp, err := callNbTool(sc, req, "named-target-e2e", tool, prepared.ToolInput, nil, "", uuid.NewString(), "")
+		resp, err := callNbTool(sc, req, "named-target-e2e", tool, prepared.ToolInput, nil, "", uuid.NewString(), "", toolcore.ToolRequestTypeRead)
 		t.Logf("delegated aws_execute: status=%s err=%v data=%.300q", resp.Status, err, fmt.Sprint(resp.Data))
 		require.NoError(t, err)
 		assert.NotEqual(t, toolcore.NBToolResponseStatusError, resp.Status)

@@ -272,25 +272,29 @@ func rewriteChatChannelsJSON(workflowJSON string, channels map[string]string) st
 	return string(rewritten)
 }
 
-// keepChatChannelQuestions cuts questions to limit without dropping a chat-channel question: it
-// is the one answer that decides whether the automation can run at all, and the model lists it
-// after the others.
+// keepChatChannelQuestions cuts questions to limit without dropping a chat-channel or chat-user
+// question: each is an answer that decides whether the automation can run at all, and the model
+// lists them after the others.
 func keepChatChannelQuestions(questions []ClarifyingQuestion, limit int) []ClarifyingQuestion {
 	if len(questions) <= limit {
 		return questions
 	}
 	kept := append([]ClarifyingQuestion(nil), questions[:limit]...)
 	for _, dropped := range questions[limit:] {
-		if dropped.Kind != clarifyKindChatChannel {
+		if !isChatTargetQuestion(dropped) {
 			continue
 		}
-		// Give up the last question that is not itself about a channel.
+		// Give up the last question that is not itself about a channel or a DM recipient.
 		for i := len(kept) - 1; i >= 0; i-- {
-			if kept[i].Kind != clarifyKindChatChannel {
+			if !isChatTargetQuestion(kept[i]) {
 				kept = append(append(kept[:i:i], kept[i+1:]...), dropped)
 				break
 			}
 		}
 	}
 	return kept
+}
+
+func isChatTargetQuestion(question ClarifyingQuestion) bool {
+	return question.Kind == clarifyKindChatChannel || question.Kind == clarifyKindChatUser
 }

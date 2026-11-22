@@ -10,6 +10,7 @@ import CopyButton from '@shared/buttons/CopyButton';
 import apiWorkflow from '@api1/workflow';
 import type { AccountExecutionItem } from '@api1/workflow/types';
 import { getDuration, getStatusTone } from '../utils/executionStatus';
+import FailedStepsMark, { firstFailedStepSummary } from '../components/FailedStepsMark';
 import { executionAutomationLabel, executionUserLabel, nonPersistedAutomationLabel } from './constants';
 
 interface ExecutionDetailDrawerProps {
@@ -73,6 +74,7 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)', padding: 'var(--ds-space-4)' }}>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
           <Label size='md' dot text={execution.status.toUpperCase()} tone={getStatusTone(execution.status)} />
+          <FailedStepsMark size='md' info={execution} testId='execution-drawer-failed-steps-mark' />
           <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}>
             {executionAutomationLabel(execution.workflow_name, execution.workflow_id)}
           </Typography>
@@ -104,6 +106,17 @@ const ExecutionDetailDrawer: React.FC<ExecutionDetailDrawerProps> = ({ execution
               {/* The row only carries a clamped one-liner; the whole message
                   (with stack) is read here — wrapped, scrollable, copyable. */}
               <CodeBlock code={detail.error} wrap maxHeight={260} copyToast='Error copied.' />
+            </Box>
+          </Box>
+        )}
+
+        {!loading && !detail?.error && firstFailedStepSummary(execution) && (
+          <Box>
+            <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-red-600)' }}>
+              First failed step
+            </Typography>
+            <Box sx={{ mt: 'var(--ds-space-1)' }}>
+              <CodeBlock code={firstFailedStepSummary(execution)} wrap maxHeight={260} copyToast='Error copied.' />
             </Box>
           </Box>
         )}

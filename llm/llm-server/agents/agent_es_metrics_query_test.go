@@ -116,8 +116,9 @@ func TestBuildESMetricsQueryPrompt(t *testing.T) {
 			"the shared field catalogue should reach the generator")
 	})
 
-	t.Run("forbids aggregations and log indices", func(t *testing.T) {
-		assert.Contains(t, prompt, "aggs")
+	t.Run("allows aggregations for window answers, forbids log indices", func(t *testing.T) {
+		assert.Contains(t, prompt, "use an aggregation with `size: 0`")
+		assert.NotContains(t, prompt, "NEVER use `aggs`")
 		assert.Contains(t, prompt, "fluentk8-*")
 	})
 }

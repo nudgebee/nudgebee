@@ -1,4 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
+import { canManageMessagingPlatforms } from '@lib/messagingPlatforms';
 import { resolveRequestAuth } from '@lib/sessionToken';
 import { getRequestId, handleErrorResponse, sendAuthenticationError } from 'src/utils/apiUtils';
 
@@ -18,10 +19,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return sendAuthenticationError(res);
     }
 
-    const roles = (auth.jwt.roles as string[]) || [];
-    const permissions = (auth.jwt.permissions as string[]) || [];
-    const canManageDiscord = roles.includes('tenant_admin') || auth.jwt.isSuperAdmin === true || permissions.includes('messagingplatforms:Write');
-    if (!canManageDiscord) {
+    if (!canManageMessagingPlatforms(auth.jwt)) {
       return res.status(403).json({ error: 'forbidden' });
     }
 

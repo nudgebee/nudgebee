@@ -111,7 +111,7 @@ func TestCascadePipeline_DB(t *testing.T) {
 		// The node is named from the Name tag; the instance id lives in
 		// properties. That gap is the whole reason this test exists.
 		props := fmt.Sprintf(`{"name":%q,"region":"us-east-1","status":"Active","resource_id":%q,"arn":%q}`,
-			s.name, s.inst, "arn:aws:ec2:us-east-1:864186153326:instance/"+s.inst)
+			s.name, s.inst, "arn:aws:ec2:us-east-1:888888888888:instance/"+s.inst)
 		mustExec(`INSERT INTO knowledge_graph_node
 		          (id, tenant_id, cloud_account_id, node_type, level, is_active, query_attributes, properties, unique_key)
 		          VALUES ($1,$2,$3,'ComputeInstance','Tenant',true,
@@ -180,9 +180,9 @@ func TestCascadePipeline_DB(t *testing.T) {
 	}
 
 	for _, a := range cascade {
-		fp := "arn:aws:cloudwatch:us-east-1:864186153326:alarm:nudgebee-scenario-services-" + a.name
+		fp := "arn:aws:cloudwatch:us-east-1:888888888888:alarm:nudgebee-scenario-services-" + a.name
 		// service_key in the synthetic-ARN form CloudWatch alarm events carry.
-		svcKey := "arn:aws:ec2:us-east-1:864186153326:compute-instance:" + a.inst
+		svcKey := "arn:aws:ec2:us-east-1:888888888888:compute-instance:" + a.inst
 		mustExec(`INSERT INTO events
 		          (id, created_at, updated_at, finding_id, title, aggregation_key, finding_type,
 		           priority, subject_name, subject_type, subject_namespace, cluster, evidences,
