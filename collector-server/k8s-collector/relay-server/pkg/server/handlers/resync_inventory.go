@@ -44,6 +44,12 @@ func NewResyncInventoryHandler(
 		c.Set("accountID", req.AccountID)
 		logger, _, _ := utils.BuildContextFromPayload(c, tracer, meter, rootLogger)
 
+		// These routes take the account from the body. Anything that reaches them
+		// with a user's tenant attached must own that account (#43931).
+		if !requireTenantOwnsAccount(c, store, logger, req.AccountID, db.AgentTypeProxy) {
+			return
+		}
+
 		connected, err := store.IsAgentConnected(ctx, req.AccountID, db.AgentTypeProxy)
 		if err != nil {
 			logger.Error("failed to check proxy agent connection", "account_id", req.AccountID, "err", err)

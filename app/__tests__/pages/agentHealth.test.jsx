@@ -386,4 +386,14 @@ describe('buildDisconnectedServices', () => {
   it('still names an agent-served signal whose own flag is down', () => {
     expect(buildDisconnectedServices({ ...healthyAgent, prometheusConnection: false }, { metrics: { source: 'agent' } })).toEqual(['Prometheus']);
   });
+
+  // The agent's ClickHouse is the agent's own, so it belongs in this banner, judged by its
+  // ClickHouse logs check rather than by the Loki flag.
+  it("judges logs served by the agent's ClickHouse by the ClickHouse logs check", () => {
+    const clickhouse = { logs: { provider: 'otel_clickhouse', source: 'agent' } };
+    expect(buildDisconnectedServices({ ...healthyAgent, logsConnection: false, clickhouseLogsConnection: true }, clickhouse)).toEqual([]);
+    expect(buildDisconnectedServices({ ...healthyAgent, clickhouseLogsConnection: false }, clickhouse)).toEqual(['Logs']);
+    const down = { logs: { ...clickhouse.logs, error: 'not reachable right now' } };
+    expect(buildDisconnectedServices({ ...healthyAgent, clickhouseLogsConnection: true }, down)).toEqual(['Logs']);
+  });
 });

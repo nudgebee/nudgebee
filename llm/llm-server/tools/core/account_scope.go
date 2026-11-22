@@ -30,9 +30,6 @@ type OriginBoundReason string
 const (
 	// OriginBoundWrite: acts on the account; waits for target-scoped approval.
 	OriginBoundWrite OriginBoundReason = "write"
-	// OriginBoundIntegration: credentials come from an integration linked to
-	// the conversation's account (Datadog, databases, ...).
-	OriginBoundIntegration OriginBoundReason = "integration"
 	// OriginBoundConversationState: per-account state such as memory or
 	// workflows, not a cluster's data.
 	OriginBoundConversationState OriginBoundReason = "conversation_state"

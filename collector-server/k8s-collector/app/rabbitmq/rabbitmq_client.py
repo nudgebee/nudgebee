@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
-from amqp.exceptions import PreconditionFailed
+from amqp.exceptions import NotFound, PreconditionFailed
 from kombu import Connection, Exchange, Queue, Message
 from kombu.exceptions import OperationalError
 from kombu.mixins import ConsumerMixin
@@ -189,11 +189,6 @@ class RabbitConsumer(ConsumerMixin):
         self._connection_epoch = 0
         self._epoch_lock = threading.Lock()
 
-        # Set by _declare_topology when the broker already holds this queue with
-        # arguments that differ from ours. We then attach to what exists instead
-        # of insisting, because insisting cannot win: see _declare_topology.
-        self._legacy_queue = False
-
         # Thread pool for processing messages in background
         # This keeps the main consumer loop free to send heartbeats
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"rmq-worker-{queue_name}")
@@ -226,13 +221,9 @@ class RabbitConsumer(ConsumerMixin):
         )
 
     def _queue_arguments(self) -> dict[str, Any]:
-        """The x-arguments this consumer's main queue is meant to carry.
+        """The x-arguments this consumer's main queue is created with.
 
-        Built in one place because the declare and the consume have to agree
-        exactly. kombu's Consumer re-declares its queues on every reconnect, so
-        a queue declared with arguments in one place and without them in the
-        other answers PRECONDITION_FAILED on the first reconnect and the
-        consumer never reattaches.
+        Only used when the queue does not exist yet; see _ensure_main_queue.
         """
         args: dict[str, Any] = {
             "x-dead-letter-exchange": f"{self.exchange_name}_dlx",
@@ -242,8 +233,8 @@ class RabbitConsumer(ConsumerMixin):
             args["x-message-ttl"] = self.message_ttl
         return args
 
-    def _main_queue(self, exchange: Exchange) -> Queue:
-        """The main queue, as currently agreed with the broker.
+    def _main_queue(self, exchange: Exchange, no_declare: bool = False) -> Queue:
+        """The main queue, with the arguments it is created with.
 
         The kwarg is ``queue_arguments``, NOT ``arguments``. kombu's Queue keeps
         a fixed attribute list and drops unknown kwargs without a word, so
@@ -253,12 +244,11 @@ class RabbitConsumer(ConsumerMixin):
         the .dlq, and why a stalled consumer grew the broker's disk without
         bound -- nothing but a successful consume ever removed a message.
 
-        When _legacy_queue is set we declare the bare queue the broker already
-        has, rather than the one we want. Still a declare, deliberately: kombu
-        re-declares on every reconnect, and that is what puts the queue back if
-        the broker ever comes up without it -- which is the failure this whole
-        change exists to survive. no_declare would be the tidier-looking
-        expression of "attach to what exists" and would quietly remove it.
+        The consumer's copy is ``no_declare``: kombu would otherwise re-declare
+        it with these arguments on every reconnect, and a queue that already
+        exists with other arguments answers that with PRECONDITION_FAILED.
+        _declare_topology, which runs on every revival, is what recreates the
+        queue if the broker comes up without it.
         """
         return Queue(
             name=self.queue_name,
@@ -267,8 +257,30 @@ class RabbitConsumer(ConsumerMixin):
             durable=True,
             exclusive=False,
             auto_delete=False,
-            queue_arguments=None if self._legacy_queue else self._queue_arguments(),
+            queue_arguments=self._queue_arguments(),
+            no_declare=no_declare,
         )
+
+    def _ensure_main_queue(self, conn: Connection, channel, exchange: Exchange) -> None:
+        """Create the main queue if it is missing; otherwise use it as it is.
+
+        Existing queues come with whatever arguments they were created with:
+        none on installs older than the `queue_arguments` fix, all of them on
+        newer ones. RabbitMQ refuses (406 PRECONDITION_FAILED) a declare whose
+        arguments differ from the live queue's and never changes a live queue,
+        so asking for ours on an older queue only fills the broker log with
+        channel errors -- every pod start, every reconnect. A passive declare
+        checks existence without comparing arguments. The TTL, the size cap and
+        the dead-letter exchange for queues without arguments come from the
+        `nb-collector-agent-queues` broker policy (RabbitMQ migration 002).
+        """
+        try:
+            channel.queue_declare(queue=self.queue_name, passive=True)
+        except NotFound:
+            # The broker closed `channel` with the 404.
+            self._main_queue(exchange).declare(channel=conn.channel())
+            return
+        channel.queue_bind(queue=self.queue_name, exchange=self.exchange_name, routing_key=self.routing_key)
 
     def _declare_topology(self):
         """Declare exchanges, queues, and bindings with infinite retry"""
@@ -278,21 +290,13 @@ class RabbitConsumer(ConsumerMixin):
                 attempt += 1
                 logger.info("Declaring topology (attempt %d)...", attempt)
 
-                # Always ask for the arguments we want, even if we settled for a
-                # bare queue last time. The operator's remedy for a legacy queue
-                # is to delete it, and a sticky flag would have us recreate it
-                # bare on the next reconnect -- silently undoing the fix they
-                # just applied. Asking again costs one declare and is the only
-                # thing that lets a running pod pick the arguments up.
-                self._legacy_queue = False
-
-                # Not `with self.connection.channel()`: a PRECONDITION_FAILED
-                # leaves the channel closed by the broker, and letting the
-                # context manager close it again raises a second, unrelated
-                # error on the way out of the block -- which the generic handler
-                # below would then retry forever.
-                channel = self.connection.channel()
+                # On a clone, released when done. Declaring on self.connection
+                # left it open with nothing sending heartbeats on it -- kombu
+                # consumes on a clone of it -- so the broker dropped it for
+                # missed heartbeats a few minutes after every pod start.
+                conn = self.connection.clone()
                 try:
+                    channel = conn.channel()
                     # Main exchange
                     main_ex = Exchange(self.exchange_name, type=self.exchange_type, durable=True, auto_delete=False)
                     main_ex.declare(channel=channel)
@@ -302,9 +306,6 @@ class RabbitConsumer(ConsumerMixin):
                     dlx_ex = Exchange(dlx_name, type="direct", durable=True, auto_delete=False)
                     dlx_ex.declare(channel=channel)
 
-                    # DLQ before the main queue: a PRECONDITION_FAILED on the
-                    # main queue kills the channel, so anything declared after
-                    # it would silently not happen.
                     dlq = Queue(
                         name=f"{self.queue_name}.dlq",
                         exchange=dlx_ex,
@@ -315,11 +316,11 @@ class RabbitConsumer(ConsumerMixin):
                     )
                     dlq.declare(channel=channel)
 
-                    self._main_queue(main_ex).declare(channel=channel)
+                    self._ensure_main_queue(conn, channel, main_ex)
                 finally:
                     try:
-                        channel.close()
-                    except Exception:  # pragma: no cover - channel already gone
+                        conn.release()
+                    except Exception:  # pragma: no cover - connection already gone
                         pass
 
                 logger.info("Topology declared successfully")
@@ -327,28 +328,12 @@ class RabbitConsumer(ConsumerMixin):
                 return
 
             except PreconditionFailed as e:
-                # The queue exists with arguments that are not ours. Every
-                # collector queue created before the `arguments=` fix above is
-                # in exactly this state, and redeclaring cannot win: RabbitMQ
-                # will not change a live queue's arguments, and the only way to
-                # force it is to delete the queue, which discards the backlog
-                # the operator is usually trying to save.
-                #
-                # Retrying is worse than not insisting. This runs on the
-                # consumer thread from get_consumers(), but a retry loop
-                # here would still leave the consumer stalled retrying a
-                # declare that can never succeed. Attach to what exists
-                # instead; `nb-collector-agent-queues` (RabbitMQ policy,
-                # migration 002) supplies the TTL and the size cap on these
-                # queues, so the bound does not depend on this.
-                self._legacy_queue = True
-                logger.warning(
-                    "Queue %s already exists with different arguments (%s). Attaching to it as-is; "
-                    "its bounds come from the broker policy, and dead-lettering stays disabled until "
-                    "the queue is recreated.",
-                    self.queue_name,
-                    e,
-                )
+                # Not expected since the main queue is checked passively, but
+                # an exchange or .dlq created by hand with other settings would
+                # land here. Retrying cannot win -- RabbitMQ never changes a
+                # live entity -- and would stall the consumer, so attach to
+                # what exists.
+                logger.warning("Topology for %s differs from the broker's (%s); using it as-is.", self.queue_name, e)
                 otel_metrics.record_topology_declaration(self.queue_name, success=False)
                 return
 
@@ -412,20 +397,16 @@ class RabbitConsumer(ConsumerMixin):
         """Set up the consumer with proper topology reference"""
         # kombu calls this on every connection revival, which makes it the one
         # place that sees a broker whose state changed under us -- a recreated
-        # PVC, or an operator deleting a legacy bare queue so it can come back
-        # with its arguments. Re-declaring here is what lets a running pod
-        # recover from both without being restarted.
+        # PVC, or an operator deleting a queue. Re-declaring here is what lets a
+        # running pod recover without being restarted.
         #
         # Safe to do on kombu's path: _declare_topology talks on its own
-        # channel, so a PRECONDITION_FAILED closes that one and not the
-        # consumer's. Doing the probe inline here instead would kill the
-        # consumer channel and flap the connection on every legacy install.
+        # channel, so a 404 from its existence check closes that one and not
+        # the consumer's.
         self._declare_topology()
 
-        # Same exchange/queue definitions as the topology declaration -- both
-        # go through _main_queue so they cannot drift apart.
         main_ex = Exchange(self.exchange_name, type=self.exchange_type, durable=True, auto_delete=False)
-        q = self._main_queue(main_ex)
+        q = self._main_queue(main_ex, no_declare=True)
 
         return [
             Consumer(

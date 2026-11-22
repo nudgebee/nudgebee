@@ -144,9 +144,10 @@ const FormatPanel = ({ schema }) => (
     <CodeBlock code={FORMAT_SKELETON} language='json' title='Document format' />
     <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], lineHeight: 1.5 }}>
       A node needs <Code>name</Code>. In a connected account give <Code>cloud_account</Code> and <Code>specific_type</Code>, plus <Code>region</Code>{' '}
-      for a cloud resource or <Code>namespace</Code> for a Kubernetes one; outside one give <Code>node_type</Code>. <Code>properties</Code> keep their
-      JSON types. A dependency side is a node&apos;s <Code>ref</Code> as a string, or an object naming a node already in the graph;{' '}
-      <Code>relationship_type</Code> is CALLS, PUBLISHES_TO or SUBSCRIBES_TO (default CALLS).
+      for a cloud resource or <Code>namespace</Code> for a Kubernetes one; outside one give <Code>node_type</Code>, plus <Code>specific_type</Code>{' '}
+      for a kind of your own (e.g. NetworkSwitch). <Code>properties</Code> keep their JSON types. A dependency side is a node&apos;s <Code>ref</Code>{' '}
+      as a string, or an object naming a node already in the graph; <Code>relationship_type</Code> is CALLS, PUBLISHES_TO or SUBSCRIBES_TO (default
+      CALLS), or — with a node declared outside any account at one end — CONNECTED_TO, DEPENDS_ON, RUNS_ON, HOSTED_ON, ROUTES_TO or BELONGS_TO.
     </Typography>
     <ManualNodeTypeValues schema={schema} />
   </Box>

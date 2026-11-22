@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     last_execution_time TIMESTAMP WITHOUT TIME ZONE,
     created_by uuid,
     updated_by uuid,
+    run_as_user_id uuid, -- Owner unattended runs act as (V1020)
     created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT now(),
     updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT now()
 );

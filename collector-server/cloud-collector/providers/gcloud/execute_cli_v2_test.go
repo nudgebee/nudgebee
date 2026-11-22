@@ -22,6 +22,8 @@ func TestExecuteCliCommandV2RejectsCredentialAndWrongCliCommands(t *testing.T) {
 		{command: "gcloud storage cp gs://bucket/file local.txt", want: "cannot transfer"},
 		{command: "bq extract dataset.table local.csv", want: "cannot transfer"},
 		{command: "az vm list", want: "must start with gcloud, gsutil, or bq"},
+		{command: "gcloud compute instances list --account other@example.com", want: "--account is not allowed"},
+		{command: "gcloud compute instances list --account=other@example.com", want: "--account is not allowed"},
 	}
 	for _, tt := range tests {
 		_, err := (&gcloudProvider{}).ExecuteCliCommandV2(nil, providers.Account{}, tt.command)

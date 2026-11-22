@@ -26,6 +26,8 @@ import { LiveMetricCharts } from '@components/cloudaccount/cloud-metrics/LiveMet
 
 const _INSTANCE_TABLE_ID = 'INSTANCE_TABLE_ID';
 
+const _INSTANCE_TYPE_CHIP_LIMIT = 4;
+
 // Column widths sized to typical values: Count is a single number (10%), Name
 // is the longest free-form string (~50%), the rest are short labels (~20%).
 const _INSTANCE_HEADERS = [
@@ -225,6 +227,7 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
   const instancesCount = ec2Summary?.cloud_resourses_count || ec2Summary?.cloud_resourses?.length || 0;
   const [loading, _setLoading] = useState(false);
   const [instanceData, setInstanceData] = useState([]);
+  const [showAllInstanceTypes, setShowAllInstanceTypes] = useState(false);
   const reservedInstances = instancesCount - spotInstances;
 
   // "View all instances" deeplink — subtab=2 + `#…/instances` hash convention
@@ -329,11 +332,24 @@ const ClusterSummary = ({ accountId, ec2Summary = {}, serviceName = '' }: any) =
                 {uniqueInstanceTypes.size} {uniqueInstanceTypes.size === 1 ? 'Instance Type' : labels.instanceType}
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
-                {(Array.from(uniqueInstanceTypes) as string[]).map((type) => (
-                  <Chip key={type} variant='tag' tone='neutral' size='sm'>
-                    {type}
+                {(Array.from(uniqueInstanceTypes) as string[])
+                  .slice(0, showAllInstanceTypes || uniqueInstanceTypes.size <= _INSTANCE_TYPE_CHIP_LIMIT + 1 ? undefined : _INSTANCE_TYPE_CHIP_LIMIT)
+                  .map((type) => (
+                    <Chip key={type} variant='tag' tone='neutral' size='sm'>
+                      {type}
+                    </Chip>
+                  ))}
+                {uniqueInstanceTypes.size > _INSTANCE_TYPE_CHIP_LIMIT + 1 && (
+                  <Chip
+                    variant='action'
+                    tone='info'
+                    size='sm'
+                    onClick={() => setShowAllInstanceTypes((prev) => !prev)}
+                    data-testid='ec2-summary-instance-types-toggle'
+                  >
+                    {showAllInstanceTypes ? 'Show less' : `+${uniqueInstanceTypes.size - _INSTANCE_TYPE_CHIP_LIMIT} more`}
                   </Chip>
-                ))}
+                )}
               </Box>
             </Box>
           </>

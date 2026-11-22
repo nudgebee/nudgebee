@@ -1,7 +1,7 @@
 // Not for OSS
 import { test, expect } from "@playwright/test";
 import { openOverview, readRenderedSections, waitForAnySection } from "./overviewHelper";
-import { EMPTY_STATE_HEADING, HEADING_CLOUD, HEADING_K8S, HEADING_VM, SECTION_CLOUD, SECTION_K8S, SECTION_VM } from "./overviewLocators";
+import { EMPTY_STATE_HEADING, SECTION_CLOUD, SECTION_K8S, SECTION_VM } from "./overviewLocators";
 
 // Overview — the fleet-wide landing surface at /overview (app/src/pages/overview/index.jsx).
 // It renders up to three sections — Kubernetes Clusters, Cloud Accounts and Self-hosted VMs —
@@ -21,7 +21,7 @@ test.beforeEach(() => {
 test.describe("Overview", () => {
   test(
     "Overview sanity - open /overview, verify the Kubernetes Clusters section renders with its counted heading and its account cards",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -43,7 +43,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview sanity - open /overview, verify the header omits the cluster dropdown so no single account stays in scope while the fleet view is open",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -68,7 +68,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview, verify each rendered cluster card wraps its title link in the ClusterViewCard contract that points at /kubernetes/details/{accountId}#summary",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -92,7 +92,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview and click a cluster card's title, verify /kubernetes/details/{accountId} opens on its summary tab then browser Back restores the fleet view",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -120,7 +120,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview, verify the anchor jump-nav renders one button per section the tenant has, and no button for a section kind it does not",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -156,7 +156,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview and click the Clusters anchor button, verify the Kubernetes Clusters section heading scrolls into the viewport",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -186,7 +186,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview on a populated tenant, verify the empty-state onboarding panel and its Add Cluster / Connect Cloud Account controls are absent",
-    { tag: ["@dev", "@regression", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@validation"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -210,7 +210,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview and deep-link an unknown hash, verify the URL is preserved as /overview and the Account Overview surface still renders",
-    { tag: ["@dev", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -232,7 +232,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview when the tenant has cloud accounts, verify each Cloud Accounts card links at /cloud-account/details/{accountId}#summary and never at another provider's details path",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);
@@ -262,7 +262,7 @@ test.describe("Overview", () => {
 
   test(
     "Overview - open /overview and reload the page, verify the fleet view survives a hard reload with the K8s section back on screen",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const { locators } = await openOverview(page);
       await waitForAnySection(locators);

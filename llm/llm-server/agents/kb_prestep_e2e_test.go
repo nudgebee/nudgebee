@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -94,7 +96,7 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 		require.Greater(t, split, 0)
 		body = body[:split] + strings.Repeat("Background reference only; see the Resolution section for the required response.\n", size/80) + body[split:]
 	}
-	kb, err := toolcore.CreateKnowledgebase(sc, accountID, toolcore.Knowledgebase{
+	kb, err := knowledge.CreateKnowledgebase(sc, accountID, knowledge.Knowledgebase{
 		Name: service + " memory procedure", Description: "Operator procedure and reference code for high memory on " + service,
 		Data: body, DataFormat: "text", DataFilename: "skill_lifecycle_canary.txt",
 	})
@@ -103,9 +105,9 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 	mapped := false
 	t.Cleanup(func() {
 		if mapped {
-			assert.NoError(t, toolcore.UnmapKBFromAgent(sc, accountID, kb.Id, mappedAgent), "cleanup: unmap test KB %s", kb.Id)
+			assert.NoError(t, knowledge.UnmapKBFromAgent(sc, accountID, kb.Id, mappedAgent), "cleanup: unmap test KB %s", kb.Id)
 		}
-		deleteErr := toolcore.DeleteKnowledgebase(sc, accountID, kb.Id)
+		deleteErr := knowledge.DeleteKnowledgebase(sc, accountID, kb.Id)
 		assert.NoError(t, deleteErr, "cleanup: delete test KB %s", kb.Id)
 		var count int
 		checkErr := dbms.Db.Get(&count, "SELECT count(*) FROM llm_knowledgebases WHERE id = $1 AND account_id = $2", kb.Id, accountID)
@@ -119,7 +121,7 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 	var status string
 	var indexingErr error
 	require.Eventually(t, func() bool {
-		cur, getErr := toolcore.GetKnowledgebase(sc, accountID, kb.Id)
+		cur, getErr := knowledge.GetKnowledgebase(sc, accountID, kb.Id)
 		indexingErr = getErr
 		if getErr != nil {
 			return true
@@ -130,7 +132,7 @@ func runSkillLifecycle(t *testing.T, delegated bool) {
 	require.NoError(t, indexingErr, "read indexing status")
 	require.Equal(t, "active", status, "KB indexing failed")
 	if delegated || os.Getenv("TEST_SKILL_UNMAPPED") != "true" {
-		_, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, mappedAgent)
+		_, err = knowledge.MapKBToAgent(sc, accountID, kb.Id, mappedAgent, nil)
 		require.NoError(t, err, "map test KB")
 		mapped = true
 	}

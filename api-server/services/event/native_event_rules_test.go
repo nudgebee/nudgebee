@@ -30,6 +30,22 @@ func TestRegisterNativeEventTypeRule_SkipsUnstableAggregationKey(t *testing.T) {
 	assert.False(t, claimed, "an unstable aggregation_key must not reach registration")
 }
 
+// A CloudWatch alarm's rule is the one the alarm sync writes under the same key;
+// no placeholder is registered for it, however the alarm was delivered.
+func TestRegisterNativeEventTypeRule_SkipsCloudWatchAlarms(t *testing.T) {
+	evt := map[string]any{
+		"cloud_account_id": "acct-alarm",
+		"tenant":           "tenant-alarm",
+		"aggregation_key":  "TargetTracking-table/orders-ProvisionedCapacityHigh",
+		"source":           "AWS_CloudWatch_Alarm",
+	}
+
+	registerNativeEventTypeRule(&security.RequestContext{}, evt)
+
+	_, claimed := nativeEventRuleSeen.Load("tenant-alarm:acct-alarm:TargetTracking-table/orders-ProvisionedCapacityHigh")
+	assert.False(t, claimed, "a CloudWatch alarm must not reach registration")
+}
+
 func TestHasUnstableAggregationKey(t *testing.T) {
 	tests := []struct {
 		name string

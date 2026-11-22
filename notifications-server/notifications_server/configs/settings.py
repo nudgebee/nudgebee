@@ -546,12 +546,6 @@ class MSTeamsSettings(BaseSettings):
         True,
         validation_alias=AliasChoices("MS_TEAMS_ANSWER_CARDS_ENABLED", "ms_teams_answer_cards_enabled"),
     )
-    # Path matches the Next.js callback route at /api/integrations/ms-teams/callback
-    redirect_path: str = "/api/integrations/ms-teams/callback"
-    # The bot sends with its own credentials, so Connect only needs the signed-in
-    # user's own profile, to learn which Microsoft tenant is connecting.
-    scopes: List[str] = ["User.Read"]
-
     model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
@@ -581,6 +575,15 @@ class GoogleChatSettings(BaseSettings):
     )
     rate_limit_sleep: int = Field(
         10, validation_alias=AliasChoices("GOOGLE_CHAT_RATE_LIMIT_SLEEP", "google_chat_rate_limit_sleep")
+    )
+    api_timeout: int = Field(
+        15,
+        validation_alias=AliasChoices("GOOGLE_CHAT_API_TIMEOUT", "google_chat_api_timeout"),
+        description=(
+            "Hard socket timeout (seconds) for outbound Google Chat API/token calls. "
+            "googleapiclient/httplib2 default to no timeout, so a stalled TLS session "
+            "would otherwise hang a worker until the OS TCP timeout (minutes)."
+        ),
     )
     sa_key: Optional[str] = Field(
         None,
@@ -754,11 +757,28 @@ class NotificationSettings(BaseSettings):
     grouped_redis_ttl_seconds: int = Field(
         3900, validation_alias=AliasChoices("GROUPED_REDIS_TTL_SECONDS", "grouped_redis_ttl_seconds")
     )
+    # Shorter than the hourly window, so a recovered channel isn't a full cycle behind the others.
+    grouped_flush_retry_delay_seconds: int = Field(
+        300, validation_alias=AliasChoices("GROUPED_FLUSH_RETRY_DELAY_SECONDS", "grouped_flush_retry_delay_seconds")
+    )
+    grouped_sweep_interval_seconds: int = Field(
+        60, validation_alias=AliasChoices("GROUPED_SWEEP_INTERVAL_SECONDS", "grouped_sweep_interval_seconds")
+    )
+    # Must exceed how long a real flush ever takes, or the sweep mistakes a slow one for a crashed one.
+    grouped_claim_stale_seconds: int = Field(
+        600, validation_alias=AliasChoices("GROUPED_CLAIM_STALE_SECONDS", "grouped_claim_stale_seconds")
+    )
     # An anomaly that clears joins the next grouped anomaly digest, in a
     # "Resolved" section. Off: its resolve looks for a Slack thread, as before.
     # An SLO that recovers joins the SLO digest the same way. Off: it is dropped.
     digest_resolved_enabled: bool = Field(
         False, validation_alias=AliasChoices("DIGEST_RESOLVED_ENABLED", "digest_resolved_enabled")
+    )
+    # Delivery history rows nothing else reads. Off: only the rows threading,
+    # Teams buttons and remediation act on are written, as before.
+    delivery_history_recording_enabled: bool = Field(
+        True,
+        validation_alias=AliasChoices("DELIVERY_HISTORY_RECORDING_ENABLED", "delivery_history_recording_enabled"),
     )
     event_cache_ttl_seconds: int = Field(
         7200,
@@ -771,6 +791,7 @@ class NotificationSettings(BaseSettings):
     @field_validator(
         "channel_awareness_enabled",
         "digest_resolved_enabled",
+        "delivery_history_recording_enabled",
         mode="before",
     )
     @classmethod
@@ -833,6 +854,10 @@ class Settings(BaseSettings):
         "", validation_alias=AliasChoices("NOTIFICATION_SERVER_TOKEN", "notification_server_token")
     )
     llm_server_token: str = Field("", validation_alias=AliasChoices("LLM_SERVER_TOKEN", "llm_server_token"))
+    # X-ACTION-TOKEN for the workflow server's service-token routes.
+    workflow_server_token: str = Field(
+        "", validation_alias=AliasChoices("WORKFLOW_SERVER_TOKEN", "workflow_server_token")
+    )
     llm_server_token_header: str = Field(
         "X-ACTION-TOKEN",
         validation_alias=AliasChoices("LLM_SERVER_TOKEN_HEADER", "llm_server_token_header"),
@@ -862,11 +887,6 @@ class Settings(BaseSettings):
         return bool(v)
 
     # Computed properties (derived from other settings)
-    @property
-    def ms_teams_redirect_uri(self) -> str:
-        """Full MS Teams OAuth redirect URI."""
-        return f"{self.base_url}{self.ms_teams.redirect_path}"
-
     @property
     def google_chat_redirect_uri(self) -> str:
         """Full Google Chat OAuth redirect URI."""
@@ -921,7 +941,6 @@ def public_ip() -> str:
 
 # Application URLs
 BASE_URL = settings.base_url
-MS_TEAMS_REDIRECT_URI = settings.ms_teams_redirect_uri
 GOOGLE_CHAT_REDIRECT_URI = settings.google_chat_redirect_uri
 GOOGLE_AUTH_URL = settings.google_chat.auth_url
 TRACE_INCOMING_REQUESTS = settings.trace_incoming_requests

@@ -1,33 +1,26 @@
-// System-role grant derivation — the single source of truth that maps each
-// built-in role to the (module × class) grant set it should be SEEDED with in
-// the unified entity-scoped grant model (custom_roles where is_system=true).
+// System-role grant derivation — maps each built-in role to the (module × class)
+// grant set that matches its operation surface.
 //
 // The derivation is FAITHFUL: a system role's operation surface is exactly the
 // set of actions actions.yaml currently grants that role (its `permissions:`
-// entries), classified through permissionCatalog.classifyAction. This is what
-// keeps the post-migration behavior identical — the grant set a built-in role
-// resolves to equals the actions it can invoke today.
+// entries), classified through permissionCatalog.classifyAction.
 //
-// Consumed by:
-//   - __tests__/systemRoleGrants.test.ts — asserts the committed V766 migration
-//     seed SQL matches this derivation exactly (fails CI if actions.yaml drifts
-//     from the seeded grants). To REGENERATE the migration's grant block after an
-//     intentional actions.yaml change, run deriveSystemRoleGrants over
-//     actions.yaml (+ src/ee/actions.yaml) and emit one
-//     ('<system_key>', '<module>', '<class>') VALUES row per grant.
+// Consumed by pages/api/permissions/catalog.ts, which shows the built-in roles'
+// grants read-only in the Roles editor, derived on each request so it cannot
+// drift. V833 once seeded a copy into custom_role_permissions for a unified
+// resolver that was never built; V1067 removed that unread copy.
 //
 // NOTE: super_admin / super_admin_readonly are intentionally NOT derived here —
 // they bypass the gateway gate entirely (rpcGateway: isSuperAdmin short-circuit)
-// and are never assigned via actions.yaml permissions. The migration seeds them
-// as system roles for model uniformity but with no grant rows; their privileges
-// come from the bypass, not from grants. tenant_usage / account_usage appear in
+// and are never assigned via actions.yaml permissions; their privileges come
+// from the bypass, not from grants. tenant_usage / account_usage appear in
 // actions.yaml but are absent from the `roles` table (no user can hold them), so
-// they are dead and not seeded.
+// they are dead and not derived.
 
 import { classifyAction, permissionKey, type PermissionClass } from '@lib/permissionCatalog';
 
 // The assignable built-in roles whose grants we derive from actions.yaml. Order
-// is the canonical seed order (mirrors the resolver's array_position ordering).
+// is the display order in the Roles editor.
 export const DERIVED_SYSTEM_ROLE_KEYS = [
   'tenant_admin',
   'tenant_admin_readonly',
@@ -39,7 +32,7 @@ export const DERIVED_SYSTEM_ROLE_KEYS = [
 
 export type DerivedSystemRoleKey = (typeof DERIVED_SYSTEM_ROLE_KEYS)[number];
 
-// Display labels for the built-in/system roles (matches the V766 seed names).
+// Display labels for the built-in/system roles (match the system role names in custom_roles).
 // Used by the Roles & Permissions UI to render the built-in roles read-only.
 export const SYSTEM_ROLE_LABELS: Record<string, string> = {
   tenant_admin: 'Tenant Admin',

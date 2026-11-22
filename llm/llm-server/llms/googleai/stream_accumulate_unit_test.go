@@ -105,9 +105,33 @@ func TestAccumulateStream(t *testing.T) {
 		t.Parallel()
 		opts, _ := collectOpts(0)
 		_, err := accumulateStream(context.Background(), "gemini-test", streamOf(
-			&genai.GenerateContentResponse{},
+			&genai.GenerateContentResponse{PromptFeedback: &genai.GenerateContentResponsePromptFeedback{BlockReason: genai.BlockedReasonSafety}},
 		), opts)
 		assert.NotErrorIs(t, err, ErrStreamIncomplete)
+	})
+
+	// Dev 2026-10-20: during Gemini 500s, streams ended with a candidate-less
+	// chunk after a few tokens and the fragment was stored as the answer.
+	t.Run("candidate-less chunk without a block reason after text is a cut-off", func(t *testing.T) {
+		t.Parallel()
+		opts, _ := collectOpts(0)
+		_, err := accumulateStream(context.Background(), "gemini-test", streamOf(
+			textChunk("### What", ""),
+			&genai.GenerateContentResponse{UsageMetadata: &genai.GenerateContentResponseUsageMetadata{CandidatesTokenCount: 2}},
+		), opts)
+		assert.ErrorIs(t, err, ErrStreamIncomplete)
+	})
+
+	t.Run("usage-only chunk after a finished stream keeps the answer and its usage", func(t *testing.T) {
+		t.Parallel()
+		opts, _ := collectOpts(0)
+		resp, err := accumulateStream(context.Background(), "gemini-test", streamOf(
+			textChunk("done", genai.FinishReasonStop),
+			&genai.GenerateContentResponse{UsageMetadata: &genai.GenerateContentResponseUsageMetadata{CandidatesTokenCount: 7}},
+		), opts)
+		require.NoError(t, err)
+		assert.Equal(t, "done", resp.Choices[0].Content)
+		assert.Equal(t, string(genai.FinishReasonStop), resp.Choices[0].StopReason)
 	})
 
 	t.Run("caller stopping the stream is not a cut-off", func(t *testing.T) {

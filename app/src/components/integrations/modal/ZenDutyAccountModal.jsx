@@ -18,10 +18,15 @@ import { getIntegrationDescription } from '@lib/integrationDescriptions';
 // submit/test is treated as "leave the stored value untouched".
 const TOKEN_PLACEHOLDER = '••••••••';
 
+// Default host for accounts that predate ZenDuty's per-region hosting
+// (rebranded Xurrent IMR). Mirrors ticket-server's ZenDutyDefaultHost.
+const ZENDUTY_DEFAULT_URL = 'www.zenduty.com';
+
 const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
   const { title: baseTitle } = useBrandingConfig();
   const isEdit = !!editConfig;
   const [zenDutyName, setZenDutyName] = useState('');
+  const [zenDutyUrl, setZenDutyUrl] = useState(ZENDUTY_DEFAULT_URL);
   const [zenDutyAccountName, setZenDutyAccountName] = useState('');
   const [zenDutyToken, setZenDutyToken] = useState('');
   const [rcaWritebackEnabled, setRcaWritebackEnabled] = useState(false);
@@ -30,17 +35,17 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
   const [errors, setErrors] = useState({});
 
-  const zenDutyUrl = 'www.zenduty.com';
-
   useEffect(() => {
     if (openModal) {
       if (isEdit && editConfig) {
         setZenDutyName(editConfig.name || '');
+        setZenDutyUrl(editConfig.url || ZENDUTY_DEFAULT_URL);
         setZenDutyAccountName(editConfig.username || '');
         setZenDutyToken(TOKEN_PLACEHOLDER);
         setRcaWritebackEnabled(!!editConfig.rca_writeback_enabled);
       } else {
         setZenDutyName('');
+        setZenDutyUrl(ZENDUTY_DEFAULT_URL);
         setZenDutyAccountName('');
         setZenDutyToken('');
         setRcaWritebackEnabled(false);
@@ -110,6 +115,7 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
 
   const handleCloseZenDutyModal = (shouldRefresh = false) => {
     setZenDutyName('');
+    setZenDutyUrl(ZENDUTY_DEFAULT_URL);
     setZenDutyAccountName('');
     setZenDutyToken('');
     setRcaWritebackEnabled(false);
@@ -213,7 +219,7 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
             />
           </Box>
 
-          {/* URL Field (Read-only) */}
+          {/* URL Field */}
           <Box sx={{ mb: ds.space[1] }}>
             <Typography
               variant='body2'
@@ -225,9 +231,10 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
                 pl: ds.space[1],
               }}
             >
-              ZenDuty API URL (automatically configured)
+              Your ZenDuty (Xurrent IMR) account domain. Most accounts use www.zenduty.com — EU-region accounts use a domain like imr.eu.xurrent.com
+              instead.
             </Typography>
-            <Input value={zenDutyUrl} size='sm' disabled onChange={() => {}} id='zenDutyUrl' label='Account URL' />
+            <Input value={zenDutyUrl} size='sm' id='zenDutyUrl' label='Account URL' onChange={setZenDutyUrl} disabled={isSubmitting} />
           </Box>
 
           {/* Email Field */}

@@ -41,7 +41,7 @@ func TestMarksRoundTrip(t *testing.T) {
 	if _, err := repo.tx.Exec(`SET LOCAL TimeZone = 'Asia/Kolkata'`); err != nil {
 		t.Fatal(err)
 	}
-	locked, err := tryLock(context.Background(), repo.tx)
+	locked, err := tryLock(context.Background(), repo.tx, detectTenant)
 	if err != nil || !locked {
 		t.Fatalf("tryLock = %v, %v", locked, err)
 	}

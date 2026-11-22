@@ -17,7 +17,7 @@ interface TriggerWorkflowModalProps {
     id: string;
     type: 'string' | 'int' | 'bool' | 'json' | 'array';
     description: string;
-    default: any;
+    default?: any;
   }>;
   onTrigger: (inputs: any) => Promise<void>;
   loading?: boolean;
@@ -35,6 +35,14 @@ interface TriggerWorkflowModalProps {
   // The listing flow always runs live, so this defaults to 'live'.
   runVariant?: 'live' | 'current';
 }
+
+// The value chip for an expected input: one without a default reads "No default",
+// never the text "undefined" (#41485).
+const formatInputDefault = (input: { type: string; default?: any }): string => {
+  if (input.default === undefined || input.default === null) return 'No default';
+  if (input.type === 'json' || input.type === 'array') return JSON.stringify(input.default);
+  return String(input.default) || '""';
+};
 
 // Initial box contents: explicit defaultInputs first, then schema defaults, else {}.
 const seedInputs = (defaultInputs: any, inputSchema: NonNullable<TriggerWorkflowModalProps['inputSchema']>): string => {
@@ -336,7 +344,7 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
                       maxWidth: '40%',
                     }}
                   >
-                    {input.type === 'json' || input.type === 'array' ? JSON.stringify(input.default) : String(input.default) || '""'}
+                    {formatInputDefault(input)}
                   </Typography>
                 </Box>
               ))}

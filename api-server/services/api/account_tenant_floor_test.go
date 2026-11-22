@@ -4,9 +4,6 @@ import (
 	"io"
 
 	"nudgebee/services/common"
-	"nudgebee/services/internal/database"
-
-	"github.com/jmoiron/sqlx"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"net/http"
@@ -24,17 +21,6 @@ const (
 	floorOwnAccount     = "87365cf1-bdf5-51d2-a3c6-87a37fb841ef"
 	floorForeignAccount = "0a921890-c3c9-50ed-83ef-eb911d263724"
 )
-
-func mockMetastore(t *testing.T) sqlmock.Sqlmock {
-	t.Helper()
-	db, mock, err := sqlmock.New()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-	manager := &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}
-	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) { return manager, nil })
-	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
-	return mock
-}
 
 // The floor refuses a request naming another tenant's account before any
 // handler runs, wherever in the body the id sits, and lets everything else

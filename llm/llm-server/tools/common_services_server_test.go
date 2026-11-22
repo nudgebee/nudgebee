@@ -66,6 +66,13 @@ func TestClampLogLimitForProvider(t *testing.T) {
 			wantClamped: true,
 		},
 		{
+			name:        "otel_clickhouse above cap — clamps to the translator's cap",
+			provider:    "otel_clickhouse",
+			requested:   10000,
+			wantLimit:   lokiMaxLogLimit,
+			wantClamped: true,
+		},
+		{
 			name:        "unknown provider — passes through unchanged, no warning fires",
 			provider:    "elasticsearch",
 			requested:   10000,
@@ -159,6 +166,7 @@ func TestGetLogProvider_ServesCachedEntry(t *testing.T) {
 		Capabilities: services_server.ProviderCapabilities{
 			SupportedOperators: []string{"_eq", "_ilike"},
 			LabelMappings:      map[string]string{"app": "deployment.keyword", "namespace": "namespace"},
+			CanonicalFields:    []string{"app", "message", "namespace", "pod"},
 		},
 	}
 
@@ -178,6 +186,11 @@ func TestGetLogProvider_ServesCachedEntry(t *testing.T) {
 	// whose real keys differ (the exact failure the canonical path exists to fix).
 	assert.Equal(t, seeded.Capabilities.LabelMappings, got.Capabilities.LabelMappings)
 	assert.Equal(t, seeded.Capabilities.SupportedOperators, got.Capabilities.SupportedOperators)
+	// CanonicalFields has the same stake and one more: QueryLabels reads it to decide
+	// whether to advertise `message` or fall back to the invented `_body` token, so a
+	// value lost on the cache round-trip would send every log query for the next
+	// TTL down the legacy path on a backend that does resolve `message` (#39573).
+	assert.Equal(t, seeded.Capabilities.CanonicalFields, got.Capabilities.CanonicalFields)
 
 	t.Run("invalidation drops the entry", func(t *testing.T) {
 		require.NoError(t, common.CacheDelete(logProviderCacheNS, acct))

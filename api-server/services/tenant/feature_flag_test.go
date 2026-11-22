@@ -1,9 +1,11 @@
 package tenant
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
+	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"os"
 	"testing"
@@ -157,5 +159,25 @@ func TestIsFeatureEnabledByDefaultForAccount_CacheHitSkipsDB(t *testing.T) {
 	// call would surface as an unexpected query and fail.
 	enabled := IsFeatureEnabledByDefaultForAccount(nil, ffTenant, ffAccount, feature)
 	assert.False(t, enabled, "cache must replay the first call's result")
+	require.NoError(t, ffMockDB.ExpectationsWereMet())
+}
+
+func TestFeatureFlagChange_DropsCachedValue(t *testing.T) {
+	feature := "TEST_FF_NOTIFY_DROPS_CACHE"
+	ffMockDB.ExpectQuery(accountQueryAPI).
+		WithArgs(feature, ffTenant, ffAccount).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("disabled"))
+	assert.False(t, IsFeatureEnabledByDefaultForAccount(nil, ffTenant, ffAccount, feature))
+	require.NoError(t, ffMockDB.ExpectationsWereMet())
+
+	// What another replica's save, or this one's, triggers.
+	common.ReplicaBroadcast(context.Background(), common.ChangeFeatureFlag, ffTenant)
+
+	// The cached "disabled" must be gone: the next read goes to the DB and
+	// sees the new value.
+	ffMockDB.ExpectQuery(accountQueryAPI).
+		WithArgs(feature, ffTenant, ffAccount).
+		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow("enabled"))
+	assert.True(t, IsFeatureEnabledByDefaultForAccount(nil, ffTenant, ffAccount, feature))
 	require.NoError(t, ffMockDB.ExpectationsWereMet())
 }

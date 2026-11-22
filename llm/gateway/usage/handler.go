@@ -26,11 +26,12 @@ type apiRequest struct {
 type apiListRequest struct {
 	StartDate string   `json:"start_date"`
 	EndDate   string   `json:"end_date"`
-	UserID    string   `json:"user_id"`   // optional; Users-tab drill-down or the User filter
-	Providers []string `json:"providers"` // optional; empty = all providers
-	Models    []string `json:"models"`    // optional; empty = all (routed) models
-	Status    string   `json:"status"`    // optional; "success" (2xx) | "error" (everything else)
-	Tool      string   `json:"tool"`      // optional drill-down from the Tools tab
+	UserID    string   `json:"user_id"`    // optional; Users-tab drill-down or the User filter
+	APIKeyID  string   `json:"api_key_id"` // optional; Keys-tab drill-down or the Key filter
+	Providers []string `json:"providers"`  // optional; empty = all providers
+	Models    []string `json:"models"`     // optional; empty = all (routed) models
+	Status    string   `json:"status"`     // optional; "success" (2xx) | "error" (everything else)
+	Tool      string   `json:"tool"`       // optional drill-down from the Tools tab
 	// Governance-tab drill-ins (each maps a Governance count to the rows behind it).
 	RoutingReason string `json:"routing_reason"` // optional; e.g. substitute | fallback | deprecated
 	RejectReason  string `json:"reject_reason"`  // optional; e.g. rate_limited | secret_blocked
@@ -123,7 +124,7 @@ func RegisterRoutes(r *gin.Engine, token string) {
 		}
 		res, err := ListRequests(c.Request.Context(), db, ListRequest{
 			TenantID: tenantID, StartDate: start, EndDate: end,
-			UserID: userID, Providers: req.Providers, Models: req.Models, Status: req.Status,
+			UserID: userID, APIKeyID: req.APIKeyID, Providers: req.Providers, Models: req.Models, Status: req.Status,
 			Tool: req.Tool, RoutingReason: req.RoutingReason, RejectReason: req.RejectReason, Dlp: req.Dlp,
 			SessionID:     req.SessionID,
 			CallerUserID:  c.GetHeader("x-user-id"),

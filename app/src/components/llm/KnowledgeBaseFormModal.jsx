@@ -17,6 +17,7 @@ import { ds } from '@utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import MentionContentInput from '@components/llm/MentionContentInput';
 import KnowledgeContextTags from '@components/llm/KnowledgeContextTags';
+import { getKbNameError } from '@components/llm/kbName';
 import { KB_FORMAT_PDF, KB_FORMAT_TEXT, MAX_UPLOAD_BYTES, arrayBufferToBase64, isPdfFile, isTextFile } from '@components/llm/kbUploadFormat';
 
 const MAX_CONTENT_LENGTH = 40000;
@@ -39,7 +40,19 @@ Describe the situation this applies to — e.g. "When auth-svc returns 5xx and a
 Mention agents that should use this, e.g. @k8s_ops
 
 ## Tool usage
-Mention tools relevant to this, e.g. #query_logs`;
+Mention tools relevant to this, e.g. #query_logs
+
+## About our environment
+Facts the agent can't discover reliably — e.g. index names, time fields, units.
+
+## Names we use
+How people refer to things vs how they're stored.
+
+## Always / never
+Team rules — e.g. "Report latency in ms."
+
+## Examples
+One or two worked queries or answers.`;
 
 /**
  * Create/edit form for a single knowledge base — self-contained: takes the
@@ -67,6 +80,9 @@ const KnowledgeBaseFormModal = ({
   scopeOptions = null,
   initialVisibility = 'account',
   initialAccountIds = [],
+  // Seeds a new note ({ title, name, description, content, noteCategory }), e.g. the
+  // "Add tool instructions" starter. Ignored when editing.
+  preset = null,
 }) => {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -104,10 +120,10 @@ const KnowledgeBaseFormModal = ({
       setNoteCategory(editKnowledgeBase.note_category || DEFAULT_NOTE_CATEGORY);
       setContextTags(editKnowledgeBase.context_tags || []);
     } else {
-      setName('');
-      setDescription('');
-      setContent('');
-      setNoteCategory(DEFAULT_NOTE_CATEGORY);
+      setName(preset?.name || '');
+      setDescription(preset?.description || '');
+      setContent(preset?.content || '');
+      setNoteCategory(preset?.noteCategory || DEFAULT_NOTE_CATEGORY);
       setContextTags([]);
     }
     setSelectedFile(null);
@@ -274,20 +290,9 @@ const KnowledgeBaseFormModal = ({
   const handleSubmit = () => {
     const trimmedName = name?.trim() || '';
 
-    if (!trimmedName) {
-      snackbar.error('Please enter a valid name for the knowledge base');
-      return;
-    }
-    if (!/^[a-zA-Z]/.test(trimmedName)) {
-      snackbar.error('Name must start with a letter (a-z or A-Z)');
-      return;
-    }
-    if (!/^[a-zA-Z]\w*$/.test(trimmedName)) {
-      snackbar.error('Name can only contain letters, numbers, and underscores');
-      return;
-    }
-    if (trimmedName.length < 3 || trimmedName.length > 50) {
-      snackbar.error('Name must be between 3 and 50 characters');
+    const nameError = getKbNameError(trimmedName);
+    if (nameError) {
+      snackbar.error(nameError);
       return;
     }
     if (showScope && visibility === SCOPE_SELECTED_ACCOUNTS && scopeAccountIds.length === 0) {
@@ -325,7 +330,7 @@ const KnowledgeBaseFormModal = ({
     <Modal
       open={open}
       handleClose={onClose}
-      title={editKnowledgeBase ? 'Edit Knowledge Base' : 'Create Knowledge Base'}
+      title={editKnowledgeBase ? 'Edit Knowledge Base' : preset?.title || 'Create Knowledge Base'}
       subtitle={
         showScope && visibility !== 'account'
           ? 'Provide organisation-wide knowledge that the AI uses for more precise responses in the accounts that can see it.'
@@ -474,7 +479,7 @@ const KnowledgeBaseFormModal = ({
                     Name Rules
                   </div>
                   {[
-                    { label: 'Allowed characters', value: 'a-z, A-Z, 0-9, underscore ( _ )' },
+                    { label: 'Allowed characters', value: 'a-z, A-Z, 0-9, hyphen ( - ), underscore ( _ )' },
                     { label: 'Must start with', value: 'a letter (a-z or A-Z)' },
                     { label: 'Length', value: '3 to 50 characters' },
                   ].map(({ label, value }, i) => (
@@ -891,6 +896,13 @@ KnowledgeBaseFormModal.propTypes = {
   scopeOptions: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })),
   initialVisibility: PropTypes.string,
   initialAccountIds: PropTypes.arrayOf(PropTypes.string),
+  preset: PropTypes.shape({
+    title: PropTypes.string,
+    name: PropTypes.string,
+    description: PropTypes.string,
+    content: PropTypes.string,
+    noteCategory: PropTypes.string,
+  }),
 };
 
 export default KnowledgeBaseFormModal;

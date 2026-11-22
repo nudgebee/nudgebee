@@ -54,3 +54,14 @@ jobs:
           uv run black --check .
           uv run flake8 .
           uv run mypy ./**/*.py --namespace-packages
+
+      - name: Run unit tests
+        working-directory: ./llm/rag-server
+        env:
+          # utils.config requires these at import; tests never connect.
+          APP_DATABASE_URL: postgresql://ci:ci@127.0.0.1:1/ci
+          RELAY_SERVER_ENDPOINT: http://127.0.0.1:1
+          RELAY_SERVER_SECRET_KEY: ci
+          # Keep DB-backed tests skipped; never point CI at a real database.
+          KB_TEST_DATABASE_URL: ""
+        run: uv run pytest -q -p no:cacheprovider

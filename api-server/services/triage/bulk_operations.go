@@ -221,10 +221,16 @@ func batchUpdateEvents(ctx context.Context, db *sqlx.DB, job *BulkClassification
 
 	rowsAffected, _ := result.RowsAffected()
 
-	// Record rule matches and log to event_history (async to not slow down batch)
-	go logBulkStatusChangeToHistory(context.Background(), db, eventIDs, job)
+	// Record history and rule matches before the next batch, on the consumer's
+	// context. This runs in a one-job-at-a-time queue consumer, not a request, so
+	// there is no caller waiting on it; detached goroutines instead piled up two
+	// per batch against the connection pool and outlived the message they belonged
+	// to. The events are already updated, so a failure here is logged with the
+	// event ids rather than returned: a requeued job skips events already at the
+	// target status and would never write their history anyway.
+	logBulkStatusChangeToHistory(ctx, db, eventIDs, job)
 	if job.RuleID != nil {
-		go insertBulkRuleMatches(context.Background(), db, eventIDs, job)
+		insertBulkRuleMatches(ctx, db, eventIDs, job)
 	}
 
 	return rowsAffected, nil
@@ -236,6 +242,10 @@ func insertBulkRuleMatches(ctx context.Context, db *sqlx.DB, eventIDs []string, 
 		return
 	}
 
+	// Bound the rule-match write so a slow insert cannot stall the consumer.
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	ruleType := RuleTypeSuppression
 	action := ActionSuppress
 	if job.Classification == ClassificationDuplicate {
@@ -246,7 +256,12 @@ func insertBulkRuleMatches(ctx context.Context, db *sqlx.DB, eventIDs []string, 
 	var tenantID string
 	err := db.GetContext(ctx, &tenantID, "SELECT tenant FROM events WHERE cloud_account_id = $1 LIMIT 1", job.AccountID)
 	if err != nil {
-		slog.WarnContext(ctx, "Failed to get tenant for bulk rule matches", "error", err)
+		slog.ErrorContext(ctx, "Failed to get tenant for bulk rule matches",
+			"error", err,
+			"job_id", job.JobID,
+			"rule_id", *job.RuleID,
+			"event_ids", eventIDs,
+		)
 		return
 	}
 
@@ -276,10 +291,11 @@ func insertBulkRuleMatches(ctx context.Context, db *sqlx.DB, eventIDs []string, 
 
 		_, err := db.ExecContext(ctx, query, args...)
 		if err != nil {
-			slog.WarnContext(ctx, "Failed to insert bulk rule matches",
+			slog.ErrorContext(ctx, "Failed to insert bulk rule matches",
 				"error", err,
 				"job_id", job.JobID,
-				"batch_size", len(batch),
+				"rule_id", *job.RuleID,
+				"event_ids", batch,
 			)
 		}
 	}
@@ -292,7 +308,7 @@ func logBulkStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventIDs []s
 		return
 	}
 
-	// Add a timeout since this runs in a background goroutine with context.Background().
+	// Bound the history write so a slow insert cannot stall the consumer.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -322,7 +338,11 @@ func logBulkStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventIDs []s
 	query := "SELECT id, cloud_account_id, tenant FROM events WHERE id = ANY($1)"
 	err = db.SelectContext(ctx, &events, query, pq.Array(eventIDs))
 	if err != nil {
-		slog.WarnContext(ctx, "Failed to batch-fetch events for history logging", "error", err)
+		slog.ErrorContext(ctx, "Failed to batch-fetch events for history logging",
+			"error", err,
+			"job_id", job.JobID,
+			"event_ids", eventIDs,
+		)
 		return
 	}
 
@@ -351,10 +371,14 @@ func logBulkStatusChangeToHistory(ctx context.Context, db *sqlx.DB, eventIDs []s
 
 		_, err := db.ExecContext(ctx, sb.String(), args...)
 		if err != nil {
-			slog.WarnContext(ctx, "Failed to batch-insert bulk status change history",
+			batchIDs := make([]string, len(batch))
+			for j, ev := range batch {
+				batchIDs[j] = ev.ID
+			}
+			slog.ErrorContext(ctx, "Failed to batch-insert bulk status change history",
 				"error", err,
 				"job_id", job.JobID,
-				"batch_size", len(batch),
+				"event_ids", batchIDs,
 			)
 		}
 	}

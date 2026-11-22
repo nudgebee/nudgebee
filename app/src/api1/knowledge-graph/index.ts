@@ -99,6 +99,9 @@ export interface ManualNodeKind {
   node_type: string;
   key_fields: ManualNodeKeyField[];
   properties: ManualNodeProperty[];
+  // A tenant's own kind outside any account (specific_type is its name,
+  // node_type its category): any keys, no schema.
+  free_properties?: boolean;
 }
 
 export type ManualNodePropertyValue = string | number | boolean | string[] | Record<string, string>;
@@ -110,6 +113,8 @@ export interface ManualNodeSchemaAccount {
   account_number?: string;
   cloud_provider: string;
   kinds: ManualNodeKind[];
+  // Outside any account: the caller may introduce a kind the tenant does not use yet.
+  can_define_kinds?: boolean;
 }
 
 export interface ManualNode {
@@ -133,6 +138,9 @@ export interface ManualNode {
   declared_by_user_id?: string;
   created_at: string;
   updated_at: string;
+  // The node's user-set role (kg_node_roles); changed through setNodeRole.
+  role?: string;
+  engine?: string;
 }
 
 export interface ManualNodeCreateRequest {
@@ -142,10 +150,36 @@ export interface ManualNodeCreateRequest {
   name: string;
   region?: string;
   namespace?: string;
+  // An Azure resource's resource group: part of its key.
+  resource_group?: string;
   network_node_id?: string;
   description?: string;
   properties?: Record<string, ManualNodePropertyValue>;
   labels?: Record<string, string>;
+  // The role the node acts as from its first write (kg_node_roles).
+  role?: string;
+  engine?: string;
+}
+
+// What a node can act as (kg_list_node_roles).
+export interface NodeRoleDef {
+  value: string;
+  label: string;
+}
+
+export interface NodeRoleVocabulary {
+  roles: NodeRoleDef[];
+  target_node_types: string[];
+}
+
+// The answer to setting or removing a role: the node as kg_get_node returns
+// it, the linked cloud instances that took the same change and those the
+// caller may not change, and whether a running build may overwrite it.
+export interface NodeRoleResult {
+  node: Record<string, unknown> & { id: string; properties?: Record<string, unknown>; logo_id?: string };
+  applied: string[];
+  skipped: string[];
+  build_in_progress: boolean;
 }
 
 export interface ManualNodeDetailsPatch {
@@ -220,8 +254,8 @@ export interface ManualDeclarationsResult {
 // -- GraphQL queries / mutations -------------------------------------------
 
 const KG_GET_COMPLETE_GRAPH = `
-mutation KnowledgeGraph {
-  kg_get_complete_graph(request: __WHERE__) {
+mutation KnowledgeGraph($request: kg_get_complete_graph_input!) {
+  kg_get_complete_graph(request: $request) {
     data {
       edges
       generated_at
@@ -248,8 +282,8 @@ query KgFilterOptions {
 }`;
 
 const KG_GET_FILTER_VALUES = `
-query KgFilterOptionLabelValues {
-  kg_get_filter_values(request: __WHERE__) {
+query KgFilterOptionLabelValues($request: kg_get_filter_values_input!) {
+  kg_get_filter_values(request: $request) {
     data {
       filter_key
       filter_type
@@ -425,6 +459,27 @@ mutation KgDeleteAllManualNodes {
   }
 }`;
 
+const KG_LIST_NODE_ROLES = `
+query KgListNodeRoles {
+  kg_list_node_roles(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_UPSERT_NODE_ROLE = `
+mutation KgUpsertNodeRole {
+  kg_upsert_node_role(request: __WHERE__) {
+    data
+  }
+}`;
+
+const KG_DELETE_NODE_ROLE = `
+mutation KgDeleteNodeRole {
+  kg_delete_node_role(request: __WHERE__) {
+    data
+  }
+}`;
+
 // -- API object ------------------------------------------------------------
 
 const apiKnowledgeGraph = {
@@ -460,16 +515,19 @@ const apiKnowledgeGraph = {
     if (data?.levels) {
       request.levels = data.levels;
     }
-    return await queryGraphQL(KG_GET_COMPLETE_GRAPH.replace('__WHERE__', gqlStringify(request)), 'KnowledgeGraph', {}, undefined, signal);
+    return queryGraphQL(KG_GET_COMPLETE_GRAPH, 'KnowledgeGraph', { request }, undefined, signal);
   },
 
-  getFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[] }) {
-    const request: { account_ids?: string[]; node_types?: string[] } = {};
+  getFilterOptions: async function (data?: { accountIds?: string[]; nodeTypes?: string[]; specificTypes?: string[] }) {
+    const request: { account_ids?: string[]; node_types?: string[]; specific_types?: string[] } = {};
     if (data?.accountIds?.length) {
       request.account_ids = data.accountIds;
     }
     if (data?.nodeTypes?.length) {
       request.node_types = data.nodeTypes;
+    }
+    if (data?.specificTypes?.length) {
+      request.specific_types = data.specificTypes;
     }
     return await queryGraphQL(KG_GET_FILTER_OPTIONS.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptions', {});
   },
@@ -494,7 +552,7 @@ const apiKnowledgeGraph = {
     if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
     if (data.labelKeys?.length) request.label_keys = data.labelKeys;
     if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
-    return await queryGraphQL(KG_GET_FILTER_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
+    return queryGraphQL(KG_GET_FILTER_VALUES, 'KgFilterOptionLabelValues', { request });
   },
 
   getNode: async function (nodeId: string) {
@@ -610,6 +668,21 @@ const apiKnowledgeGraph = {
 
   deleteAllManualNodes: async function () {
     return await queryGraphQL(KG_DELETE_ALL_MANUAL_NODES.replace('__WHERE__', gqlStringify({})), 'KgDeleteAllManualNodes', {});
+  },
+
+  // ---- Node roles ----------------------------------------------------------
+
+  listNodeRoles: async function (): Promise<NodeRoleVocabulary | undefined> {
+    const res = await queryGraphQL(KG_LIST_NODE_ROLES.replace('__WHERE__', gqlStringify({})), 'KgListNodeRoles', {});
+    return res?.data?.data?.kg_list_node_roles?.data;
+  },
+
+  setNodeRole: async function (data: { node_id: string; role: string; engine?: string }) {
+    return await queryGraphQL(KG_UPSERT_NODE_ROLE.replace('__WHERE__', gqlStringify(data)), 'KgUpsertNodeRole', {});
+  },
+
+  removeNodeRole: async function (data: { node_id: string }) {
+    return await queryGraphQL(KG_DELETE_NODE_ROLE.replace('__WHERE__', gqlStringify(data)), 'KgDeleteNodeRole', {});
   },
 };
 

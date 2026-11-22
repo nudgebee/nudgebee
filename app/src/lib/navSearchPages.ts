@@ -130,12 +130,30 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Optimize', label: 'Optimize Resolutions', path: '/optimise#resolutions' },
   { group: 'Optimize', label: 'Auto Optimize - Optimizations', path: '/optimise#auto-optimize/optimizations' },
   { group: 'Optimize', label: 'Auto Optimize - Approvals', path: '/optimise#auto-optimize/approvals' },
-  // Both gated in GlobalPageSearch.jsx by the same two gates the tabs themselves
-  // use: LLM Analyser on the per-tenant LLM_ANALYSER feature flag, AI Gateway on
-  // the deployment's UI_ENABLE_LLM_GATEWAY env var (read off the session — see
-  // optimise/index.jsx), each narrowed by hasReadAccess(selectedCluster?.value).
+  // Gated in GlobalPageSearch.jsx by the same gate the tab itself uses: the
+  // per-tenant LLM_ANALYSER feature flag, narrowed by hasReadAccess(selectedCluster?.value).
   { group: 'Optimize', label: 'LLM Analyser', path: '/optimise#llm-analyser' },
-  { group: 'Optimize', label: 'AI Gateway', path: '/optimise#ai-gateway' },
+  { group: 'Optimize', label: 'LLM Analyser - Overview', path: '/optimise#llm-analyser/overview' },
+  { group: 'Optimize', label: 'LLM Analyser - Conversations', path: '/optimise#llm-analyser/conversations' },
+  { group: 'Optimize', label: 'LLM Analyser - Models', path: '/optimise#llm-analyser/models' },
+  { group: 'Optimize', label: 'LLM Analyser - Agents', path: '/optimise#llm-analyser/agents' },
+  { group: 'Optimize', label: 'LLM Analyser - Tools', path: '/optimise#llm-analyser/tools' },
+  { group: 'Optimize', label: 'LLM Analyser - Users', path: '/optimise#llm-analyser/users' },
+  { group: 'Optimize', label: 'LLM Analyser - Cost Report', path: '/optimise#llm-analyser/cost-report' },
+  { group: 'Optimize', label: 'LLM Analyser - Critiques', path: '/optimise#llm-analyser/critiques' },
+
+  // Its own page, one row per tab (sections = GROUPS in GatewayUsage.tsx). The whole
+  // group is gated in GlobalPageSearch.jsx by the page's own gate; Users also by
+  // canViewGatewayUserAccess, the same check that hides that tab.
+  { group: 'AI Gateway', label: 'AI Gateway - Connect', path: '/ai-gateway#connect' },
+  { group: 'AI Gateway', label: 'AI Gateway - Overview', path: '/ai-gateway#monitor' },
+  { group: 'AI Gateway', label: 'AI Gateway - Models', path: '/ai-gateway#monitor/models' },
+  { group: 'AI Gateway', label: 'AI Gateway - Users', path: '/ai-gateway#monitor/users' },
+  { group: 'AI Gateway', label: 'AI Gateway - Keys', path: '/ai-gateway#monitor/keys' },
+  { group: 'AI Gateway', label: 'AI Gateway - Requests', path: '/ai-gateway#activity' },
+  { group: 'AI Gateway', label: 'AI Gateway - Sessions', path: '/ai-gateway#activity/sessions' },
+  { group: 'AI Gateway', label: 'AI Gateway - Tools', path: '/ai-gateway#activity/tools' },
+  { group: 'AI Gateway', label: 'AI Gateway - Governance', path: '/ai-gateway#governance' },
 
   // Infra → VM. The account in scope comes from the header cluster dropdown, and
   // the page adopts the first self-hosted account when the current selection is
@@ -145,11 +163,23 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'VM', label: 'Virtual Machines', path: '/vm#instances' },
   { group: 'VM', label: 'VM Vulnerabilities', path: '/vm#vulnerabilities' },
   { group: 'VM', label: 'VM Packages', path: '/vm#packages' },
+  { group: 'VM', label: 'VM Service Map', path: '/vm#service-map' },
+  { group: 'VM', label: 'VM Traces', path: '/vm#traces' },
+  { group: 'VM', label: 'VM Events', path: '/vm#alerts' },
+  { group: 'VM', label: 'VM Metrics', path: '/vm#metrics' },
+  { group: 'VM', label: 'VM Logs', path: '/vm#logs' },
   // No VM Agents row: that tab moved to Agent Health → Proxy Agent, which is
   // already indexed as an account-scoped fragment below.
 
   { group: 'Tickets', label: 'All Tickets', path: '/tickets#tickets' },
   { group: 'Tickets', label: 'All Tickets - Assigned to me', path: '/tickets#assigned-me' },
+
+  // A section an extension registers (registerNavSection, id 'bees-sidenav'),
+  // only for tenants with its feature flag; GlobalPageSearch.jsx hides these
+  // rows otherwise (canAccessBees).
+  { group: 'Bees', label: 'Bees', path: '/bees' },
+  { group: 'Bees', label: 'Bee Catalog', path: '/bees/catalog' },
+  { group: 'Bees', label: 'Bee Approvals', path: '/bees/approvals' },
 
   // Users, Groups, Ownership, Roles and Audit Log all consolidated into one
   // "Access & Users" top-level tab as sibling sub-tabs (AnchorComponent's
@@ -172,6 +202,7 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Audit Log', path: '/user-management#access-users/audit-log' },
   { group: 'Admin', label: 'Integrations', path: '/user-management#integrations' },
   { group: 'Admin', label: 'Notification Rules', path: '/user-management#notification-rules' },
+  { group: 'Admin', label: 'Delivery history', path: '/user-management#notification-rules/delivery-history' },
   // Relocated from the Settings modal (see docs/ia-consolidation-plan.md,
   // PR 3) into one "AI & Tools" top-level tab, same sibling-sub-tab shape as
   // Access & Users above. Agents is the default sub-tab, so its path carries
@@ -182,9 +213,15 @@ export const navSearchPages: NavSearchPage[] = [
   { group: 'Admin', label: 'Gateway', path: '/user-management#ai-tools/gateway' },
   // EE-only sub-tabs (`eeOnly` in aiToolsConfig.js) are dropped from the Admin
   // page on OSS, so their search rows go too: a hit would land on an empty tab.
-  ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Egress Filter', path: '/user-management#ai-tools/egress-filter' }]),
+  ...(isOSSDeploymentMode()
+    ? []
+    : [
+        { group: 'Admin', label: 'Security — Egress Filter', path: '/user-management#ai-tools/egress-filter' },
+        { group: 'Admin', label: 'Security — Tool Approvals', path: '/user-management#ai-tools/egress-filter/tool-approvals' },
+      ]),
   { group: 'Admin', label: 'Budgets & Limits', path: '/user-management#ai-tools/budgets-limits' },
   ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Memory Policy', path: '/user-management#ai-tools/memory-policy' }]),
+  ...(isOSSDeploymentMode() ? [] : [{ group: 'Admin', label: 'Investigation Depth', path: '/user-management#ai-tools/investigation-depth' }]),
   { group: 'Admin', label: 'RCA Format', path: '/user-management#ai-tools/rca-format' },
   // Relocated from an avatar-menu modal (see docs/ia-consolidation-plan.md) —
   // now a plain top-level Admin tab, gated the same way (tenants:Read).
@@ -287,6 +324,7 @@ export const integrationProviders: string[] = [
   'CUBEAPM_WEBHOOK',
   'SIGNOZ_WEBHOOK',
   'EVENT_WEBHOOK',
+  'ORION_WEBHOOK',
   // database
   'POSTGRES',
   'MYSQL',
@@ -305,6 +343,7 @@ export const integrationProviders: string[] = [
   'AZURE_APP_INSIGHTS',
   'PROMETHEUS',
   'CHRONOSPHERE',
+  'ORION',
   'OTEL',
   'JAEGER',
   'GRAFANA_TEMPO',
@@ -436,8 +475,6 @@ export const awsDetailsSearchFragments: AwsDetailsSearchFragment[] = [
 
   { label: 'AWS Services', slug: 'aws/services', fragment: 'services' },
 
-  { label: 'AWS Vulnerabilities', slug: 'aws/vulnerabilities', fragment: 'vulnerabilities' },
-
   { label: 'AWS Events', slug: 'aws/troubleshoot/events', fragment: 'events/events' },
   { label: 'AWS Triage Rules', slug: 'aws/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
   {
@@ -496,8 +533,6 @@ export const azureDetailsSearchFragments: AzureDetailsSearchFragment[] = [
   },
 
   { label: 'Azure Services', slug: 'azure/services', fragment: 'services' },
-
-  { label: 'Azure Vulnerabilities', slug: 'azure/vulnerabilities', fragment: 'vulnerabilities' },
 
   { label: 'Azure Events', slug: 'azure/troubleshoot/events', fragment: 'events/events' },
   { label: 'Azure Triage Rules', slug: 'azure/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
@@ -560,8 +595,6 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
 
   { label: 'GCP Services', slug: 'gcp/services', fragment: 'services' },
 
-  { label: 'GCP Vulnerabilities', slug: 'gcp/vulnerabilities', fragment: 'vulnerabilities' },
-
   { label: 'GCP Events', slug: 'gcp/troubleshoot/events', fragment: 'events/events' },
   { label: 'GCP Triage Rules', slug: 'gcp/troubleshoot/triage-rules', fragment: 'events/triage-rules' },
   {
@@ -592,10 +625,13 @@ export const gcpDetailsSearchFragments: GcpDetailsSearchFragment[] = [
 ];
 
 // CloudFoundry Cloud Account Details tabs — same route/shape as
-// awsDetailsSearchFragments above, see `cfOptions` in
-// src/pages/cloud-account/details/[CloudAccountDetails].jsx. `label` is the
-// hardcoded row title shown to the user; `slug` is the slash-joined path used
-// for the row's `type` chip, its searchText, and its acronym.
+// awsDetailsSearchFragments above, see `cfOptions` (and the shared `baseOptions`
+// Summary tab, kept for CF too) in src/pages/cloud-account/details/
+// [CloudAccountDetails].jsx. Unlike AWS/Azure/GCP, CF has no Optimize/Monitoring
+// tabs (disabled there) and no Services tab (hidden there), so those are simply
+// absent here rather than needing a navSearchIgnoredFragments entry. `label` is
+// the hardcoded row title shown to the user; `slug` is the slash-joined path
+// used for the row's `type` chip, its searchText, and its acronym.
 export interface CloudFoundryDetailsSearchFragment {
   label: string;
   slug: string;
@@ -614,6 +650,56 @@ export const cloudFoundryDetailsSearchFragments: CloudFoundryDetailsSearchFragme
   { label: 'CloudFoundry Spaces', slug: 'cloudfoundry/cf-spaces/instances', fragment: 'cf-spaces/instances' },
   { label: 'CloudFoundry Space Events', slug: 'cloudfoundry/cf-spaces/events', fragment: 'cf-spaces/events' },
   { label: 'CloudFoundry Routes', slug: 'cloudfoundry/cf-routes/instances', fragment: 'cf-routes/instances' },
+];
+
+// Every b-Cortex tab (BCortexModal.jsx's *_SUB_TABS_CONFIG arrays, plus the
+// flat Knowledge Graph top-level tab — Memory/Preferences/Knowledge/Insights
+// aren't listed on their own since each already defaults to its first
+// sub-tab). b-Cortex is a modal, not a route, so there's no page of its own
+// to index — GlobalPageSearch.jsx opens these directly via the bCortexOpener
+// seam (NubiBrainNav.jsx subscribes to it) rather than navigating anywhere.
+// `memoryOnly`/`requiresFeedbackScope` mirror the matching
+// field on that tab's own config in BCortexModal.jsx exactly, so
+// GlobalPageSearch.jsx can gate a row the same way the modal gates the tab
+// itself. Kept here rather than exported from the modal so this stays a
+// read-only mirror of the registry, not a second copy the modal depends on;
+// keep the two in sync by hand.
+export interface BCortexSearchFragment {
+  label: string;
+  slug: string;
+  tab: string;
+  memoryOnly?: boolean;
+  requiresFeedbackScope?: boolean;
+}
+
+export const bCortexSearchFragments: BCortexSearchFragment[] = [
+  { label: 'Patterns', slug: 'bcortex/memory/patterns', tab: 'patterns' },
+  { label: 'Decisions', slug: 'bcortex/memory/decisions', tab: 'decisions' },
+  { label: 'Sessions', slug: 'bcortex/memory/sessions', tab: 'sessions' },
+  { label: 'Soul', slug: 'bcortex/memory/soul', tab: 'soul' },
+  { label: 'Privacy', slug: 'bcortex/memory/privacy', tab: 'privacy' },
+  { label: 'Collective', slug: 'bcortex/memory/collective', tab: 'collective' },
+
+  { label: 'Preferences - Inferred', slug: 'bcortex/preferences/inferred', tab: 'inferred' },
+  { label: 'Preferences - Typed', slug: 'bcortex/preferences/typed', tab: 'typed' },
+
+  { label: 'Knowledge Base', slug: 'bcortex/knowledge/knowledge-base', tab: 'knowledge-base' },
+  {
+    label: 'Account Context',
+    slug: 'bcortex/knowledge/account-context',
+    tab: 'account-context',
+  },
+
+  { label: 'Knowledge Graph', slug: 'bcortex/knowledge-graph', tab: 'knowledge-graph' },
+
+  { label: 'Digests', slug: 'bcortex/insights/digests', tab: 'digests' },
+  {
+    label: 'Feedback',
+    slug: 'bcortex/insights/feedback',
+    tab: 'feedback',
+    requiresFeedbackScope: true,
+  },
+  { label: 'My Usage', slug: 'bcortex/insights/my-usage', tab: 'my-usage' },
 ];
 
 // Tabs/sub-tabs that exist in page source today but are NOT represented
@@ -641,15 +727,15 @@ export const navSearchIgnoredFragments: string[] = [
 
   // /auto-pilot/task/{taskId} — src/pages/auto-pilot/task/[TaskDetails].jsx.
   // Needs a runtime taskId like the provider detail pages above, so it would
-  // need its own `autoPilotTaskSearchFragments`-style array, not a static path.
-  // NOT confirmed intentional.
+  // need its own `autoPilotTaskSearchFragments`-style array fed by a live task
+  // listing (same shape as navSearchWorkflowItems/navSearchDashboardItems in
+  // GlobalPageSearch.jsx), not a static path. NOT confirmed intentional.
   'auto-pilot/task#tasks',
   'auto-pilot/task#details',
 
-  // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own (just
-  // shortcut cards linking into fragments already registered elsewhere); it's
-  // the default landing page, so nothing to search for in the first place.
-  // Confirmed intentional.
+  // /home — src/pages/home/index.jsx. No fragment/tabOptions of its own — just
+  // shortcut cards linking into fragments already registered elsewhere — so
+  // nothing to search for in the first place. Confirmed intentional.
   '/home',
 
   // /ask-nudgebee — src/pages/ask-nudgebee/index.jsx. No tabs of its own, and

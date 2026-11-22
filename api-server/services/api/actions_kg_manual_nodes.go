@@ -79,13 +79,15 @@ func manualNodeSummary(n *flow_sources.ManualNode) map[string]any {
 // manualAccountAuthorizer answers whether the caller may write a manual node
 // or dependency in an account. Anything outside a connected account belongs
 // to the tenant as a whole, so it takes tenant-wide access; an account admin's
-// reach stops at their own accounts.
-func manualAccountAuthorizer(sc *security.SecurityContext, access security.SecurityAccessType) flow_sources.ManualAccountAuthorizer {
+// reach stops at their own accounts. A custom-role grant for the action's key
+// counts too: tenant-wide for a tenant-level row, tenant-wide or bound to the
+// account for an account's row.
+func manualAccountAuthorizer(ctx *security.RequestContext, access security.SecurityAccessType) flow_sources.ManualAccountAuthorizer {
 	return func(cloudAccountID string) bool {
 		if cloudAccountID == "" {
-			return sc.HasTenantAccess(access)
+			return ctx.GetSecurityContext().CanAccessTenant(access)
 		}
-		return sc.HasAccountAccess(cloudAccountID, access)
+		return ctx.GetSecurityContext().CanAccessAccount(cloudAccountID, access)
 	}
 }
 
@@ -101,7 +103,7 @@ func authorizeManualNodeWrite(c *gin.Context, ctx *security.RequestContext, repo
 		c.JSON(500, common.ErrorActionInternal("Failed to load manual node: "+err.Error()))
 		return false
 	}
-	if !manualAccountAuthorizer(ctx.GetSecurityContext(), access)(n.CloudAccountID) {
+	if !manualAccountAuthorizer(ctx, access)(n.CloudAccountID) {
 		c.JSON(403, common.ErrorActionForbidden(flow_sources.ErrManualNodeForbidden.Error()))
 		return false
 	}
@@ -117,7 +119,7 @@ func manualNodeWriteStatus(err error) int {
 	switch {
 	case errors.As(err, &exists), errors.Is(err, flow_sources.ErrManualNodeDuplicate):
 		return 409
-	case errors.Is(err, flow_sources.ErrManualNodeForbidden):
+	case errors.Is(err, flow_sources.ErrManualNodeForbidden), errors.Is(err, flow_sources.ErrManualNodeKindForbidden):
 		return 403
 	case errors.Is(err, sql.ErrNoRows):
 		return 404
@@ -151,7 +153,19 @@ func handleKgGetManualNodeSchema(actionPayload *ActionRequest, c *gin.Context, t
 		c.JSON(500, common.ErrorActionInternal("Failed to load the node schema: "+err.Error()))
 		return
 	}
+	canDefineKinds := manualNewKindAuthorizer(ctx.GetSecurityContext())()
+	for i := range schema {
+		if schema[i].CloudProvider == flow_sources.TenantScopedProvider {
+			schema[i].CanDefineKinds = canDefineKinds
+		}
+	}
 	c.JSON(200, map[string]any{"data": schema})
+}
+
+// manualNewKindAuthorizer answers whether the caller may introduce a custom
+// node kind the tenant does not use yet: a tenant admin's call.
+func manualNewKindAuthorizer(sc *security.SecurityContext) func() bool {
+	return func() bool { return sc.IsTenantAdmin() || sc.IsSuperAdmin() }
 }
 
 // handleKgListManualNodes returns the tenant's live declarations.
@@ -190,7 +204,8 @@ func handleKgCreateManualNode(actionPayload *ActionRequest, c *gin.Context, trac
 	}
 	req.TenantID = tenantID
 	req.DeclaredByUserID = ctx.GetSecurityContext().GetUserId()
-	req.Authorize = manualAccountAuthorizer(ctx.GetSecurityContext(), security.SecurityAccessTypeCreate)
+	req.Authorize = manualAccountAuthorizer(ctx, security.SecurityAccessTypeCreate)
+	req.AuthorizeNewKind = manualNewKindAuthorizer(ctx.GetSecurityContext())
 
 	created, err := repo.Create(ctx.GetContext(), kg, req)
 	if err != nil {
@@ -334,7 +349,7 @@ func handleKgDeleteAllManualNodes(actionPayload *ActionRequest, c *gin.Context, 
 		return
 	}
 	// Withdraws every account's declarations, so it takes tenant-wide access.
-	if !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeDelete) {
+	if !ctx.GetSecurityContext().CanAccessTenant(security.SecurityAccessTypeDelete) {
 		c.JSON(403, common.ErrorActionForbidden("deleting all manual nodes needs tenant admin access"))
 		return
 	}

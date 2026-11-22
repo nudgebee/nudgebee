@@ -153,6 +153,14 @@ describe('checkConnections', () => {
     expect(checkConnections(cluster)).toBe(false);
   });
 
+  // With the agent's ClickHouse serving the logs, logsConnection is the agent's Loki check
+  // and says nothing about them; the ClickHouse logs check does.
+  it("judges logs served by the agent's ClickHouse by the ClickHouse logs check", () => {
+    const providerStatus = { logs: { provider: 'otel_clickhouse', source: 'agent' } };
+    expect(checkConnections(k8sCluster({ ...healthyAgent, logsConnection: false, clickhouseLogsConnection: true, providerStatus }))).toBe(true);
+    expect(checkConnections(k8sCluster({ ...healthyAgent, logsConnection: true, clickhouseLogsConnection: false, providerStatus }))).toBe(false);
+  });
+
   it('still accepts server-side OpenCost', () => {
     expect(checkConnections(k8sCluster({ ...healthyAgent, opencostConnection: false, opencostServerSide: true }))).toBe(true);
     expect(checkConnections(k8sCluster({ ...healthyAgent, opencostConnection: false }))).toBe(false);

@@ -1,14 +1,8 @@
 package integrations
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"nudgebee/services/common"
-	"nudgebee/services/config"
 	"nudgebee/services/event"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
@@ -47,24 +41,6 @@ type GCPMonitoringResource struct {
 
 type GCPMonitoringMetric struct {
 	Type string `json:"type"`
-}
-
-// gcpNormalizedEvent is the event row the polling path would store for the incident, as
-// returned by the collector's normalize_gcp_monitoring_webhook endpoint.
-type gcpNormalizedEvent struct {
-	Title            string            `json:"title"`
-	Description      string            `json:"description"`
-	AggregationKey   string            `json:"aggregation_key"`
-	SubjectName      string            `json:"subject_name"`
-	SubjectType      string            `json:"subject_type"`
-	SubjectNamespace string            `json:"subject_namespace"`
-	ServiceKey       string            `json:"service_key"`
-	Fingerprint      string            `json:"fingerprint"`
-	FindingId        string            `json:"finding_id"`
-	CloudResourceId  string            `json:"cloud_resource_id"`
-	Priority         string            `json:"priority"`
-	Status           string            `json:"status"`
-	Labels           map[string]string `json:"labels"`
 }
 
 const IntegrationGCPMonitoringWebhook = "gcp_monitoring_webhook"
@@ -222,7 +198,7 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 
 // buildGCPMonitoringWebhookEvent fills the webhook event from the collector's normalized
 // row; the raw delivery is kept as evidence.
-func buildGCPMonitoringWebhookEvent(inc GCPMonitoringIncident, payload map[string]any, n gcpNormalizedEvent) core.EventIncomingWebhook {
+func buildGCPMonitoringWebhookEvent(inc GCPMonitoringIncident, payload map[string]any, n collectorNormalizedEvent) core.EventIncomingWebhook {
 	var eventTime time.Time
 	if inc.StartedAt > 0 {
 		eventTime = time.Unix(inc.StartedAt, 0).UTC()
@@ -298,52 +274,8 @@ func buildGCPMonitoringWebhookEvent(inc GCPMonitoringIncident, payload map[strin
 // normalizeGCPIncident asks the collector for the event row polling would store for this
 // incident. A collector outage fails the delivery; the incident still arrives by polling
 // on accounts whose credentials can list alerts.
-func normalizeGCPIncident(sc *security.RequestContext, accountId, webhookPayload string) (gcpNormalizedEvent, error) {
-	// The tenant-admin context is nil when its account lookup failed.
-	if sc.GetSecurityContext() == nil {
-		return gcpNormalizedEvent{}, fmt.Errorf("no tenant context")
-	}
-	collectorURL := fmt.Sprintf("%s/v1/cloud/normalize_gcp_monitoring_webhook?account_id=%s",
-		config.Config.CloudCollectorServerUrl, url.QueryEscape(accountId))
-	httpReq, err := http.NewRequestWithContext(sc.GetContext(), http.MethodPost, collectorURL, bytes.NewReader([]byte(webhookPayload)))
-	if err != nil {
-		return gcpNormalizedEvent{}, fmt.Errorf("failed to create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set(config.Config.CloudCollectorServerTokenHeader, config.Config.CloudCollectorServerToken)
-	httpReq.Header.Set("x-tenant-id", sc.GetSecurityContext().GetTenantId())
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return gcpNormalizedEvent{}, fmt.Errorf("failed to call collector-server: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return gcpNormalizedEvent{}, fmt.Errorf("failed to read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return gcpNormalizedEvent{}, fmt.Errorf("collector-server returned %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var apiResponse struct {
-		Data   gcpNormalizedEvent `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(respBody, &apiResponse); err != nil {
-		return gcpNormalizedEvent{}, fmt.Errorf("failed to parse response: %w", err)
-	}
-	if len(apiResponse.Errors) > 0 {
-		return gcpNormalizedEvent{}, fmt.Errorf("%s", apiResponse.Errors[0].Message)
-	}
-	if apiResponse.Data.FindingId == "" {
-		return gcpNormalizedEvent{}, fmt.Errorf("collector-server returned no finding_id")
-	}
-	return apiResponse.Data, nil
+func normalizeGCPIncident(sc *security.RequestContext, accountId, webhookPayload string) (collectorNormalizedEvent, error) {
+	return normalizeByCollector(sc, "normalize_gcp_monitoring_webhook", accountId, webhookPayload)
 }
 
 func (m GCPMonitoringWebhook) TestConnection(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId string) (bool, error) {

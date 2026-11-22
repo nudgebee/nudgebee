@@ -1,7 +1,8 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Select } from '@ui/Select';
+import { Switch } from '@ui/Switch';
 import { Button as DsButton } from '@ui/Button';
 import Text from '@shared/format/Text';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
@@ -16,6 +17,7 @@ import apiAccount from '@api1/account';
 import { canManage } from '@lib/auth';
 import { ds } from 'src/utils/colors';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
+import { splitTeamsValue, teamsChannelOptions, teamsValue } from './rules/destinations';
 
 const renderAccountGroupIcon = (accountProvider: string) => <CloudProviderIcon cloud_provider={accountProvider} width='14px' height='14px' />;
 
@@ -35,7 +37,6 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
 
   const [cloudAccounts, setCloudAccounts] = useState<any[]>([]);
   const [channels, setChannels] = useState<any[]>([]);
-  const [teams, setTeams] = useState<any[]>([]);
   const [messagingPlatform, setMessagingPlatform] = useState<any>(null);
   const [channelNameMap, setChannelNameMap] = useState<Record<string, string>>({});
   const [teamNameMap, setTeamNameMap] = useState<Record<string, string>>({});
@@ -44,6 +45,7 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
   const [selectedChannel, setSelectedChannel] = useState('');
   const [selectedTeam, setSelectedTeam] = useState('');
   const [selectedMappingId, setSelectedMappingId] = useState('');
+  const [showSystemManaged, setShowSystemManaged] = useState(false);
 
   const headers = useMemo(
     () =>
@@ -90,7 +92,15 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
       const teamMap: Record<string, string> = {};
 
       if (provider === 'ms_teams') {
-        setTeams(data.map((item: any) => ({ label: item.name, value: item.id, channels: item.channels, teamId: item.id })));
+        setChannels(
+          teamsChannelOptions(
+            data.map((item: any) => ({
+              label: item.name,
+              value: item.id,
+              channels: (item.channels || []).map((c: any) => ({ label: c.name, value: c.id })),
+            }))
+          )
+        );
         // For MS Teams, build map from all team channels and teams
         data.forEach((team: any) => {
           // Build team name map
@@ -149,18 +159,32 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     }
   }, [isConfigured, loadMessagingPlatform]);
 
-  const loadMappings = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const response = await apiNotifications.listChannelAccountMappings(provider);
-      setMappings(response?.data || []);
-    } catch (error) {
-      snackbar.error('Failed to load mappings');
-      console.error(error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [provider]);
+  // One toggle state = one full (non-paginated) dataset, so switching back and forth
+  // between normal/system-managed shouldn't re-fetch what we already have.
+  const mappingsCacheRef = useRef<Record<string, any[]>>({});
+
+  const loadMappings = useCallback(
+    async (force = false) => {
+      const cacheKey = `${provider}:${showSystemManaged}`;
+      if (!force && mappingsCacheRef.current[cacheKey]) {
+        setMappings(mappingsCacheRef.current[cacheKey]);
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const response = await apiNotifications.listChannelAccountMappings(provider, provider === 'slack' ? showSystemManaged : undefined);
+        const rows = response?.data || [];
+        mappingsCacheRef.current[cacheKey] = rows;
+        setMappings(rows);
+      } catch (error) {
+        snackbar.error('Failed to load mappings');
+        console.error(error);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [provider, showSystemManaged]
+  );
 
   useEffect(() => {
     if (isConfigured) {
@@ -231,7 +255,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     try {
       await apiNotifications.deleteChannelAccountMapping(selectedMappingId);
       snackbar.success('Mapping deleted');
-      await loadMappings();
+      mappingsCacheRef.current = {};
+      await loadMappings(true);
     } catch {
       snackbar.error('Failed to delete');
     } finally {
@@ -289,7 +314,8 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
         snackbar.success('Mapping saved');
       }
 
-      await loadMappings();
+      mappingsCacheRef.current = {};
+      await loadMappings(true);
       setOpenModal(false);
       resetForm();
     } catch (error) {
@@ -301,13 +327,6 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleTeamChange = (next: string) => {
-    setSelectedTeam(next);
-    setSelectedChannel('');
-    const team = teams.find((t: any) => t.value === next);
-    setChannels(team?.channels?.map((item: any) => ({ label: item.name, value: item.id })) || []);
   };
 
   if (!isConfigured) {
@@ -391,29 +410,22 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
           />
 
           {provider === 'ms_teams' ? (
-            <>
-              <Select
-                id='team'
-                label='Team'
-                required
-                value={selectedTeam}
-                options={teams}
-                onChange={handleTeamChange}
-                disabled={isLoadingChannels}
-                placeholder={isLoadingChannels ? 'Loading…' : 'Select team'}
-              />
-              <Select
-                id='channel'
-                key={`channel-${selectedTeam}`}
-                label='Channel'
-                required
-                value={selectedChannel}
-                options={channels}
-                onChange={(next) => setSelectedChannel(next)}
-                disabled={!selectedTeam || isLoadingChannels}
-                placeholder={!selectedTeam ? 'Select a team first' : isLoadingChannels ? 'Loading…' : 'Select channel'}
-              />
-            </>
+            <Select
+              id='channel'
+              label='Channel'
+              required
+              value={selectedChannel ? teamsValue(selectedTeam, selectedChannel) : ''}
+              grouped
+              defaultGroupsOpen
+              options={channels}
+              onChange={(next) => {
+                const { teamId, channelId } = splitTeamsValue(next);
+                setSelectedTeam(teamId);
+                setSelectedChannel(channelId);
+              }}
+              disabled={isLoadingChannels}
+              placeholder={isLoadingChannels ? 'Loading…' : 'Select channel'}
+            />
           ) : (
             <Select
               id='channel'
@@ -432,11 +444,22 @@ const ChannelAccountMapping: React.FC<ChannelAccountMappingProps> = ({ provider,
       <ListingLayout id={`${provider}-channel-account-mappings`}>
         <ListingLayout.Toolbar
           actions={
-            canManage('messagingplatforms', 'Write') ? (
-              <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
-                Add Mapping
-              </DsButton>
-            ) : undefined
+            <Box display='flex' alignItems='center' gap='var(--ds-space-4)'>
+              {provider === 'slack' ? (
+                <Switch
+                  id={`${provider}-show-system-managed`}
+                  checked={showSystemManaged}
+                  onChange={(_, checked) => setShowSystemManaged(checked)}
+                  label='Show system-managed channels'
+                  size='sm'
+                />
+              ) : null}
+              {canManage('messagingplatforms', 'Write') ? (
+                <DsButton id='add-mapping-btn' tone='primary' size='md' onClick={() => setOpenModal(true)}>
+                  Add Mapping
+                </DsButton>
+              ) : null}
+            </Box>
           }
         >
           <Box display='flex' flexDirection='column'>

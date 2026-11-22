@@ -669,7 +669,7 @@ func repairAgainstTargetState(ctx *security.RequestContext, request RemediationG
 		return draft
 	}
 	trace.DraftPlan = &draft
-	trace.RepairValidation = finalizePlan(&repaired, artifacts, request.AlertRule, inventoryReplicas(request.AccountId))
+	trace.RepairValidation = finalizePlan(&repaired, artifacts, request.AlertRule, inventoryReplicas(request.AccountId), request.automations)
 	return repaired
 }
 

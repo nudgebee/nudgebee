@@ -39,6 +39,7 @@ body: |2
   Find resources by name/type/namespace/source/account/labels and get node IDs to chain into `kg_traverse`. Parameters:
   - `query` — name, exact or ILIKE pattern with `%` (empty string lists everything matching the other filters)
   - `node_types` — e.g. `["Workload"]`, `["Database"]`
+  - `roles` — what a node ACTS AS, whatever its type: `database`, `cache`, `messagequeue`, `search`, `objectstorage`, `loadbalancer`, `proxy`, `apigateway`, `scheduler`, `monitoring`, `auth`. Matches nodes tagged with the role (an in-cluster redis Workload, a VM running Postgres) AND nodes whose type is that role (an RDS `Database`). For "all databases / caches / queues", pass `roles` ALONE — with `node_types` both must match.
   - `namespace` — Kubernetes namespace
   - `source` — cloud PLATFORM type: `k8s` / `aws` / `gcp` / `azure` (NOT an account)
   - `account_ids` — cloud account UUIDs or names, never provider account numbers (see rule 3); use THIS, not `source`, to narrow by account
@@ -46,7 +47,7 @@ body: |2
   - `limit` — max rows (default 20, max 100). If the header reads "Found N (showing M)" with N>M, the list is CAPPED — raise `limit`, add filters, or summarize by category; never present a capped page as the complete set.
 
   ## kg_traverse — dependencies, topology, connectivity
-  Seed with `query` (name or `%`-pattern) OR `node_id` / `node_ids` from a prior search (IDs skip re-resolution and win if both are given). A `CALLS` edge may terminate at any cloud-resource type (`Database`, `Storage`, `Cache`, `MessageQueue`, `LoadBalancer`, `APIGateway`, `CDN`, `ServerlessFunction`), not just Service/Workload/ExternalService — treat these as data dependencies. When the edge carries an `original_hostname` property, cite it as the breadcrumb from the observed traffic to the resource.
+  Seed with `query` (name or `%`-pattern) OR `node_id` / `node_ids` from a prior search (IDs skip re-resolution and win if both are given). A `CALLS` edge may terminate at any cloud-resource type (`Database`, `Storage`, `Cache`, `MessageQueue`, `LoadBalancer`, `APIGateway`, `CDN`, `ServerlessFunction`), not just Service/Workload/ExternalService — treat these as data dependencies. So is a node shown as "acts as database/cache/messagequeue/…" (a Workload or ComputeInstance with a role): treat it like the matching type. When the edge carries an `original_hostname` property, cite it as the breadcrumb from the observed traffic to the resource.
 
   ### Direction Guide
   - `downstream` = what X calls / depends on / runs on
@@ -76,7 +77,8 @@ body: |2
   - "What does X call / what calls X?" → search `["Workload","K8sService"]` named X (rule 5), then `kg_traverse(node_ids:[both], direction:downstream|upstream, relationship_types:["CALLS"], max_depth:1)`.
   - "Full dependency map of X" → `kg_traverse(query:"X", direction:downstream, max_depth:1)`; raise depth only if incomplete.
   - "What runs in / lives in namespace Y?" → `kg_search_nodes(query:"", namespace:"Y", node_types:["Workload","K8sService"])`. A Namespace node has NO outgoing `CALLS` edges, so do not `kg_traverse` CALLS from it (returns 0). For "what cluster hosts Y?" use `kg_traverse(query:"Y", node_types:["Namespace"], relationship_types:["RUNS_ON"])`.
-  - "Find all databases / RDS" → `kg_search_nodes(query:"", node_types:["Database"], source:"aws")`.
+  - "Find all databases" (managed, in-cluster or on a VM) → `kg_search_nodes(query:"", roles:["database"])`; caches → `roles:["cache"]`, queues → `roles:["messagequeue"]`.
+  - "Find all RDS databases" → `kg_search_nodes(query:"", node_types:["Database"], source:"aws")`.
   - "Ingress path to workload X" → `kg_traverse(node_id:"X", direction:upstream, max_depth:1, relationship_types:["EXPOSES"])` to find the K8sService(s), then from each `relationship_types:["ROUTES_TO_SERVICE","ROUTES_TO_BACKEND"]` for the Ingress/LB.
   - "Map all communication in namespace Y" → `kg_search_nodes(query:"", node_types:["Workload","K8sService","Service"], namespace:"Y", account_ids:["<uuid>"])`, then traverse the IDs in batches of ≤10 with `direction:both, max_depth:1, relationship_types:["CALLS"]`; combine the edge lists (every diagram edge must come from these responses, rule 1).
   - "Check LB connectivity" → `kg_traverse(query:"lb-name", node_types:["LoadBalancer"], direction:both)`.

@@ -1,6 +1,6 @@
 """Azure OpenAI client construction shared by the chat and embeddings paths.
 
-Mirrors llm-server's agents/core/llm_config.go (getAzureOpenAILLM). ``api_style`` picks the wire:
+Mirrors llm-server's llms/runtime/llm_config.go (getAzureOpenAILLM). ``api_style`` picks the wire:
 
     v1       {endpoint}/openai/v1/...          deployment name in the request body (default)
     classic  {endpoint}/openai/deployments/{deployment}/...?api-version=X

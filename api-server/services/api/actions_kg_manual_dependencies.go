@@ -49,7 +49,7 @@ func manualDepHandlerSetup(
 // is checked against the accounts the dependency touches (see
 // ManualDependencyRepository.WithAccountAuthorizer).
 func manualDepWriter(ctx *security.RequestContext, repo *flow_sources.ManualDependencyRepository, access security.SecurityAccessType) *flow_sources.ManualDependencyRepository {
-	return repo.WithAccountAuthorizer(manualAccountAuthorizer(ctx.GetSecurityContext(), access))
+	return repo.WithAccountAuthorizer(manualAccountAuthorizer(ctx, access))
 }
 
 // manualDepWriteStatus maps a repository error to an HTTP status.
@@ -61,6 +61,8 @@ func manualDepWriteStatus(err error, fallback int) int {
 		return 404
 	case errors.Is(err, flow_sources.ErrManualDependencyNodeNotFound):
 		return 400
+	case errors.Is(err, flow_sources.ErrManualDependencyPairLinked):
+		return 409
 	}
 	return fallback
 }
@@ -370,9 +372,9 @@ func handleKgReresolveManualDependencies(actionPayload *ActionRequest, c *gin.Co
 		}
 	}
 
-	// Not account-checked: it re-runs the stored declarations through the
-	// resolver, which every KG build already does; it changes no declaration.
-	results, err := repo.ReresolveAll(ctx.GetContext(), tenantID, filter)
+	// Re-resolves only the rows the caller could re-resolve one by one: every
+	// account a row touches must be writable (see manualDepWriter).
+	results, err := manualDepWriter(ctx, repo, security.SecurityAccessTypeUpdate).ReresolveAll(ctx.GetContext(), tenantID, filter)
 	if err != nil {
 		ctx.GetLogger().Error("bulk re-resolve failed", "error", err)
 		c.JSON(500, common.ErrorActionInternal("Bulk re-resolve failed: "+err.Error()))
@@ -396,7 +398,7 @@ func handleKgDeleteAllManualDependencies(actionPayload *ActionRequest, c *gin.Co
 	}
 
 	// Withdraws every account's dependencies, so it takes tenant-wide access.
-	if !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeDelete) {
+	if !ctx.GetSecurityContext().CanAccessTenant(security.SecurityAccessTypeDelete) {
 		c.JSON(403, common.ErrorActionForbidden("deleting all manual dependencies needs tenant admin access"))
 		return
 	}

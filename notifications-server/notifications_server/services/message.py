@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import uuid
+import redis
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
@@ -13,7 +14,7 @@ from asyncio import Lock
 from collections import defaultdict
 
 from slack_sdk.errors import SlackApiError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from notifications_server.clients.google_chat_client import GoogleChatClient
@@ -24,13 +25,15 @@ from notifications_server.configs import settings
 
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.schemas.message import SendMessageRequest
-from notifications_server.services.cache import Cache
+from notifications_server.services import delivery_records, remediation_thread
+from notifications_server.services.cache import Cache, run_in_cache_thread
 from notifications_server.services.delivery_errors import (
     AUTH_FAILED,
     INTERNAL_ERROR,
     INVALID_REQUEST,
     NO_DESTINATION,
     NOT_CONFIGURED,
+    channel_name,
     delivery_channel_id,
     destination_fields,
     discord_failure,
@@ -42,10 +45,17 @@ from notifications_server.services.delivery_errors import (
     teams_failure,
     webhook_failure,
 )
-from notifications_server.services.response_helpers import not_sent_response, success_response, system_response
+from notifications_server.services.response_helpers import (
+    failed_response,
+    not_sent_response,
+    success_response,
+    system_response,
+)
 from notifications_server.services.rules import (
     DEFAULT_CHANNELS,
     DEFAULT_DELIVER,
+    NUBI_SOURCE,
+    OPT_IN_SOURCES,
     OPTIMIZE_EVENT_BY_MESSAGE_TYPE,
     OPTIMIZE_SOURCE,
     NotificationRulesService,
@@ -60,7 +70,9 @@ from notifications_server.services.delivery_split import (
     merged_parameters,
 )
 from notifications_server.message_templates.slack.weekly_digest_events import digest_link, digest_verdict
+from notifications_server.services.slack import workspace_url
 from notifications_server.services.slack.slack import retriable_slack_api_error
+from notifications_server.utils.rich_text_blocks import send_blocks_with_fallback
 from notifications_server.message_templates import template_mapping
 from notifications_server.message_templates.google_chat.finding import get_markdown_message_template
 from notifications_server.message_templates.base import is_resolved
@@ -81,6 +93,7 @@ from notifications_server.message_templates.slack.finding import (
 from notifications_server.message_templates.slack.webhook_sanitize import strip_interactive_slack_elements
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.models import (
+    CloudAccount,
     SentNotifications,
     NotificationRuleMappings,
     MessagingPlatform,
@@ -253,7 +266,11 @@ def resolve_outcome(matched_rules, source=None, event_type=None, honour_batch=Tr
     targets = [entry for entry in delivering if entry.get("platform")]
     policy_action = (default_policy or {}).get("action", DEFAULT_DELIVER)
     if delivering:
-        return RuleOutcome(None, targets, policy_action == DEFAULT_DELIVER)
+        # An opt-in type uses default channels only for a matched rule that names no platform.
+        use_defaults = policy_action == DEFAULT_DELIVER or (
+            source in OPT_IN_SOURCES and any(not entry.get("platform") for entry in delivering)
+        )
+        return RuleOutcome(None, targets, use_defaults)
     if policy_action == DEFAULT_DELIVER or (non_suppressible and policy_action != DEFAULT_CHANNELS):
         return RuleOutcome(None, [], True)
     if policy_action == DEFAULT_CHANNELS:
@@ -325,6 +342,12 @@ def _ids_match(rule_id, payload_id):
 # *findings* stay troubleshoot findings.
 RULE_SOURCE_CATEGORIES = {"troubleshoot", "optimize", "slo", "cloud"}
 
+# Finding sources that are not themselves a category but belong to one other
+# than "troubleshoot". "forecast" findings are projected CPU SLO breaches, so an
+# SLO rule receives them. They stay finding-shaped (filters, fingerprint) and
+# are kept out of the SLO digest, which is keyed on the message source "slo".
+FINDING_SOURCE_CATEGORIES = {"forecast": "slo"}
+
 # Non-finding messages from runbook-server. They carry a top-level `event_type`
 # and `parameters.account_id`; rules select them by event type.
 AUTOMATION_SOURCE = "automation"
@@ -384,7 +407,9 @@ def _excluded(rule, account_id, namespace, workload, aggregation_key):
 
 
 def _finding_rule_source(source):
-    return source if source in RULE_SOURCE_CATEGORIES else "troubleshoot"
+    if source in RULE_SOURCE_CATEGORIES:
+        return source
+    return FINDING_SOURCE_CATEGORIES.get(source, "troubleshoot")
 
 
 def _event_type_matches(rule, source, event_type):
@@ -430,7 +455,7 @@ class NotificationRuleMatcher:
                 params.get("workload"),
                 None,
             )
-        if source == "cloud":
+        if source == "cloud" or type_ == "integration_health":
             return (
                 source,
                 params.get("account_id"),
@@ -616,13 +641,21 @@ class SlackSender(BaseSender):
         while True:
             try:
                 channels = self.extract_channels(installation)
+                if not channels:
+                    LOG.warning("No Slack channel resolved for tenant %s; skipping send", tenant)
+                    return None
                 for channel in channels:
                     channel_id = channel.get("id")
                     if thread_id:
-                        return self.slack_app.client.reply_in_thread(
+                        response = self.slack_app.client.reply_in_thread(
                             token=installation.token, channel_id=channel_id, thread_ts=thread_id, **message
                         )
-                    return self.slack_app.client.chat_post(channel_id=channel_id, token=installation.token, **message)
+                    else:
+                        response = self.slack_app.client.chat_post(
+                            channel_id=channel_id, token=installation.token, **message
+                        )
+                    workspace_url.remember(installation)
+                    return response
 
             except SlackApiError as exc:
                 if retriable_slack_api_error(exc) and max_tries < settings.slack.max_rate_limit_retries:
@@ -643,23 +676,96 @@ class SlackSender(BaseSender):
                 LOG.exception(f"Failed to send message for tenant {tenant} due to: {exc}")
                 return None
 
+    def post_to_slack_with_blocks_fallback(self, tenant, installation, **message):
+        """Like post_to_slack, but bisects via send_blocks_with_fallback on a
+        block-shape rejection (e.g. Slack's table character caps) instead of
+        dropping the whole message. Non-threaded only."""
+        blocks = message.pop("blocks", None) or []
+        attachments = message.pop("attachments", None)
+        channels = self.extract_channels(installation)
+        if not channels:
+            LOG.warning("No Slack channel resolved for tenant %s; skipping send", tenant)
+            return None
+        channel_id = channels[0].get("id")
+        sent = []
+        blocks_sent_count = 0
+
+        def send_fn(block_list):
+            nonlocal blocks_sent_count
+            kwargs = dict(message)
+            if block_list:
+                kwargs["blocks"] = block_list
+            # attachments render after blocks within a message, so they belong
+            # on whichever send carries the tail of the original blocks - a
+            # running count rather than object identity, since the same block
+            # object can recur in the list (e.g. a shared divider constant).
+            if attachments and (not blocks or blocks_sent_count + len(block_list) == len(blocks)):
+                kwargs["attachments"] = attachments
+            sent.append(self.slack_app.client.chat_post(channel_id=channel_id, token=installation.token, **kwargs))
+            blocks_sent_count += len(block_list)
+
+        max_tries = 0
+        while True:
+            try:
+                if blocks:
+                    send_blocks_with_fallback(blocks, send_fn)
+                else:
+                    send_fn(blocks)
+                return sent[-1] if sent else None
+            except SlackApiError as exc:
+                # Retrying after a partial bisected send would duplicate it.
+                if not sent and retriable_slack_api_error(exc) and max_tries < settings.slack.max_rate_limit_retries:
+                    time.sleep(self.get_retry_after(exc))
+                    max_tries += 1
+                    continue
+                # Slack's error code is on the response; the caller reports it.
+                LOG.warning(
+                    "Slack refused the post for tenant %s: %s",
+                    tenant,
+                    (getattr(exc.response, "data", None) or {}).get("error"),
+                )
+                return exc.response
+            except Exception as exc:
+                LOG.exception(f"Failed to send message for tenant {tenant} due to: {exc}")
+                return None
+
     @staticmethod
-    async def check_if_sent_already(session, fingerprint, team_id, channels):
+    async def check_if_sent_already(session, fingerprint, team_id, channels, tenant_id=None):
+        """The thread of this alert's first post in the target channel, from the
+        last day; a repeat after that starts a new post."""
         # The same finding may have been delivered to several channels (rule
         # routing vs defaults), each with its own thread — so scan the
         # fingerprint's rows for the target channel instead of comparing only
         # the latest row.
         normalized_channel = normalize_channel(channels)
         target_channel_id = normalized_channel.get("id") if isinstance(normalized_channel, dict) else None
-        if not target_channel_id:
+        if not (target_channel_id and fingerprint):
             return None
 
-        result = await session.execute(
+        query = (
             select(SentNotifications)
-            .filter_by(slack_team_id=team_id, fingerprint=fingerprint)
+            .filter(
+                SentNotifications.fingerprint == fingerprint,
+                SentNotifications.created_at >= utc_now() - delivery_records.REPEAT_WINDOW,
+                or_(
+                    and_(
+                        delivery_records.first_post("slack"),
+                        SentNotifications.team_id == team_id,
+                        SentNotifications.destination == target_channel_id,
+                    ),
+                    and_(
+                        delivery_records.written_before_delivery_columns(), SentNotifications.slack_team_id == team_id
+                    ),
+                ),
+            )
             .order_by(SentNotifications.created_at.desc())
         )
+        if tenant_id:
+            query = query.filter(SentNotifications.tenant_id == tenant_id)
+        result = await session.execute(query)
         for notification in result.scalars():
+            if notification.kind is not None:
+                return notification.message_id
             if not notification.slack_metadata:
                 continue
             try:
@@ -732,18 +838,32 @@ class DiscordSender(BaseSender):
 
     @staticmethod
     async def check_if_sent_already(session, fingerprint, tenant_id, channel_id):
-        """Message id of the original Discord post for this fingerprint+channel, or
-        None — repeat findings reply to it instead of posting fresh messages."""
+        """Message id of the original Discord post for this fingerprint+channel
+        from the last day, or None — repeat findings reply to it instead of
+        posting fresh messages."""
         if not fingerprint:
             return None
         result = await session.execute(
             select(SentNotifications)
-            .filter_by(tenant_id=tenant_id, fingerprint=fingerprint, discord_channel_id=channel_id)
+            .filter(
+                SentNotifications.tenant_id == tenant_id,
+                SentNotifications.fingerprint == fingerprint,
+                SentNotifications.created_at >= utc_now() - delivery_records.REPEAT_WINDOW,
+                or_(
+                    and_(delivery_records.first_post("discord"), SentNotifications.destination == str(channel_id)),
+                    and_(
+                        delivery_records.written_before_delivery_columns(),
+                        SentNotifications.discord_channel_id == str(channel_id),
+                    ),
+                ),
+            )
             .order_by(SentNotifications.created_at.desc())
             .limit(1)
         )
         notification = result.scalars().first()
-        return notification.discord_message_id if notification else None
+        if notification is None:
+            return None
+        return notification.message_id if notification.kind is not None else notification.discord_message_id
 
     @staticmethod
     def get_new_sent_notification(tenant_id, channel_id, message_id, fingerprint, account_id=None):
@@ -761,11 +881,35 @@ class DiscordSender(BaseSender):
 # ----------------------------- Grouped Message Handler -----------------------------
 
 
+def _named(response, ip):
+    """A result with the name of its destination, when its routing names it."""
+    name = channel_name(ip)
+    if name and isinstance(response, dict) and not response.get("destination_name"):
+        response["destination_name"] = name
+    return response
+
+
+def rule_category(type_, payload):
+    """The rule category a message falls under, for its delivery rows."""
+    try:
+        return NotificationRuleMatcher.get_filters_from_notification_payload(type_, payload or {})[0] or None
+    except Exception:
+        return (payload or {}).get("source")
+
+
 def grouped_unit(index, group_type, item):
     """(key, message type, payload) to match one queued alert of a group. An
-    anomaly is queued as its finding, so it is matched as the finding it is."""
+    anomaly is queued as its finding, so it is matched as the finding it is.
+    A batch-delivery item is a finding too, under its own real source rather
+    than a hardcoded one, so it re-matches the same rule that queued it."""
     if group_type == "anomaly":
         return index, "finding", {"source": "anomaly", "parameters": {"finding": item.get("parameters") or {}}}
+    if group_type == "batch":
+        return (
+            index,
+            "finding",
+            {"source": item.get("source") or "", "parameters": {"finding": item.get("parameters") or {}}},
+        )
     return index, group_type, item
 
 
@@ -782,20 +926,41 @@ class GroupedMessageHandler:
             tenant_id = payload["tenant_id"]
             group_type = payload["type"]
             key = f"grouped:{tenant_id}:{group_type}"
-            redis = self.cache.redis_client
-            if not redis:
+            due_key = f"{key}:due"
+            redis_client = self.cache.redis_client
+            if not redis_client:
                 return {"status": "ignored"}
 
-            await asyncio.to_thread(redis.lpush, key, json.dumps(payload, default=str))
-            await asyncio.to_thread(redis.expire, key, settings.notifications.grouped_redis_ttl_seconds)
+            await run_in_cache_thread(redis_client.lpush, key, json.dumps(payload, default=str))
+            await run_in_cache_thread(redis_client.expire, key, settings.notifications.grouped_redis_ttl_seconds)
+
+            delay_seconds = settings.notifications.grouped_flush_delay_seconds
+            # nx=True: only the alert that creates this key sets its due time,
+            # so the schedule lives in Redis and survives a restart that would
+            # otherwise drop the in-memory timer below.
+            await run_in_cache_thread(
+                redis_client.set,
+                due_key,
+                int(time.time()) + delay_seconds,
+                nx=True,
+                ex=settings.notifications.grouped_redis_ttl_seconds,
+            )
 
             if key not in self._group_tasks:
-                delay_seconds = settings.notifications.grouped_flush_delay_seconds
+                # Time the timer from the stored due time, not a fresh full
+                # window: after a restart the first new push would otherwise
+                # push an already-due batch back by up to an hour, and the
+                # sweep skips any key that has a local timer.
+                due_at = await run_in_cache_thread(redis_client.get, due_key)
+                try:
+                    delay_seconds = max(int(due_at) - int(time.time()), 0)
+                except (TypeError, ValueError):
+                    pass  # due_key gone (expired between SET and GET): keep the full window
                 LOG.info("Scheduling flush for %s in %d seconds", key, delay_seconds)
                 task = asyncio.create_task(self._delayed_flush(key, delay_seconds))
                 self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}
 
-            length = await asyncio.to_thread(redis.llen, key)
+            length = await run_in_cache_thread(redis_client.llen, key)
             LOG.info("Enqueued grouped msg to %s (count=%d)", key, length)
             return {"status": "queued"}
         except Exception as e:
@@ -805,8 +970,12 @@ class GroupedMessageHandler:
         try:
             LOG.debug("Starting delayed flush timer for %s (%d seconds)", key, delay_seconds)
             await asyncio.sleep(delay_seconds)
-            redis = self.cache.redis_client
-            if not redis or (await asyncio.to_thread(redis.llen, key)) == 0:
+            redis_client = self.cache.redis_client
+            if not redis_client:
+                return
+            has_live = await run_in_cache_thread(redis_client.llen, key)
+            has_claimed = await run_in_cache_thread(redis_client.exists, f"{key}:claim")
+            if not has_live and not has_claimed:
                 LOG.info("No messages left for key %s before scheduled flush, skipping", key)
                 return
 
@@ -821,83 +990,331 @@ class GroupedMessageHandler:
             self._group_tasks.pop(key, None)
             LOG.debug("Cleanup complete for delayed flush task of %s", key)
 
+    @staticmethod
+    def _unwrap_entry(raw):
+        """(payload, retry platforms or None, attempts); a brand-new entry has no wrapper."""
+        if isinstance(raw, dict) and "payload" in raw and "attempts" in raw:
+            return raw["payload"], raw.get("retry_platforms") or None, raw["attempts"]
+        return raw, None, 0
+
+    async def _claim_batch(self, key, claim_key):
+        """RENAME atomically moves the batch out of `key`, so a push that
+        lands after this can't be lost. Gated by a lease so two callers — two
+        pods' local timers, a timer racing a sweep — can't both act on the
+        same key: only the lease-holder tries the RENAME. The other gets
+        None, unless the lease is stale, meaning the pod that held it is gone
+        and this claim would otherwise sit unresumed until its TTL silently
+        drops it — the same loss this fix exists to close."""
+        redis_client = self.cache.redis_client
+        lease_key = f"{claim_key}:claimed_at"
+        now_ts = int(time.time())
+        acquired = await run_in_cache_thread(
+            redis_client.set, lease_key, now_ts, nx=True, ex=settings.notifications.grouped_redis_ttl_seconds
+        )
+        if not acquired:
+            claimed_at = await run_in_cache_thread(redis_client.get, lease_key)
+            try:
+                stale = (
+                    claimed_at is None
+                    or (now_ts - int(claimed_at)) >= settings.notifications.grouped_claim_stale_seconds
+                )
+            except (TypeError, ValueError):
+                stale = True
+            if not stale:
+                return None  # another pod is actively working this claim
+            await run_in_cache_thread(
+                redis_client.set, lease_key, now_ts, ex=settings.notifications.grouped_redis_ttl_seconds
+            )
+
+        if not await run_in_cache_thread(redis_client.exists, claim_key):
+            try:
+                await run_in_cache_thread(redis_client.rename, key, claim_key)
+            except redis.exceptions.ResponseError:
+                if await run_in_cache_thread(redis_client.exists, claim_key):
+                    return None  # another pod's rename won; its lease, leave it
+                await run_in_cache_thread(redis_client.delete, lease_key)
+                return []  # nothing queued
+        return await run_in_cache_thread(redis_client.lrange, claim_key, 0, -1)
+
+    async def _release_claim(self, key, claim_key, due_key):
+        """Clears the claim with nothing left to retry. A push landing in
+        `key` while this flush ran couldn't set its own due time — its SET NX
+        no-ops against the in-progress flush's due_key — so if `key` has
+        data, re-arm due_key for a fresh window instead of deleting it and
+        leaving that push with nothing watching to flush it."""
+        redis_client = self.cache.redis_client
+
+        def _execute():
+            has_new_items = bool(redis_client.exists(key))
+            with redis_client.pipeline() as pipe:
+                pipe.delete(claim_key)
+                pipe.delete(f"{claim_key}:claimed_at")
+                if has_new_items:
+                    new_due = int(time.time()) + settings.notifications.grouped_flush_delay_seconds
+                    pipe.set(due_key, new_due, ex=settings.notifications.grouped_redis_ttl_seconds)
+                else:
+                    pipe.delete(due_key)
+                pipe.execute()
+
+        await run_in_cache_thread(_execute)
+
+    @staticmethod
+    async def _batch_account_names(session, tenant_id, batch):
+        """{account id: name} for a batch digest — a finding carries only its
+        account id. Empty on failure, so the digest falls back to the ids
+        rather than not going out."""
+        account_ids = set()
+        for payload, _, _ in batch:
+            finding = payload.get("parameters") or {}
+            account_id = finding.get("cloud_account_id") or finding.get("account_id")
+            # A malformed id would fail the whole uuid IN query, not just its own row.
+            try:
+                uuid.UUID(str(account_id))
+            except ValueError:
+                continue
+            account_ids.add(str(account_id))
+        if not account_ids:
+            return {}
+        try:
+            # A savepoint, so a failure rolls back only this read — a full
+            # rollback would expire the installations the sends below still use.
+            async with session.begin_nested():
+                result = await session.execute(
+                    select(CloudAccount.id, CloudAccount.account_name).filter(
+                        CloudAccount.id.in_(account_ids), CloudAccount.tenant == tenant_id
+                    )
+                )
+                rows = result.all()
+        except SQLAlchemyError as e:
+            LOG.warning("Account names for the batch digest of tenant %s failed; showing ids: %s", tenant_id, e)
+            return {}
+        return {str(account_id): name for account_id, name in rows if name}
+
+    async def _send_batch(self, session, tenant_id, orig_type, batch, routes, installed_platforms, dispatch):
+        """Returns (attempted indexes, {index: still-pending platforms}, raw
+        responses, [(title, that route's responses), ...] to record once the
+        session this ran in has closed)."""
+        attempted_indexes = set()
+        failed_platforms_by_index = defaultdict(set)
+        platform_responses = []
+        sent = []
+        account_names = await self._batch_account_names(session, tenant_id, batch) if orig_type == "batch" else None
+        for ip, channel, indexes in routes:
+            # batch[i][1] is the item's pending-platforms list on a retry;
+            # skip a platform that's already delivered it.
+            effective_indexes = [i for i in indexes if not batch[i][1] or ip.platform in batch[i][1]]
+            if not effective_indexes:
+                continue
+            attempted_indexes.update(effective_indexes)
+            self.message_service.point_at(installed_platforms, ip, channel)
+            events = [batch[i][0]["parameters"] for i in effective_indexes]
+            if orig_type in ("anomaly", "slo_alert") and settings.notifications.digest_resolved_enabled:
+                # A firing alert and its resolve in one window show once, as resolved;
+                # an SLO's hourly repeats show once too. SLO items carry no updated_at,
+                # so the newest queued one is the state shown.
+                events = latest_per_key(events)
+            params = {"events": events}
+            if account_names is not None:
+                params["account_names"] = account_names
+            responses = (
+                await self.message_service.send_template_notification(
+                    session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]
+                )
+                or []
+            )
+            dispatch.title = delivery_records.title_of(dispatch.kind, params)
+            sent.append((dispatch.title, responses))
+            platform_responses.extend(responses)
+            if any(isinstance(r, dict) and r.get("status") == "failed" for r in responses):
+                for i in effective_indexes:
+                    failed_platforms_by_index[i].add(ip.platform)
+        await MessageService._save_stored_cards(session, dispatch, platform_responses)
+        return attempted_indexes, failed_platforms_by_index, platform_responses, sent
+
+    @staticmethod
+    def _build_retry_entries(key, batch, attempted_indexes, failed_platforms_by_index):
+        """Items still owed to a platform, capped at task_retry_count — past that, drop rather than hold forever."""
+        retry_entries = []
+        for i, (payload, _, attempts) in enumerate(batch):
+            if i not in attempted_indexes:
+                continue  # stopped by rules this round, same as before: drop, don't hold
+            still_pending = failed_platforms_by_index.get(i)
+            if not still_pending:
+                continue  # delivered to every platform it was attempted on
+            attempts += 1
+            if attempts > settings.notifications.task_retry_count:
+                LOG.error(
+                    "Dropping grouped alert for %s after %d failed attempts to %s",
+                    key,
+                    attempts,
+                    sorted(still_pending),
+                )
+                continue
+            retry_entries.append(
+                json.dumps(
+                    {"payload": payload, "retry_platforms": sorted(still_pending), "attempts": attempts}, default=str
+                )
+            )
+        return retry_entries
+
+    async def _finalize_flush(self, key, claim_key, due_key, retry_entries, platform_responses):
+        """One pipeline, so a crash mid-finalize can't land only the claim
+        clear and lose the retry_entries (or vice versa) — it's all or
+        nothing on the Redis side."""
+        if not retry_entries:
+            await self._release_claim(key, claim_key, due_key)
+            LOG.debug("Successfully flushed %s", key)
+            return {"status": "ok"}
+
+        redis_client = self.cache.redis_client
+        retry_due = int(time.time()) + settings.notifications.grouped_flush_retry_delay_seconds
+
+        def _execute():
+            with redis_client.pipeline() as pipe:
+                pipe.delete(claim_key)
+                pipe.delete(f"{claim_key}:claimed_at")
+                # Appends onto whatever a concurrent push already left in
+                # `key` — no separate handling needed for that case here.
+                pipe.rpush(key, *retry_entries)
+                pipe.expire(key, settings.notifications.grouped_redis_ttl_seconds)
+                pipe.set(due_key, retry_due, ex=settings.notifications.grouped_redis_ttl_seconds)
+                pipe.execute()
+
+        await run_in_cache_thread(_execute)
+
+        LOG.warning(
+            "Not all notifications sent successfully for %s (responses: %s), re-queued %d item(s) for the "
+            "failed platform(s) only",
+            key,
+            platform_responses,
+            len(retry_entries),
+        )
+        if key not in self._group_tasks:
+            delay = max(retry_due - int(time.time()), 0)
+            task = asyncio.create_task(self._delayed_flush(key, delay))
+            self._group_tasks[key] = {"task": task, "scheduled_at": utc_now()}
+        return {"status": "partial_failure", "delivery_status": platform_responses}
+
     async def _flush_group(self, key):
         async with self._flush_locks[key]:
-            redis = self.cache.redis_client
-            if not redis:
+            redis_client = self.cache.redis_client
+            if not redis_client:
                 LOG.error("Redis unavailable during flush for %s", key)
                 return {"status": "failed", "error": "redis_unavailable"}
 
+            due_key = f"{key}:due"
+            claim_key = f"{key}:claim"
             try:
-                raw_list = await asyncio.to_thread(redis.lrange, key, 0, -1)
-                if not raw_list:
-                    LOG.info("No messages to flush for key %s", key)
-                    return {"status": "ok"}
+                raw_list = await self._claim_batch(key, claim_key)
             except Exception as e:
                 LOG.exception("Failed reading from Redis for %s: %s", key, e)
                 return {"status": "failed", "error": "Unexpected error; see server logs"}
+
+            if raw_list is None:
+                return {"status": "ok"}  # another pod actively holds the lease
+            if not raw_list:
+                await self._release_claim(key, claim_key, due_key)
+                LOG.info("No messages to flush for key %s", key)
+                return {"status": "ok"}
 
             LOG.info("Flushing %d messages for %s", len(raw_list), key)
 
             try:
                 _, tenant_id, orig_type = key.split(":", 2)
-                batch = [json.loads(item) for item in raw_list]
+                batch = [self._unwrap_entry(json.loads(item)) for item in raw_list]
 
+                units = [grouped_unit(index, orig_type, payload) for index, (payload, _, _) in enumerate(batch)]
+                dispatch = delivery_records.dispatch_for(
+                    tenant_id,
+                    f"grouped_{orig_type}",
+                    {},
+                    source=rule_category(units[0][1], units[0][2]),
+                )
                 async with BaseDB.async_session(self.message_service.engine)() as session:
                     installed_platforms = await self.message_service.get_installed_platforms_from_cache_or_db(
                         session, tenant_id
                     )
                     if not installed_platforms:
                         LOG.warning("No messaging platform installation for tenant %s", tenant_id)
+                        await self._release_claim(key, claim_key, due_key)
                         return {"status": "ok"}
 
                     # Each alert is matched on its own, so every channel gets only
                     # the alerts routed to it; anomalies match as troubleshooting findings.
+                    # Every grouped digest is already an hourly message, so a matching
+                    # batch rule is satisfied by it: honour_batch=False routes the item
+                    # to that rule's channels instead of holding it for batch delivery,
+                    # which nothing here would pick up again — an anomaly or SLO alert a
+                    # batch rule matched used to be dropped from its digest.
                     routes = await self.message_service.route_units(
                         session,
                         tenant_id,
-                        [grouped_unit(index, orig_type, item) for index, item in enumerate(batch)],
+                        units,
                         installed_platforms,
+                        dispatch=dispatch,
+                        honour_batch=False,
                     )
                     if not routes:
                         LOG.debug("Nothing to send for %s: every alert was stopped by the rules", key)
-                        await asyncio.to_thread(redis.delete, key)
+                        await self._release_claim(key, claim_key, due_key)
                         return {"status": "ok"}
 
-                    platform_responses = []
-                    for ip, channel, indexes in routes:
-                        self.message_service.point_at(installed_platforms, ip, channel)
-                        events = [batch[index]["parameters"] for index in indexes]
-                        if orig_type in ("anomaly", "slo_alert") and settings.notifications.digest_resolved_enabled:
-                            # A firing alert and its resolve in one window show once, as resolved;
-                            # an SLO's hourly repeats show once too. SLO items carry no updated_at,
-                            # so the newest queued one is the state shown.
-                            events = latest_per_key(events)
-                        params = {"events": events}
-                        platform_responses.extend(
-                            await self.message_service.send_template_notification(
-                                session, tenant_id, {"parameters": params}, f"grouped_{orig_type}", [ip]
-                            )
-                            or []
-                        )
+                    attempted_indexes, failed_platforms_by_index, platform_responses, sent = await self._send_batch(
+                        session, tenant_id, orig_type, batch, routes, installed_platforms, dispatch
+                    )
 
-                    if platform_responses and all(
-                        resp.get("status") == "success" for resp in platform_responses if isinstance(resp, dict)
-                    ):
-                        await asyncio.to_thread(redis.delete, key)
-                        LOG.debug("Successfully flushed and deleted Redis key %s", key)
-                        return {"status": "ok"}
-                    else:
-                        LOG.warning(
-                            "Not all notifications sent successfully for %s (responses: %s), keeping messages in Redis",
-                            key,
-                            platform_responses,
-                        )
-                        return {"status": "partial_failure", "delivery_status": platform_responses}
+                # Recorded once the session is closed, so recording never holds a second connection.
+                for title, route_responses in sent:
+                    dispatch.title = title
+                    await delivery_records.record_results(
+                        getattr(self.message_service, "engine", None), dispatch, route_responses
+                    )
+
+                retry_entries = self._build_retry_entries(key, batch, attempted_indexes, failed_platforms_by_index)
+                return await self._finalize_flush(key, claim_key, due_key, retry_entries, platform_responses)
 
             except Exception as e:
                 LOG.exception("Error flushing group %s: %s", key, e)
                 return {"status": "failed", "error": "Unexpected error; see server logs"}
+
+    async def sweep(self):
+        """Backstop for the in-memory flush timer: a due group, or a claim left by a crashed flush."""
+        redis_client = self.cache.redis_client
+        if not redis_client:
+            return
+
+        now_ts = int(time.time())
+        cursor = 0
+        while True:
+            cursor, due_keys = await run_in_cache_thread(redis_client.scan, cursor, match="grouped:*:due", count=200)
+            for due_key in due_keys:
+                key = due_key[: -len(":due")]
+                if key in self._group_tasks:
+                    continue
+                # An existing claim means it's already claimed (actively being
+                # sent, or crashed) — the claim scan below decides that, gated
+                # on lease staleness; flushing here too would resend it.
+                if await run_in_cache_thread(redis_client.exists, f"{key}:claim"):
+                    continue
+                due_at = await run_in_cache_thread(redis_client.get, due_key)
+                if due_at is not None and int(due_at) <= now_ts:
+                    await self._flush_group(key)
+            if cursor == 0:
+                break
+
+        cursor = 0
+        while True:
+            cursor, claim_keys = await run_in_cache_thread(
+                redis_client.scan, cursor, match="grouped:*:claim", count=200
+            )
+            for claim_key in claim_keys:
+                key = claim_key[: -len(":claim")]
+                if key in self._group_tasks:
+                    continue
+                # Staleness is decided once, inside _claim_batch's lease check.
+                await self._flush_group(key)
+            if cursor == 0:
+                break
 
 
 # ----------------------------- MessageService -----------------------------
@@ -924,13 +1341,30 @@ class MessageService:
 
     # ----------------------------- High level send -----------------------------
     async def send_message(self, request: SendMessageRequest):
+        # Convert to dict once for downstream code that still uses dict access
+        payload = request.dict(exclude_none=True, by_alias=True)
+        dispatch = self._dispatch_for(request, payload)
+        send = self._send_from_nubi if request.source == NUBI_SOURCE and not request.thread else self._send
+        results = await send(request, payload, dispatch)
+        await delivery_records.record_results(getattr(self, "engine", None), dispatch, results)
+        return results
+
+    @staticmethod
+    def _dispatch_for(request, payload):
+        return delivery_records.dispatch_for(
+            request.tenant_id,
+            request.type,
+            payload,
+            source=rule_category(request.type, payload),
+            dispatch_id=getattr(request, "dispatch_id", None),
+            attempt=getattr(request, "attempt", None),
+        )
+
+    async def _send(self, request, payload, dispatch):
         tenant_id = request.tenant_id
         type_ = request.type
         source = request.source or ""
         thread = request.thread
-
-        # Convert to dict once for downstream code that still uses dict access
-        payload = request.dict(exclude_none=True, by_alias=True)
         parameters = payload.get("parameters", {})
 
         try:
@@ -949,9 +1383,12 @@ class MessageService:
                         event_type=payload.get("event_type"),
                         default_policy=default_policy,
                     )
+                    dispatch.matched = matched_rules
+                    delivery_records.routed(dispatch, outcome, payload)
                     if outcome.response is not None:
                         return outcome.response
-                return await self.send_threaded_reply(tenant_id, thread, parameters)
+                dispatch.requested = True  # the caller named the thread
+                return await self.send_threaded_reply(tenant_id, thread, parameters, dispatch=dispatch)
 
             if type_ == "finding_resolved":
                 # An anomaly's firing went out in a grouped digest, which records
@@ -971,12 +1408,14 @@ class MessageService:
 
             sections = account_sections(type_, parameters)
             if sections:
-                return await self.send_rollup(tenant_id, type_, payload, sections, request)
+                return await self.send_rollup(tenant_id, type_, payload, sections, request, dispatch=dispatch)
 
             async with BaseDB.async_session(self.engine)() as session:
                 matched_rules, source = await self.rule_matcher.match_notification_rules(
                     session, tenant_id, type_, payload
                 )
+                dispatch.source = source or dispatch.source
+                dispatch.matched = matched_rules
 
                 if type_ == "finding":
                     finding_priority = (parameters.get("finding") or {}).get("priority")
@@ -998,8 +1437,9 @@ class MessageService:
                 outcome = resolve_outcome(
                     matched_rules, source=source, event_type=payload.get("event_type"), default_policy=default_policy
                 )
+                delivery_records.routed(dispatch, outcome, payload)
                 if outcome.response is not None:
-                    return outcome.response
+                    return await self._handle_stopped_outcome(type_, source, tenant_id, parameters, outcome.response)
 
                 installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
                 installed_platforms = self._scope_to_retry_platforms(
@@ -1020,13 +1460,48 @@ class MessageService:
                 return await send_in_rounds(
                     installed_platforms,
                     lambda platforms: self.trigger_notification(
-                        session, fingerprint, platforms, payload, parameters, [], tenant_id, type_
+                        session, fingerprint, platforms, payload, parameters, [], tenant_id, type_, dispatch=dispatch
                     ),
                 )
 
         except Exception:
             LOG.exception("Can't send message, tenant_id=%s, type=%s", tenant_id, type_)
             return [failure("system", INTERNAL_ERROR)]
+
+    async def _send_from_nubi(self, request, payload, dispatch):
+        """A message a person sent from Nubi goes to the channels they named and
+        nowhere else: no rule, snooze or default channel applies to it."""
+        dispatch.requested = True
+        if not payload.get("channels"):
+            return [not_sent_response("system", NO_DESTINATION)]
+        try:
+            return await self._deliver_to_requested_channels(request, payload, dispatch)
+        except Exception:
+            LOG.exception("Can't send a message from Nubi (tenant %s)", request.tenant_id)
+            return [failure("system", INTERNAL_ERROR)]
+
+    async def _deliver_to_requested_channels(self, request, payload, dispatch):
+        tenant_id = request.tenant_id
+        parameters = payload.get("parameters", {})
+        async with BaseDB.async_session(self.engine)() as session:
+            installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
+            installed_platforms = self._scope_to_retry_platforms(
+                installed_platforms, getattr(request, "retry_platforms", None)
+            )
+            self.get_channels_from_request_or_defaults(
+                installed_platforms, [], NUBI_SOURCE, payload, use_defaults=False
+            )
+            self._scope_to_retry_destinations(installed_platforms, getattr(request, "retry_destinations", None))
+            if not any(ip.to_channel for ip in installed_platforms):
+                return [not_sent_response("system", NO_DESTINATION)]
+
+            fingerprint = get_fingerprint(request.type, payload)
+            return await send_in_rounds(
+                installed_platforms,
+                lambda platforms: self.trigger_notification(
+                    session, fingerprint, platforms, payload, parameters, [], tenant_id, request.type, dispatch=dispatch
+                ),
+            )
 
     async def _maybe_handle_grouped_message(self, source, parameters, tenant_id, kwargs):
         if source and source.lower() == "slo":
@@ -1037,7 +1512,7 @@ class MessageService:
                 if not settings.notifications.digest_resolved_enabled:
                     return [system_response("dropped", "The SLO digest lists resolved SLOs only when enabled")]
                 return await self.group_handler.enqueue(kwargs) or [
-                    system_response("dropped", "Resolved SLO could not be queued for the digest")
+                    failed_response("system", INTERNAL_ERROR, error_code="grouping_failed", retryable=False)
                 ]
             return await self.group_handler.enqueue(kwargs)
 
@@ -1061,6 +1536,29 @@ class MessageService:
 
         return None
 
+    async def _handle_stopped_outcome(self, type_, source, tenant_id, parameters, response):
+        """response is what resolve_outcome decided for a message it won't
+        deliver now. A finding held for batch delivery is queued for the
+        digest instead of dropped; every other stop (suppressed, snoozed,
+        dropped) returns as resolve_outcome already decided it."""
+        if type_ == "finding" and response and response[0].get("status") == "queued":
+            return await self._enqueue_batch_finding(source, tenant_id, parameters) or response
+        return response
+
+    async def _enqueue_batch_finding(self, source, tenant_id, parameters):
+        """A finding matched a rule set to hourly batch delivery — hold it for
+        the grouped digest instead of dropping it. Its real source travels
+        with it so the flush re-matches it against the same rule, the way
+        _flush_group already re-matches every grouped item."""
+        finding = parameters.get("finding") or {}
+        batch_item = {
+            "source": source,
+            "type": "batch",
+            "tenant_id": tenant_id,
+            "parameters": finding,
+        }
+        return await self.group_handler.enqueue(batch_item)
+
     async def _queue_returned_anomaly(self, parameters, tenant_id):
         """An anomaly that had cleared and fired again joins the next digest,
         labelled. No other source has a message for a return."""
@@ -1074,6 +1572,13 @@ class MessageService:
         # report the anomaly as unsupported.
         return [failure("system", INTERNAL_ERROR)]
 
+    async def _post_waiting_remediation_cards(self, tenant_id, fingerprint):
+        """Remediation posts that arrived before the alert had a Slack thread (#40734) go in it now."""
+        try:
+            await asyncio.to_thread(remediation_thread.flush_pending, tenant_id, fingerprint)
+        except Exception as e:
+            LOG.warning("Posting waiting remediation posts for %s failed: %s", fingerprint, e)
+
     async def trigger_notification(
         self,
         session,
@@ -1084,19 +1589,22 @@ class MessageService:
         platform_responses,
         tenant_id,
         type_,
+        dispatch=None,
     ):
         if type_ == "finding":
             new_sent_notifications, platform_responses = await self.send_finding_notification(
                 session, tenant_id, parameters, fingerprint, installed_platforms
             )
-            if new_sent_notifications:
-                await MessageService._save_after_send(session, new_sent_notifications)
+            delivery_records.fill_all(new_sent_notifications, dispatch, platform_responses)
+            if new_sent_notifications and await MessageService._save_after_send(session, new_sent_notifications):
+                # Remediation posts may be waiting for this alert's new Slack thread (#40734).
+                if any(n.slack_thread_id for n in new_sent_notifications):
+                    await self._post_waiting_remediation_cards(tenant_id, fingerprint)
         elif type_ in template_mapping:
             platform_responses = await self.send_template_notification(
                 session, tenant_id, kwargs, type_, installed_platforms
             )
-            if session.info.pop(STORED_TEAMS_CARDS, False):
-                await MessageService._save_after_send(session)
+            await MessageService._save_stored_cards(session, dispatch, platform_responses)
         else:
             LOG.warning("No template found for notification type '%s' — notification not delivered", type_)
             platform_responses = [failure("system", INVALID_REQUEST)]
@@ -1105,7 +1613,7 @@ class MessageService:
     # ----------------------------- Installation loading -----------------------------
     async def get_installed_platforms_from_cache_or_db(self, session, tenant_id):
         if self.cache and self.cache.redis_client:
-            installed_platforms = self.cache.get_installations(tenant_id)
+            installed_platforms = await self.cache.aio.get_installations(tenant_id)
             if installed_platforms is not None:
                 return installed_platforms
 
@@ -1117,7 +1625,7 @@ class MessageService:
                 session.expunge(ip)
 
         if installed_platforms and self.cache and self.cache.redis_client:
-            self.cache.cache_installations(tenant_id, installed_platforms)
+            await self.cache.aio.cache_installations(tenant_id, installed_platforms)
 
         if installed_platforms:
             return installed_platforms
@@ -1163,6 +1671,16 @@ class MessageService:
         return result
 
     @staticmethod
+    async def _save_stored_cards(session, dispatch=None, results=()):
+        """Commit the Teams card rows the template senders added, with their
+        delivery columns."""
+        rows = (getattr(session, "info", None) or {}).pop(STORED_TEAMS_CARDS, None)
+        if not rows:
+            return
+        delivery_records.fill_all(rows, dispatch, results)
+        await MessageService._save_after_send(session)
+
+    @staticmethod
     async def _save_after_send(session, rows=()):
         """Commit rows recorded for posts that already went out. A failure is
         logged, not raised: raising would send the posts again on retry."""
@@ -1184,7 +1702,9 @@ class MessageService:
     async def get_installed_platforms(session, **kwargs):
         filter_conditions = {key: value for key, value in kwargs.items() if value is not None}
         result = await session.execute(select(MessagingPlatform).filter_by(**filter_conditions))
-        installs = list(result.scalars().all())
+        # Google Chat and MS Teams are integrations-only now; ignore any stale legacy
+        # messaging_platforms row of theirs so it can't be delivered to.
+        installs = [ip for ip in result.scalars().all() if ip.platform not in ("google_chat", "ms_teams")]
         for ip in installs:
             ip._origin = ORIGIN_LEGACY
         tenant_id = filter_conditions.get("tenant_id")
@@ -1197,6 +1717,16 @@ class MessageService:
         integration_installs = []
         for platform in target_platforms:
             integration_installs += await load_integration_installations_async(session, tenant_id, platform)
+        # Google Chat (service-account model): bound spaces live in `integrations`
+        # (google_chat_space), not messaging_platforms. Synthesize one transient
+        # install so Google Chat participates in rule/default routing like every other
+        # platform. The default space is resolved fresh per send in
+        # _apply_gchat_default_fallback — deliberately left off this (cached) install so
+        # changing the default takes effect without waiting for cache expiry.
+        if requested in (None, "google_chat"):
+            gchat = await MessageService._build_google_chat_installation(session, tenant_id)
+            if gchat is not None:
+                integration_installs.append(gchat)
         # Webhook targets: many per tenant, no legacy counterpart, routed per-target
         # in get_channels_from_request_or_defaults (never a tenant default).
         if requested is None or requested in WEBHOOK_PLATFORM_TYPES:
@@ -1208,17 +1738,28 @@ class MessageService:
         overridden = {ip.platform for ip in integration_installs}
         return [ip for ip in installs if ip.platform not in overridden] + integration_installs
 
-    async def route_units(self, session, tenant_id, units, installed_platforms):
+    async def route_units(self, session, tenant_id, units, installed_platforms, dispatch=None, honour_batch=True):
         """Match each unit — (key, message type, payload) for one account or one
         alert — on its own and group the keys by the channel they go to. Returns
-        [(installation, channel, [keys])]; stopped units go nowhere."""
+        [(installation, channel, [keys])]; stopped units go nowhere. dispatch
+        collects the rules that routed or stopped any unit. honour_batch=False
+        is for the batch digest's own flush: a unit already held for batch
+        delivery must route to its rule's channels here, not be held again."""
         channels = {}
         for key, type_, payload in units:
             matched_rules, source = await self.rule_matcher.match_notification_rules(session, tenant_id, type_, payload)
             default_policy = await self.rule_matcher.rules_service.get_default_policy(tenant_id, source)
             outcome = resolve_outcome(
-                matched_rules, source=source, event_type=payload.get("event_type"), default_policy=default_policy
+                matched_rules,
+                source=source,
+                event_type=payload.get("event_type"),
+                honour_batch=honour_batch,
+                default_policy=default_policy,
             )
+            if dispatch is not None:
+                dispatch.matched.extend(matched_rules)
+                dispatch.targets.extend(outcome.targets)
+                dispatch.stopped_by = dispatch.stopped_by or outcome.stopped_by
             if outcome.response is not None:
                 continue
             self.get_channels_from_request_or_defaults(
@@ -1241,17 +1782,19 @@ class MessageService:
             other.additional_channels = []
         ip.to_channel = channel
 
-    async def send_rollup(self, tenant_id, type_, payload, sections, request=None):
+    async def send_rollup(self, tenant_id, type_, payload, sections, request=None, dispatch=None):
         """Send a message covering several accounts: one message per channel, each
         with only the accounts routed to that channel."""
         parameters = payload.get("parameters") or {}
         unit = {key: payload[key] for key in ("source", "type", "channels") if payload.get(key)}
         units = [(account_id, type_, {**unit, "parameters": {"account_id": account_id}}) for account_id in sections]
+        if dispatch is not None:
+            dispatch.requested = bool(payload.get("channels"))
         async with BaseDB.async_session(self.engine)() as session:
             installed_platforms = await self.get_installed_platforms_from_cache_or_db(session, tenant_id)
             if not installed_platforms:
                 return [not_sent_response("system", NO_DESTINATION)]
-            routes = await self.route_units(session, tenant_id, units, installed_platforms)
+            routes = await self.route_units(session, tenant_id, units, installed_platforms, dispatch=dispatch)
             if not routes:
                 return [system_response("suppressed", "Every account in this message was left out by the rules")]
             routes = [route for route in routes if has_recommendations(parameters, route[2])]
@@ -1267,6 +1810,7 @@ class MessageService:
                     )
                     or []
                 )
+            await MessageService._save_stored_cards(session, dispatch, responses)
             return responses
 
     @staticmethod
@@ -1389,7 +1933,7 @@ class MessageService:
             if sent_notification:
                 new_sent_notifications.append(sent_notification)
             if response_data:
-                platform_responses.append(response_data)
+                platform_responses.append(_named(response_data, ip))
 
         return new_sent_notifications, platform_responses
 
@@ -1410,7 +1954,11 @@ class MessageService:
 
         # Look up the thread at the channel the message is actually posted to
         # (rule-routed channel or default), not the installation default.
-        thread_id = await self.slack_sender.check_if_sent_already(session, fingerprint, ip.team_id, ip.to_channel)
+        thread_id = None
+        if getattr(ip, "thread_repeats", True):
+            thread_id = await self.slack_sender.check_if_sent_already(
+                session, fingerprint, ip.team_id, ip.to_channel, tenant_id
+            )
         message, output_blocks, attachments = get_slack_finding_message(self.slack_app, ip, finding)
 
         # Empty text/blocks must be OMITTED: with no blocks Slack renders a
@@ -1443,7 +1991,10 @@ class MessageService:
             team_id=ip.team_id,
             channel_id=slack_response.data.get("channel"),
             message_ts=slack_response.data.get("ts"),
+            thread_id=thread_id,
         )
+        if sent_notification is not None:
+            response_data[delivery_records.SEND_PATH_ROW] = True
 
         return response_data, sent_notification
 
@@ -1461,11 +2012,16 @@ class MessageService:
             return [system_response("dropped", "Resolved finding lacks a fingerprint")]
 
         async with BaseDB.async_session(self.engine)() as session:
-            query = select(SentNotifications).filter_by(tenant_id=tenant_id, fingerprint=fingerprint)
-            # Only Slack rows have a thread to reply in; skip the rest in the query.
-            query = query.filter(SentNotifications.slack_thread_id.isnot(None))
+            # Only a Slack first post has a thread to reply in; skip the rest in the query.
+            query = select(SentNotifications).filter(
+                SentNotifications.tenant_id == tenant_id,
+                SentNotifications.fingerprint == fingerprint,
+                SentNotifications.created_at >= utc_now() - delivery_records.RESOLVED_WINDOW,
+                delivery_records.slack_first_post(),
+            )
             if account_id:
                 query = query.filter_by(account_id=account_id)
+            query = query.order_by(SentNotifications.created_at.desc())
             rows = (await session.execute(query)).scalars().all()
             rows = [row for row in rows if row.slack_thread_id and row.slack_team_id and row.slack_metadata]
             if not rows:
@@ -1478,6 +2034,7 @@ class MessageService:
 
             responses = []
             stamped = False
+            replied_channels = set()
             for row in rows:
                 try:
                     slack_metadata = json.loads(row.slack_metadata)
@@ -1487,6 +2044,12 @@ class MessageService:
                     continue
                 channel_id = slack_metadata.get("channel")
                 ip = installs_by_team.get(row.slack_team_id)
+                # With thread_repeats off a channel holds one top-level message per
+                # repeat; only the newest (rows are newest first) gets the reply.
+                channel_key = (row.slack_team_id, channel_id)
+                if channel_key in replied_channels:
+                    continue
+                replied_channels.add(channel_key)
                 if slack_metadata.get("resolved_notified") or not (channel_id and ip):
                     continue
 
@@ -1506,13 +2069,27 @@ class MessageService:
                     LOG.warning("Failed to post resolved reply to thread %s: %s", row.slack_thread_id, exc)
                     slack_response = getattr(exc, "response", None)
                     responses.append(
-                        slack_failure(slack_response, team_id=row.slack_team_id, **destination_fields(ip, channel_id))
+                        slack_failure(
+                            slack_response,
+                            team_id=row.slack_team_id,
+                            thread_id=row.slack_thread_id,
+                            routed_by=row.routed_by,
+                            destination_name=row.destination_name,
+                            **destination_fields(ip, channel_id),
+                        )
                     )
                     continue
 
                 if not (slack_response and slack_response.status_code == 200 and slack_response.data.get("ok")):
                     responses.append(
-                        slack_failure(slack_response, team_id=row.slack_team_id, **destination_fields(ip, channel_id))
+                        slack_failure(
+                            slack_response,
+                            team_id=row.slack_team_id,
+                            thread_id=row.slack_thread_id,
+                            routed_by=row.routed_by,
+                            destination_name=row.destination_name,
+                            **destination_fields(ip, channel_id),
+                        )
                     )
                     continue
 
@@ -1525,6 +2102,9 @@ class MessageService:
                         team_id=row.slack_team_id,
                         channel_id=channel_id,
                         message_ts=slack_response.data.get("ts"),
+                        thread_id=row.slack_thread_id,
+                        routed_by=row.routed_by,
+                        destination_name=row.destination_name,
                     )
                 )
 
@@ -1575,6 +2155,8 @@ class MessageService:
             card,
             "finding",
         )
+        if row is not None:
+            response[delivery_records.SEND_PATH_ROW] = True
         return response, row
 
     async def _send_finding_to_teams_webhook(self, session, tenant_id, ip, finding, _):
@@ -1618,6 +2200,30 @@ class MessageService:
             return webhook_failure("slack_webhook", response, **destination_fields(ip)), None
 
         return success_response("slack_webhook", channel_id=str(ip.id)), None
+
+    @staticmethod
+    async def _build_google_chat_installation(session, tenant_id):
+        """A single transient Google Chat install for the tenant (service-account
+        model), or None when the SA isn't configured or no space is bound. Carries no
+        channel — the default space is applied per send in _apply_gchat_default_fallback."""
+        if not tenant_id or not GoogleChatAppClient.is_enabled():
+            return None
+        result = await session.execute(
+            select(Integration.id)
+            .where(
+                Integration.tenant_id == tenant_id,
+                Integration.type == "google_chat_space",
+                Integration.status != "disabled",
+            )
+            .limit(1)
+        )
+        if result.first() is None:
+            return None
+        ip = MessagingPlatform()
+        ip.platform = "google_chat"
+        ip.tenant_id = tenant_id
+        ip.channels = None
+        return ip
 
     @staticmethod
     async def _resolve_default_gchat_space(session, tenant_id):
@@ -1727,7 +2333,9 @@ class MessageService:
 
         # Repeat findings reply to the original message (Slack-thread parity)
         # instead of posting a fresh top-level message each time.
-        thread_id = await self.discord_sender.check_if_sent_already(session, fingerprint, tenant_id, channel_id)
+        thread_id = None
+        if getattr(ip, "thread_repeats", True):
+            thread_id = await self.discord_sender.check_if_sent_already(session, fingerprint, tenant_id, channel_id)
         if thread_id:
             result = await asyncio.to_thread(
                 DiscordClient.reply_in_thread,
@@ -1751,12 +2359,13 @@ class MessageService:
                     fingerprint,
                     finding.get("cloud_account_id") if finding else None,
                 )
+            response_data = success_response(
+                "discord", channel_id=channel_id, message_ts=result.get("ts"), thread_id=thread_id
+            )
+            if sent_notification is not None:
+                response_data[delivery_records.SEND_PATH_ROW] = True
             return (
-                success_response(
-                    "discord",
-                    channel_id=channel_id,
-                    message_ts=result.get("ts"),
-                ),
+                response_data,
                 sent_notification,
             )
 
@@ -1806,7 +2415,7 @@ class MessageService:
                 except Exception as exc:
                     response = await MessageService._failed_send(session, ip, exc)
                 if response:
-                    platform_responses.append(response)
+                    platform_responses.append(_named(response, ip))
 
         except Exception as exc:
             LOG.exception(f"Failed to send message: {exc}")
@@ -1840,7 +2449,7 @@ class MessageService:
         if not delivery_channel_id(ip, ip.to_channel):
             return failure("slack", NOT_CONFIGURED, team_id=ip.team_id, **destination_fields(ip))
         response = await asyncio.to_thread(
-            self.slack_sender.post_to_slack, tenant, ip, None, **template_func(param_value)
+            self.slack_sender.post_to_slack_with_blocks_fallback, tenant, ip, **template_func(param_value)
         )
         if response and response.status_code == 200 and not response.data.get("error"):
             channel_id = response.data.get("channel")
@@ -1936,7 +2545,9 @@ class MessageService:
             )
             if row is not None:
                 session.add(row)
-                session.info[STORED_TEAMS_CARDS] = True
+                # Kept by reference: a later post in the send autoflushes this row out of session.new.
+                session.info.setdefault(STORED_TEAMS_CARDS, []).append(row)
+                response[delivery_records.SEND_PATH_ROW] = True
         return response
 
     async def send_teams_webhook_template_notification(self, ip, template_func, param_value, tenant):
@@ -2030,13 +2641,13 @@ class MessageService:
     async def commit_session_and_clear_cache(self, ip, session):
         await MessageService._persist_installation(ip, session)
         if self.cache and self.cache.redis_client:
-            self.cache.delete_cached_installations(ip.tenant_id)
+            await self.cache.aio.delete_cached_installations(ip.tenant_id)
 
     @staticmethod
     async def commit_session_and_clear_cache_static(ip, session):
         await MessageService._persist_installation(ip, session)
         if cache and cache.redis_client:
-            cache.delete_cached_installations(ip.tenant_id)
+            await cache.aio.delete_cached_installations(ip.tenant_id)
 
     @staticmethod
     async def _persist_installation(ip, session):
@@ -2056,7 +2667,7 @@ class MessageService:
             await session.commit()
 
     # ----------------------------- Threaded Reply Methods (always generic) -----------------------------
-    async def send_threaded_reply(self, tenant_id, thread, parameters):
+    async def send_threaded_reply(self, tenant_id, thread, parameters, dispatch=None):
         """Send a generic threaded reply using templates. Bypasses notification rules."""
         from notifications_server.message_templates.slack.generic import (
             get_generic_message_params,
@@ -2125,7 +2736,7 @@ class MessageService:
                         ip, channel_id, message_ts, template
                     ),
                     PlatformTypes.MS_TEAMS.value: lambda: self._send_teams_threaded_reply(
-                        session, ip, team_id, channel_id, message_ts, template
+                        session, ip, team_id, channel_id, message_ts, template, dispatch=dispatch
                     ),
                     PlatformTypes.GOOGLE_CHAT.value: lambda: self._send_gchat_threaded_reply(
                         session, ip, channel_id, message_ts, template
@@ -2170,9 +2781,11 @@ class MessageService:
                 )
             ]
 
-        return [slack_failure(response, team_id=ip.team_id, **destination_fields(ip))]
+        return [slack_failure(response, team_id=ip.team_id, thread_ts=thread_ts, **destination_fields(ip))]
 
-    async def _send_teams_threaded_reply(self, session, ip, team_id, channel_id, parent_message_id, template):
+    async def _send_teams_threaded_reply(
+        self, session, ip, team_id, channel_id, parent_message_id, template, dispatch=None
+    ):
         """Send MS Teams threaded reply using generic template (adaptive card)."""
         try:
             message_id = await self._post_teams_card_as_bot(
@@ -2180,10 +2793,23 @@ class MessageService:
             )
         except TeamsBotError as e:
             LOG.warning("Teams bot thread reply in team %s failed: %s", team_id, e)
-            return [teams_failure(e, team_id=team_id, **destination_fields(ip, channel_id))]
+            return [
+                teams_failure(
+                    e, team_id=team_id, parent_message_id=parent_message_id, **destination_fields(ip, channel_id)
+                )
+            ]
+        response = success_response(
+            "ms_teams",
+            team_id=team_id,
+            channel_id=channel_id,
+            message_ts=message_id,
+            parent_message_id=parent_message_id,
+        )
         if card_actions.has_actions(template):
             row = card_actions.card_row(ip.tenant_id, None, None, channel_id, message_id, template, "approval")
             if row is not None:
+                response[delivery_records.SEND_PATH_ROW] = True
+                delivery_records.fill(row, dispatch, team_id=team_id, thread_id=parent_message_id)
                 # The card is already posted: a failed save only means clicks on it
                 # reply in the thread, so it doesn't fail the send.
                 try:
@@ -2192,15 +2818,7 @@ class MessageService:
                 except Exception as e:
                     await session.rollback()
                     LOG.warning("Storing Teams approval card %s failed: %s", message_id, e)
-        return [
-            success_response(
-                "ms_teams",
-                team_id=team_id,
-                channel_id=channel_id,
-                message_ts=message_id,
-                parent_message_id=parent_message_id,
-            )
-        ]
+        return [response]
 
     @staticmethod
     def _convert_gchat_message_to_thread_name(message_name, space_id):

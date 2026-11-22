@@ -129,8 +129,22 @@ func TestRenderAttemptReportsAMergedFix(t *testing.T) {
 
 func TestRenderAttemptCarriesAFailedVerification(t *testing.T) {
 	line := renderAttempt(attempt{Kind: "CommandExecution", Ref: "kubectl rollout restart deployment/app -n web",
-		Status: "Success", Data: []byte(`{"verify":{"ran":true,"passed":false,"output":"0/3 ready"}}`), At: time.Now()})
+		Status: "Success", Data: []byte(`{"exit_code_reported":true,"verify":{"ran":true,"passed":false,"output":"0/3 ready"}}`), At: time.Now()})
 	require.Contains(t, line, "ran kubectl rollout restart deployment/app -n web -> success, verification FAILED: 0/3 ready")
+}
+
+// The planner is told how a run ended only as far as it is known: a success without an exit code is
+// unverified, a run in flight or with no result is said so, and a run that never ran is not "ran".
+func TestRenderAttemptSaysWhatIsNotKnown(t *testing.T) {
+	render := func(status, data string) string {
+		return renderAttempt(attempt{Kind: "CommandExecution", Ref: "kubectl rollout restart deployment/app -n web", Status: status, Data: []byte(data), At: time.Now()})
+	}
+	require.True(t, strings.HasSuffix(render("Success", `{"exit_code_reported":true}`), "-> success"))
+	require.True(t, strings.HasSuffix(render("Success", `{}`), "-> outcome unverified (no exit code was reported)"))
+	require.True(t, strings.HasSuffix(render("Success", `{"exit_code_reported":false}`), "-> outcome unverified (no exit code was reported)"))
+	require.True(t, strings.HasSuffix(render("Unknown", `{"reply_received":true}`), "-> outcome unknown (no result came back; it may have run)"))
+	require.True(t, strings.HasSuffix(render("InProgress", `{}`), "-> still running, no result yet"))
+	require.Contains(t, render("Failed", `{"not_sent":true,"error":"agent not connected"}`), "-> failed, not run")
 }
 
 // Rows from the dev audit: kubectl runs in demo recorded against a nudgebee/benchmark-server alert.

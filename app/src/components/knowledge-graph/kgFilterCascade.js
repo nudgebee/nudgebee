@@ -14,6 +14,66 @@
 //   - label/attr keys -> per-key bucket coverage (a key survives iff one of its
 //                       (account,node_type,specific_type) buckets is present in the scope)
 
+const splitPascalCase = (type) =>
+  (type || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([0-9])([A-Z][a-z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+
+// Product names that are PascalCase themselves stay whole after the split
+// ("DynamoDBTable" → "DynamoDB Table", not "Dynamo DB Table").
+const PRODUCT_NAMES = [
+  'BigQuery',
+  'CloudFormation',
+  'CloudFront',
+  'CloudTrail',
+  'CloudWatch',
+  'DynamoDB',
+  'ElastiCache',
+  'GitHub',
+  'GitLab',
+  'GuardDuty',
+  'OpenSearch',
+  'PagerDuty',
+  'SageMaker',
+];
+const PRODUCT_NAME_REJOINS = PRODUCT_NAMES.map((name) => [new RegExp(`\\b${splitPascalCase(name)}\\b`, 'g'), name]);
+
+// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
+// "EC2Instance" → "EC2 Instance"). The type picker and the Knowledge Graph's
+// Node Type filter and node cards all show these labels.
+export const humanizeType = (type) => PRODUCT_NAME_REJOINS.reduce((label, [re, name]) => label.replace(re, name), splitPascalCase(type));
+
+// The selectable leaves for a given node_type: its known specific_types, or (when none are
+// known yet — no ontology data, or not backfilled) a single leaf identical to the node_type
+// itself, so every node type stays selectable and accounted for either way.
+export function getNodeTypeLeaves(nodeType, specificTypesByNodeType) {
+  const specificTypes = specificTypesByNodeType?.[nodeType];
+  return specificTypes?.length ? specificTypes : [nodeType];
+}
+
+// Builds the grouped Node Type filter options: one leaf per specific_type, grouped by its
+// broad node_type. A node_type whose only leaf is identical to itself (no ontology mapping,
+// or the AWS/GCP/Azure specific_type extractors' own fallback-to-node_type default) has
+// nothing to drill into, so it's left ungrouped rather than rendered as a group header with
+// one child of the same name — FilterDropdown buckets ungrouped options under "Other".
+// Labels and group headers are spaced ("RDS Instance", "Compute Instance"); `searchText` keeps
+// the raw PascalCase leaf so typing "RDSInstance" still finds it, and real leaves add their broad
+// (ontological) type too — e.g. searching "compute" surfaces EC2Instance/GCEInstance/etc. even
+// though none of those specific-type labels themselves contain "compute".
+export function buildNodeTypeOptions(nodeTypes, specificTypesByNodeType) {
+  return (nodeTypes || []).flatMap((nodeType) => {
+    const leaves = getNodeTypeLeaves(nodeType, specificTypesByNodeType);
+    const hasRealBreakdown = !(leaves.length === 1 && leaves[0] === nodeType);
+    const group = humanizeType(nodeType);
+    return leaves.map((leaf) => ({
+      label: humanizeType(leaf),
+      value: leaf,
+      ...(hasRealBreakdown ? { group, searchText: `${leaf} ${nodeType} ${group}` } : { searchText: leaf }),
+    }));
+  });
+}
+
 // Parse a canonical 6-part KG unique key into its components.
 // Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
 // (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
@@ -38,6 +98,7 @@ const PROVIDER_TYPE_PREFIX = {
   github: 'GitHub',
   gitlab: 'GitLab',
   pagerduty: 'PagerDuty',
+  selfhosted: 'SelfHosted',
 };
 
 // Type label for a node row's badge: the specific_type (or node_type) humanized from
@@ -70,13 +131,22 @@ export function decodeFilterOptions(data) {
   const nodeSpecificTypeIdx = d.node_specific_type_idx || [];
   const nodeClusterIdx = d.node_cluster_idx || [];
   const nodeBucketIdx = d.node_bucket_idx || [];
+  // Sparse, not index-aligned: display_name_node_idx[n] is an index into node_keys,
+  // display_names[n] its label. Only identity nodes (UserAccount, keyed on the login)
+  // carry one — see FilterOptions.DisplayNames in api-server.
+  const displayNameNodeIdx = d.display_name_node_idx || [];
+  const displayNames = d.display_names || [];
   const nodeTypes = d.node_types || {}; // merged: node_type -> specific_types
 
   const nodeIdMap = {};
   const nodeClusterMap = {};
   const nodeSpecificTypeMap = {};
   const nodeAccountMap = {};
+  const nodeDisplayNameMap = {};
   const nodeBucketId = {};
+  // account id -> { provider, name } read off the first canonical key the account owns.
+  // The server rewrites the key's account segment to the account / integration name.
+  const accountSources = {};
 
   for (let i = 0; i < nodeKeys.length; i++) {
     const uk = nodeKeys[i];
@@ -84,8 +154,20 @@ export function decodeFilterOptions(data) {
     nodeIdMap[uk] = id;
     if (nodeClusterIdx[i] >= 0) nodeClusterMap[uk] = clusterDict[nodeClusterIdx[i]];
     if (nodeSpecificTypeIdx[i] >= 0) nodeSpecificTypeMap[uk] = specificTypeDict[nodeSpecificTypeIdx[i]];
-    if (nodeAccountIdx[i] >= 0) nodeAccountMap[id] = accountIds[nodeAccountIdx[i]];
+    if (nodeAccountIdx[i] >= 0) {
+      const accountId = accountIds[nodeAccountIdx[i]];
+      nodeAccountMap[id] = accountId;
+      if (!accountSources[accountId]) {
+        const parsed = parseUniqueKey(uk);
+        if (parsed?.account) accountSources[accountId] = { provider: parsed.provider, name: parsed.account };
+      }
+    }
     if (nodeBucketIdx[i] >= 0) nodeBucketId[uk] = nodeBucketIdx[i];
+  }
+
+  for (let n = 0; n < displayNameNodeIdx.length; n++) {
+    const uk = nodeKeys[displayNameNodeIdx[n]];
+    if (uk && displayNames[n]) nodeDisplayNameMap[uk] = displayNames[n];
   }
 
   return {
@@ -94,6 +176,8 @@ export function decodeFilterOptions(data) {
     nodeClusterMap,
     nodeSpecificTypeMap,
     nodeAccountMap,
+    nodeDisplayNameMap,
+    accountSources,
     nodeTypeList: Object.keys(nodeTypes),
     specificTypesByNodeType: nodeTypes,
     labelKeys: d.label_keys || [],
@@ -104,6 +188,40 @@ export function decodeFilterOptions(data) {
     lastSyncTime: d.last_sync_time || null,
     nodeCount: d.node_count ?? nodeKeys.length,
   };
+}
+
+// Account filter group for the tenant-scoped integrations, whose ids are integration ids,
+// not cloud accounts (see TenantScopedSource in knowledge_graph/core/service.go).
+const INTEGRATION_ACCOUNT_GROUP = { github: 'GitHub', gitlab: 'GitLab', pagerduty: 'PagerDuty' };
+
+// Label of the entry for nodes owned by the tenant itself: users, groups and nodes
+// declared outside any account. Matches the subtitle those nodes carry on the canvas.
+export const TENANT_ACCOUNT_LABEL = 'Not in a connected account';
+
+// Account filter options: every account id that owns nodes. Connected cloud and Kubernetes
+// accounts come from the accounts list; the rest (GitHub / GitLab / PagerDuty integrations,
+// the tenant's own id) are named from the node keys they own.
+export function buildAccountOptions(accounts, accountIds, accountSources, tenantId) {
+  const ids = Array.isArray(accountIds) ? accountIds : [];
+  const idsSet = new Set(ids);
+  const known = new Set();
+  const options = (accounts || [])
+    .filter((ac) => idsSet.has(ac.id))
+    .map((acc) => {
+      known.add(acc.id);
+      return { label: acc.label || acc.account_name, value: acc.id || acc.value, group: acc.cloud_provider || 'Other' };
+    });
+  ids
+    .filter((id) => !known.has(id))
+    .forEach((id) => {
+      const source = accountSources?.[id];
+      if (id === tenantId || source?.provider === 'external') {
+        options.push({ label: TENANT_ACCOUNT_LABEL, value: id, group: 'Other', searchText: 'users groups' });
+        return;
+      }
+      options.push({ label: source?.name || id, value: id, group: INTEGRATION_ACCOUNT_GROUP[source?.provider] || 'Other' });
+    });
+  return options;
 }
 
 // Filter the label/attribute key list to those present in the scoped node set.
@@ -134,6 +252,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
   const nodeClusterMap = baseline?.nodeClusterMap || {};
   const nodeSpecificTypeMap = baseline?.nodeSpecificTypeMap || {};
   const nodeAccountMap = baseline?.nodeAccountMap || {};
+  const nodeDisplayNameMap = baseline?.nodeDisplayNameMap || {};
   const nodeBucketId = baseline?.nodeBucketId || {};
 
   const accountSet = new Set(accountIds || []);
@@ -145,6 +264,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
   const scopedNodeIdMap = {};
   const scopedClusterMap = {};
   const scopedSpecificTypeMap = {};
+  const scopedDisplayNameMap = {};
   // The Node-Type dropdown is scoped by account only (not by the type filter itself),
   // so it keeps listing every type present in the selected accounts instead of
   // collapsing to the user's current pick.
@@ -175,6 +295,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
     scopedNodeIdMap[uniqueKey] = nodeId;
     if (nodeClusterMap[uniqueKey]) scopedClusterMap[uniqueKey] = nodeClusterMap[uniqueKey];
     if (st) scopedSpecificTypeMap[uniqueKey] = st;
+    if (nodeDisplayNameMap[uniqueKey]) scopedDisplayNameMap[uniqueKey] = nodeDisplayNameMap[uniqueKey];
     const tid = nodeBucketId[uniqueKey];
     if (tid !== undefined) presentBucketIds.add(tid);
   });
@@ -189,6 +310,7 @@ export function computeFilterOptionsClientSide(baseline, { accountIds = [], broa
     nodeIdMap: scopedNodeIdMap,
     nodeClusterMap: scopedClusterMap,
     nodeSpecificTypeMap: scopedSpecificTypeMap,
+    nodeDisplayNameMap: scopedDisplayNameMap,
     nodeTypeList,
     specificTypesByNodeType,
     labelMap: scopeKeys(baseline?.labelKeys || [], baseline?.labelKeyBuckets || [], presentBucketIds),

@@ -39,6 +39,14 @@ func (t AzureCliTool) ToolPrompt() []string {
 	}
 }
 
+var azureMetricRead = cloudMetricReadSpec{
+	binary:      "az",
+	valueFlags:  map[string]bool{"--subscription": true, "--output": true, "-o": true, "--query": true},
+	paths:       [][]string{{"monitor", "metrics", "list"}},
+	filePrefix:  "metrics_azure_monitor",
+	description: "Azure Monitor metric data (raw CLI JSON output)",
+}
+
 type AzureCliTool struct {
 	workspaceManager workspace.WorkspaceManager
 }
@@ -126,6 +134,9 @@ func (t AzureCliTool) InputSchema() core.ToolSchema {
 }
 
 func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := readOnlyCheckRefusal(nbRequestContext, t.Name(), input); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 
 	requested := RequestedCloudAccount(input.Arguments)
 	if requested == "" && nbRequestContext.ToolConfig.Name == "" {
@@ -192,10 +203,12 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 		}, err
 	}
 
+	note, refs := saveCloudMetricRead(nbRequestContext, t.workspace(), azureMetricRead, command, response)
 	return core.NBToolResponse{
-		Data:   provenance + response,
-		Type:   core.NBToolResponseTypeText,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:       provenance + response + note,
+		Type:       core.NBToolResponseTypeText,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: refs,
 	}, nil
 }
 

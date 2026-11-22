@@ -186,6 +186,29 @@ class TestResolvedDelivery:
         assert statuses == ["failed", "success"]
         assert commits == [True]  # the surviving thread still stamped + committed
 
+    def test_a_reply_names_the_channel_its_alert_went_to(self, monkeypatch):
+        named, unnamed = _sent_row({"channel": _CHANNEL}), _sent_row({"channel": "C0OTHER"})
+        named.destination_name = "ops"
+
+        result, _, _ = _run_resolved(monkeypatch, [named, unnamed])
+
+        assert [(r["channel_id"], r.get("destination_name")) for r in result] == [(_CHANNEL, "ops"), ("C0OTHER", None)]
+
+    def test_a_failed_reply_names_the_channel_too(self, monkeypatch):
+        def _raise(**kw):
+            raise RuntimeError("token_revoked")
+
+        def _refuse(**kw):
+            return SimpleNamespace(status_code=200, data={"ok": False, "error": "not_in_channel"})
+
+        for reply_fn in (_raise, _refuse):
+            row = _sent_row({"channel": _CHANNEL})
+            row.destination_name = "ops"
+
+            result, _, _ = _run_resolved(monkeypatch, [row], reply_fn=reply_fn)
+
+            assert [(r["status"], r.get("destination_name")) for r in result] == [("failed", "ops")]
+
     def test_non_dict_metadata_is_skipped(self, monkeypatch):
         bad = _sent_row({})
         bad.slack_metadata = json.dumps(None)

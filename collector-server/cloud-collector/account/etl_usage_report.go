@@ -9,6 +9,7 @@ import (
 	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/kgnotify"
 	"nudgebee/collector/cloud/providers"
+	awsProvider "nudgebee/collector/cloud/providers/aws"
 	"nudgebee/collector/cloud/security"
 	"runtime/debug"
 	"slices"
@@ -802,8 +803,21 @@ func discoverAndStoreAccountResources(ctx *security.RequestContext, accountId st
 		ctx.GetLogger().Info("usagereport: adding missing default service for discovery", "service", defaultSvc, "provider", account.CloudProvider, "accountId", accountId)
 	}
 
+	// The regions passed per service are where its rows are, so on an account
+	// with a region allowlist a region added to the list would never be crawled
+	// for a service already seen elsewhere. Adding the list keeps this full sync
+	// in step with it; StoreResources crawls only the allowed part and archives
+	// the rest.
+	var allowedRegions []string
+	if accErr == nil && strings.EqualFold(account.CloudProvider, "aws") {
+		allowedRegions = awsProvider.ConfiguredRegions(account)
+	}
+
 	// sync resources
 	for serviceName, regions := range serviceRegionsMaps {
+		if len(allowedRegions) > 0 && !isGlobalAwsService(serviceName) {
+			regions = lo.Union(regions, allowedRegions)
+		}
 		r, err := StoreResources(ctx, accountId, serviceName, regions...)
 		msg := ""
 		if err != nil && !errors.Is(err, errors.ErrUnsupported) {

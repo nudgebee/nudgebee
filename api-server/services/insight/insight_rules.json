@@ -892,7 +892,7 @@
     ],
     "account_column": "cloud_account_id",
     "severity": "Critical",
-    "cloud_providers": ["k8s"]
+    "cloud_providers": ["k8s", "selfhosted"]
   },
   {
     "unique_id": "119",
@@ -916,7 +916,7 @@
     ],
     "account_column": "cloud_account_id",
     "severity": "Critical",
-    "cloud_providers": ["k8s", "aws", "azure", "gcp"]
+    "cloud_providers": ["k8s", "aws", "azure", "gcp", "selfhosted"]
   },
   {
     "unique_id": "120",
@@ -940,7 +940,7 @@
     ],
     "account_column": "cloud_account_id",
     "severity": "Critical",
-    "cloud_providers": ["k8s", "aws", "azure", "gcp"]
+    "cloud_providers": ["k8s", "aws", "azure", "gcp", "selfhosted"]
   },
   {
     "unique_id": "121",
@@ -1137,9 +1137,7 @@
     "threshold": 0,
     "account_column": "cloud_account_id",
     "severity": "High",
-    "cloud_providers": [
-      "k8s"
-    ]
+    "cloud_providers": ["k8s"]
   },
   {
     "unique_id": "129",
@@ -1165,9 +1163,7 @@
     "category": "Troubleshooting",
     "aggregate_column": "MAX(event_count)",
     "severity": "Medium",
-    "cloud_providers": [
-      "k8s"
-    ]
+    "cloud_providers": ["k8s"]
   },
   {
     "unique_id": "131",
@@ -1204,5 +1200,24 @@
     "severity": "High",
     "cloud_providers": ["selfhosted"],
     "applications_query": "SELECT DISTINCT COALESCE(v.vuln_id, r.recommendation ->> 'vuln_id') AS name FROM recommendation r LEFT JOIN vulnerabilities v ON v.id = r.vulnerability_id WHERE r.cloud_account_id = ? AND r.rule_name = 'vm_package_vulnerability' AND r.status IN ('Open', 'InProgress') AND r.severity = 'High' ORDER BY name LIMIT 5"
-  }
+  },
+  {
+    "unique_id": "133",
+    "insight_format": "{} alerts are FIRING on your VM fleet",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      { "column": "source", "value": ["prometheus_alertmanager_webhook", "event_webhook"], "operator": "in" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["selfhosted"],
+    "applications_query": "SELECT aggregation_key AS name FROM events WHERE cloud_account_id = ? AND status = 'FIRING' AND source IN ('prometheus_alertmanager_webhook', 'event_webhook') AND created_at > now() - interval '1 day' AND aggregation_key IS NOT NULL AND aggregation_key <> '' GROUP BY aggregation_key ORDER BY count(*) DESC, aggregation_key LIMIT 5"
+  },
+  {"unique_id": "134", "insight_format": "{} P1 alerts need attention on your VM fleet", "type": "Addition", "source": "Event", "category": "Troubleshooting", "range": 1, "range_unit": "DAY", "filters": [{"column": "computed_priority", "value": "P1", "operator": "="}, {"column": "status", "value": "FIRING", "operator": "="}], "threshold": 0, "account_column": "cloud_account_id", "severity": "High", "cloud_providers": ["selfhosted"]},
+  {"unique_id": "135", "insight_format": "Most frequent issue: {aggregation_key} ({} FIRING events)", "type": "Ratio", "source": "Event", "view_name": "frequent_errors", "with": "WITH frequent_errors AS ( SELECT aggregation_key, cloud_account_id, tenant, COUNT(*) AS event_count, ROW_NUMBER() OVER (PARTITION BY cloud_account_id, tenant ORDER BY COUNT(*) DESC) AS rn FROM events WHERE created_at >= NOW() - INTERVAL '7 days' AND status = 'FIRING' AND aggregation_key IS NOT NULL AND aggregation_key != '' GROUP BY aggregation_key, cloud_account_id, tenant )", "grouped_by": ["cloud_account_id", "tenant", "aggregation_key"], "filters": [{"column": "rn", "value": 1, "operator": "="}], "threshold": 1, "account_column": "cloud_account_id", "category": "Troubleshooting", "aggregate_column": "MAX(event_count)", "severity": "Medium", "cloud_providers": ["selfhosted"]}
 ]

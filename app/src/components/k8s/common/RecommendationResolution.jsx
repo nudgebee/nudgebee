@@ -68,28 +68,6 @@ const RecommendationResolution = ({ recommendation }) => {
       }
       setResolutions(res?.data?.recommendation_resolution);
 
-      // Get unique resolver_ids first
-      const uniqueResolverIds = [
-        ...new Set(res?.data?.recommendation_resolution.filter((resolution) => resolution?.resolver_id).map((resolution) => resolution.resolver_id)),
-      ];
-      // Fetch user data for unique IDs only
-      const usersMap = {};
-      await Promise.all(
-        uniqueResolverIds.map(async (resolverId) => {
-          try {
-            const userResponse = await apiUser.getUser(resolverId);
-            const user = userResponse?.data;
-            if (user) {
-              usersMap[resolverId] = user.display_name || user.firstname || user.username;
-            }
-          } catch (error) {
-            console.error(error);
-          }
-        })
-      );
-      if (cancelled) {
-        return;
-      }
       let tableData = res?.data?.recommendation_resolution.map((resolution) => {
         const referenceObj = {};
         if (containsLink(resolution?.type_reference_id)) {
@@ -110,8 +88,7 @@ const RecommendationResolution = ({ recommendation }) => {
           );
         }
 
-        const resolverDisplay =
-          resolution?.resolver_id && usersMap[resolution.resolver_id] ? usersMap[resolution.resolver_id] : resolution?.resolver_type || '-';
+        const resolverDisplay = resolution?.resolver_display_name || resolution?.resolver_type || '-';
 
         return [
           {

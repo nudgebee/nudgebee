@@ -243,6 +243,12 @@ func TestShouldScoreAnswerConfidence(t *testing.T) {
 		assert.True(t, shouldScoreAnswerConfidence(r, "here are your pods"))
 	})
 
+	t.Run("automation does not qualify even when it reads like an investigation", func(t *testing.T) {
+		r := base()
+		r.ConversationSource = ConversationSourceAutomation
+		assert.False(t, shouldScoreAnswerConfidence(r, "root cause found"))
+	})
+
 	t.Run("classifies on the top-level question, not a sub-agent brief", func(t *testing.T) {
 		// OriginalQuery holds the user's verbatim ask; Query may have been
 		// rewritten. Grading the rewrite would misclassify.

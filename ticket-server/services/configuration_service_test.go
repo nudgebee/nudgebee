@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	ticketmgr "nudgebee/tickets-server/services/ticket"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/go-github/v67/github"
 	"github.com/lib/pq"
 )
 
@@ -234,6 +236,31 @@ func TestInterpretServiceNowError(t *testing.T) {
 			}
 			if !strings.Contains(got.Error(), tt.wantErrSub) {
 				t.Errorf("interpretServiceNowError(%q) = %q, want substring %q", tt.inputErr.Error(), got.Error(), tt.wantErrSub)
+			}
+		})
+	}
+}
+
+func TestIsGithubForbidden(t *testing.T) {
+	forbidden := &github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusForbidden}}
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"plain 403", forbidden, true},
+		{"wrapped 403", fmt.Errorf("list collaborators: %w", forbidden), true},
+		{"404", &github.ErrorResponse{Response: &http.Response{StatusCode: http.StatusNotFound}}, false},
+		{"no response", &github.ErrorResponse{}, false},
+		{"primary rate limit", &github.RateLimitError{Response: &http.Response{StatusCode: http.StatusForbidden}}, false},
+		{"secondary rate limit", &github.AbuseRateLimitError{Response: &http.Response{StatusCode: http.StatusForbidden}}, false},
+		{"non-github error", errors.New("connection reset"), false},
+		{"nil error", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isGithubForbidden(tc.err); got != tc.want {
+				t.Errorf("isGithubForbidden() = %v, want %v", got, tc.want)
 			}
 		})
 	}

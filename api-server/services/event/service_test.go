@@ -742,3 +742,25 @@ func TestStampEvidencesWithSourceWorkflow(t *testing.T) {
 		}
 	})
 }
+
+// A remediation run (CommandExecution, no card_id) in flight is not a card's own fix to reuse; a card's
+// raise-PR attempt still is, for a retry of the same card.
+func TestInProgressRunIsNotReusedByACardAction(t *testing.T) {
+	row := func(id string, typ models.RecommendationResolutionType, data map[string]any) models.EventResolution {
+		return models.EventResolution{Id: id, Type: typ, Status: models.RecommendationResolutionStatusInProgress, Data: models.NewJsonObject(data)}
+	}
+	run := row("run-1", "CommandExecution", map[string]any{"command": "kubectl rollout restart deployment/api -n shop"})
+	card := row("card-1", models.RecommendationResolutionTypeDeploymentChange, map[string]any{"data": map[string]any{}})
+	pr := row("pr-1", models.RecommendationResolutionTypePullRequest, map[string]any{"data": map[string]any{"card_id": "AskAiCard"}})
+	for _, c := range []struct {
+		rows   []models.EventResolution
+		cardId string
+		want   string
+	}{{[]models.EventResolution{run}, "", ""}, {[]models.EventResolution{run, card}, "", "card-1"}, {[]models.EventResolution{run, pr}, "AskAiCard", "pr-1"}} {
+		found, id := hasInProgressRecommendation(c.rows, c.cardId)
+		assert.Equal(t, c.want != "", found, c.want)
+		if c.want != "" {
+			assert.Equal(t, c.want, id)
+		}
+	}
+}

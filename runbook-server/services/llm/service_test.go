@@ -416,3 +416,69 @@ func TestProcessRequest_StopsWhenConversationTerminated(t *testing.T) {
 		})
 	}
 }
+
+// chatGetServer answers chat_get with status and counts the polls.
+func chatGetServer(t *testing.T, status int) (*int, func()) {
+	t.Helper()
+	polls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		polls++
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"api: user does not have access"}]}`))
+	}))
+	oldURL := config.Config.LlmServerUrl
+	config.Config.LlmServerUrl = server.URL
+	return &polls, func() { config.Config.LlmServerUrl = oldURL; server.Close() }
+}
+
+// WaitForChat stops at the first 401 or 403: waiting does not grant access.
+func TestWaitForChat_RefusalEndsTheWait(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		polls, done := chatGetServer(t, status)
+		sc, _, _ := newTestSecurityContext(t)
+		reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+		_, err := WaitForChat(reqCtx, "conv-1", "acc-1", time.Now().Add(time.Minute), time.Millisecond, nil)
+		done()
+		assert.ErrorIs(t, err, ErrChatRefused, status)
+		assert.Contains(t, err.Error(), "user does not have access")
+		assert.Equal(t, 1, *polls, status)
+	}
+}
+
+// ProcessRequest's polling (refusalEnds false) keeps going through a
+// refusal, as it always has.
+func TestPollChatWithoutRefusalEndsKeepsPolling(t *testing.T) {
+	polls, done := chatGetServer(t, http.StatusForbidden)
+	defer done()
+	sc, _, _ := newTestSecurityContext(t)
+	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+	_, err := pollChat(reqCtx, "conv-1", "acc-1", time.Millisecond, false, func(attempt int) bool { return attempt < 2 })
+	assert.ErrorIs(t, err, ErrChatStillRunning)
+	assert.Equal(t, 2, *polls)
+}
+
+// Extra headers (a run claim) go on the chat request as headers, never in
+// its body.
+func TestStartChat_SendsExtraHeaders(t *testing.T) {
+	var gotClaim string
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotClaim = r.Header.Get("X-NB-Run-Ref")
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(llmChatResponse{Data: llmAgentResponse{ConversationId: "conv-1", Status: "IN_PROGRESS"}})
+	}))
+	defer server.Close()
+	oldURL := config.Config.LlmServerUrl
+	config.Config.LlmServerUrl = server.URL
+	defer func() { config.Config.LlmServerUrl = oldURL }()
+	sc, _, _ := newTestSecurityContext(t)
+	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+
+	convID, err := StartChat(reqCtx, LLMRequest{Message: "@bee hi", AccountId: "acc-1", Headers: map[string]string{"X-NB-Run-Ref": "run-1"}})
+	assert.NoError(t, err)
+	assert.Equal(t, "conv-1", convID)
+	assert.Equal(t, "run-1", gotClaim)
+	assert.NotContains(t, gotBody, "run-1", "the claim is not in the body")
+}

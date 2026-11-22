@@ -44,7 +44,25 @@ export const validateWorkflowForSave = (
     errors.push(`${badSchedules.length} schedule trigger(s) have an invalid cron expression`);
   }
 
+  // The server never registers an unfiltered optimization trigger, so it would never run.
+  const unfilteredOptimizations = nodes.filter(
+    (node) => node.type === 'trigger' && node.data?.trigger?.type === 'optimization' && !optimizationParamsHaveFilter(node.data.trigger.params)
+  );
+  if (unfilteredOptimizations.length > 0) {
+    errors.push(OPTIMIZATION_NEEDS_FILTER_MSG);
+  }
+
   return errors;
+};
+
+export const OPTIMIZATION_NEEDS_FILTER_MSG = 'Optimization trigger needs at least one filter: Cluster, Category or Rule Name';
+
+/** True when optimization trigger params narrow which recommendations fire it (mirrors the server check). */
+export const optimizationParamsHaveFilter = (params: Record<string, unknown> | null | undefined): boolean => {
+  const hasItem = (v: unknown) => Array.isArray(v) && v.some((item) => typeof item === 'string' && item !== '');
+  if (['categories', 'rule_names', 'clusters'].some((key) => hasItem(params?.[key]))) return true;
+  const filter = params?.filter;
+  return typeof filter === 'string' && filter.trim().replace(/^\{\{/, '').replace(/\}\}$/, '').trim() !== '';
 };
 
 export interface TaskOutputReference {

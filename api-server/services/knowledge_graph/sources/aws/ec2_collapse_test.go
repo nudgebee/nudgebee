@@ -23,14 +23,14 @@ func TestCollapseComputeInstanceDuplicates_SSMFoldsIntoEC2(t *testing.T) {
 	ssm := computeNode("ssm-node", "SSMManagedInstance", map[string]interface{}{
 		"name":          "i-0f568ef22d52139bb",
 		"resource_id":   "i-0f568ef22d52139bb",
-		"arn":           "arn:aws:ssm:us-east-1:864186153326:managed-instance/i-0f568ef22d52139bb",
+		"arn":           "arn:aws:ssm:us-east-1:888888888888:managed-instance/i-0f568ef22d52139bb",
 		"ping_status":   "Online",
 		"agent_version": "3.2.1",
 	})
 	ec2 := computeNode("ec2-node", "EC2Instance", map[string]interface{}{
 		"name":        "nb-demo-web",
 		"resource_id": "i-0f568ef22d52139bb",
-		"arn":         "arn:aws:ec2:us-east-1:864186153326:instance/i-0f568ef22d52139bb",
+		"arn":         "arn:aws:ec2:us-east-1:888888888888:instance/i-0f568ef22d52139bb",
 		"vpc_id":      "vpc-06f8c85f523a3e52c",
 		"private_ip":  "172.31.0.145",
 	})
@@ -64,7 +64,7 @@ func TestCollapseComputeInstanceDuplicates_SSMFoldsIntoEC2(t *testing.T) {
 	if name, _ := core.GetNodePropertyString(survivor, "name"); name != "nb-demo-web" {
 		t.Errorf("survivor name = %q, want the EC2 Name tag nb-demo-web", name)
 	}
-	if arn, _ := core.GetNodePropertyString(survivor, "arn"); arn != "arn:aws:ec2:us-east-1:864186153326:instance/i-0f568ef22d52139bb" {
+	if arn, _ := core.GetNodePropertyString(survivor, "arn"); arn != "arn:aws:ec2:us-east-1:888888888888:instance/i-0f568ef22d52139bb" {
 		t.Errorf("survivor arn = %q, want the EC2 ARN", arn)
 	}
 	// SSM-only facts are still worth keeping.

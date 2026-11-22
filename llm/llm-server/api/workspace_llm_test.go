@@ -7,6 +7,7 @@ import (
 
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -81,11 +82,11 @@ func TestWorkspaceUsageLink(t *testing.T) {
 				assert.Zero(t, dao.calls)
 			}
 			if !tt.wantLinked {
-				assert.Equal(t, core.UsageLink{}, link)
+				assert.Equal(t, llmruntime.UsageLink{}, link)
 				assert.Empty(t, userID)
 				return
 			}
-			assert.Equal(t, core.UsageLink{ConversationID: "conv-1", MessageID: "msg-1", AgentID: runID, ModelTier: "retrieval", TaskType: "reflection"}, link)
+			assert.Equal(t, llmruntime.UsageLink{ConversationID: "conv-1", MessageID: "msg-1", AgentID: runID, ModelTier: "retrieval", TaskType: "reflection"}, link)
 			assert.Equal(t, "user-1", userID)
 		})
 	}

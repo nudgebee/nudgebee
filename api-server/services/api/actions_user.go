@@ -861,6 +861,10 @@ func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 		c.JSON(200, resp)
 		return
 	default:
+		// EE-registered user actions dispatch here.
+		if dispatchAction(actionPayload, c, tracer, meter, logger) {
+			return
+		}
 		c.JSON(400, common.ErrorActionBadRequest("invalid action name - "+actionPayload.Action.Name))
 		return
 	}

@@ -70,6 +70,15 @@ func TestListRequestsFilter(t *testing.T) {
 		assert.Equal(t, []any{"t1", start, end, "u1"}, args)
 	})
 
+	t.Run("api key filter composes with the user scope", func(t *testing.T) {
+		req := base
+		req.UserID = "u1"
+		req.APIKeyID = "k1"
+		where, args := listRequestsFilter(req)
+		assert.Contains(t, where, "g.user_id = $4 AND g.api_key_id = $5")
+		assert.Equal(t, []any{"t1", start, end, "u1", "k1"}, args)
+	})
+
 	t.Run("providers and models get numbered IN placeholders", func(t *testing.T) {
 		req := base
 		req.Providers = []string{"anthropic", "openai"}

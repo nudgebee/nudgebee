@@ -1,6 +1,6 @@
 """The stable per-page handle shared with llm-server: ``<collection>|<source id>``.
 
-Same recipe as llm-server's ``DocumentKey`` (tools/core/knowledgebase_document_category.go),
+Same recipe as llm-server's ``DocumentKey`` (knowledge/knowledgebase_document_category.go),
 which user Fact/SOP marks are already stored against, so a label row and a mark about
 one page carry the same key. Both sides are pinned to the vectors in
 ``docs/fixtures/kb_document_keys.json``.

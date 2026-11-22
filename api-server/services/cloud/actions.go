@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -65,6 +66,48 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 	if tenantId == "" || accountId == "" || serviceName == "" {
 		return nil, nil
 	}
+
+	args := []any{tenantId, accountId, serviceName}
+	whereClauses := []string{
+		"tenant = $1",
+		"account = $2",
+		"lower(service_name) = lower($3)",
+	}
+	if region != "" {
+		args = append(args, region)
+		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
+	}
+	if len(resourceIds) > 0 {
+		args = append(args, pq.Array(resourceIds))
+		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
+	}
+	return selectResourcesFromDB(whereClauses, args)
+}
+
+// lookupEventResources returns the row the event is linked to when it has one, else the rows
+// matching the alert's identifiers. Several rows can share a resource's id (a load balancer's
+// cost-report record is keyed by the alarm's app/<name>/<id> dimension while the load balancer
+// itself is keyed by its ARN; an instance also has Systems Manager and cost-report records), so
+// the identifier match can describe the wrong record. The link was chosen with the resource's
+// service and key, and is what the event's resource card already shows. A link to a row of
+// another service is ignored: events linked before that choice existed can point at a Systems
+// Manager or Inspector record of the resource.
+func lookupEventResources(ctx playbooks.PlaybookActionContext, accountId, serviceName, region string, resourceIds []string) ([]Resource, error) {
+	if linkedId := ctx.GetEvent().CloudResourceId; linkedId != "" && ctx.GetTenantId() != "" && serviceName != "" {
+		items, err := selectResourcesFromDB(
+			[]string{"tenant = $1", "id = $2", "lower(service_name) = lower($3)"},
+			[]any{ctx.GetTenantId(), linkedId, serviceName})
+		if err != nil {
+			return nil, err
+		}
+		if len(items) > 0 {
+			return items, nil
+		}
+	}
+	return lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, resourceIds)
+}
+
+func selectResourcesFromDB(whereClauses []string, args []any) ([]Resource, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return nil, err
@@ -81,21 +124,6 @@ func lookupResourcesFromDB(tenantId, accountId, serviceName, region string, reso
 		Tags        []byte         `db:"tags"`
 		Meta        []byte         `db:"meta"`
 		CreatedAt   sql.NullTime   `db:"created_at"`
-	}
-
-	args := []any{tenantId, accountId, serviceName}
-	whereClauses := []string{
-		"tenant = $1",
-		"account = $2",
-		"lower(service_name) = lower($3)",
-	}
-	if region != "" {
-		args = append(args, region)
-		whereClauses = append(whereClauses, fmt.Sprintf("region = $%d", len(args)))
-	}
-	if len(resourceIds) > 0 {
-		args = append(args, pq.Array(resourceIds))
-		whereClauses = append(whereClauses, fmt.Sprintf("(resourse_id = ANY($%d) OR external_resource_id = ANY($%d) OR arn = ANY($%d))", len(args), len(args), len(args)))
 	}
 
 	query := fmt.Sprintf(`SELECT resourse_id, name, type, arn, service_name, status, region, tags, meta, created_at
@@ -218,6 +246,69 @@ func getVpcIdForResource(resourceId, tenantId string) string {
 	return vpcId
 }
 
+var (
+	flowLogScopeENIRegex = regexp.MustCompile(`"NetworkInterfaceId":\s*"(eni-[0-9a-f]{8,17})"`)
+	flowLogScopeIPRegex  = regexp.MustCompile(`"PrivateIpAddress":\s*"((?:\d{1,3}\.){3}\d{1,3})"`)
+)
+
+// flowLogScopeMaxValues bounds how many interfaces or addresses go into one
+// Insights filter; an instance with more is still matched by the first ones.
+const flowLogScopeMaxValues = 16
+
+// getNetworkScopeForInstance returns the network interfaces and private IPs of
+// an EC2 instance from its cloud_resourses meta, so VPC flow-log evidence can
+// be limited to that instance's own traffic. Only instance ids are looked up:
+// other resource types' meta carries a VpcId but no interfaces of their own,
+// and a PrivateIpAddress in it may belong to something else. A resource can
+// have several rows (one per service type), not all with the interface list,
+// so values are merged across rows.
+func getNetworkScopeForInstance(resourceId, tenantId string) (enis []string, ips []string) {
+	if !awsInstanceIdRegex.MatchString(resourceId) {
+		return nil, nil
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, nil
+	}
+	var metas []string
+	// Same index path as getVpcIdForResource.
+	err = dbms.Db.Select(&metas,
+		`SELECT meta::text
+		 FROM cloud_resourses
+		 WHERE account IN (SELECT id FROM cloud_accounts WHERE tenant = $2)
+		 AND resourse_id = $1 AND tenant = $2 AND cloud_provider = 'AWS'
+		 AND meta::text ~ '"(NetworkInterfaceId|PrivateIpAddress)"'
+		 LIMIT 20`,
+		resourceId, tenantId,
+	)
+	if err != nil {
+		slog.Warn("getNetworkScopeForInstance: failed to query cloud_resourses", "resourceId", resourceId, "error", err)
+		return nil, nil
+	}
+	return extractInstanceNetworkScope(metas)
+}
+
+// extractInstanceNetworkScope pulls distinct, validated interface ids and
+// private IPv4 addresses out of instance meta rows.
+func extractInstanceNetworkScope(metas []string) (enis []string, ips []string) {
+	seenENI, seenIP := map[string]bool{}, map[string]bool{}
+	for _, meta := range metas {
+		for _, m := range flowLogScopeENIRegex.FindAllStringSubmatch(meta, -1) {
+			if !seenENI[m[1]] && len(enis) < flowLogScopeMaxValues {
+				seenENI[m[1]] = true
+				enis = append(enis, m[1])
+			}
+		}
+		for _, m := range flowLogScopeIPRegex.FindAllStringSubmatch(meta, -1) {
+			if ip := net.ParseIP(m[1]); ip != nil && ip.To4() != nil && !seenIP[m[1]] && len(ips) < flowLogScopeMaxValues {
+				seenIP[m[1]] = true
+				ips = append(ips, m[1])
+			}
+		}
+	}
+	return enis, ips
+}
+
 type cloudResourceAction struct {
 }
 
@@ -290,7 +381,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		accountId := ctx.GetAccountId()
 		if accountId != "" {
 			rawParams["account_id"] = accountId
-			items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, serviceName, region, []string{targetResource})
+			items, err := lookupEventResources(ctx, accountId, serviceName, region, []string{targetResource})
 			if err != nil {
 				ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 				return nil, nil
@@ -320,7 +411,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 			return nil, err
 		}
 		rawParams["account_id"] = accountId
-		items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
+		items, err := lookupEventResources(ctx, accountId, labels["gcp_service_name"], labels["gcp_region"], []string{labels["gcp_event_instance"]})
 		if err != nil {
 			ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 			return nil, nil
@@ -356,7 +447,7 @@ func (a *cloudResourceAction) AutoExecute(ctx playbooks.PlaybookActionContext) (
 		return nil, err
 	}
 	rawParams["account_id"] = accountId
-	items, err := lookupResourcesFromDB(ctx.GetTenantId(), accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
+	items, err := lookupEventResources(ctx, accountId, labels["aws_service_name"], labels["aws_region"], lo.Uniq(resource_ids))
 	if err != nil {
 		ctx.GetLogger().Warn("cloudResourceAction: db lookup failed, skipping auto-discovery", "error", err)
 		return nil, nil
@@ -1916,6 +2007,14 @@ func (a *cloudLogAction) Execute(ctx playbooks.PlaybookActionContext, rawParams 
 	additionalInfo := map[string]any{}
 	if title, ok := rawParams["title"].(string); ok && title != "" {
 		additionalInfo["title"] = title
+	}
+	// Name the source, so a reader of the lines knows which log group (and
+	// which of its streams) they came from and can query it further.
+	if resourceResp.LogGroupName != "" {
+		additionalInfo["log_group_name"] = resourceResp.LogGroupName
+		if resourceResp.LogStreamPrefix != "" {
+			additionalInfo["log_stream_prefix"] = resourceResp.LogStreamPrefix
+		}
 	}
 
 	response := playbooks.NewPlaybookActionResponseJson(map[string]any{"data": logoutput}, additionalInfo, insights, metadata)
@@ -3571,6 +3670,8 @@ func extractResourceGroup(resourceID string) string {
 var (
 	awsRegionRegex       = regexp.MustCompile(`^[a-z]{2}-(?:gov-)?[a-z]+-\d+$`)
 	awsVpcIdRegex        = regexp.MustCompile(`^vpc-[0-9a-f]{8,17}$`)
+	awsInstanceIdRegex   = regexp.MustCompile(`^i-[0-9a-f]{8,17}$`)
+	awsENIIdRegex        = regexp.MustCompile(`^eni-[0-9a-f]{8,17}$`)
 	awsLogGroupNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_\-/.#]{1,512}$`)
 )
 
@@ -3593,6 +3694,34 @@ type cloudVpcFlowLogsParams struct {
 	OnlyFailed       bool       `json:"only_failed"`        // If true, only show rejected/failed connections
 	IncludePublicIPs bool       `json:"include_public_ips"` // If true, include public IP traffic (default: false, private only)
 	IPWhitelist      []string   `json:"ip_whitelist"`       // Optional: specific CIDR ranges to include (overrides private IP filter)
+	// Optional: limit flows to one resource's traffic. Set when the action runs
+	// for an alert on a specific instance; without them the query covers the VPC.
+	ResourceId   string   `json:"resource_id"`
+	InterfaceIds []string `json:"interface_ids"`
+	ResourceIPs  []string `json:"resource_ips"`
+}
+
+// flowLogResourceFilter returns the Insights filter stage that keeps only the
+// flows of the given interfaces (when the log format records interface-id) or
+// else of the given addresses, and "" when neither can be applied. Values must
+// already be validated.
+func flowLogResourceFilter(logFormat string, interfaceIds, ips []string) string {
+	quoteAll := func(values []string) string {
+		quoted := make([]string, len(values))
+		for i, v := range values {
+			quoted[i] = `"` + v + `"`
+		}
+		return "[" + strings.Join(quoted, ", ") + "]"
+	}
+	hasInterfaceField := logFormat == "" || strings.Contains(logFormat, "${interface-id}")
+	if len(interfaceIds) > 0 && hasInterfaceField {
+		return "filter interface_id in " + quoteAll(interfaceIds)
+	}
+	if len(ips) > 0 {
+		list := quoteAll(ips)
+		return fmt.Sprintf("filter srcaddr in %s or dstaddr in %s", list, list)
+	}
+	return ""
 }
 
 func (a *cloudVpcFlowLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
@@ -3635,7 +3764,16 @@ func (a *cloudVpcFlowLogsAction) AutoExecute(ctx playbooks.PlaybookActionContext
 		"vpc_id":      vpcId,
 		"region":      region,
 		"only_failed": true, // By default, only show failed/rejected connections
-		"title":       "VPC Flow Logs Failed Connections - " + vpcId,
+	}
+
+	// An alert on one instance gets that instance's flows, not the whole VPC's:
+	// VPC-wide rejects were read as the instance's own failures.
+	if instance := labels["aws_event_instance"]; instance != "" {
+		rawParams["resource_id"] = instance
+		if enis, ips := getNetworkScopeForInstance(instance, ctx.GetTenantId()); len(enis) > 0 || len(ips) > 0 {
+			rawParams["interface_ids"] = enis
+			rawParams["resource_ips"] = ips
+		}
 	}
 
 	// Get cloud account ID
@@ -3686,6 +3824,16 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 	if params.LogGroupName != "" && !awsLogGroupNameRegex.MatchString(params.LogGroupName) {
 		return nil, fmt.Errorf("invalid log_group_name format: %q", params.LogGroupName)
 	}
+	for _, eni := range params.InterfaceIds {
+		if !awsENIIdRegex.MatchString(eni) {
+			return nil, fmt.Errorf("invalid interface id format: %q", eni)
+		}
+	}
+	for _, ip := range params.ResourceIPs {
+		if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
+			return nil, fmt.Errorf("invalid resource ip format: %q", ip)
+		}
+	}
 
 	// Prioritize time sources: explicit params > event window > default (last 1 hour).
 	// The event window goes through ResolveQueryWindow rather than being used raw: a
@@ -3734,6 +3882,12 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 	if params.OnlyFailed {
 		queryString += `
 | filter action = "REJECT"`
+	}
+
+	resourceFilter := flowLogResourceFilter(logFormat, params.InterfaceIds, params.ResourceIPs)
+	scopedToResource := resourceFilter != ""
+	if scopedToResource {
+		queryString += "\n| " + resourceFilter
 	}
 
 	// IP filtering logic: configurable based on parameters
@@ -3944,8 +4098,10 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 						logEntry := map[string]any{
 							"timestamp": startTime.Format(time.RFC3339),
 							"message":   message,
-							"severity":  lo.Ternary(action == "REJECT", "ERROR", "INFO"),
-							"labels":    flow, // All flow fields as labels
+							// Only a resource's own rejects are its errors; VPC-wide
+							// rows tagged ERROR became the alerting host's error lines.
+							"severity": lo.Ternary(action == "REJECT" && scopedToResource, "ERROR", "INFO"),
+							"labels":   flow, // All flow fields as labels
 						}
 
 						logoutput = append(logoutput, logEntry)
@@ -3967,33 +4123,48 @@ func (a *cloudVpcFlowLogsAction) Execute(ctx playbooks.PlaybookActionContext, ra
 				"action_name": "cloud_logs", // Use "cloud_logs" to trigger CloudLog card rendering
 			}
 
+			metadata["resource_id"] = params.ResourceId
+			metadata["scoped_to_resource"] = scopedToResource
+			// scope says whose flows these are, in every title and insight.
+			scope := fmt.Sprintf("VPC '%s'", params.VpcId)
+			switch {
+			case scopedToResource:
+				scope = fmt.Sprintf("%s in VPC '%s'", params.ResourceId, params.VpcId)
+			case params.ResourceId != "":
+				scope = fmt.Sprintf("all of VPC '%s', not filtered to %s (its network interfaces are unknown)", params.VpcId, params.ResourceId)
+			}
+
 			if title, ok := rawParams["title"]; ok {
 				additionalInfo["title"] = title
+			} else if params.OnlyFailed {
+				additionalInfo["title"] = "VPC Flow Logs rejected connections - " + scope
 			} else {
-				additionalInfo["title"] = fmt.Sprintf("VPC Flow Logs - %s (Private IPs Only)", params.VpcId)
+				additionalInfo["title"] = fmt.Sprintf("VPC Flow Logs - %s (Private IPs Only)", scope)
 			}
 
 			insights := []playbooks.PlaybookActionResponseInsight{}
 			if len(logoutput) == 0 {
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message:  fmt.Sprintf("No %s private IP connections found in VPC Flow Logs for VPC '%s' during the specified time range (Internet traffic excluded)", lo.Ternary(params.OnlyFailed, "rejected", ""), params.VpcId),
+					Message:  fmt.Sprintf("No %s private IP connections found in VPC Flow Logs for %s during the specified time range (Internet traffic excluded)", lo.Ternary(params.OnlyFailed, "rejected", ""), scope),
 					Severity: "info",
 				})
 			} else {
 				if params.OnlyFailed && failedFlowCount > 0 {
+					// A reject is a deny rule doing its job as often as a fault;
+					// say what was seen, not what it is likely to mean.
 					insights = append(insights, playbooks.PlaybookActionResponseInsight{
-						Message:  fmt.Sprintf("Found %d rejected internal connection patterns between private IPs in VPC '%s'. These are likely security group misconfigurations preventing internal communication.", failedFlowCount, params.VpcId),
-						Severity: "high",
+						Message:  fmt.Sprintf("Found %d rejected connection patterns between private IPs for %s. Check whether the alerting resource depends on these connections before treating them as a cause.", failedFlowCount, scope),
+						Severity: lo.Ternary(scopedToResource, "warning", "info"),
 					})
 				}
 
 				// Add summary insight
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message: fmt.Sprintf("Analyzed %d connection patterns (%d total connections, %s data transferred) between private IPs in VPC '%s'",
+					Message: fmt.Sprintf("Analyzed %d connection patterns (%d total connections, %s data transferred) between private IPs for %s",
 						len(logoutput),
 						totalConnections,
 						formatBytes(totalBytes),
-						params.VpcId),
+						scope),
 					Severity: "info",
 				})
 			}

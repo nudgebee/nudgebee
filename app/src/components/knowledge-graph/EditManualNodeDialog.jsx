@@ -8,6 +8,10 @@
 //      resource by, so when it is later collected the two are one node.
 //   4. Optional details from the type's schema.
 //
+// Outside any account the tenant may also use kinds of its own (NetworkSwitch
+// under the CloudResource category): those take free key/value properties,
+// and a tenant admin may introduce a new one from the type picker.
+//
 // Editing changes only the details: the key fields decide the node id, so
 // changing one would be a different node (delete and declare again).
 
@@ -25,13 +29,108 @@ import { toast as snackbar } from '@ui/Toast';
 import { Form } from '@shared/forms/Form';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import { humanizeType } from './ManualNodesTable';
+import { useNodeRoles } from './nodeRoles';
 import { ds } from 'src/utils/colors';
 
 // The schema's place for "outside any connected account" has no account id.
 export const OUTSIDE_ACCOUNTS = '__outside__';
 const placeValue = (place) => place.cloud_account_id || OUTSIDE_ACCOUNTS;
 
-const EMPTY_KEYS = { name: '', region: '', namespace: '', network: '' };
+const EMPTY_KEYS = { name: '', region: '', namespace: '', resource_group: '', network: '' };
+
+// The type picker's entry for introducing a kind the tenant does not use yet.
+export const NEW_KIND = '__new_kind__';
+
+// The built-in categories a custom kind sits under; CloudResource is the catch-all.
+const CATEGORIES = [
+  'Service',
+  'ExternalService',
+  'Database',
+  'Cache',
+  'MessageQueue',
+  'Queue',
+  'Topic',
+  'ComputeInstance',
+  'LoadBalancer',
+  'Storage',
+  'APIGateway',
+  'ServerlessFunction',
+  'CloudResource',
+];
+const CATEGORY_OPTIONS = CATEGORIES.map((c) => ({ value: c, label: c === 'CloudResource' ? 'Other (Cloud Resource)' : humanizeType(c) }));
+const DEFAULT_CATEGORY = 'CloudResource';
+
+// Mirrors the server's rule for a kind name: PascalCase, 2-64 characters.
+const KIND_NAME_PATTERN = /^[A-Z][A-Za-z0-9]{1,63}$/;
+
+// Keys the server refuses on a custom kind: the node's identity and what the
+// builder stamps (core.manualReservedProperties), and the endpoint keys
+// observed traffic is matched on (flow_sources.customKindEndpointKeys).
+const RESERVED_FREE_PROPERTIES = new Set([
+  'name',
+  'id',
+  'resource_id',
+  'region',
+  'zone',
+  'location',
+  'vpc',
+  'vpc_id',
+  'vpc_name_hierarchy',
+  'vnet_id',
+  'vnet_name_hierarchy',
+  'namespace',
+  'cluster',
+  'service_name',
+  'source',
+  'specific_type',
+  'labels',
+  'is_active',
+  'description',
+  'nb_resource_id',
+  'nb_account_id',
+  'manual_declared',
+  'manual_node_id',
+  // Where a node's role came from (core.IsNodeRoleBookkeepingProperty): set the role instead.
+  'role_source',
+  'detected_role',
+  'detected_engine',
+  'dns_name',
+  'dns_aliases',
+  'endpoint_address',
+  'configuration_endpoint',
+  'primary_endpoint',
+  'reader_endpoint',
+  'node_group_endpoints',
+  'cache_node_endpoints',
+]);
+const MAX_FREE_PROPERTIES = 50;
+
+// Schema fields the "Acts as" row edits instead.
+const ROLE_FIELD_NAMES = new Set(['role', 'engine']);
+
+// The engine the "Acts as" row starts with for an edited declaration: its
+// role's engine, else the engine the declaration itself names.
+const seededRoleEngine = (row) => row?.engine || (typeof row?.properties?.engine === 'string' ? row.properties.engine : '');
+
+// Free properties are edited as key/value text rows. A value that is not text
+// (a number, a list, a map) shows as JSON and is sent back as it was unless
+// edited; typed text starting with [ or { is read as JSON.
+const toFreeRows = (props) => Object.entries(props || {}).map(([k, v]) => ({ k, v: typeof v === 'string' ? v : JSON.stringify(v), orig: v }));
+
+const fromFreeValue = (row) => {
+  const text = row.v.trim();
+  if (row.orig !== undefined && typeof row.orig !== 'string' && text === JSON.stringify(row.orig)) {
+    return row.orig;
+  }
+  if (text.startsWith('[') || text.startsWith('{')) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
+};
 
 // The VPC node's name is the last segment of its unique key
 // (aws:<account>:<region>:VPC::<name>), and it is what the collector keys a
@@ -80,11 +179,19 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
   const [keys, setKeys] = useState(EMPTY_KEYS);
   const [description, setDescription] = useState('');
   const [properties, setProperties] = useState({});
+  const [freeProperties, setFreeProperties] = useState([]);
+  const [newKindName, setNewKindName] = useState('');
+  const [category, setCategory] = useState(DEFAULT_CATEGORY);
   const [labels, setLabels] = useState([]);
   const [networks, setNetworks] = useState([]);
   const [loadingNetworks, setLoadingNetworks] = useState(false);
   const [existingNodeId, setExistingNodeId] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  // What the node acts as (kg_node_roles): sent with a new declaration, and set
+  // through the role actions when an existing one is edited.
+  const [role, setRole] = useState('');
+  const [roleEngine, setRoleEngine] = useState('');
+  const { roles } = useNodeRoles();
 
   // Seed the form whenever it opens: the row being edited, a prefill from an
   // unmatched dependency endpoint, or blank.
@@ -95,26 +202,90 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
     setExistingNodeId('');
     if (row) {
       setPlace(row.cloud_account_id || OUTSIDE_ACCOUNTS);
-      setSpecificType(row.cloud_account_id ? row.specific_type : row.node_type);
-      setKeys({ name: row.name, region: row.region || '', namespace: row.namespace || '', network: row.network_node_id || '' });
+      // Outside an account specific_type is the node type, or the tenant's own kind.
+      setSpecificType(row.specific_type || row.node_type);
+      setKeys({
+        name: row.name,
+        region: row.region || '',
+        namespace: row.namespace || '',
+        resource_group: row.resource_group || '',
+        network: row.network_node_id || '',
+      });
       setDescription(row.description || '');
       setProperties(Object.fromEntries(Object.entries(row.properties || {}).map(([k, v]) => [k, toEditable(v)])));
+      setFreeProperties(toFreeRows(row.properties));
       setLabels(Object.entries(row.labels || {}).map(([k, v]) => ({ k, v })));
+      setRole(row.role || '');
+      setRoleEngine(seededRoleEngine(row));
       return;
     }
+    setRole('');
+    setRoleEngine('');
     setPlace(OUTSIDE_ACCOUNTS);
     setSpecificType(initial?.node_type || '');
     setKeys({ ...EMPTY_KEYS, name: initial?.name || '', namespace: initial?.namespace || '', region: initial?.region || '' });
     setDescription('');
     setProperties({});
+    setFreeProperties([]);
+    setNewKindName('');
+    setCategory(DEFAULT_CATEGORY);
     setLabels([]);
   }, [open, row, initial]);
 
   const places = schema || [];
   const currentPlace = places.find((p) => placeValue(p) === place);
   const kinds = currentPlace?.kinds ?? [];
-  const kind = kinds.find((k) => k.specific_type === specificType);
   const isOutside = place === OUTSIDE_ACCOUNTS;
+  const canDefineKinds = isOutside && Boolean(currentPlace?.can_define_kinds);
+  const isNewKind = canDefineKinds && specificType === NEW_KIND;
+  // A new kind has the key fields of any node outside an account and free properties.
+  const kind = isNewKind
+    ? {
+        specific_type: newKindName.trim(),
+        node_type: category,
+        key_fields: kinds.find((k) => !k.free_properties)?.key_fields ?? [],
+        properties: [],
+        free_properties: true,
+      }
+    : kinds.find((k) => k.specific_type === specificType);
+  // An edited declaration of the tenant's own kind is one even before the schema lists it.
+  const isCustomKind = Boolean(kind?.free_properties) || (isEdit && isOutside && Boolean(row.specific_type) && row.specific_type !== row.node_type);
+
+  const newKindError = useMemo(() => {
+    const name = newKindName.trim();
+    if (!isNewKind || !name) {
+      return '';
+    }
+    if (!KIND_NAME_PATTERN.test(name)) {
+      return 'Start with a capital letter and use only letters and digits (2-64), e.g. NetworkSwitch.';
+    }
+    const builtIn = (k) => !k.free_properties && (k.specific_type === name || k.node_type === name);
+    if (CATEGORIES.includes(name) || places.some((p) => (p.kinds ?? []).some(builtIn))) {
+      return `${name} is a built-in type — pick it as the category, or name the kind differently.`;
+    }
+    if (kinds.some((k) => k.specific_type === name)) {
+      return `${name} is already in the type list — pick it there.`;
+    }
+    return '';
+  }, [isNewKind, newKindName, kinds, places]);
+
+  const freePropertiesError = useMemo(() => {
+    if (!isCustomKind) {
+      return '';
+    }
+    const keys = freeProperties.map((r) => r.k.trim()).filter(Boolean);
+    const reserved = keys.find((k) => RESERVED_FREE_PROPERTIES.has(k));
+    if (reserved) {
+      return `“${reserved}” cannot be a property: it is part of the node’s identity or used to match observed traffic.`;
+    }
+    if (new Set(keys).size !== keys.length) {
+      return 'Each property name may be used once.';
+    }
+    if (keys.length > MAX_FREE_PROPERTIES) {
+      return `At most ${MAX_FREE_PROPERTIES} properties.`;
+    }
+    return '';
+  }, [isCustomKind, freeProperties]);
 
   const placeOptions = useMemo(
     () =>
@@ -130,13 +301,20 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
     [places]
   );
 
-  const typeOptions = useMemo(
-    () =>
-      kinds
-        .map((k) => ({ value: k.specific_type, label: humanizeType(k.specific_type), group: humanizeType(k.node_type) }))
-        .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label)),
-    [kinds]
-  );
+  // Built-in kinds grouped by category; the tenant's own kinds after them, then
+  // the entry for a new one.
+  const typeOptions = useMemo(() => {
+    const builtIn = kinds
+      .filter((k) => !k.free_properties)
+      .map((k) => ({ value: k.specific_type, label: humanizeType(k.specific_type), group: humanizeType(k.node_type) }))
+      .sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+    const custom = kinds
+      .filter((k) => k.free_properties)
+      .map((k) => ({ value: k.specific_type, label: humanizeType(k.specific_type), group: 'Your kinds' }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const newKind = canDefineKinds ? [{ value: NEW_KIND, label: 'New kind…', group: 'Your kinds' }] : [];
+    return [...builtIn, ...custom, ...newKind];
+  }, [kinds, canDefineKinds]);
 
   const networkField = kind?.key_fields?.find((f) => f.name === 'network');
 
@@ -175,33 +353,72 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
     setSpecificType('');
     setKeys((prev) => ({ ...EMPTY_KEYS, name: prev.name }));
     setProperties({});
+    setFreeProperties([]);
   };
 
   const handleTypeChange = (next) => {
     setSpecificType(next || '');
     setKeys((prev) => ({ ...prev, network: '' }));
     setProperties({});
+    setFreeProperties([]);
   };
 
   const setKey = (name) => (next) => setKeys((prev) => ({ ...prev, [name]: next }));
 
   const missingRequired = (kind?.key_fields ?? []).some((f) => f.required && !String(keys[f.name] || '').trim());
-  const canSubmit = isEdit || (kind && !missingRequired);
+  const newKindIncomplete = isNewKind && (!newKindName.trim() || Boolean(newKindError));
+  const canSubmit = !freePropertiesError && (isEdit || (kind && !missingRequired && !newKindIncomplete));
 
   const shapeOf = (name) => kind?.properties?.find((p) => p.name === name)?.shape;
 
-  const cleanedProperties = () =>
-    Object.fromEntries(
+  const setProperty = (name) => (next) => setProperties((prev) => ({ ...prev, [name]: next }));
+  // The "Acts as" row edits the role and its engine; a type whose schema has
+  // its own role or engine field shows that through the row, not twice.
+  const fieldProperties = (kind?.properties ?? []).filter((p) => p.shape !== 'map' && !ROLE_FIELD_NAMES.has(p.name));
+  const mapProperties = (kind?.properties ?? []).filter((p) => p.shape === 'map');
+  const kindHasEngine = !isCustomKind && (kind?.properties ?? []).some((p) => p.name === 'engine');
+
+  const cleanedProperties = () => {
+    if (isCustomKind) {
+      return Object.fromEntries(freeProperties.filter((r) => r.k.trim()).map((r) => [r.k.trim(), fromFreeValue(r)]));
+    }
+    const cleaned = Object.fromEntries(
       Object.entries(properties)
         .map(([k, v]) => [k, fromEditable(v, shapeOf(k))])
         .filter(([, v]) => v !== undefined && v !== null)
     );
+    // The row's engine is also the declared engine when the type has one.
+    if (kindHasEngine) {
+      if (roleEngine.trim()) {
+        cleaned.engine = roleEngine.trim();
+      } else {
+        delete cleaned.engine;
+      }
+    }
+    return cleaned;
+  };
 
   const cleanedLabels = () => Object.fromEntries(labels.filter((l) => l.k.trim()).map((l) => [l.k.trim(), l.v.trim()]));
 
-  const setProperty = (name) => (next) => setProperties((prev) => ({ ...prev, [name]: next }));
-  const fieldProperties = (kind?.properties ?? []).filter((p) => p.shape !== 'map');
-  const mapProperties = (kind?.properties ?? []).filter((p) => p.shape === 'map');
+  // Sets or removes the edited node's role when it changed. Throws with the
+  // server's message when the role action refuses.
+  const syncEditedRole = async () => {
+    const engine = roleEngine.trim();
+    // Compared with what the form was seeded with: a role row may have no
+    // engine while the declaration's own engine property fills the field.
+    const was = { role: row.role || '', engine: seededRoleEngine(row) };
+    if (role === was.role && (!role || engine === was.engine)) {
+      return {}; // unchanged: the saved row already carries it
+    }
+    const res = role
+      ? await apiKnowledgeGraph.setNodeRole({ node_id: row.kg_node_id, role, engine })
+      : await apiKnowledgeGraph.removeNodeRole({ node_id: row.kg_node_id });
+    const errors = res?.data?.errors;
+    if (errors?.length) {
+      throw new Error(errors[0]?.message ?? 'Unknown error');
+    }
+    return role ? { role, engine: engine || undefined } : { role: undefined, engine: undefined };
+  };
 
   const handleSubmit = async () => {
     setSubmitting(true);
@@ -217,8 +434,15 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
           snackbar.error(`Save failed: ${errors[0]?.message ?? 'Unknown error'}`);
           return;
         }
-        snackbar.success('Node updated.');
-        onSaved(res?.data?.data?.kg_update_manual_node?.data);
+        const updated = res?.data?.data?.kg_update_manual_node?.data;
+        try {
+          const nextRole = await syncEditedRole();
+          snackbar.success('Node updated.');
+          onSaved(updated ? { ...updated, ...nextRole } : updated);
+        } catch (roleErr) {
+          snackbar.error(`Node updated, but its role could not be changed: ${roleErr.message}`);
+          onSaved(updated);
+        }
         return;
       }
 
@@ -228,8 +452,17 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
         properties: cleanedProperties(),
         labels: cleanedLabels(),
       };
+      if (role) {
+        request.role = role;
+        if (roleEngine.trim()) {
+          request.engine = roleEngine.trim();
+        }
+      }
       if (isOutside) {
         request.node_type = kind.node_type;
+        if (isCustomKind) {
+          request.specific_type = kind.specific_type;
+        }
         if (keys.namespace.trim()) {
           request.namespace = keys.namespace.trim();
         }
@@ -237,16 +470,16 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
           request.region = keys.region.trim();
         }
       } else {
-        // Send exactly the key fields this type declares: a cloud resource has a
-        // region (and maybe a VPC), a Kubernetes one a namespace.
+        // Send exactly the key fields this type declares, whatever they are: a
+        // cloud resource has a region (and maybe a VPC or resource group), a
+        // Kubernetes one a namespace. Reading the list rather than naming each
+        // field keeps a new key field working without a change here.
         request.cloud_account_id = place;
         request.specific_type = kind.specific_type;
-        const declares = (field) => kind.key_fields.some((f) => f.name === field);
-        if (declares('region')) {
-          request.region = keys.region.trim();
-        }
-        if (declares('namespace')) {
-          request.namespace = keys.namespace.trim();
+        for (const f of kind.key_fields) {
+          if (f.name !== 'name' && f.name !== 'network') {
+            request[f.name] = String(keys[f.name] || '').trim();
+          }
         }
         if (keys.network) {
           request.network_node_id = keys.network;
@@ -330,6 +563,29 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
             />
           )}
 
+          {isNewKind && (
+            <Form.Row ratio={[1, 1]}>
+              <Form.Field
+                label='Kind name'
+                required
+                error={newKindError || undefined}
+                helperText='Your own type, e.g. NetworkSwitch. Once it exists anyone who can declare nodes can add more of it.'
+              >
+                <Input size='sm' value={newKindName} onChange={setNewKindName} placeholder='NetworkSwitch' data-testid='manual-node-kind-name' />
+              </Form.Field>
+              <Form.Field label='Category' required helperText='The built-in type it behaves as on the map and in impact.'>
+                <Select
+                  size='sm'
+                  options={CATEGORY_OPTIONS}
+                  value={category}
+                  onChange={(next) => setCategory(next || DEFAULT_CATEGORY)}
+                  required
+                  id='manual-node-category'
+                />
+              </Form.Field>
+            </Form.Row>
+          )}
+
           {kind && (
             <Form.Section title='Identity' description='These fields decide which resource this is.'>
               <Form.Row ratio={kind.key_fields.map(() => 1)}>
@@ -359,12 +615,40 @@ const EditManualNodeDialog = ({ open, row, initial, schema, onClose, onSaved, on
             <CollapsableCard
               header={<Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold }}>More details</Typography>}
               elevation='flat'
-              defaultOpen={isEdit}
+              defaultOpen={isEdit || isCustomKind}
             >
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
                 <Form.Field label='Description'>
                   <Input size='sm' value={description} onChange={setDescription} placeholder='What it is and who owns it' />
                 </Form.Field>
+                <Form.Row ratio={[1, 1]}>
+                  <Form.Field label='Acts as' helperText='What the node does. The graph, its filters and the assistant use it.'>
+                    <Select
+                      size='sm'
+                      options={[{ value: '', label: 'Nothing in particular' }, ...roles.map((r) => ({ value: r.value, label: r.label }))]}
+                      value={role}
+                      onChange={(next) => setRole(next || '')}
+                      placeholder='Nothing in particular'
+                      id='manual-node-role'
+                    />
+                  </Form.Field>
+                  <Form.Field label='Engine' helperText='Optional: postgres, redis, kafka, … It sets the icon shown on the node.'>
+                    <Input
+                      size='sm'
+                      value={roleEngine}
+                      onChange={setRoleEngine}
+                      placeholder='postgres'
+                      disabled={!role && !kindHasEngine}
+                      data-testid='manual-node-role-engine'
+                    />
+                  </Form.Field>
+                </Form.Row>
+                {isCustomKind && (
+                  <>
+                    <KeyValueEditor title='Properties' addLabel='Add property' rows={freeProperties} onChange={setFreeProperties} />
+                    {freePropertiesError && <Callout tone='critical' message={freePropertiesError} />}
+                  </>
+                )}
                 {fieldProperties.length > 0 && (
                   <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: ds.space[3] }}>
                     {fieldProperties.map((p) => (

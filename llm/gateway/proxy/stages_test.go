@@ -6,19 +6,20 @@ import (
 	"testing"
 
 	"nudgebee/llm-gateway/auth"
+	"nudgebee/llm-gateway/metering"
 	"nudgebee/llm-gateway/ratelimit"
 	"nudgebee/llm-gateway/routing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// fakeLimitSource mimics the EE store's per-key/per-model indexing (task 4): it
-// only returns a limit when the scope passed in matches the limit's own key/model.
-// That is the layer that actually enforces per-key isolation — Check's own guard
-// only re-checks Model — so this is what proves ratelimitStage.Handle threads
-// rc.Identity.APIKeyID and rc.Model into the Check call.
+// fakeLimitSource mimics the EE store's per-key indexing (task 4): it only returns a
+// limit when the scope passed in matches the limit's own tenant/user/key. Like the EE
+// store it ignores the model — Check's own guard decides which model a row covers — so
+// this proves ratelimitStage.Handle threads rc.Identity.APIKeyID into the Check call.
 type fakeLimitSource struct{ limits []ratelimit.Limit }
 
 func (f fakeLimitSource) LimitsFor(tenant, user, apiKey, model string) []ratelimit.Limit {
@@ -31,9 +32,6 @@ func (f fakeLimitSource) LimitsFor(tenant, user, apiKey, model string) []ratelim
 			continue
 		}
 		if lim.APIKeyID != "" && lim.APIKeyID != apiKey {
-			continue
-		}
-		if lim.Model != "" && lim.Model != model {
 			continue
 		}
 		out = append(out, lim)
@@ -115,4 +113,92 @@ func TestRatelimitStage_UsesRequestedModelAfterRouting(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, stop2, "second routed request must hit the cap on the requested model")
 	assert.Equal(t, "rate_limited", rc2.RejectReason)
+}
+
+// #40339: a quota saved as "provider/model" must cap the bare model the request names.
+func TestRatelimitStage_ProviderQualifiedQuotaMatchesBareModel(t *testing.T) {
+	limiter := ratelimit.New(ratelimit.NewMemStore(), fakeLimitSource{[]ratelimit.Limit{
+		{TenantID: "t", UserID: "u", APIKeyID: "key-1", Model: "anthropic/claude-haiku-4-5",
+			Metric: ratelimit.MetricRequests, Period: ratelimit.PeriodMinute, Value: 1, Enabled: true},
+	}})
+	s := ratelimitStage{limiter: limiter}
+	call := func() *RequestContext {
+		rc := newRateLimitTestContext(auth.Identity{TenantID: "t", UserID: "u", APIKeyID: "key-1"}, "claude-haiku-4-5")
+		rc.Provider = schemas.Anthropic
+		rc.Decision = routing.Decision{RequestedProvider: "anthropic", RequestedModel: "claude-haiku-4-5",
+			ResolvedProvider: "anthropic", ResolvedModel: "claude-haiku-4-5"}
+		return rc
+	}
+
+	stop, err := s.Handle(call())
+	require.NoError(t, err)
+	assert.False(t, stop, "first call under the cap should pass")
+	rc2 := call()
+	stop2, err := s.Handle(rc2)
+	require.NoError(t, err)
+	assert.True(t, stop2, "second call must hit the anthropic/claude-haiku-4-5 cap")
+	assert.Equal(t, "rate_limited", rc2.RejectReason)
+}
+
+// A quota pinned to one provider must not cap the same model name on another provider.
+func TestRatelimitStage_ProviderQualifiedQuotaKeepsProviderPinned(t *testing.T) {
+	limiter := ratelimit.New(ratelimit.NewMemStore(), fakeLimitSource{[]ratelimit.Limit{
+		{TenantID: "t", UserID: "u", APIKeyID: "key-1", Model: "bedrock/claude-haiku-4-5",
+			Metric: ratelimit.MetricRequests, Period: ratelimit.PeriodMinute, Value: 1, Enabled: true},
+	}})
+	s := ratelimitStage{limiter: limiter}
+	for i := 0; i < 2; i++ {
+		rc := newRateLimitTestContext(auth.Identity{TenantID: "t", UserID: "u", APIKeyID: "key-1"}, "claude-haiku-4-5")
+		rc.Provider = schemas.Anthropic
+		stop, err := s.Handle(rc)
+		require.NoError(t, err)
+		assert.False(t, stop, "a bedrock-pinned quota must not cap anthropic traffic")
+	}
+}
+
+// #40340: a tier alias that routes to a capped model must count against that model's quota.
+func TestRatelimitStage_AliasCountsAgainstRoutedModel(t *testing.T) {
+	limiter := ratelimit.New(ratelimit.NewMemStore(), fakeLimitSource{[]ratelimit.Limit{
+		{TenantID: "t", UserID: "u", APIKeyID: "key-1", Model: "claude-opus-4-8",
+			Metric: ratelimit.MetricRequests, Period: ratelimit.PeriodMinute, Value: 1, Enabled: true},
+	}})
+	s := ratelimitStage{limiter: limiter}
+	id := auth.Identity{TenantID: "t", UserID: "u", APIKeyID: "key-1"}
+
+	direct := newRateLimitTestContext(id, "claude-opus-4-8")
+	direct.Provider = schemas.Anthropic
+	direct.Decision = routing.Decision{RequestedProvider: "anthropic", RequestedModel: "claude-opus-4-8"}
+	stop, err := s.Handle(direct)
+	require.NoError(t, err)
+	assert.False(t, stop, "first direct call under the cap should pass")
+
+	alias := newRateLimitTestContext(id, "claude-opus-4-8")
+	alias.Provider = schemas.Anthropic
+	alias.Decision = routing.Decision{RequestedProvider: "anthropic", RequestedModel: "nb-smart",
+		ResolvedProvider: "anthropic", ResolvedModel: "claude-opus-4-8"}
+	stop2, err := s.Handle(alias)
+	require.NoError(t, err)
+	assert.True(t, stop2, "nb-smart routes to claude-opus-4-8, so it must hit the opus cap")
+	assert.Equal(t, "rate_limited", alias.RejectReason)
+}
+
+// #40340: post-call token usage is metered against the model actually served, not the alias.
+func TestMeter_ReconcilesAgainstServedModel(t *testing.T) {
+	limiter := ratelimit.New(ratelimit.NewMemStore(), fakeLimitSource{[]ratelimit.Limit{
+		{TenantID: "t", UserID: "u", APIKeyID: "key-1", Model: "claude-opus-4-8",
+			Metric: ratelimit.MetricTokens, Period: ratelimit.PeriodMinute, Value: 10, Enabled: true},
+	}})
+	h := &handler{sink: &metering.CapturingSink{}, limiter: limiter}
+	id := auth.Identity{TenantID: "t", UserID: "u", APIKeyID: "key-1"}
+	rm := &reqMeta{provider: schemas.Anthropic, model: "claude-opus-4-8", path: "/v1/messages", identity: id,
+		decision: routing.Decision{RequestedProvider: "anthropic", RequestedModel: "nb-smart",
+			ResolvedProvider: "anthropic", ResolvedModel: "claude-opus-4-8"}}
+	h.meter(context.Background(), rm, 200, nil,
+		&schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 20, TotalTokens: 20}}, nil)
+
+	rc := newRateLimitTestContext(id, "claude-opus-4-8")
+	rc.Provider = schemas.Anthropic
+	stop, err := ratelimitStage{limiter: limiter}.Handle(rc)
+	require.NoError(t, err)
+	assert.True(t, stop, "20 tokens served by opus via nb-smart must count against the 10-token opus cap")
 }

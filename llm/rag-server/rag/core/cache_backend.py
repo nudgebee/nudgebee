@@ -530,6 +530,22 @@ def get_cache_backend() -> CacheBackend:
         return _backend
 
 
+def drop_local(prefix: str = "", key: str = "") -> None:
+    """Drop entries from this process's in-memory tier only.
+
+    For replica broadcasts (rag.core.replica_broadcast): the pod that made the
+    change already cleared the shared tier, so every other pod only has to
+    forget its own copy. Empty key and prefix drops the whole local tier.
+    """
+    fallback = _fallback
+    if fallback is None:
+        return
+    if key:
+        fallback.delete(key)
+    else:
+        fallback.clear(prefix)
+
+
 def reset_cache_backend() -> None:
     """Drop the cached selection. For tests and for re-reading config."""
     global _backend, _fallback

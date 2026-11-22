@@ -8,7 +8,16 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/audit"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 )
+
+// redactAuditCommand masks the credentials a command carries before it is
+// audited: the command-line shapes first (--password x, mysql -px, curl -u
+// user:pw, PGPASSWORD=x, quoted workspace arguments), then every token shape
+// tool output is masked for. The command that runs is not changed.
+func redactAuditCommand(command string) string {
+	return egressfilter.RedactSecrets(egressfilter.RedactCommandLine(command))
+}
 
 // webChatSources allow-lists conversation sources that originate from the in-app ("Nubi") web chat; all other sources are excluded from CHAT_ACTIONS audits.
 var webChatSources = map[core.ConversationSource]bool{
@@ -39,6 +48,49 @@ func toolConfirmationDecision(response string) string {
 	default:
 		return "other"
 	}
+}
+
+// followupAuditState is what a follow-up answer's audit stores: query = the
+// originating user question, response = the user's answer, followup_type =
+// the kind of follow-up (so credential/config selections stay filterable),
+// and for a tool confirmation the tool, the command approved and the decision.
+// Credentials in the question, the answer and the command are masked.
+func followupAuditState(info *core.PendingFollowupInfo, answer string) map[string]any {
+	state := map[string]any{
+		"query":         auditPreview(info.Query, egressfilter.RedactSecrets),
+		"response":      auditPreview(answer, egressfilter.RedactSecrets),
+		"followup_type": info.FollowupType,
+	}
+	if info.IsToolConfirmation {
+		state["tool_name"] = info.ToolName
+		state["command"] = auditPreview(info.Command, redactAuditCommand)
+		state["decision"] = toolConfirmationDecision(answer)
+	}
+	return state
+}
+
+// auditPreviewRedactionMargin is how far past the preview cap the text is
+// redacted before it is cut, so a secret that starts inside the preview is
+// masked whole rather than cut to an unmasked prefix.
+const auditPreviewRedactionMargin = 512
+
+// auditPreview redacts s and caps it like truncateQueryForAudit. Only the head
+// that can reach the preview is redacted: a query can be ~500k chars.
+func auditPreview(s string, redact func(string) string) string {
+	head := s
+	count := 0
+	for i := range s {
+		if count == maxAuditQueryPreviewRunes+auditPreviewRedactionMargin {
+			head = s[:i]
+			break
+		}
+		count++
+	}
+	preview := truncateQueryForAudit(redact(head))
+	if len(head) < len(s) && !strings.HasSuffix(preview, "…[truncated]") {
+		preview += "…[truncated]"
+	}
+	return preview
 }
 
 // truncateQueryForAudit returns a rune-safe preview of s capped at maxAuditQueryPreviewRunes, suffixed with a marker when trimmed.

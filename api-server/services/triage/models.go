@@ -505,8 +505,12 @@ type GetBulkOperationStatusResponse struct {
 
 // UpdateNBStatusRequest is the request to update event nb_status
 type UpdateNBStatusRequest struct {
-	EventID      string     `json:"event_id"`
-	NBStatus     string     `json:"nb_status"`
+	EventID  string `json:"event_id"`
+	NBStatus string `json:"nb_status"`
+	// ReasonText is an optional free-text note explaining why the status was changed (e.g. "restarted
+	// the pod, monitoring" on Resolve). Stored as the event_history change_reason so it surfaces on
+	// the event timeline; empty falls back to the generic "manual_status_update" marker.
+	ReasonText   *string    `json:"reason_text,omitempty"`
 	SnoozedUntil *time.Time `json:"snoozed_until,omitempty"`
 }
 

@@ -63,6 +63,11 @@ class _ClosedConnection:
         # _closed is set, so attribute access on it blows up.
         raise AttributeError("'NoneType' object has no attribute 'channel'")
 
+    def clone(self):
+        # kombu's clone() builds a new Connection from the same parameters, so
+        # it is usable whatever state this one is in.
+        return _LiveConnection()
+
     def release(self):
         self.released = True
 
@@ -76,6 +81,9 @@ class _LiveConnection:
 
     def channel(self):
         return mock.MagicMock()
+
+    def clone(self):
+        return _LiveConnection()
 
     def release(self):
         self.released = True
@@ -109,24 +117,36 @@ class TestTopologyDeadConnection(unittest.TestCase):
             )
             mock_declare.assert_not_called()
 
-    def test_closed_connection_is_replaced_instead_of_retried_forever(self):
-        """The declare loop must escape a closed Connection, not spin on it.
+    def test_closed_connection_does_not_stop_the_declare(self):
+        """The declare loop must not spin on a closed Connection.
 
-        Without the fix this test hangs: the loop retries the same closed
-        object, which raises identically every time.
+        It declares on a clone, and a clone is a new connection whatever state
+        the original is in. Without that this test hangs: the loop retries the
+        same closed object, which raises identically every time.
         """
         consumer = _make_consumer()
-        dead = _ClosedConnection()
-        live = _LiveConnection()
-        consumer.connection = dead
+        consumer.connection = _ClosedConnection()
 
-        with mock.patch.object(rc.RabbitConsumer, "_new_connection", staticmethod(lambda: live)), mock.patch.object(
-            rc, "Exchange"
-        ), mock.patch.object(rc, "Queue"):
+        with mock.patch.object(rc, "Exchange"), mock.patch.object(rc, "Queue"):
+            consumer._declare_topology()  # must return
+
+    def test_declare_connection_is_released(self):
+        """An open declare connection is one nothing sends heartbeats on.
+
+        kombu consumes on a clone of self.connection, so a connection the
+        declare leaves open sits idle until the broker drops it for missed
+        heartbeats -- three broker errors a few minutes after every pod start.
+        """
+        consumer = _make_consumer()
+        declare_conn = _LiveConnection()
+        consumer.connection = mock.MagicMock()
+        consumer.connection.clone.return_value = declare_conn
+
+        with mock.patch.object(rc, "Exchange"), mock.patch.object(rc, "Queue"):
             consumer._declare_topology()
 
-        self.assertIs(consumer.connection, live, "declare loop kept the closed connection")
-        self.assertTrue(dead.released, "the closed connection was leaked instead of released")
+        self.assertTrue(declare_conn.released)
+        consumer.connection.channel.assert_not_called()
 
     def test_live_connection_is_not_churned_on_an_unrelated_failure(self):
         """A declare failure that isn't the socket must not drop a live connection.

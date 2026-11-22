@@ -340,3 +340,20 @@ func BenchmarkContainsLabelSkip(b *testing.B) {
 		containsLabelSkip("kubernetes.labels.app", skips)
 	}
 }
+
+// #39201 acceptance: result labels must lead to fields that can be queried. Labels
+// stay short (dashboards and alerts store label keys); the note maps each one to
+// its document field, here on the customer's own response.
+func TestParseESMetricsHits_AWSCloudwatchMetricsetLabelFields(t *testing.T) {
+	_, stats, err := parseESMetricsHitsWithStats([]byte(awsCloudwatchSampleBody), 0)
+	require.NoError(t, err)
+	assert.Equal(t, "metricset.dimensions.DBClusterIdentifier", stats.LabelFields["DBClusterIdentifier"])
+	assert.Equal(t, "metricset.dimensions.Role", stats.LabelFields["Role"])
+	assert.Equal(t, "metricset.metric_name", stats.LabelFields["__name__"])
+	note := esLabelFieldsNote(stats.LabelFields)
+	assert.Contains(t, note, "DBInstanceIdentifier = metricset.dimensions.DBInstanceIdentifier")
+	assert.Contains(t, note, "statistic = metricset.value.max")
+
+	// Layouts whose labels are already field paths get no note.
+	assert.Empty(t, esLabelFieldsNote(nil))
+}

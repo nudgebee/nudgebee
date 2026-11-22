@@ -139,16 +139,17 @@ func loadLimitsForKeys(q sqlx.Queryer, tenantID string, keyIDs []string) (map[st
 		Period   string  `db:"period"`
 		Value    float64 `db:"value"`
 		Model    string  `db:"model"`
+		SoftPct  *int    `db:"soft_pct"`
 	}
 	if err := sqlx.Select(q, &rows,
-		`SELECT api_key_id, metric, period, limit_value AS value, model
+		`SELECT api_key_id, metric, period, limit_value AS value, model, soft_pct
 		   FROM llm_gateway_rate_limits
 		  WHERE tenant_id = $1 AND api_key_id = ANY($2) AND enabled = true`, tenantID, pq.Array(keyIDs)); err != nil {
 		return nil, err
 	}
 	out := map[string][]TokenLimit{}
 	for _, r := range rows {
-		out[r.APIKeyID] = append(out[r.APIKeyID], TokenLimit{Metric: r.Metric, Period: r.Period, Value: r.Value, Model: r.Model})
+		out[r.APIKeyID] = append(out[r.APIKeyID], TokenLimit{Metric: r.Metric, Period: r.Period, Value: r.Value, Model: r.Model, SoftPct: r.SoftPct})
 	}
 	return out, nil
 }

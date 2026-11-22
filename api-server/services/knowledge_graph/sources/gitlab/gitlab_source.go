@@ -279,7 +279,8 @@ func (s *GitLabSource) BuildGraph(reqCtx *security.RequestContext, req *core.Sou
 
 // newNode builds a node the same way every resource file in this package needs to:
 // compute its unique key via the default BaseSource algorithm (properties["name"] +
-// CloudAccountID), then hand off to core.NewNode for ID/query_attributes/ontology.
+// CloudAccountID, or properties["username"] for UserAccount — see
+// GenerateUniqueKey), then hand off to core.NewNode for ID/query_attributes/ontology.
 func (s *GitLabSource) newNode(nodeType core.NodeType, properties map[string]interface{}, req *core.SourceBuildRequest) *core.DbNode {
 	tempNode := &core.DbNode{
 		NodeType:       nodeType,

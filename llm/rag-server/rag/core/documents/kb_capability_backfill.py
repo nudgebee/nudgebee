@@ -199,7 +199,7 @@ def _pending_knowledgebases() -> List[KBCollection]:
     account_id — every integration's KB since #40605) uses an active account of
     its tenant; one whose tenant has none is skipped.
 
-    Mirrors kbCollectionName in llm-server's tools/core/knowledgebase_service.go;
+    Mirrors kbCollectionName in llm-server's knowledge/knowledgebase_service.go;
     the two must stay in sync or this looks at the wrong collection.
     """
     from sqlalchemy import text

@@ -903,33 +903,13 @@ func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fet
 		return nil, fmt.Errorf("failed to execute loki query: %w", err)
 	}
 
-	if dataStr, ok := resp["data"].(string); ok {
-		return nil, fmt.Errorf("loki.QueryLogs received an error response from the service: %s", dataStr)
+	body, err := lokiRelayBody(resp, "loki.QueryLogs")
+	if err != nil {
+		return nil, err
 	}
-
-	data1, ok := resp["data"].(map[string]any)
-	if !ok || data1 == nil {
-		return nil, fmt.Errorf("loki.QueryLogs data1 field not found or is nil from response: %v", resp["data"])
-	}
-	data2, ok := data1["data"]
-	if !ok || data2 == nil {
-		return nil, fmt.Errorf("loki.QueryLogs data2 field not found or is nil from response: %v", data1["data"])
-	}
-	if v, ok := data2.(string); ok {
-		return nil, fmt.Errorf("loki.QueryLogs received an error response from the service: %s", v)
-	}
-	var data3 map[string]any
-	switch v := data2.(type) {
-	case string:
-		return nil, fmt.Errorf("loki.QueryLogs received an error response from the service: %s", v)
-	case map[string]any:
-		var ok bool
-		data3, ok = v["data"].(map[string]any)
-		if !ok || data3 == nil {
-			return nil, fmt.Errorf("loki.QueryLogs data3 field not found, is not a map, or is nil from response: %v", resp["data"])
-		}
-	default:
-		return nil, fmt.Errorf("loki.QueryLogs unexpected type for data2 field from response: %T", v)
+	data3, ok := body["data"].(map[string]any)
+	if !ok || data3 == nil {
+		return nil, fmt.Errorf("loki.QueryLogs data3 field not found, is not a map, or is nil from response: %v", resp["data"])
 	}
 	data, err := common.MarshalJson(data3)
 	if err != nil {
@@ -940,6 +920,30 @@ func (s *LokiSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fet
 		return nil, fmt.Errorf("loki.QueryLogs failed to convert loki response in nudgebee log: %w", err)
 	}
 	return outputLog, nil
+}
+
+// lokiRelayBody unwraps a query_loki relay response to the Loki API body it carries
+// ({status, data: {resultType, result}}). op prefixes the errors.
+func lokiRelayBody(resp map[string]any, op string) (map[string]any, error) {
+	if dataStr, ok := resp["data"].(string); ok {
+		return nil, fmt.Errorf("%s received an error response from the service: %s", op, dataStr)
+	}
+	data1, ok := resp["data"].(map[string]any)
+	if !ok || data1 == nil {
+		return nil, fmt.Errorf("%s data1 field not found or is nil from response: %v", op, resp["data"])
+	}
+	data2, ok := data1["data"]
+	if !ok || data2 == nil {
+		return nil, fmt.Errorf("%s data2 field not found or is nil from response: %v", op, data1["data"])
+	}
+	switch v := data2.(type) {
+	case string:
+		return nil, fmt.Errorf("%s received an error response from the service: %s", op, v)
+	case map[string]any:
+		return v, nil
+	default:
+		return nil, fmt.Errorf("%s unexpected type for data2 field from response: %T", op, v)
+	}
 }
 
 func (s *LokiSource) ExtractDataSliceFromRelay(resp map[string]any) ([]any, error) {

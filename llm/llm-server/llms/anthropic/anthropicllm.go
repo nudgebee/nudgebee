@@ -221,6 +221,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	if o.CallbacksHandler != nil {
 		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, contentResp)
 	}
+	normalizeChoices(contentResp)
 
 	return contentResp, nil
 }

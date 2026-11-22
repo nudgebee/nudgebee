@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, TYPE_CHECKING
+from typing import List, Dict, Any, TYPE_CHECKING, Optional
 
 from rag.qdrant.client import get_qdrant_client
 from rag.qdrant.client import list_collections_optimized
@@ -116,6 +116,22 @@ def _extract_metrics_from_evidence(evidence_data):
         return []
 
 
+def _metric_name(value) -> Optional[str]:
+    """The metric name as a string, or None when there is no usable name.
+
+    A name arrives as a plain string, as a label dict from the relay server, or
+    (for a few LLM-generated examples) as a nested object where the string
+    should be. Every place that puts a name into a set goes through here, so a
+    non-string can no longer raise from inside a set.
+    """
+    if isinstance(value, dict):
+        value = value.get("metric") or value.get("__name__") or value.get("name")
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return None
+
+
 def _process_metrics_list(metrics) -> List[str]:
     """Process the metrics list - filter and deduplicate"""
     if not metrics:
@@ -127,9 +143,9 @@ def _process_metrics_list(metrics) -> List[str]:
         if not metric:
             continue
         if isinstance(metric, dict):
-            metric_name = metric.get("metric") or metric.get("__name__") or metric.get("name")
+            metric_name = _metric_name(metric)
             if metric_name:
-                processed_metrics.append(str(metric_name))
+                processed_metrics.append(metric_name)
             else:
                 processed_metrics.append(json.dumps(metric, sort_keys=True))
         elif isinstance(metric, str):
@@ -145,9 +161,9 @@ def extract_metric_names(documents: List[Dict[str, Any]]) -> set:
     metric_names = set()
 
     for doc in documents:
-        # Extract metric name from metadata.metric field
-        if "metadata" in doc and "metric" in doc["metadata"]:
-            metric_name = doc["metadata"]["metric"]
+        metadata = doc.get("metadata") if isinstance(doc, dict) else None
+        metric_name = _metric_name(metadata.get("metric")) if isinstance(metadata, dict) else None
+        if metric_name:
             metric_names.add(metric_name)
 
     logger.info(f"Extracted {len(metric_names)} unique metrics")
@@ -181,8 +197,8 @@ def _extract_json_from_markdown(text):
 def _normalize_metadata(data):
     """Convert 'name' field to 'metric' in metadata if present"""
     for item in data:
-        if "metadata" in item and "name" in item["metadata"]:
-            item["metadata"]["metric"] = item["metadata"].pop("name")
+        if isinstance(item, dict) and isinstance(item.get("metadata"), dict) and "name" in item["metadata"]:
+            item["metadata"]["metric"] = _metric_name(item["metadata"].pop("name"))
     return data
 
 

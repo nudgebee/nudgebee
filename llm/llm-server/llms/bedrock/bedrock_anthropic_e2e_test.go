@@ -103,3 +103,53 @@ func TestBedrockAnthropicE2E_Streaming(t *testing.T) {
 	assert.NotEmpty(t, streamChunks)
 	assert.Equal(t, resp.Choices[0].Content, strings.Join(streamChunks, ""))
 }
+
+// TestBedrockAnthropicE2E_PromptCaching sends two steps of a tool loop with the
+// markers AnthropicCacheProvider places, and checks that step 1 writes the
+// cache and step 2 reads it. Defaults to Claude Haiku 4.5, the cheapest Claude
+// on Bedrock with prompt caching (4,096-token minimum prefix, so the system
+// prompt is padded past it); override with BEDROCK_CACHE_TEST_MODEL.
+// Step 2 streams, so both response parsers report cache usage.
+func TestBedrockAnthropicE2E_PromptCaching(t *testing.T) {
+	modelID := os.Getenv("BEDROCK_CACHE_TEST_MODEL")
+	if modelID == "" {
+		modelID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	}
+	llm := getTestBedrockLLM(t, modelID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var sys strings.Builder
+	sys.WriteString("You are a Kubernetes troubleshooting assistant. Answer in one short sentence.\n")
+	// A unique run id keeps an earlier run's cache from turning step 1 into a read.
+	sys.WriteString("Run " + time.Now().Format(time.RFC3339Nano) + "\n")
+	for i := 0; i < 700; i++ {
+		sys.WriteString("Reference rule: check pod events, container restarts, and resource limits before concluding.\n")
+	}
+	mark := &llms.CacheControl{Type: "ephemeral"}
+
+	step1 := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.WithCacheControl(llms.TextContent{Text: sys.String()}, mark)}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.WithCacheControl(llms.TextContent{Text: "Why is pod api-0 restarting?"}, mark)}},
+	}
+	resp1, err := llm.GenerateContent(ctx, step1, llms.WithMaxTokens(64))
+	require.NoError(t, err)
+	info1 := resp1.Choices[0].GenerationInfo
+	t.Logf("step 1: input=%v cache_write=%v cache_read=%v", info1["input_tokens"], info1["CacheCreationInputTokens"], info1["CacheReadInputTokens"])
+	assert.Greater(t, info1["CacheCreationInputTokens"], 0, "step 1 writes the cache")
+
+	step2 := []llms.MessageContent{
+		{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.WithCacheControl(llms.TextContent{Text: sys.String()}, mark)}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.WithCacheControl(llms.TextContent{Text: "Why is pod api-0 restarting?"}, mark)}},
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextContent{Text: resp1.Choices[0].Content}}},
+		{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.WithCacheControl(
+			llms.ToolCallResponse{ToolCallID: "t1", Name: "kubectl", Content: "Last State: Terminated, Reason: OOMKilled"}, mark)}},
+	}
+	resp2, err := llm.GenerateContent(ctx, step2, llms.WithMaxTokens(64),
+		llms.WithStreamingFunc(func(context.Context, []byte) error { return nil }))
+	require.NoError(t, err)
+	info2 := resp2.Choices[0].GenerationInfo
+	t.Logf("step 2: input=%v cache_write=%v cache_read=%v", info2["input_tokens"], info2["CacheCreationInputTokens"], info2["CacheReadInputTokens"])
+	assert.Greater(t, info2["CacheReadInputTokens"], 0, "step 2 reads step 1's prefix")
+}

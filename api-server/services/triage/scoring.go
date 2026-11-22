@@ -3,6 +3,7 @@ package triage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -105,6 +106,9 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurre
 	llmResult, llmErr := ComputeScoreLLM(ctx, db, event, correlationType, correlationScore, isIncidentChild)
 
 	if !config.Config.FeatureLLMTriageScoringShadow {
+		if errors.Is(llmErr, ErrNoVerdictPossible) {
+			return legacyScoreAwaitingVerdict(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
+		}
 		if llmErr != nil || llmResult == nil {
 			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
 				"event_id", event.Id, "error", llmErr)
@@ -127,10 +131,11 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurre
 }
 
 // llmTriageScoringEnabled reports whether the LLM-assisted scoring path is active for this event's
-// tenant. The primary gate is the per-tenant TRIAGE_LLM_SCORING feature flag (toggled in Tenant
-// Settings; default off, enabled tenant-by-tenant). The global config flag stays as a force-on-all
-// override (local testing / a global kill-switch). IsFeatureExplicitlyEnabled nil-guards its
-// context and caches per (feature, tenant), so this stays cheap on the hot path.
+// tenant. The primary gate is the per-tenant TRIAGE_LLM_SCORING feature flag (Tenant Settings): on
+// unless the tenant has a 'disabled' row. Tenants that existed when it became default-on were given
+// that row, so only tenants created since start on it. The global config flag stays as a
+// force-on-all override (local testing). IsFeatureEnabledByDefault nil-guards its context and
+// caches per (feature, tenant), so this stays cheap on the hot path.
 func llmTriageScoringEnabled(event *models.Event) bool {
 	if config.Config.FeatureLLMTriageScoringEnabled {
 		return true
@@ -138,7 +143,21 @@ func llmTriageScoringEnabled(event *models.Event) bool {
 	if event == nil || event.Tenant == nil || *event.Tenant == "" {
 		return false
 	}
-	return tenant.IsFeatureExplicitlyEnabled(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
+	return tenant.IsFeatureEnabledByDefault(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
+}
+
+// legacyScoreAwaitingVerdict scores an event whose class can't get an AI verdict for now (see
+// ErrNoVerdictPossible) with the legacy formula. The result carries the class key and the
+// fallback marker, so rescoreFreshlyMintedClass still upgrades it once a later mint succeeds.
+func legacyScoreAwaitingVerdict(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64, isIncidentChild bool) (*ScoreResult, error) {
+	result, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore, isIncidentChild)
+	if err != nil || result == nil {
+		return result, err
+	}
+	result.Factors["class_key"] = ClassKey(event)
+	result.Factors["verdict_source"] = "fallback"
+	result.Factors["verdict_lookup"] = "no_verdict_possible"
+	return result, nil
 }
 
 // computeLegacyScore is the original severity*env scoring formula. Takes
@@ -266,9 +285,11 @@ type envCacheEntry struct {
 }
 
 var (
-	envCache    = make(map[string]envCacheEntry)
-	envCacheMu  sync.RWMutex
-	envCacheTTL = 5 * time.Minute
+	envCache   = make(map[string]envCacheEntry)
+	envCacheMu sync.RWMutex
+	// Short so a prod/non-prod change on the account reaches every replica
+	// quickly; one query per account per minute is negligible (#40807).
+	envCacheTTL = 1 * time.Minute
 )
 
 // getAccountEnv returns the cloud account's raw account_env value, cached for

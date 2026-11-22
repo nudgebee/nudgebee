@@ -61,6 +61,8 @@ const (
 	PromptLogAnalysisCodediffGenerateRequest = "log_analysis_codediff_generate_request"
 	PromptLogAnalysisFileExtractor           = "log_analysis_file_extractor"
 	PromptMemoryExtractor                    = "memory_extractor"
+	PromptMemoryPrestep                      = "memory_prestep"
+	PromptMemorySaver                        = "memory_saver"
 	PromptAgentLlm                           = "agent_llm"
 	PromptAnswerConfidence                   = "answer_confidence"
 	PromptResponseFormatter                  = "response_formatter"
@@ -121,6 +123,8 @@ var promptCategories = map[string]PromptCategory{
 	PromptLogAnalysisCodediffGenerateRequest: CategoryUtilities,
 	PromptLogAnalysisFileExtractor:           CategoryUtilities,
 	PromptMemoryExtractor:                    CategoryUtilities,
+	PromptMemoryPrestep:                      CategoryUtilities,
+	PromptMemorySaver:                        CategoryUtilities,
 	PromptAgentLlm:                           CategoryUtilities,
 	PromptResponseFormatter:                  CategoryUtilities,
 	PromptResponseFormatterSlack:             CategoryUtilities,
@@ -247,7 +251,7 @@ func RenderPrompt(ctx context.Context, module string, accountID string, data map
 
 // requestModelKey carries the LLM model resolved for the current request
 // (conversation override → pinned source → tier config → env, reconciled by
-// agents/core.ResolveLLMConfig). Set via WithRequestModel at the start of an
+// llms/runtime.ResolveLLMConfig). Set via WithRequestModel at the start of an
 // agent execution so prompt resolution matches the model that will actually
 // serve the call, instead of the deployment-wide LLM_MODEL env var.
 type requestModelKey struct{}

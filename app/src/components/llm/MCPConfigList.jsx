@@ -1,32 +1,45 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Stack, Box } from '@mui/material';
+import { Stack } from '@mui/material';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
 import { ListingLayout } from '@ui/ListingLayout';
-import { Banner } from '@ui/Banner';
 import { Chip } from '@ui/Chip';
 import { Label } from '@ui/Label';
-import FilterDropdown from '@shared/FilterDropdownButton';
-import CustomSearch from '@shared/CustomSearch';
-import CustomTable from '@shared/tables/CustomTable2';
+import { Button } from '@ui/Button';
+import Tooltip from '@ui/Tooltip';
+import Text from '@shared/format/Text';
+import FilterDropdown from '@ui/FilterDropdown';
+import SearchInput from '@ui/SearchInput';
+import CustomTable from '@shared/tables/CustomTable';
 import { toast as snackbar } from '@ui/Toast';
 import apiIntegrations from '@api1/integrations';
 import { parseIntegrationItem } from '@api1/integrations/helpers';
-import { useRouter } from 'next/router';
+import { Modal } from '@ui/Modal';
+import { canManage, isTenantAdmin } from '@lib/auth';
+import McpWriteToolsField, { parseToolNames } from '@components/common/forms/McpWriteToolsField';
+import { summarizeMCPHealth } from './mcpHealthSummary';
+
+dayjs.extend(relativeTime);
 
 const STATUS_OPTIONS = [
   { label: 'Enabled', value: 'enabled' },
   { label: 'Disabled', value: 'disabled' },
 ];
 
-const HEADERS = ['Name', 'Connection', 'Account', 'Created By', 'Status'];
+// Status keeps its column position; the newer columns follow it.
+const HEADERS = ['Name', 'Connection', 'Account', 'Created By', 'Status', 'Health', 'Needs approval'];
+
+const configValue = (item, key) =>
+  (Array.isArray(item?.integration_config_values) ? item.integration_config_values : []).find((v) => v?.name === key)?.value || '';
 
 /**
- * Read-only MCP Servers listing inside the Nubi Settings modal. All
- * management actions (add / edit / enable / disable / delete) live on the
- * Admin → Integrations page; this view is a quick what's-configured glance
- * with a Banner pointing to the canonical management surface.
+ * MCP Servers listing inside the Nubi Settings modal. Server management
+ * (add / edit / enable / disable / delete) lives on the Admin → Integrations
+ * page; this view shows each enabled server's health as Nubi last saw it, with
+ * Check now for integrations:Execute holders (#40994), and lets tenant admins
+ * choose which of a server's tools need approval (#40399).
  */
-const MCPConfigList = () => {
-  const router = useRouter();
+const MCPConfigList = ({ stickyTable = false }) => {
   const [integrations, setIntegrations] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -36,6 +49,38 @@ const MCPConfigList = () => {
   const [currentPage, setCurrentPage] = useState(0);
   const [recordsPerPage, setRecordsPerPage] = useState(10);
   const [totalCount, setTotalCount] = useState(0);
+  const [checkingId, setCheckingId] = useState(null);
+  // Check now is integrations:Execute; account-scoped grants can't reach it (v1).
+  const canCheck = canManage('integrations', 'Execute');
+  // The server whose tools are being marked as needing approval (#40399).
+  const [approvalTarget, setApprovalTarget] = useState(null);
+  const [approvalDraft, setApprovalDraft] = useState('');
+  const [savingApproval, setSavingApproval] = useState(false);
+  const canManageApproval = isTenantAdmin();
+
+  const openApproval = (item) => {
+    setApprovalTarget(item);
+    setApprovalDraft(configValue(item, 'write_tools'));
+  };
+
+  const saveApproval = async () => {
+    setSavingApproval(true);
+    try {
+      const response = await apiIntegrations.updateMcpWriteTools(approvalTarget.id, approvalDraft);
+      const error = response?.data?.errors?.[0]?.message;
+      if (error) {
+        snackbar.error(error);
+        return;
+      }
+      snackbar.success('Saved which tools need approval');
+      setApprovalTarget(null);
+      fetchIntegrations();
+    } catch {
+      snackbar.error('Failed to save which tools need approval');
+    } finally {
+      setSavingApproval(false);
+    }
+  };
 
   const fetchIntegrations = useCallback(async () => {
     setLoading(true);
@@ -46,6 +91,7 @@ const MCPConfigList = () => {
         offset: currentPage * recordsPerPage,
         name: selectedNameFilter || undefined,
         status: selectedStatusFilter || undefined,
+        withHealth: true,
       });
       // Fail-closed on GraphQL errors — same rationale as LLMConfigList.
       const gqlErrors = response?.data?.errors;
@@ -98,6 +144,82 @@ const MCPConfigList = () => {
     );
   };
 
+  const checkNow = useCallback(async (item) => {
+    setCheckingId(item.id);
+    try {
+      const result = await apiIntegrations.checkMCPIntegrationHealth(item.id);
+      if (result?.error) {
+        snackbar.error(result.error);
+        return;
+      }
+      const updated = { ...item, health: result.health };
+      setIntegrations((rows) => rows.map((row) => (row.id === item.id ? updated : row)));
+      const summary = summarizeMCPHealth(updated);
+      const message = `${item.name}: ${summary.label}${summary.scopeNote ? ` (${summary.scopeNote})` : ''}`;
+      if (summary.tone === 'critical') {
+        snackbar.error(message);
+      } else {
+        snackbar.success(message);
+      }
+    } finally {
+      setCheckingId(null);
+    }
+  }, []);
+
+  const healthCell = (item) => {
+    // Disabling resets the health, and a disabled server is never checked.
+    if (item.status !== 'enabled') {
+      return <span>-</span>;
+    }
+    const summary = summarizeMCPHealth(item);
+    const pill = <Label tone={summary.tone}>{summary.label}</Label>;
+    const details = [
+      summary.scopeNote,
+      summary.toolCount !== null ? `${summary.toolCount} ${summary.toolCount === 1 ? 'tool' : 'tools'}` : '',
+      summary.checkedAt ? `checked ${dayjs(summary.checkedAt).fromNow()}` : '',
+    ].filter(Boolean);
+    return (
+      <Stack direction='row' alignItems='center' spacing={1} useFlexGap flexWrap='wrap'>
+        {summary.reason ? (
+          <Tooltip title={summary.reason}>
+            <span>{pill}</span>
+          </Tooltip>
+        ) : (
+          pill
+        )}
+        {details.length > 0 && <Text value={details.join(' · ')} secondaryText />}
+        {canCheck && (
+          <Button
+            id={`mcp-config-check-now-${item.id}`}
+            tone='secondary'
+            size='xs'
+            loading={checkingId === item.id}
+            disabled={checkingId !== null}
+            onClick={() => checkNow(item)}
+          >
+            Check now
+          </Button>
+        )}
+      </Stack>
+    );
+  };
+
+  const approvalCell = (item) => {
+    const marked = parseToolNames(configValue(item, 'write_tools'));
+    return (
+      <Stack direction='row' spacing={1} alignItems='center'>
+        <Chip size='sm' variant='tag' tone={marked.length ? 'warning' : 'neutral'}>
+          {marked.length ? `${marked.length} tool${marked.length === 1 ? '' : 's'}` : 'None'}
+        </Chip>
+        {canManageApproval && (
+          <Button tone='secondary' size='xs' onClick={() => openApproval(item)} data-testid={`mcp-approval-manage-${item.id}`}>
+            Manage
+          </Button>
+        )}
+      </Stack>
+    );
+  };
+
   const tableData = useMemo(
     () =>
       integrations.map((item) => [
@@ -106,33 +228,16 @@ const MCPConfigList = () => {
         { component: accountChips(item) },
         { text: item?.created_by_display_name || '-' },
         { component: <Label text={item.status || '-'} /> },
+        { component: healthCell(item) },
+        { component: approvalCell(item) },
       ]),
-    [integrations]
+    [integrations, checkingId, canCheck, canManageApproval]
   );
 
   const selectedStatusOption = STATUS_OPTIONS.find((o) => o.value === selectedStatusFilter) ?? null;
 
   return (
     <>
-      <Box sx={{ mb: 2 }}>
-        <Banner
-          tone='info'
-          surface='section'
-          actionsPlacement='inline'
-          message={
-            <>
-              This view is read-only. Manage <strong>MCP Servers</strong> from <strong>Admin → Integrations → MCP</strong>.
-            </>
-          }
-          actions={[
-            {
-              label: 'Manage in Admin',
-              onClick: () => router.push('/accounts/account-form?cloudProvider=mcp'),
-            },
-          ]}
-        />
-      </Box>
-
       <ListingLayout id='mcp-config-list'>
         <ListingLayout.Toolbar>
           <Stack direction='row' alignItems='center' spacing={1}>
@@ -146,7 +251,7 @@ const MCPConfigList = () => {
                 setCurrentPage(0);
               }}
             />
-            <CustomSearch
+            <SearchInput
               id='mcp-config-name-search'
               value={nameInput}
               onChange={(next) => {
@@ -184,9 +289,37 @@ const MCPConfigList = () => {
               setCurrentPage(page - 1);
               setRecordsPerPage(limit);
             }}
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 340px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>
+      <Modal
+        width='sm'
+        open={!!approvalTarget}
+        handleClose={() => setApprovalTarget(null)}
+        title={approvalTarget ? `Tools that need approval · ${approvalTarget.name}` : ''}
+      >
+        {approvalTarget && (
+          <Stack spacing={2}>
+            <McpWriteToolsField
+              value={approvalDraft}
+              onChange={setApprovalDraft}
+              integrationId={approvalTarget.id}
+              accountId={approvalTarget.integrations_cloud_accounts?.[0]?.cloud_account_id}
+              disabled={savingApproval}
+            />
+            <Stack direction='row' spacing={1} justifyContent='flex-end'>
+              <Button tone='secondary' size='md' onClick={() => setApprovalTarget(null)} disabled={savingApproval}>
+                Cancel
+              </Button>
+              <Button tone='primary' size='md' onClick={saveApproval} loading={savingApproval} data-testid='mcp-approval-save'>
+                Save
+              </Button>
+            </Stack>
+          </Stack>
+        )}
+      </Modal>
     </>
   );
 };

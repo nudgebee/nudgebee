@@ -970,13 +970,13 @@ func TestSQLGen_RealTable_EventGroupings_NoAnalysisJoinWhenUnreferenced(t *testi
 	assert.NotContains(t, sql, "event_log_analysis")
 }
 
-func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *testing.T) {
+func TestSQLGen_RealTable_EventGroupings_IncidentGroupReadsNewestFiring(t *testing.T) {
 	td, ok := GetTableMetadata("event_groupings_v2")
 	require.True(t, ok)
 
 	req := QueryRequest{
 		Table:   "event_groupings_v2",
-		Columns: cols("account_id", "latest_event_id", "incident_group_size", "incident_group_leader_id"),
+		Columns: cols("account_id", "latest_event_id", "incident_group_size", "is_incident_child", "incident_group_leader_id"),
 		Where: QueryWhereClause{
 			Binary: BinaryWhereClause{
 				"tenant_id": {Eq: "t1"},
@@ -987,21 +987,23 @@ func TestSQLGen_RealTable_EventGroupings_IncidentGroupLeaderIsGroupAnchor(t *tes
 	sql, err := GenerateSqlQuery(superAdminCtx(), "", req, td)
 	require.NoError(t, err)
 
-	// The Triage Inbox reads the GROUPED badge from incident_group_size and
-	// opens the Grouped Alerts panel on incident_group_leader_id. Those two
-	// must describe the SAME group, so the leader id has to be a group ANCHOR,
-	// not the row's newest event: a recurring fingerprint leads its group from
-	// its OLDEST event, so latest_event_id is usually neither leader nor
-	// member and the panel renders "no related alerts" under a GROUPED badge.
-	assert.Contains(t, sql, "AS incident_group_leader_id")
-	// A row that LEADS resolves to its own biggest leader event...
-	assert.Contains(t, sql, "array_agg(events.id::text ORDER BY ecc.incident_member_count DESC, events.created_at DESC) FILTER (WHERE ecc.incident_member_count > 0)")
-	// ...and only a row that merely BELONGS to one falls back to the link.
-	assert.Contains(t, sql, "array_agg(ecl.related_event_id::text ORDER BY events.created_at DESC) FILTER (WHERE ecl.related_event_id IS NOT NULL)")
-	// max() over the link alone cannot resolve a leading row at all, and picks
-	// arbitrarily between leaders when a row holds more than one.
-	assert.NotContains(t, sql, "max(ecl.related_event_id::text)")
-	// Both joins are required: the anchor reads member counts (ecc) as well as
+	// The Triage Inbox shows one row per fingerprint, timed and investigated
+	// from latest_event_id. Each firing has its own group (the alerts that
+	// fired with it), so the GROUPED badge, the child marker and the Grouped
+	// Alerts panel must read that same newest firing. Taking the row's biggest
+	// group instead showed members of a burst from hours earlier under the
+	// newest firing's time.
+	assert.Contains(t, sql, "(array_agg(events.id ORDER BY events.created_at DESC))[1] as TEXT) AS latest_event_id")
+	assert.Contains(t, sql, "(array_agg(coalesce(ecc.incident_member_count, 0) ORDER BY events.created_at DESC))[1] AS incident_group_size")
+	assert.Contains(t, sql, "(array_agg(ecl.related_event_id IS NOT NULL ORDER BY events.created_at DESC))[1] AS is_incident_child")
+	// The panel opens on the newest firing when it leads, else on its leader.
+	assert.Contains(t, sql, "(array_agg(CASE WHEN ecc.incident_member_count > 0 THEN events.id::text "+
+		"ELSE ecl.related_event_id::text END ORDER BY events.created_at DESC))[1] as TEXT) AS incident_group_leader_id")
+	// No aggregate over every firing of the row.
+	assert.NotContains(t, sql, "max(coalesce(ecc.incident_member_count, 0))")
+	assert.NotContains(t, sql, "bool_or(ecl.related_event_id IS NOT NULL)")
+	assert.NotContains(t, sql, "ORDER BY ecc.incident_member_count DESC")
+	// Both joins are required: the columns read member counts (ecc) as well as
 	// the child link (ecl).
 	assert.Contains(t, sql, ") ecl")
 	assert.Contains(t, sql, ") ecc")

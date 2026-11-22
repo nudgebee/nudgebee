@@ -60,12 +60,13 @@ func invalidAgentMetricsFilterResponse(startTime time.Time, field string, operat
 	}, nil
 }
 
-func processAgentMetrices(query QueryRequest, context *security.RequestContext, startTime time.Time) (QueryResponse, error) {
+func processAgentMetrices(query QueryRequest, context *security.RequestContext, startTime time.Time, permissionModule string) (QueryResponse, error) {
 	binary := query.Where.Binary
 	if binary != nil && binary["account_id"] != nil && binary["account_id"][Eq] != nil {
-		accountId, ok := binary["account_id"][Eq].(string)
+		accountId, isString := binary["account_id"][Eq].(string)
 		delete(binary, "account_id")
-		if !ok || !context.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		if !isString || context == nil || context.GetSecurityContext() == nil ||
+			!context.GetSecurityContext().CanReadAccountData(accountId, permissionModule) {
 			return QueryResponse{
 				Errors: []common.Error{
 					common.ErrorUnauthorized("Access Denied"),

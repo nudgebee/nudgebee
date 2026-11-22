@@ -18,7 +18,10 @@ func init() {
 	})
 }
 
-type DatadogTracesExecuteTool struct{}
+type DatadogTracesExecuteTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m DatadogTracesExecuteTool) Name() string { return ToolDatadogTracesExecute }
 

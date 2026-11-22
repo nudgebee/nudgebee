@@ -3,6 +3,7 @@ import { Box } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Banner } from '@ui/Banner';
 import ListTools from '@components/llm/ListTools';
+import AutomationToolsList from '@components/llm/AutomationToolsList';
 import MCPConfigList from '@components/llm/MCPConfigList';
 import AdminAccountFilter from './AdminAccountFilter';
 import useAdminAction from '@components/user-management/useAdminAction';
@@ -34,6 +35,7 @@ const ToolsAndMCPAdminTab = ({ stickyTable = false }) => {
           options={[
             { value: 'tools', label: 'Tools' },
             { value: 'mcp', label: 'MCP Servers' },
+            { value: 'automations', label: 'Automations' },
           ]}
           value={activeSubTab}
           onChange={(next) => setActiveSubTab(next)}
@@ -49,16 +51,34 @@ const ToolsAndMCPAdminTab = ({ stickyTable = false }) => {
               actionsPlacement='inline'
               message={
                 <>
-                  This view is read-only. Manage <strong>MCP Servers</strong> from <strong>Admin → Integrations → MCP</strong>.
+                  Choose which tools need approval here with <strong>Manage</strong>. Add or edit <strong>MCP Servers</strong> from{' '}
+                  <strong>Admin → Integrations → MCP</strong>.
                 </>
               }
               actions={[{ label: 'Manage in Integrations', onClick: () => window.open('/accounts/account-form?cloudProvider=mcp', '_blank') }]}
             />
           </Box>
         )}
+        {activeSubTab === 'automations' && (
+          <Box sx={{ width: '50%', minWidth: 0 }}>
+            <Banner
+              tone='info'
+              surface='section'
+              actionsPlacement='inline'
+              message={
+                <>
+                  Automations Nubi can run as tools, and whether each asks first. <strong>Manage</strong> changes both; the AI description and trigger
+                  are edited in the <strong>automation</strong> itself.
+                </>
+              }
+              actions={[{ label: 'Open Automations', onClick: () => window.open('/automation', '_blank') }]}
+            />
+          </Box>
+        )}
       </Box>
       {activeSubTab === 'tools' && <ListTools accountId={accountId} stickyTable={stickyTable} />}
       {activeSubTab === 'mcp' && <MCPConfigList stickyTable={stickyTable} />}
+      {activeSubTab === 'automations' && <AutomationToolsList stickyTable={stickyTable} />}
     </Box>
   );
 };

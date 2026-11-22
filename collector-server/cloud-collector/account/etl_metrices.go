@@ -2,6 +2,7 @@ package account
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/config"
@@ -446,6 +447,11 @@ func StoreMetrices(ctx *security.RequestContext, accountId string, query StoreMe
 				EndDate:      &endDate,
 			})
 			if err != nil {
+				// A service the collector has no metrics for is not a failure.
+				if errors.Is(err, errors.ErrUnsupported) {
+					ctx.GetLogger().Debug("metrics not supported for service", "service", serviceAndRegionAndType[0], "error", err)
+					continue
+				}
 				ctx.GetLogger().Error("unable to fetch metrices", "error", err)
 				continue
 			}

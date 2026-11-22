@@ -38,6 +38,35 @@ def _caller() -> str:
     return f"{request.remote_addr} {request.method} {request.path}"
 
 
+# Request headers whose values the audit log keeps. Every other header is
+# recorded by name with its value redacted: a denylist missed the internal
+# X-ACTION-TOKEN, which api-server sends on every OpenCost sync, and any header
+# a client adds later could carry a credential too.
+AUDIT_HEADER_ALLOWLIST = frozenset(
+    {
+        "accept",
+        "accept-encoding",
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "host",
+        "user-agent",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-nb-account-id",
+        "x-real-ip",
+        "x-request-id",
+    }
+)
+REDACTED_HEADER_VALUE = "[redacted]"
+
+
+def audit_headers(headers) -> dict:
+    """The request headers as the audit log stores them: allowlisted values kept,
+    every other value replaced, names always kept."""
+    return {k: (v if k.lower() in AUDIT_HEADER_ALLOWLIST else REDACTED_HEADER_VALUE) for k, v in headers.items()}
+
+
 class AuditLogger(BaseController):
     def __init__(self, func):
         super().__init__()
@@ -58,13 +87,10 @@ class AuditLogger(BaseController):
                 raise e
             finally:
                 # Log the incoming request to the audit table
-                sensitive_headers = {"authorization", "cookie", "x-api-key", "proxy-authorization"}
                 log_entry = {
                     "method": request.method,
                     "url": request.path,
-                    "headers": json.dumps(
-                        {k: v for k, v in request.headers.items() if k.lower() not in sensitive_headers}
-                    ),
+                    "headers": json.dumps(audit_headers(request.headers)),
                     "client_ip": request.remote_addr,
                     "agent_id": request.agent_id if hasattr(request, "agent_id") else "",
                     "cloud_account_id": request.cloud_account_id if hasattr(request, "cloud_account_id") else "",

@@ -131,3 +131,40 @@ func TestServiceMapMaxNodesIsBounded(t *testing.T) {
 		t.Errorf("serviceMapMaxNodes = %d: too large to bound what gets written onto every event", serviceMapMaxNodes)
 	}
 }
+
+// TestNeighbourTypesIncludeDeclaredNetworkDevices is the regression for a
+// network device that a user declared, that resolved into live graph edges, and
+// that the evidence card still refused to show.
+//
+// A VM or on-prem estate has kit no collector reaches — a top-of-rack switch, a
+// router — so it is declared by hand and lands under NodeTypeCloudResource. Both
+// sides of the alert story need it: a host's card should name the switch it
+// hangs off, and the switch's own alert should list the hosts that go down with
+// it. Measured before this change on a declared NetworkSwitch CONNECTED_TO two
+// hosts: both edges active, and the host's card held the two hosts alone.
+//
+// The filter runs per hop, so this is not cosmetic — a type left out stops the
+// walk rather than tidying the result.
+func TestNeighbourTypesIncludeDeclaredNetworkDevices(t *testing.T) {
+	if !neighbourTypeSet()[NodeTypeCloudResource] {
+		t.Error("NodeTypeCloudResource missing: a declared switch or router cannot appear in evidence, and the walk stops at it")
+	}
+}
+
+// TestNeighbourTypesExcludePlumbingAfterCloudResource guards the reason
+// admitting CloudResource is safe: the infrastructure a resource merely sits in
+// has its own node types and is not reachable through this one. If any of these
+// were ever folded into CloudResource, the allowlist above would start dragging
+// VPCs and subnets onto every card.
+func TestNeighbourTypesExcludePlumbingAfterCloudResource(t *testing.T) {
+	set := neighbourTypeSet()
+	for _, nt := range []NodeType{
+		NodeTypeRouteTable, NodeTypeNetworkInterface,
+	} {
+		t.Run(string(nt), func(t *testing.T) {
+			if set[nt] {
+				t.Errorf("%q is plumbing: it carries no dependency information and would crowd the card", nt)
+			}
+		})
+	}
+}

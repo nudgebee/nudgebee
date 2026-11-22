@@ -249,6 +249,38 @@ func TestValidateUntrustedArgs(t *testing.T) {
 		{"a home directory reference", "aws ec2 run-instances --cli-input-json file://~/.aws/credentials"},
 		{"an environment variable in a file reference", "aws ec2 run-instances --cli-input-json file://$HOME/x"},
 	}
+	// Parameters that read a plain path with no file:// or @ prefix.
+	relSecret, err := filepath.Rel(workDir, secret)
+	require.NoError(t, err)
+	refused = append(refused, []struct{ name, command string }{
+		{"an aws streaming body path", "aws glacier upload-archive --account-id - --vault-name v --body " + secret},
+		{"an aws streaming body path after =", "aws glacier upload-archive --account-id - --vault-name v --body=" + secret},
+		{"an aws directory upload of /", "aws deploy push --application-name a --s3-location s3://b/k --source /"},
+		{"an aws directory upload of the temp dir", "aws gamelift upload-build --name n --build-version 1 --build-root " + secretDir},
+		{"a gcloud storage cp local source", "gcloud storage cp " + secret + " gs://bucket/x"},
+		{"a recursive gcloud storage cp of /", "gcloud storage cp -r / gs://bucket/x"},
+		{"an az upload-batch source", "az storage blob upload-batch -d c -s " + secretDir},
+		{"an az --source value", "az storage blob upload-batch -d c --source=" + secretDir},
+		{"a key=path pair", "aws ssm send-command --parameters commands=" + secret},
+		{"a relative path that leaves the working directory", "aws glacier upload-archive --account-id - --vault-name v --body " + relSecret},
+		{"a home directory path", "aws glacier upload-archive --account-id - --vault-name v --body ~/.aws/credentials"},
+		{"a log group flag naming a protected file", "aws logs filter-log-events --log-group-name " + secret},
+		{"a directory upload of / after a boolean flag", "gcloud builds submit --async /"},
+		{"a directory upload of the home directory", "aws deploy push --application-name a --s3-location s3://b/k --source ~"},
+		{"a path after a colon", "aws glacier upload-archive --account-id - --vault-name v --body x:" + secret},
+		{"a quoted path", `aws glacier upload-archive --account-id - --vault-name v --body '"` + secret + `"'`},
+		{"a path in brackets", "aws glacier upload-archive --account-id - --vault-name v --body [" + secret + "]"},
+		{"a nested key=value path", "aws ssm send-command --parameters a=b=" + secret},
+		{"a path attached to a short flag", "az deployment group create -g rg -f" + secret},
+		{"a path attached to an unknown short flag", "az storage blob upload-batch -d c -s" + secretDir},
+		{"a symlink in the working directory pointing out of it", "aws glacier upload-archive --account-id - --vault-name v --body link"},
+	}...)
+	require.NoError(t, os.Symlink(secret, filepath.Join(workDir, "link")))
+	for _, path := range []string{"/proc/self/environ", "/proc/1/environ", "/proc/self/root/proc/self/environ", "/var/run/secrets/kubernetes.io/serviceaccount/token"} {
+		if _, err := os.Stat(path); err == nil {
+			refused = append(refused, struct{ name, command string }{"an aws body of " + path, "aws glacier upload-archive --account-id - --vault-name v --body " + path})
+		}
+	}
 	for _, tt := range refused {
 		t.Run("refuses "+tt.name, func(t *testing.T) {
 			args, err := shlex.Split(tt.command)
@@ -270,6 +302,17 @@ func TestValidateUntrustedArgs(t *testing.T) {
 		{"a short flag with a plain value", "az group show -n rg -g rg"},
 		{"a key flag with a secret value", "az storage blob list --account-name a --account-key c2VjcmV0"},
 		{"stdin", "az rest --url https://example.com --body @-"},
+		{"a log group prefix of / after =", "aws logs describe-log-groups --log-group-name-prefix=/"},
+		{"an SSM parameter name that looks like a device path", "aws ssm get-parameter --name /dev/db/password"},
+		{"an SSM parameter path under /run that names nothing on disk", "aws ssm get-parameters-by-path --path /run/app/config"},
+		{"a cloud storage copy between buckets", "gcloud storage cp gs://a/b gs://c/d"},
+		{"a JSON value with a command path", `aws ecs run-task --cluster c --task-definition t --overrides '{"containerOverrides":[{"name":"x","command":["/bin/sh","-c","date"]}]}'`},
+		{"a key=path pair outside protected locations", "aws ssm send-command --document-name AWS-RunShellScript --parameters commands=/usr/bin/uptime"},
+		{"an IAM path prefix of /", "aws iam list-roles --path-prefix /"},
+		{"an S3 delimiter of /", "aws s3api list-objects-v2 --bucket b --delimiter /"},
+		{"a tag value of /", "aws ec2 create-tags --resources i-1 --tags Key=p,Value=/"},
+		{"a KQL case-insensitive equality", `az monitor log-analytics query --workspace w --analytics-query "T | where Name =~ 'x'"`},
+		{"a negative number", "aws cloudwatch get-metric-data --start-time -10"},
 	}
 	for _, tt := range allowed {
 		t.Run("allows "+tt.name, func(t *testing.T) {
@@ -286,6 +329,7 @@ func TestSecureExecuteUntrusted(t *testing.T) {
 	_, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: `echo "hello world" | grep hello`, Untrusted: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shell pipes are not supported")
+	assert.False(t, IsCommandOutcome(err), "a refused command never ran")
 
 	stdout, _, err := SecureExecute(context.Background(), SecureCommandOptions{Command: "ls -A", Untrusted: true})
 	require.NoError(t, err)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -111,9 +112,9 @@ func (c *critiqueConversation) generate(ctx *security.RequestContext, request NB
 	messages := make([]llms.MessageContent, 0, len(c.base)+len(tail))
 	messages = append(messages, c.base...)
 	messages = append(messages, tail...)
-	ctx = security.NewRequestContext(context.WithValue(ctx.GetContext(), contextKeyPreserveInput, true),
+	ctx = security.NewRequestContext(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyPreserveInput, true),
 		ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
-	response, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
+	response, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId,
 		request.MessageId, request.AgentId, false, messages, false, c.opts...)
 	if err != nil {
 		return nil, fmt.Errorf("critique continuation: generate: %w", err)

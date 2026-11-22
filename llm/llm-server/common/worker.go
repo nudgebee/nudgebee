@@ -12,6 +12,11 @@ type WorkerPool struct {
 	wg         sync.WaitGroup
 	numWorkers int
 	name       string
+
+	mu       sync.RWMutex
+	stopped  bool
+	quit     chan struct{}
+	stopOnce sync.Once
 }
 
 type WorkerPoolStats struct {
@@ -39,6 +44,7 @@ func NewWorkerPool(name string, numWorkers int, queueSize int) *WorkerPool {
 		tasks:      make(chan func(), queueSize),
 		numWorkers: numWorkers,
 		name:       name,
+		quit:       make(chan struct{}),
 	}
 	pool.start()
 	RegisterWorkerPool(pool)
@@ -130,23 +136,43 @@ func (p *WorkerPool) Submit(ctx context.Context, task func()) error {
 		return nil
 	}
 
+	p.mu.RLock()
+	if p.stopped {
+		p.mu.RUnlock()
+		return ErrWorkerPoolStopped
+	}
+
 	// Stamp trace_id/span_id from the submitter's context so these lines
 	// correlate with the request that queued the task.
 	logger := TraceLogger(ctx)
 	select {
 	case p.tasks <- task:
+		p.mu.RUnlock()
 		logger.Info("worker: pending task", "task", len(p.tasks), "pool", p.name)
 		return nil
+	case <-p.quit:
+		p.mu.RUnlock()
+		logger.Warn("worker: task submission aborted, pool stopping", "pool", p.name)
+		return ErrWorkerPoolStopped
 	case <-ctx.Done():
+		p.mu.RUnlock()
 		logger.Warn("worker: task submission timed out", "pool", p.name, "error", ctx.Err())
 		return ErrWorkerPoolTimeout
 	}
 }
 
 func (p *WorkerPool) Stop() {
-	slog.Info("worker: stopping, waiting for tasks to complete", "pool", p.name)
-	close(p.tasks)
-	p.wg.Wait()
-	UnregisterWorkerPool(p)
-	slog.Info("worker: stopped", "pool", p.name)
+	p.stopOnce.Do(func() {
+		slog.Info("worker: stopping, waiting for tasks to complete", "pool", p.name)
+		close(p.quit)
+
+		p.mu.Lock()
+		p.stopped = true
+		close(p.tasks)
+		p.mu.Unlock()
+
+		p.wg.Wait()
+		UnregisterWorkerPool(p)
+		slog.Info("worker: stopped", "pool", p.name)
+	})
 }

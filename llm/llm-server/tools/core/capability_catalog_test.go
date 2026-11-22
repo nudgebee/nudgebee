@@ -398,6 +398,26 @@ func TestListAgentToolCapabilities_OnePanickingFactoryDoesNotDropOthers(t *testi
 	assert.NotContains(t, names, panicName)
 }
 
+func TestListWorkflowTaskCapabilities_SendsTheServiceToken(t *testing.T) {
+	// The workflow server is moving to reject callers without its service token.
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-ACTION-TOKEN")
+		_, _ = w.Write([]byte(`{"tasks": [{"name": "k8s.workload_restart", "description": "Rolling restart"}]}`))
+	}))
+	defer server.Close()
+
+	oldURL, oldToken := config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken
+	config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken = server.URL, "test-token"
+	t.Cleanup(func() {
+		config.Config.WorkflowServerEndpoint, config.Config.WorkflowServerToken = oldURL, oldToken
+	})
+
+	_, err := listWorkflowTaskCapabilities(security.NewRequestContextForSuperAdmin(), "acct-1")
+	require.NoError(t, err)
+	assert.Equal(t, "test-token", got)
+}
+
 // Executors of arbitrary tasks, workflows, code, commands or tool-using agents
 // must never be narrow, whatever their typed fields look like.
 func TestClassifyCapability_ExecutorsAreNeverNarrow(t *testing.T) {
@@ -420,7 +440,7 @@ func TestClassifyCapability_UnconfirmedStayUnclassified(t *testing.T) {
 	for _, name := range []string{
 		"ticket_master_v2", "recommendation_apply", "workflow_config_save", "workflow_validate",
 		"workflow_publish", "workflow_make_version_live", "workflow_restore_version",
-		"standard_diagnostic_grep", "automation_builder", "search_tools", "websearch",
+		"automation_builder", "search_tools", "websearch",
 		"llm.classify", "llm.summary", "llm.event_investigate",
 	} {
 		scope, found := ClassifyCapability(name)

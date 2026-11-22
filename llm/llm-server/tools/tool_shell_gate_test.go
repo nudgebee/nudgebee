@@ -217,6 +217,25 @@ func TestShellTool_InferToolRequestType_KubectlAggregationPipelineIsRead(t *test
 		"known kubectl reads followed by bounded local aggregation must avoid LLM classification")
 }
 
+// #41201: the workspace kubeconfig is virtual and read-only, so a kubectl
+// config command changes nothing and must not ask for approval. A real write
+// chained after it still does.
+func TestShellTool_InferToolRequestType_KubectlConfigIsNotGated(t *testing.T) {
+	tool := ShellTool{AccountId: "test-account"}
+	for _, input := range []string{
+		"kubectl config use-context signoz-prod-test",
+		"kubectl config use-context signoz-prod-test && kubectl get deploy,pods -n nb-e2e-edge",
+	} {
+		got, err := tool.InferToolRequestType(nil, "shell_execute", input)
+		require.NoError(t, err)
+		assert.Equal(t, core.ToolRequestTypeRead, got, input)
+	}
+
+	got, err := tool.InferToolRequestType(nil, "shell_execute", "kubectl config use-context prod && kubectl delete pod api-123 -n shop")
+	require.NoError(t, err)
+	assert.Equal(t, core.ToolRequestTypeDelete, got)
+}
+
 func TestShellTool_InferToolRequestType_AwsCompoundReadsAreRead(t *testing.T) {
 	tool := ShellTool{AccountId: "test-account"}
 	input := "aws ec2 describe-instances --region us-east-1 --output json > /tmp/instances.json && " +
@@ -877,7 +896,7 @@ func TestShellTool_KubectlReadSubcommands(t *testing.T) {
 		assert.Equal(t, core.ToolRequestTypeRead, got, input)
 	}
 	for _, input := range []string{
-		"kubectl config current-context; kubectl config set-context prod",
+		"kubectl config current-context; kubectl delete deployment prod",
 		"kubectl rollout status deployment/api && kubectl rollout restart deployment/api",
 		"kubectl auth can-i update deployments && kubectl auth reconcile -f roles.yaml",
 	} {

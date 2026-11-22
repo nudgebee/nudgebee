@@ -29,6 +29,13 @@ const (
 	SignozAuthTypeKey      = "signoz_auth_type"
 	SignozAuthTypePassword = signozclient.AuthPassword
 	SignozAuthTypeAPIKey   = signozclient.AuthAPIKey
+
+	// connection_mode selects how Nudgebee reaches SigNoz: "direct" (the default, and
+	// what rows saved before this field mean) dials signoz_url from the server;
+	// "vm_agent" goes through a forager. Same field and values as Loki.
+	SignozConnectionModeKey     = "connection_mode"
+	SignozConnectionModeDirect  = "direct"
+	SignozConnectionModeVMAgent = "vm_agent"
 )
 
 type Signoz struct {
@@ -54,6 +61,8 @@ func (m Signoz) ValidateConfig(ctx *security.SecurityContext, values []core.Inte
 	if authType == "" {
 		authType = SignozAuthTypePassword
 	}
+
+	connectionMode := strings.TrimSpace(configMap[SignozConnectionModeKey])
 
 	var errs []error
 	if url == "" {
@@ -87,8 +96,16 @@ func (m Signoz) ValidateConfig(ctx *security.SecurityContext, values []core.Inte
 	if mode != SignozModeSelfHosted && mode != SignozModeCloud {
 		errs = append(errs, fmt.Errorf("signoz_mode must be %q or %q", SignozModeSelfHosted, SignozModeCloud))
 	}
+	if connectionMode == SignozConnectionModeVMAgent && mode == SignozModeCloud {
+		errs = append(errs, fmt.Errorf("a forager is for a SigNoz Nudgebee cannot reach; SigNoz Cloud is public, use connection_mode %q", SignozConnectionModeDirect))
+	}
 	if len(errs) > 0 {
 		return errs
+	}
+	if connectionMode == SignozConnectionModeVMAgent {
+		// The URL is only reachable from the customer's network, so the login and API-key
+		// probes below cannot run from here; the pre-save test runs through the forager.
+		return nil
 	}
 
 	// Only the selected auth type's values go into the credentials: a row that
@@ -209,6 +226,15 @@ func (m Signoz) ConfigSchema() core.IntegrationSchema {
 				Enum:        []any{SignozModeSelfHosted, SignozModeCloud},
 				Priority:    90,
 				IsTestable:  true,
+			},
+			SignozConnectionModeKey: {
+				Type: core.ToolSchemaTypeString,
+				Description: "How Nudgebee reaches SigNoz: directly from Nudgebee, or through a forager " +
+					"running in your network (for a self-hosted SigNoz Nudgebee cannot reach).",
+				Default:    SignozConnectionModeDirect,
+				Enum:       []any{SignozConnectionModeDirect, SignozConnectionModeVMAgent},
+				Priority:   92,
+				IsTestable: true,
 			},
 			"signoz_url": {
 				Type:        core.ToolSchemaTypeString,

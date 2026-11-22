@@ -105,6 +105,7 @@ func TestComputeLogoID_SpecificTypeOverride(t *testing.T) {
 		{"GitHubOrganization gets the GitHub icon", NodeTypeSourceControlOrg, "GitHubOrganization", "github"},
 		{"NudgebeeUser falls back to the generic UserAccount icon", NodeTypeUserAccount, "NudgebeeUser", "useraccount"},
 		{"unspecified specific_type falls back to the generic UserAccount icon", NodeTypeUserAccount, "", "useraccount"},
+		{"SelfHostedVM gets the self-hosted icon", NodeTypeComputeInstance, SpecificTypeSelfHostedVM, "selfhosted"},
 	}
 
 	for _, tt := range tests {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
@@ -106,6 +107,7 @@ func TestNewCritiqueConversationSkipsCompressedRuns(t *testing.T) {
 // All three critique calls continue the planner's request: each starts with the
 // planner's messages and its answer, so the provider cache covers that prefix.
 func TestCritiqueContinuationReusesPlannerRequest(t *testing.T) {
+	critiqueCallsInOrder(t)
 	installContinuationFlags(t)
 	dao := &claimCaptureDAO{}
 	installClaimCaptureDAO(t, dao)
@@ -154,6 +156,7 @@ func TestCritiqueContinuationReusesPlannerRequest(t *testing.T) {
 // A continuation that calls a tool or returns an invalid audit falls back to the
 // standalone critique, so the verdict never depends on the continuation working.
 func TestCritiqueContinuationFallsBack(t *testing.T) {
+	critiqueCallsInOrder(t)
 	installContinuationFlags(t)
 	dao := &claimCaptureDAO{}
 	installClaimCaptureDAO(t, dao)
@@ -189,6 +192,7 @@ func TestCritiqueContinuationFallsBack(t *testing.T) {
 // With the flag off nothing changes: no conversation is built and both
 // critiques run standalone.
 func TestCritiqueContinuationOffKeepsStandalone(t *testing.T) {
+	critiqueCallsInOrder(t)
 	installContinuationFlags(t)
 	config.Config.CritiqueContinuationEnabled = false
 	installClaimCaptureDAO(t, &claimCaptureDAO{})
@@ -283,4 +287,134 @@ func TestOversizedPacketContinuationFailureHasNoFallback(t *testing.T) {
 	require.Equal(t, claimModeContinuation, final.Detail.Mode)
 	require.NotEmpty(t, final.Detail.ContinuationError)
 	require.True(t, final.Completed)
+}
+
+// critiqueCallsInOrder runs the answer critiquer before the claim audit, so a
+// test that scripts model replies in call order gets them in the order written.
+func critiqueCallsInOrder(t *testing.T) {
+	t.Helper()
+	previous := startAnswerCritique
+	startAnswerCritique = func(critique func()) { critique() }
+	t.Cleanup(func() { startAnswerCritique = previous })
+}
+
+// overlapModel answers the answer critiquer and the claim audit by content and
+// records how many calls were in flight at once. Each call waits for the other
+// to start (or 5 s), so calls made one after the other never overlap.
+type overlapModel struct {
+	mu              sync.Mutex
+	inFlight        int
+	maxInFlight     int
+	both            chan struct{}
+	once            sync.Once
+	panicOnCritique bool
+}
+
+func (m *overlapModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.mu.Lock()
+	m.inFlight++
+	m.maxInFlight = max(m.maxInFlight, m.inFlight)
+	if m.inFlight == 2 {
+		m.once.Do(func() { close(m.both) })
+	}
+	m.mu.Unlock()
+	select {
+	case <-m.both:
+	case <-time.After(5 * time.Second):
+	}
+	m.mu.Lock()
+	m.inFlight--
+	m.mu.Unlock()
+	if strings.Contains(messageText(messages[len(messages)-1]), "<decision>") {
+		if m.panicOnCritique {
+			panic("critique model exploded")
+		}
+		return newFakeContentResponse("<decision>accept</decision><feedback></feedback>", "stop"), nil
+	}
+	return newFakeContentResponse(validClaimAudit, "stop"), nil
+}
+
+func (m *overlapModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", errors.New("overlapModel: Call is not used")
+}
+
+func (m *overlapModel) peak() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.maxInFlight
+}
+
+// The answer critiquer and the claim audit judge the same answer independently,
+// so ReAct4 runs them at the same time; only combining the verdicts waits for both.
+func TestReAct4AnswerCritiqueRunsAlongsideClaimAudit(t *testing.T) {
+	installContinuationFlags(t)
+	config.Config.ClaimCritiqueActionableFeedbackEnabled = false // two calls: critique and audit
+	dao := &claimCaptureDAO{}
+	installClaimCaptureDAO(t, dao)
+	model := &overlapModel{both: make(chan struct{})}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	request := NBAgentRequest{Query: "why is CPU high"}
+	p := &NBReActPlanner4{ctx: ctx, request: request, nbAgent: notebookOptOutAgent{}, maxRefinementAttempts: 2}
+	conv := newCritiqueConversation(ctx, "", continuationPlannerMessages, "the answer", nil, continuationSteps, false)
+	require.NotNil(t, conv)
+
+	decision, feedback := p.runCritique(request.Query, "metrics", "the answer", continuationSteps, conv)
+
+	require.Equal(t, 2, model.peak(), "the critique and the audit overlap")
+	require.Equal(t, "refine", decision, "an accepted answer with a refuted claim is sent back, as before")
+	require.NotEmpty(t, feedback)
+	require.GreaterOrEqual(t, len(dao.rows), 2)
+	require.Equal(t, claimBaselinePending, dao.rows[0].BaselineDecision, "stored before the critique has answered")
+	require.Equal(t, "accept", dao.rows[len(dao.rows)-1].BaselineDecision)
+}
+
+// A panic in the answer critiquer is the same as a failed critique: the answer is
+// accepted, and the claim audit still completes its row.
+func TestReAct4AnswerCritiquePanicAcceptsAnswer(t *testing.T) {
+	installContinuationFlags(t)
+	config.Config.ClaimCritiqueActionableFeedbackEnabled = false
+	dao := &claimCaptureDAO{}
+	installClaimCaptureDAO(t, dao)
+	model := &overlapModel{both: make(chan struct{}), panicOnCritique: true}
+	withFakeLLMModel(t, model)
+	ctx := llmOverrideContext()
+	request := NBAgentRequest{Query: "why is CPU high"}
+	p := &NBReActPlanner4{ctx: ctx, request: request, nbAgent: notebookOptOutAgent{}, maxRefinementAttempts: 2}
+
+	decision, _ := p.runCritique(request.Query, "metrics", "the answer", continuationSteps, nil)
+
+	require.Empty(t, decision)
+	final := dao.rows[len(dao.rows)-1]
+	require.True(t, final.Completed)
+	require.Equal(t, "unknown", final.BaselineDecision)
+}
+
+// The audit never reads the critiquer's verdict, so it asks for it only after it
+// has run; the row written before then says the verdict is pending.
+func TestClaimCritiqueAsksForBaselineAfterAudit(t *testing.T) {
+	pinClaimAuditOnly(t)
+	previous := config.Config.ClaimCritiqueFeedbackEnabled
+	config.Config.ClaimCritiqueFeedbackEnabled = true
+	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
+	dao := &claimCaptureDAO{}
+	installClaimCaptureDAO(t, dao)
+	fake := &fakeLLMModel{turns: []fakeTurn{{content: validClaimAudit}}}
+	withFakeLLMModel(t, fake)
+	callsWhenAsked := -1
+	baseline := func() (string, string) {
+		callsWhenAsked = fake.callCount()
+		return "refine", "check the node"
+	}
+
+	decision, feedback := runClaimCritique(llmOverrideContext(), NBAgentRequest{}, "react4", "test_agent", baseline,
+		"why", "answer", "", nil, false, nil)
+
+	require.Equal(t, 1, callsWhenAsked, "asked after the audit call")
+	require.Equal(t, "refine", decision)
+	require.True(t, strings.HasPrefix(feedback, "check the node"), feedback)
+	require.Equal(t, claimBaselinePending, dao.rows[0].BaselineDecision)
+	final := dao.rows[len(dao.rows)-1]
+	require.Equal(t, "refine", final.BaselineDecision)
+	require.Equal(t, "check the node", final.BaselineFeedback)
 }

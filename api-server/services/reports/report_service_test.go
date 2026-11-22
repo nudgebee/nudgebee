@@ -978,7 +978,7 @@ func TestOptimizationRuleNamesAreTheOnesProducersWrite(t *testing.T) {
 }
 
 func TestPrepareRecommendationQueryFiltersOnTheSharedRuleList(t *testing.T) {
-	q := prepareRecommendationQuery("tenant", nil)
+	q := prepareRecommendationQuery("tenant", nil, nil)
 
 	var filtered []string
 	for _, clause := range q.Where.And {

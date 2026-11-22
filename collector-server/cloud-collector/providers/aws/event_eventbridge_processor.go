@@ -665,22 +665,7 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 					return map[string]any{}
 				}
 
-				essentialByName := map[string]bool{}
-				if len(taskDefContainerDefsArg) > 0 {
-					if cds, ok := taskDefContainerDefsArg[0].([]any); ok {
-						for _, c := range cds {
-							cm, ok := c.(map[string]any)
-							if !ok {
-								continue
-							}
-							name, _ := cm["Name"].(string)
-							essential, _ := cm["Essential"].(bool)
-							if name != "" {
-								essentialByName[name] = essential
-							}
-						}
-					}
-				}
+				essentialByName := essentialContainers(taskDefContainerDefsArg...)
 
 				var failing []map[string]any
 				var reasonMatch map[string]any
@@ -703,6 +688,15 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 					}
 					if hasFailureSignal {
 						failing = append(failing, cm)
+					}
+				}
+
+				// A container that crashed outranks one that was killed: with several
+				// Essential containers, the sidecar ECS killed afterwards can come
+				// first in the array.
+				for _, cm := range failing {
+					if containerCrashed(cm) && canFailTask(cm, essentialByName) {
+						return cm
 					}
 				}
 
@@ -734,6 +728,9 @@ func (p *TemplatedEventBridgeProcessor) renderTemplateValue(ctx providers.CloudP
 				}
 				return map[string]any{}
 			},
+			// taskFailed reports whether a stopped task failed, for the rule that
+			// raises one. See taskContainersFailed.
+			"taskFailed": taskContainersFailed,
 			// streamPrefixForContainer returns one container's real awslogs-stream-prefix
 			// from the task definition's ContainerDefinitions (TaskDefContainerDefs,
 			// already fetched by prepareTemplateData — no new AWS call here), matched
@@ -857,6 +854,81 @@ func (p *TemplatedEventBridgeProcessor) renderField(ctx providers.CloudProviderC
 		return p.renderTemplateValue(ctx, fieldName, fieldTpl.Template, data)
 	}
 	return fieldTpl.Value, nil // Return static value if no template
+}
+
+// essentialContainers reads each container's Essential flag from the task
+// definition's ContainerDefinitions. ECS treats an omitted Essential as true.
+// Empty when the task definition is not available.
+func essentialContainers(taskDefContainerDefsArg ...any) map[string]bool {
+	essentialByName := map[string]bool{}
+	if len(taskDefContainerDefsArg) == 0 {
+		return essentialByName
+	}
+	cds, ok := taskDefContainerDefsArg[0].([]any)
+	if !ok {
+		return essentialByName
+	}
+	for _, c := range cds {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := cm["Name"].(string)
+		essential, isBool := cm["Essential"].(bool)
+		if !isBool {
+			essential = true
+		}
+		if name != "" {
+			essentialByName[name] = essential
+		}
+	}
+	return essentialByName
+}
+
+// containerCrashed reports a non-zero exit the container chose itself. 137 and
+// 143 are SIGKILL and SIGTERM: what a sidecar shows when ECS tears down a task
+// whose app already finished, so they say nothing about the container.
+func containerCrashed(container map[string]any) bool {
+	code, isNum := anyToFloat64(container["exitCode"])
+	return isNum && code != 0 && code != 137 && code != 143
+}
+
+// canFailTask reports whether this container's exit can fail the task: it is
+// marked Essential, or the task definition is not available to say otherwise.
+// Containers missing from an available task definition were injected by a
+// platform (GuardDuty's agent, for one), and are not the task's own work.
+func canFailTask(container map[string]any, essentialByName map[string]bool) bool {
+	if len(essentialByName) == 0 {
+		return true
+	}
+	name, _ := container["name"].(string)
+	return essentialByName[name]
+}
+
+// taskContainersFailed reports whether a stopped task failed: no container
+// exited 0 (nothing finished), or a container that can fail the task crashed.
+// A clean exit elsewhere does not clear a crash, because sidecars and injected
+// agents exit 0 once the task is torn down.
+func taskContainersFailed(containers any, taskDefContainerDefsArg ...any) bool {
+	list, ok := containers.([]any)
+	if !ok {
+		return true
+	}
+	essentialByName := essentialContainers(taskDefContainerDefsArg...)
+	hasZero := false
+	for _, c := range list {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if code, isNum := anyToFloat64(cm["exitCode"]); isNum && code == 0 {
+			hasZero = true
+		}
+		if containerCrashed(cm) && canFailTask(cm, essentialByName) {
+			return true
+		}
+	}
+	return !hasZero
 }
 
 // Helper to convert various numeric types to float64 for comparison
@@ -1620,10 +1692,12 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		// Sparse client-side filters can require many pages; bound the whole action.
 		lookupCtx, cancel := context.WithTimeout(pCtx.GetContext(), 30*time.Second)
 		defer cancel()
-		boundedCtx := cloudTrailActionContext{CloudProviderContext: pCtx, ctx: lookupCtx}
+		const maxPagesPerQuery = 5
+		deadline, _ := lookupCtx.Deadline()
 		seen := map[string]bool{}
 		var merged []trailtypes.Event
-		for _, q := range paramsCT.LookupAttributes {
+		var firstLookupErr error
+		for i, q := range paramsCT.LookupAttributes {
 			if q.AttributeKey == "" || q.AttributeValue == "" {
 				logger.Warn("eventprocessor: skipping invalid lookup_attributes entry for aws_get_cloudtrail_events", "entry", q)
 				continue
@@ -1640,22 +1714,29 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 			for _, n := range q.EventNames {
 				allowedNames[n] = true
 			}
+			// Reserve a share of the remaining time for each later query.
+			queryCtx, stopQuery := context.WithTimeout(lookupCtx, time.Until(deadline)/time.Duration(len(paramsCT.LookupAttributes)-i))
+			providerCtx := cloudTrailActionContext{CloudProviderContext: pCtx, ctx: queryCtx}
+			var queryErr error
 			matched := 0
 			querySeen := map[string]bool{}
-			for {
-				if err := lookupCtx.Err(); err != nil {
-					return nil, fmt.Errorf("eventprocessor: cloudtrail lookup for action '%s': %w", actionDef.Name, err)
+			for page := 1; page <= maxPagesPerQuery; page++ {
+				if queryErr = queryCtx.Err(); queryErr != nil {
+					break
 				}
-				output, err := p.awsAPI.LookupCloudTrailEvents(boundedCtx, awsAccount, region, input)
+				output, err := p.awsAPI.LookupCloudTrailEvents(providerCtx, awsAccount, region, input)
 				if err != nil {
-					return nil, fmt.Errorf("eventprocessor: failed to lookup cloudtrail events for action '%s' (%s=%s): %w", actionDef.Name, q.AttributeKey, q.AttributeValue, err)
+					queryErr = err
+					break
 				}
-				if err := lookupCtx.Err(); err != nil {
-					return nil, fmt.Errorf("eventprocessor: cloudtrail lookup for action '%s': %w", actionDef.Name, err)
+				if queryErr = queryCtx.Err(); queryErr != nil {
+					break
 				}
 				if output == nil {
-					return nil, fmt.Errorf("eventprocessor: cloudtrail returned no result for action '%s'", actionDef.Name)
+					queryErr = errors.New("CloudTrail returned no result")
+					break
 				}
+				// Count filtered matches, preserving CloudTrail's newest-first order per query.
 				for _, ev := range output.Events {
 					if len(allowedNames) > 0 && !allowedNames[ptr.ToString(ev.EventName)] {
 						continue
@@ -1681,11 +1762,25 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 					break
 				}
 				if ptr.ToString(output.NextToken) == ptr.ToString(input.NextToken) {
-					return nil, fmt.Errorf("eventprocessor: cloudtrail repeated pagination token for action '%s'", actionDef.Name)
+					queryErr = errors.New("CloudTrail repeated a pagination token")
+					break
 				}
-				// Count filtered matches, preserving CloudTrail's newest-first order per query.
+				if page == maxPagesPerQuery {
+					queryErr = fmt.Errorf("CloudTrail page limit of %d reached", maxPagesPerQuery)
+					break
+				}
 				input.NextToken = output.NextToken
 			}
+			stopQuery()
+			if queryErr != nil {
+				logger.Warn("eventprocessor: CloudTrail evidence lookup truncated", "action", actionDef.Name, "attribute", q.AttributeKey, "value", q.AttributeValue, "matches", matched, "error", queryErr)
+				if firstLookupErr == nil {
+					firstLookupErr = fmt.Errorf("eventprocessor: incomplete CloudTrail lookup for action '%s' (%s=%s): %w", actionDef.Name, q.AttributeKey, q.AttributeValue, queryErr)
+				}
+			}
+		}
+		if len(merged) == 0 && firstLookupErr != nil {
+			return nil, firstLookupErr
 		}
 
 		sort.Slice(merged, func(i, j int) bool {
@@ -2826,6 +2921,16 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				}
 				setAlarmFiring(&provEvent, alarmArn, stateChangedAt)
 
+				// An alarm is stored as an alarm, however it was delivered: the
+				// features built for alarms read this source.
+				provEvent.EventSource = cloudWatchAlarmEventSource
+				// The push carries the threshold and period the alarm fired with
+				// in the state's reason data, not in its configuration.
+				evaluation := extractAlarmEvaluation(ebEvent)
+				if evaluation.HasThreshold {
+					alarmInfo.Threshold = strconv.FormatFloat(evaluation.Threshold, 'f', -1, 64)
+				}
+
 				var awsCfg *aws.Config
 				cfg, cfgErr := getAwsConfigFromAccount(ctx.GetContext(), account)
 				if cfgErr == nil {
@@ -2839,6 +2944,15 @@ func (p *TemplatedEventBridgeProcessor) Process(ctx providers.CloudProviderConte
 				provEvent.ResourceLookupIds = enrichment.ResourceLookupIds
 				for k, v := range enrichment.Labels {
 					provEvent.Labels[k] = v
+				}
+				// Readers of a polled alarm find these at the top of the raw event.
+				if provEvent.Raw != nil {
+					if evaluation.HasThreshold {
+						provEvent.Raw["threshold"] = evaluation.Threshold
+					}
+					if evaluation.PeriodSeconds > 0 {
+						provEvent.Raw["period"] = evaluation.PeriodSeconds
+					}
 				}
 				// An alarm entering ALARM is a condition that lasts, not a moment.
 				// Whether it is stored open is decided where it is stored, by

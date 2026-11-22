@@ -8,6 +8,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 	"nudgebee/llm/agents"
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/gin-gonic/gin"
@@ -112,9 +113,9 @@ func handleWorkspaceLLM(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) 
 		}
 		link, userID, linked := workspaceUsageLink(ctx, req)
 		if linked {
-			ctx = core.WithUsageLink(ctx, link)
+			ctx = llmruntime.WithUsageLink(ctx, link)
 		}
-		response, err := core.GenerateAndTrackLLMContent(ctx, userID, req.AccountID, "", "", agents.AgentCodeAnalyzer, false, messages, false, options...)
+		response, err := llmruntime.GenerateAndTrackLLMContent(ctx, userID, req.AccountID, "", "", agents.AgentCodeAnalyzer, false, messages, false, options...)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 			return
@@ -168,25 +169,25 @@ func workspaceLLMMessages(wire []workspaceLLMMessage) ([]llms.MessageContent, er
 // llm-server's own row for that run, within the account the workspace token is
 // bound to, so a workspace cannot attribute usage to a conversation that is not
 // its own. A run that does not resolve leaves the call unlinked.
-func workspaceUsageLink(ctx *security.RequestContext, req workspaceLLMRequest) (core.UsageLink, string, bool) {
+func workspaceUsageLink(ctx *security.RequestContext, req workspaceLLMRequest) (llmruntime.UsageLink, string, bool) {
 	if req.AgentRunID == "" {
-		return core.UsageLink{}, "", false
+		return llmruntime.UsageLink{}, "", false
 	}
 	if _, err := uuid.Parse(req.AgentRunID); err != nil {
 		ctx.GetLogger().Warn("workspace: llm usage not linked, agent run id is not a uuid", "account_id", req.AccountID, "agent_run_id", req.AgentRunID)
-		return core.UsageLink{}, "", false
+		return llmruntime.UsageLink{}, "", false
 	}
 	dao := core.GetConversationDao()
 	if dao == nil {
 		ctx.GetLogger().Warn("workspace: llm usage not linked, conversation DAO unavailable", "account_id", req.AccountID, "agent_run_id", req.AgentRunID)
-		return core.UsageLink{}, "", false
+		return llmruntime.UsageLink{}, "", false
 	}
 	conversationID, messageID, userID, err := dao.GetAgentRunAttribution(req.AgentRunID, req.AccountID, agents.AgentCodeAnalyzer)
 	if err != nil {
 		ctx.GetLogger().Warn("workspace: llm usage not linked, failed to get agent run attribution", "account_id", req.AccountID, "agent_run_id", req.AgentRunID, "error", err)
-		return core.UsageLink{}, "", false
+		return llmruntime.UsageLink{}, "", false
 	}
-	return core.UsageLink{
+	return llmruntime.UsageLink{
 		ConversationID: conversationID,
 		MessageID:      messageID,
 		AgentID:        req.AgentRunID,

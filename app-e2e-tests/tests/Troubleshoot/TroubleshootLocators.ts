@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../utils/helpers";
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../GlobalLocators";
 
@@ -47,7 +48,7 @@ export class TroubleshootLocators extends CommonLocators {
 
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             await this.TroubleshootBtn.waitFor({ state: "visible", timeout: 15000 }).catch(() => {});
-            await this.TroubleshootBtn.click().catch(() => {});
+            await clickSidenavRail(this.TroubleshootBtn).catch(() => {});
             await this.page.mouse.move(0, 0);
 
             await this.page.waitForURL(/\/troubleshoot/, { timeout: 8000 }).catch(() => {});

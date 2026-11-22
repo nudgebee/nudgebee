@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"testing"
 
-	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestForwardedLLMConfigToMap(t *testing.T) {
-	full := &core.ForwardedLLMConfig{
+	full := &llmruntime.ForwardedLLMConfig{
 		Provider:    "googleai",
 		Model:       "gemini-3-flash-preview",
 		ApiKey:      "secret-key",
@@ -30,7 +30,7 @@ func TestForwardedLLMConfigToMap(t *testing.T) {
 	assert.Equal(t, "us-west-2", m["region"])
 
 	// Empty optional fields are omitted; provider is always present.
-	sparse := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{Provider: "openai", ApiKey: "k"})
+	sparse := forwardedLLMConfigToMap(&llmruntime.ForwardedLLMConfig{Provider: "openai", ApiKey: "k"})
 	assert.Equal(t, "openai", sparse["provider"])
 	assert.Equal(t, "k", sparse["api_key"])
 	_, hasEndpoint := sparse["endpoint"]
@@ -45,7 +45,7 @@ func TestForwardedLLMConfigToMap(t *testing.T) {
 // credential chain — which on GKE dead-ends at an IMDS dial timeout.
 func TestForwardedLLMConfigToMap_BedrockCredentials(t *testing.T) {
 	t.Run("forwards a complete credential triple", func(t *testing.T) {
-		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+		m := forwardedLLMConfigToMap(&llmruntime.ForwardedLLMConfig{
 			Provider:     "bedrock",
 			Model:        "arn:aws:bedrock:us-west-2:1234:inference-profile/us.meta.llama4",
 			AccessKey:    "AKIAEXAMPLE",
@@ -58,7 +58,7 @@ func TestForwardedLLMConfigToMap_BedrockCredentials(t *testing.T) {
 	})
 
 	t.Run("omits the optional session token", func(t *testing.T) {
-		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+		m := forwardedLLMConfigToMap(&llmruntime.ForwardedLLMConfig{
 			Provider:  "bedrock",
 			AccessKey: "AKIAEXAMPLE",
 			SecretKey: "shhh",
@@ -72,7 +72,7 @@ func TestForwardedLLMConfigToMap_BedrockCredentials(t *testing.T) {
 		// A static credentials provider built from half a pair is a hard error
 		// in the AWS SDK, not a fall-through to the pod's own chain — so an
 		// incomplete pair must not cross the wire at all.
-		m := forwardedLLMConfigToMap(&core.ForwardedLLMConfig{
+		m := forwardedLLMConfigToMap(&llmruntime.ForwardedLLMConfig{
 			Provider:  "bedrock",
 			AccessKey: "AKIAEXAMPLE",
 		})

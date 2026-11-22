@@ -11,11 +11,6 @@ import (
 // What each ticket operation does to the ticketing system. An operation not
 // listed (or no operation found) asks a person; the tools reject it anyway.
 var (
-	ticketV1OperationTypes = map[string]core.ToolRequestType{
-		OperationSearch:  core.ToolRequestTypeRead,
-		OperationUpdate:  core.ToolRequestTypeUpdate,
-		OperationComment: core.ToolRequestTypeCreate,
-	}
 	ticketV2OperationTypes = map[string]core.ToolRequestType{
 		v2OpGetCreateMeta: core.ToolRequestTypeRead,
 		v2OpGetComments:   core.ToolRequestTypeRead,
@@ -64,15 +59,6 @@ func ticketRequestType(input string, operations map[string]core.ToolRequestType)
 		return core.ToolRequestTypeUpdate
 	}
 	return result
-}
-
-func (m TicketMaster) InferToolRequestType(_ *security.RequestContext, _, input string) (core.ToolRequestType, error) {
-	return ticketRequestType(input, ticketV1OperationTypes), nil
-}
-
-// A confirmation covers only this exact ticket change, not every later one.
-func (m TicketMaster) ConfirmationKey(toolInput string) string {
-	return perActionConfirmationKey(m.Name(), toolInput)
 }
 
 func (m TicketMasterV2) InferToolRequestType(_ *security.RequestContext, _, input string) (core.ToolRequestType, error) {

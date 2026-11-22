@@ -6,9 +6,11 @@ import (
 	"sort"
 	"strings"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
-	"nudgebee/llm/security"
+	"nudgebee/llm/config"
 	toolcore "nudgebee/llm/tools/core"
 )
 
@@ -93,13 +95,20 @@ type searchToolCandidate struct {
 	description string
 	aliases     []string
 	inputUsage  string // compact leaf-tool param summary; empty for agents (NL input)
+	// integration and instructions are set for an MCP tool whose account gets
+	// MCP tools on demand. description is then the tool's own text;
+	// the integration's instructions are searched but rendered once per
+	// integration, as a header, instead of once per tool.
+	integration  string
+	instructions string
 }
 
 func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
-	// Defense-in-depth read gate. GetEnabledNBTools self-guards on account read
-	// access and returns empty otherwise, but ListAgents (the other enumeration
+	// Defense-in-depth gate. GetEnabledNBTools self-guards on the same rule (a
+	// built-in role that reads the account, or a custom-role right to run AI on
+	// it) and returns empty otherwise, but ListAgents (the other enumeration
 	// source) has no such guard — so enforce it here before enumerating either.
-	if !ctx.Ctx.GetSecurityContext().HasAccountAccess(t.accountId, security.SecurityAccessTypeRead) {
+	if sc := ctx.Ctx.GetSecurityContext(); sc == nil || !sc.CanRunAI(t.accountId) {
 		ctx.Ctx.GetLogger().Warn("tool: search_tools unauthorized — no account read access", "account_id", t.accountId)
 		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "error", ctx.AccountId)
 		return toolcore.NBToolResponse{
@@ -120,7 +129,11 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	ctx.Ctx.GetLogger().Info("tool: search_tools called", "query", query)
 
 	candidates := t.collectCandidates(ctx)
-	matched := scoreAndRankSearchTools(query, candidates, searchToolsMaxResults)
+	ranked := rankSearchTools(query, candidates)
+	matched := ranked
+	if len(matched) > searchToolsMaxResults {
+		matched = matched[:searchToolsMaxResults]
+	}
 
 	if len(matched) == 0 {
 		common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "not_found", ctx.AccountId)
@@ -144,7 +157,7 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 	common.MetricsToolOperationsTotal(toolcore.ToolImplTypeBuiltin, t.Name(), "success", ctx.AccountId)
 	return toolcore.NBToolResponse{
 		Status: toolcore.NBToolResponseStatusSuccess,
-		Data:   renderSearchToolsOutput(matched),
+		Data:   renderSearchToolsOutput(matched) + renderSearchToolsOverflow(ranked[len(matched):]),
 		Type:   toolcore.NBToolResponseTypeText,
 		AdditionalDetails: map[string]any{
 			"discovered_tools": discovered,
@@ -159,7 +172,9 @@ func (t *searchToolsTool) Call(ctx toolcore.NbToolContext, input toolcore.NBTool
 func (t *searchToolsTool) collectCandidates(ctx toolcore.NbToolContext) []searchToolCandidate {
 	return collectSearchToolCandidates(
 		core.ListAgents(ctx.Ctx, t.accountId, true),
-		toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId),
+		// Only the tools this caller may use (a person with custom roles only
+		// sees what their grants allow); dispatch still checks each call.
+		core.ToolsForPrompt(ctx.Ctx, t.accountId, toolcore.GetEnabledNBTools(ctx.Ctx, t.accountId)),
 	)
 }
 
@@ -222,12 +237,18 @@ func collectSearchToolCandidates(agentDtos []core.AgentDto, enabledTools []toolc
 			continue
 		}
 		seen[lower] = true
-		candidates = append(candidates, searchToolCandidate{
+		c := searchToolCandidate{
 			name:        tool.Name(),
 			kind:        "tool",
 			description: tool.Description(),
 			inputUsage:  summarizeToolInputSchema(toolcore.ModelInputSchema(tool)),
-		})
+		}
+		if config.Config.LlmServerMCPToolsOnDemandEnabled {
+			if integration, instructions, desc, ok := toolcore.MCPToolParts(tool); ok {
+				c.description, c.integration, c.instructions = desc, integration, instructions
+			}
+		}
+		candidates = append(candidates, c)
 	}
 
 	return candidates
@@ -280,7 +301,17 @@ func parseSearchToolsQuery(input toolcore.NBToolCallRequest) string {
 // exact-match weakness fixed in workflow_search's own ranking, one layer up, and
 // it takes the same fix.
 func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, limit int) []searchToolCandidate {
-	tokens := toolcore.TokenizeForSkillSelection(query)
+	out := rankSearchTools(query, candidates)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// rankSearchTools is scoreAndRankSearchTools without the limit: every match,
+// best first.
+func rankSearchTools(query string, candidates []searchToolCandidate) []searchToolCandidate {
+	tokens := knowledge.TokenizeForSkillSelection(query)
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -292,9 +323,12 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 	var hits []scored
 	for _, c := range candidates {
 		nameHay := strings.ToLower(c.name + " " + strings.Join(c.aliases, " "))
-		descHay := strings.ToLower(c.description)
-		nameTokens := toolcore.TokenizeForSkillSelection(nameHay)
-		descTokens := toolcore.TokenizeForSkillSelection(descHay)
+		// An MCP tool's integration name and instructions are searched as part of
+		// its description, as they were when they prefixed it, so the same
+		// queries find it.
+		descHay := strings.ToLower(strings.TrimSpace(c.integration + " " + c.instructions + " " + c.description))
+		nameTokens := knowledge.TokenizeForSkillSelection(nameHay)
+		descTokens := knowledge.TokenizeForSkillSelection(descHay)
 		score := 0
 		for _, tok := range tokens {
 			score += searchToolsFieldScore(nameHay, nameTokens, tok, searchToolsWeightName)
@@ -312,9 +346,6 @@ func scoreAndRankSearchTools(query string, candidates []searchToolCandidate, lim
 		return strings.ToLower(hits[i].cand.name) < strings.ToLower(hits[j].cand.name)
 	})
 
-	if limit > 0 && len(hits) > limit {
-		hits = hits[:limit]
-	}
 	out := make([]searchToolCandidate, 0, len(hits))
 	for _, h := range hits {
 		out = append(out, h.cand)
@@ -370,13 +401,52 @@ func searchToolsSharesPrefix(a, b string) bool {
 func renderSearchToolsOutput(matched []searchToolCandidate) string {
 	var b strings.Builder
 	b.WriteString("Matching capabilities. These are now callable even though they were not preloaded: for a single quick call, invoke one directly by its name; for multi-step or noisy work, run it via `delegate_agent` with {\"prompt\": <what to do>, \"tools\": [\"<name>\"]} to keep your context clean.\n")
+	headed := map[string]bool{}
 	for _, c := range matched {
-		fmt.Fprintf(&b, "\n<capability name=%q kind=%q>\n  <description>%s</description>",
-			c.name, c.kind, html.EscapeString(strings.TrimSpace(c.description)))
+		if c.integration != "" && !headed[c.integration] {
+			headed[c.integration] = true
+			if c.instructions != "" {
+				fmt.Fprintf(&b, "\n<integration name=%q>\n  <instructions>%s</instructions>\n</integration>",
+					c.integration, html.EscapeString(c.instructions))
+			}
+		}
+		if c.integration != "" {
+			fmt.Fprintf(&b, "\n<capability name=%q kind=%q integration=%q>\n  <description>%s</description>",
+				c.name, c.kind, c.integration, html.EscapeString(strings.TrimSpace(c.description)))
+		} else {
+			fmt.Fprintf(&b, "\n<capability name=%q kind=%q>\n  <description>%s</description>",
+				c.name, c.kind, html.EscapeString(strings.TrimSpace(c.description)))
+		}
 		if c.inputUsage != "" {
 			fmt.Fprintf(&b, "\n  <input>%s</input>", html.EscapeString(c.inputUsage))
 		}
 		b.WriteString("\n</capability>")
+	}
+	return b.String()
+}
+
+// renderSearchToolsOverflow says how many more tools of each MCP integration
+// matched than the result cap let through, so the model can narrow its query
+// to the integration instead of concluding the tool does not exist. Empty when
+// none were cut. Integrations are sorted for stable output.
+func renderSearchToolsOverflow(cut []searchToolCandidate) string {
+	counts := map[string]int{}
+	for _, c := range cut {
+		if c.integration != "" {
+			counts[c.integration]++
+		}
+	}
+	if len(counts) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(counts))
+	for n := range counts {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, n := range names {
+		fmt.Fprintf(&b, "\n%d more %s tools matched but are not shown — refine the query, e.g. `%s <what you need>`.", counts[n], n, n)
 	}
 	return b.String()
 }

@@ -50,7 +50,7 @@ const customJestConfig = {
 // next/jest's `createJestConfig` injects its own `transformIgnorePatterns`
 // that ignores all of node_modules — including pure-ESM packages that need
 // transformation. We override by resolving the async config and rewriting
-// the field. Currently only `uuid@14+` requires this (ships `"type":
+// the field. `uuid@14+` and `marked@18+` require this (ship `"type":
 // "module"` with bare `export` statements). The misleading symptom: jest
 // reports a SyntaxError pointing at the first .ts that transitively
 // imports the ESM dep, not the dep itself. Add more package names to the
@@ -63,7 +63,7 @@ module.exports = async () => {
   // single allow-uuid pattern is not enough; the next/jest-generated patterns
   // would still match. Splice the allowlist into every existing
   // `node_modules` regex.
-  const allowList = ['uuid'];
+  const allowList = ['uuid', 'marked'];
   const allowAlt = allowList.join('|');
   const allowGuard = `(?!(${allowAlt})/)(?!.*node_modules[\\\\/](${allowAlt})[\\\\/])`;
   return {

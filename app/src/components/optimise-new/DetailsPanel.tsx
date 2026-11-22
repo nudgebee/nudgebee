@@ -1025,7 +1025,12 @@ const K8sRightSizingSummary = ({ recData, trend, onViewEvidence }: { recData: an
       />
       {trend && (
         <Box sx={{ mt: ds.space[3] }}>
-          <UsageTrendMini series={trendSeries} loading={trend.loading} basis={trend.perPod.source ? 'per pod' : 'all replicas'} />
+          <UsageTrendMini
+            series={trendSeries}
+            loading={trend.loading}
+            basis={trend.perPod.source ? 'per pod' : 'all replicas'}
+            rangeDays={trend.rangeDays}
+          />
         </Box>
       )}
     </Card>

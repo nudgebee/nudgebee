@@ -76,6 +76,15 @@ func TestSignozLogGroupFilters_UseDottedKeys(t *testing.T) {
 			assert.Equal(t, "checkout", keys[signozPodKey])
 			assert.NotContains(t, keys, signozLegacyNamespaceKey)
 			assert.NotContains(t, keys, signozLegacyPodKey)
+
+			// Typed as resource attributes: untyped, SigNoz resolved k8s.namespace.name
+			// to the log attribute k8s event logs carry, and a namespace-filtered count
+			// over a namespace with thousands of matching rows came back 0 (v0.145).
+			for _, f := range filters[1:] {
+				k := f["key"].(map[string]string)
+				assert.Equal(t, "resource", k["type"], k["key"])
+				assert.Equal(t, "string", k["dataType"], k["key"])
+			}
 		})
 	}
 }

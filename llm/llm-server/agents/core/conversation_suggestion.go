@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"math"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
+	toolcore "nudgebee/llm/tools/core"
 	"sort"
 	"strings"
 	"time"
@@ -59,7 +61,7 @@ func StoredConversationSuggestions(ctx *security.RequestContext, request Convers
 // questions. A short list of suggested questions needs no deep reasoning: without
 // an explicit level the call spent 520-608 thinking tokens on 66 output tokens.
 func conversationSuggestionCallOptions() []llms.CallOption {
-	return []llms.CallOption{llms.WithTemperature(0.7), llms.WithJSONMode(), WithThinkingLevel(ThinkingLevelFastTask)}
+	return []llms.CallOption{llms.WithTemperature(0.7), llms.WithJSONMode(), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask)}
 }
 
 func HandleConversationSuggestionRequest(ctx *security.RequestContext, request ConversationSuggestionRequest) (ConversationSuggestionResponse, error) {
@@ -101,7 +103,7 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 			fmt.Sprintf(
 				"question: %s\nanswer: %s",
 				mesasge.Message,
-				mesasge.Response,
+				toolcore.StripChartData(mesasge.Response),
 			),
 		),
 	}
@@ -117,8 +119,8 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 	// shared slot each time the tools-list bytes differ.
 	suggestionCtx := security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeAccount),
-			ContextKeyModelTier, ModelTierSummary,
+			context.WithValue(ctx.GetContext(), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeAccount),
+			llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary,
 		),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
@@ -139,7 +141,7 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 			time.Sleep(backoffDuration)
 		}
 
-		response, err = GenerateAndTrackLLMContent(suggestionCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "conversation_suggestion", true, llmMessages, true, conversationSuggestionCallOptions()...)
+		response, err = llmruntime.GenerateAndTrackLLMContent(suggestionCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, "conversation_suggestion", true, llmMessages, true, conversationSuggestionCallOptions()...)
 		if err == nil {
 			break // Success, exit the retry loop
 		}

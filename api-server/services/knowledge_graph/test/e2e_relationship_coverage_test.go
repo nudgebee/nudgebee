@@ -60,6 +60,7 @@ func TestE2E_RelationshipCoverage(t *testing.T) {
 		"RESOLVES_TO",
 		"PUBLISHES_TO",
 		"CALLS",
+		"SAME_AS",
 	}
 	var missing []string
 	for _, rt := range expected {

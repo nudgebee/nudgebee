@@ -13,6 +13,8 @@ from typing import Any
 
 import yaml
 
+from vm_scenario import expand_env
+
 
 def load_scenarios(
     scenarios_dir: Path, only: set[str] | None = None
@@ -30,5 +32,9 @@ def load_scenarios(
         data["name"] = name
         if only and name not in only:
             continue
+        if data.get("type") == "vm_event":
+            # Unset names stay as `${NAME}`; the run reports them as a setup
+            # error, so loading every scenario never needs the VM fleet.
+            data = expand_env(data)
         scenarios.append(data)
     return scenarios

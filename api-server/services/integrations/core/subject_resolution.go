@@ -422,11 +422,11 @@ func classifyPromExprClusterScoped(expr string) (isCluster bool, parsed bool) {
 	return clusterSignal && !objectSeen, true
 }
 
-// fetchEventRuleExpr returns the Prometheus rule expression for an alert from the
+// FetchEventRuleExpr returns the Prometheus rule expression for an alert from the
 // event_rules catalog (the per-tenant source of truth, synced from the cluster's
 // PrometheusRule CRDs). Returns "" on any miss/error so the caller falls back to
 // the curated set.
-func fetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) string {
+func FetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) string {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return ""
@@ -454,7 +454,7 @@ func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels 
 	if clusterScopedAlertNames[alert] {
 		return true
 	}
-	if expr := fetchEventRuleExpr(sc, accountId, alert); expr != "" {
+	if expr := FetchEventRuleExpr(sc, accountId, alert); expr != "" {
 		if isCluster, parsed := classifyPromExprClusterScoped(expr); parsed && isCluster {
 			return true
 		}

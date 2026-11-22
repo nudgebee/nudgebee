@@ -12,6 +12,7 @@ import {
   CREATE_MODAL_TITLE,
   CREATE_SUBMIT_LABEL,
   DELETE_CONFIRM_LABEL,
+  DISABLE_CONFIRM_LABEL,
   EDIT_MODAL_TITLE,
   EMPTY_STATE_ID,
   EXPAND_ROW_LABEL,
@@ -93,6 +94,7 @@ export class TriageRulesLocators extends TroubleshootLocators {
 
   // Delete confirmation and toasts.
   readonly deleteConfirmButton: Locator;
+  readonly disableConfirmButton: Locator;
   readonly toastRegion: Locator;
 
   // A row's own expandable drilldown. Only one row is ever expanded within a single test here,
@@ -220,6 +222,10 @@ export class TriageRulesLocators extends TroubleshootLocators {
     // unambiguous once scoped to the dialog.
     this.modalSubmit = this.ruleModal
       .getByRole("button", { name: CREATE_SUBMIT_LABEL, exact: true })
+      .or(this.ruleModal.locator("#submit"))
+      .first();
+    this.disableConfirmButton = this.ruleModal
+      .getByRole("button", { name: DISABLE_CONFIRM_LABEL, exact: true })
       .or(this.ruleModal.locator("#submit"))
       .first();
     this.modalCancel = this.ruleModal

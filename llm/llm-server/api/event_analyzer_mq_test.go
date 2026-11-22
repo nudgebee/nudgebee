@@ -139,3 +139,22 @@ func TestAutoAnalysisGateApplies(t *testing.T) {
 		})
 	}
 }
+
+func TestPublishAutoCompletion(t *testing.T) {
+	cases := []struct {
+		name        string
+		taskToken   string
+		ranAnalysis bool
+		want        bool
+	}{
+		{"api-server request, ran here", "", true, true},
+		{"api-server request, another worker's result", "", false, true},
+		{"workflow request, ran here", "token", true, true},
+		{"workflow request, another worker's result", "token", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, publishAutoCompletion(tc.taskToken, tc.ranAnalysis))
+		})
+	}
+}

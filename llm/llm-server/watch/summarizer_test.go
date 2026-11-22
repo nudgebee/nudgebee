@@ -39,7 +39,7 @@ func TestSummarizerFactory_UnsetByDefault(t *testing.T) {
 }
 
 // TestSummarizerFactory_InstallsAndReturns documents the setter/getter
-// contract used by agents/core.BootstrapWatch. The factory is held in a
+// contract used by watch/bootstrap.BootstrapWatch. The factory is held in a
 // package-level slot guarded by a RWMutex — easy to break with a race-
 // detector run if the mutex is dropped.
 func TestSummarizerFactory_InstallsAndReturns(t *testing.T) {

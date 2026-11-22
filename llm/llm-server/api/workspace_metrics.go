@@ -40,3 +40,32 @@ func recordWorkspaceAuth(ctx context.Context, route, audience string) {
 		attribute.String("audience", audience),
 	))
 }
+
+var (
+	workspaceNbctlCounter     metric.Int64Counter
+	workspaceNbctlCounterOnce sync.Once
+)
+
+// recordWorkspaceNbctl counts requests from nbctl in Nubi's workspace by action
+// and outcome, so the flag's adoption and refusals can be read off a dashboard.
+// Labels are bounded: action is an allowlisted action or "other", and outcome
+// is one of the handler's fixed results.
+func recordWorkspaceNbctl(ctx context.Context, action, outcome string) {
+	workspaceNbctlCounterOnce.Do(func() {
+		var err error
+		workspaceNbctlCounter, err = otel.Meter(config.SERVICE_NAME).Int64Counter(
+			"nb_llm_workspace_nbctl_requests_total",
+			metric.WithDescription("Requests from nbctl in Nubi's workspace, by action and outcome"),
+		)
+		if err != nil {
+			slog.Error("workspace metrics: failed to create nbctl counter", "error", err)
+		}
+	})
+	if workspaceNbctlCounter == nil {
+		return
+	}
+	workspaceNbctlCounter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("action", action),
+		attribute.String("outcome", outcome),
+	))
+}

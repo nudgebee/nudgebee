@@ -18,7 +18,7 @@ jest.mock('@api1/user', () => ({
 jest.mock('@api1/account', () => ({ __esModule: true, default: { listProviderCapabilities: () => Promise.resolve({}) } }));
 // EE build, where the dropdown leaves a URL account it cannot find for the account guard to judge.
 jest.mock('@lib/accountGuard', () => ({ isAccountGuardActive: () => true }));
-const mockRouter = { pathname: '/home', query: {}, push: jest.fn() };
+const mockRouter = { pathname: '/home', query: {}, push: jest.fn(), replace: jest.fn() };
 jest.mock('next/router', () => ({ useRouter: () => mockRouter }));
 const mockSession = { data: { tenant: { id: 'tenant-1' } } };
 jest.mock('next-auth/react', () => ({ useSession: () => mockSession }));
@@ -134,5 +134,30 @@ describe('ClusterDropdown when the account list has no real account', () => {
     await wait(2000);
 
     expect(pickerOptions()).toEqual(['k8s-dev']);
+  });
+});
+
+describe('ClusterDropdown on a page opened without an account', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    cache.clear();
+    queryGraphQL.mockReset();
+    mockRouter.query = {};
+    mockRouter.push.mockReset();
+    mockRouter.replace.mockReset();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  // Filling in the default account is not a navigation: a push would leave a history entry
+  // for the same page without it, so Back would only strip ?accountId=.
+  it('adds the default account to the URL without a new history entry', async () => {
+    queryGraphQL.mockResolvedValue(listOf([K8S_DEV]));
+    renderDropdown();
+    await wait();
+
+    expect(mockRouter.replace).toHaveBeenCalledWith({ pathname: '/home', query: { accountId: 'acc-1' } }, undefined, { shallow: true });
+    expect(mockRouter.push).not.toHaveBeenCalled();
   });
 });

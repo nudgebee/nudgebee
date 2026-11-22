@@ -2,7 +2,6 @@ package scripting
 
 import (
 	"fmt"
-	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/tasks/testutils"
 	"os"
 	"strings"
@@ -34,10 +33,7 @@ func (l *CapturingLogger) Error(msg string, keyvals ...interface{}) {
 }
 
 func TestRunScriptTask_Security_LogRedaction(t *testing.T) {
-	// Force local execution
-	oldMode := config.Config.TaskScriptExecutionModel
-	config.Config.TaskScriptExecutionModel = "local"
-	defer func() { config.Config.TaskScriptExecutionModel = oldMode }()
+	useStubExecutor(t, &stubExecutor{output: "SUPER_SECRET_PASSWORD"})
 
 	logger := &CapturingLogger{Messages: []string{}}
 	task := &RunScriptTask{}

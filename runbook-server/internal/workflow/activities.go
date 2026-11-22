@@ -10,6 +10,8 @@ import (
 	"nudgebee/runbook/internal/tasks"
 	configSvc "nudgebee/runbook/services/config"
 	"time"
+
+	"go.temporal.io/sdk/activity"
 )
 
 // WorkflowActivities holds dependencies for workflow-related activities.
@@ -21,7 +23,23 @@ type WorkflowActivities struct {
 // Internal_UpdateLastExecutionStatus updates the last execution status of a workflow.
 func (a *WorkflowActivities) Internal_UpdateLastExecutionStatus(ctx context.Context, wf model.Workflow, status model.WorkflowExecutionStatus, statusMessage string) error {
 	statusMessage = a.scrubSecrets(ctx, wf.TenantID, wf.AccountID, statusMessage)
-	return a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage, wf.LastExecutionVersion)
+	if err := a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage, wf.LastExecutionVersion); err != nil {
+		return err
+	}
+	if runFinished != nil && wf.Binding.IsAutomation() && activity.IsActivity(ctx) && isTerminalStatus(status) {
+		return runFinished(ctx, wf, activity.GetInfo(ctx).WorkflowExecution.RunID, status, statusMessage)
+	}
+	return nil
+}
+
+// isTerminalStatus reports whether status is where an execution ends.
+func isTerminalStatus(status model.WorkflowExecutionStatus) bool {
+	switch status {
+	case model.WorkflowExecutionStatusCompleted, model.WorkflowExecutionStatusFailed, model.WorkflowExecutionStatusCanceled,
+		model.WorkflowExecutionStatusTerminated, model.WorkflowExecutionStatusTimedOut:
+		return true
+	}
+	return false
 }
 
 // scrubSecrets replaces the account's credential values in a failure message

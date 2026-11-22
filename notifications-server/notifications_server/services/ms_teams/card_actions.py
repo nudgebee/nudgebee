@@ -14,7 +14,6 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
 from typing import Callable, Optional
 
 import requests
@@ -23,11 +22,14 @@ from sqlalchemy.orm import Session
 from notifications_server import sync_engine
 from notifications_server.configs.settings import URLRoutes, settings
 from notifications_server.models.models import SentNotifications
+from notifications_server.services import auto_optimize_approval, delivery_records, workflow_approval
 from notifications_server.services.cache import Cache
-from notifications_server.services.messaging_installations import ms_teams_aad_tenant_owner
 from notifications_server.services.ms_teams.bot_sender import TeamsBotError, card_activity, get_sender
+from notifications_server.services.ms_teams.team_binding import workspaces_for
+from notifications_server.services.workflow_approval import Decision
 from notifications_server.utils.action_requests import ActionRequestBody, sign_action_request, verify_action_request
 from notifications_server.utils.datetime_utils import utc_now
+from notifications_server.utils.nb_chart import split_nb_chart_segments
 
 LOG = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ ANALYSIS_KICKOFF_TIMEOUT_SECONDS = 90
 # Identifies the signing key, so a later key can be verified alongside this one.
 KEY_ID = "1"
 # How long a card's buttons stay valid. api-server's sent_notifications cleanup
-# keeps a Teams card's row exactly this long (teamsCardRetentionDays).
+# keeps a Teams card's row at least this long (teamsCardButtonDays).
 MAX_AGE_SECONDS = 7 * 24 * 3600
 # Teams refuses a message over about 28 KB; buttons are only added to a card
 # that stays under this with them.
@@ -79,12 +81,15 @@ BUSY = object()  # the action is running on this card now
 
 SUPPRESS_THIS_DURATIONS = (("1 hour", 1), ("4 hours", 4), ("24 hours", 24), ("7 days", 168))
 SUPPRESS_ALL_DURATIONS = (("4 hours", 4), ("24 hours", 24), ("7 days", 168))
+# Messages naming the product or the assistant hold {brand} and {assistant},
+# filled by _branded when sent: the deployment's branding can change while the
+# server runs (configs/branding_overrides.py).
 PICK_A_DURATION = "Pick how long to suppress the alert for, then press Suppress."
 ALREADY_SUPPRESSED = "This alert was already suppressed from this card."
 STILL_SUPPRESSING = "Still suppressing this alert. It'll show on the card in a moment."
 SUPPRESS_CARD_TOO_OLD = (
     "This card is more than 7 days old, so its Suppress menu no longer works."
-    " Suppress the alert from Triage Rules in NudgeBee."
+    " Suppress the alert from Triage Rules in {brand}."
 )
 
 PICK_AN_OPTION = "Pick an option, then press Submit."
@@ -93,18 +98,33 @@ STILL_RECORDING = "Still recording the decision on this approval."
 APPROVAL_EXPIRED = "This approval request has expired."
 APPROVAL_FAILED = "Couldn't record the decision. Please try again."
 STILL_ANALYZING = "Still analyzing. Results will appear in this card's thread."
-ANALYSIS_FAILED = "Something went wrong analyzing this. Try again in a moment."
-ANALYSIS_BUSY = "Nubi is analyzing a lot of alerts right now. Try again in a minute."
+ANALYSIS_FAILED = (
+    "{assistant} couldn't finish analyzing this alert. To see what went wrong, [open it in {brand}]({url})"
+    " and use **Refresh investigation** to run it again."
+)
+ANALYSIS_FAILED_LINE = "{assistant} couldn't analyze this alert. See the thread for what to do next."
+ANALYSIS_BUSY = "{assistant} is analyzing a lot of alerts right now. Try again in a minute."
+ANALYSIS_WAITING = "On hold: {reason}. Results will appear in this thread once it runs."
+ANALYSIS_SLOW = (
+    "This analysis is taking longer than usual. [Open the alert in {brand}]({url}) to see its result when it finishes."
+)
+ANALYSIS_SLOW_LINE = "Still analyzing. Check the event in {brand}."
+ANALYSIS_LOST = "{assistant} lost track of this analysis. [Open the alert in {brand}]({url}) to see its result."
+ANALYSIS_LOST_LINE = "{assistant} lost track of this analysis. See the thread."
 FEEDBACK_ALREADY = "This answer was already rated."
 FEEDBACK_FAILED = "Couldn't record your feedback. Please try again."
 FEEDBACK_CARD_TOO_OLD = "This answer is too old to rate."
 ASK_NUBI_CARD_TOO_OLD = (
-    "This card is more than 7 days old, so its buttons no longer work." " Ask Nubi about the event from NudgeBee."
+    "This card is more than 7 days old, so its buttons no longer work." " Ask {assistant} about the event from {brand}."
 )
 APPROVAL_CARD_TOO_OLD = (
     "This card is more than 7 days old, so its buttons no longer work."
-    " Answer the approval from the automation's run in NudgeBee."
+    " Answer the approval from the automation's run in {brand}."
 )
+
+
+def _branded(text: str, **values) -> str:
+    return text.format(assistant=settings.urls.assistant_name, brand=settings.urls.branding_name, **values)
 
 
 def buttons_enabled() -> bool:
@@ -122,9 +142,9 @@ def sign(action_name: str, params: dict) -> str:
     return json.dumps({"kid": KEY_ID, "body": body.model_dump(exclude_none=True), "signature": signature})
 
 
-def _checked(raw, action_name: str, tenant_id):
-    """(params, age in seconds) of button data we signed for this action and this
-    NudgeBee tenant, or None."""
+def _checked(raw, action_name: str, allowed):
+    """(params, age in seconds) of button data we signed for this action and for
+    one of the allowed NudgeBee tenants, or None."""
     try:
         payload = json.loads(raw) if isinstance(raw, str) else raw
         if payload.get("kid") != KEY_ID:
@@ -137,23 +157,23 @@ def _checked(raw, action_name: str, tenant_id):
     except Exception:
         return None
     params = body.action_params or {}
-    if not tenant_id or str(params.get("tenant_id")) != str(tenant_id):
+    if str(params.get("tenant_id")) not in {str(t) for t in allowed or ()}:
         return None
     return params, time.time() - body.timestamp
 
 
-def verify(raw, action_name: str, tenant_id) -> Optional[dict]:
+def verify(raw, action_name: str, allowed) -> Optional[dict]:
     """The params of signed button data, or None unless it was signed by us for
-    this action and this NudgeBee tenant within MAX_AGE_SECONDS."""
-    checked = _checked(raw, action_name, tenant_id)
+    this action and one of the allowed NudgeBee tenants within MAX_AGE_SECONDS."""
+    checked = _checked(raw, action_name, allowed)
     if not checked or not -300 <= checked[1] <= MAX_AGE_SECONDS:
         return None
     return checked[0]
 
 
-def expired(raw, action_name: str, tenant_id) -> bool:
+def expired(raw, action_name: str, allowed) -> bool:
     """True for genuine button data that is too old to use."""
-    checked = _checked(raw, action_name, tenant_id)
+    checked = _checked(raw, action_name, allowed)
     return bool(checked) and checked[1] > MAX_AGE_SECONDS
 
 
@@ -283,7 +303,7 @@ def ask_nubi_action(finding: dict, tenant_id) -> Optional[dict]:
     return {
         "type": "Action.Submit",
         "id": ASK_NUBI_ID,
-        "title": "Ask Nubi",
+        "title": f"Ask {settings.urls.assistant_name}",
         "data": {ACTION_KEY: ASK_NUBI, ASK_NUBI_DATA: sign(ASK_NUBI, params)},
     }
 
@@ -381,11 +401,8 @@ def stored_card(tenant_id, channel_id, message_id) -> Optional[dict]:
     with Session(sync_engine) as session:
         row = (
             session.query(SentNotifications.account_id, SentNotifications.teams_metadata)
-            .filter(
-                SentNotifications.tenant_id == tenant_id,
-                SentNotifications.teams_channel_id == channel_id,
-                SentNotifications.teams_message_id == message_id,
-            )
+            .filter(SentNotifications.tenant_id == tenant_id, delivery_records.teams_card(channel_id, message_id))
+            .order_by(SentNotifications.created_at.desc())
             .first()
         )
     if row is None:
@@ -454,11 +471,8 @@ def _stamp(card_ref, action, state, mutate: Callable[[dict], dict], refuse_if_st
     with Session(sync_engine) as session:
         row = (
             session.query(SentNotifications)
-            .filter(
-                SentNotifications.tenant_id == tenant_id,
-                SentNotifications.teams_channel_id == channel_id,
-                SentNotifications.teams_message_id == message_id,
-            )
+            .filter(SentNotifications.tenant_id == tenant_id, delivery_records.teams_card(channel_id, message_id))
+            .order_by(SentNotifications.created_at.desc())
             .with_for_update()
             .first()
         )
@@ -509,9 +523,11 @@ def is_card_action(activity) -> bool:
     return isinstance(activity.value, dict) and bool(activity.value.get(ACTION_KEY))
 
 
-def _tenant_for(aad_tenant_id):
+def _allowed_for(activity):
+    """The NudgeBee tenants a click in this conversation may act for: the team's
+    owner in a channel, or the eligible workspaces in a personal or group chat."""
     with Session(sync_engine) as session:
-        return ms_teams_aad_tenant_owner(session, aad_tenant_id, enabled_only=True)
+        return workspaces_for(session, activity)
 
 
 async def handle(common_service, activity, user_email, aad_tenant_id) -> None:
@@ -544,14 +560,15 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
     raw = activity.value.get(SUPPRESS_CHOICE)
     if not raw:
         return await reply(PICK_A_DURATION)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, SUPPRESS, tenant_id)
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, SUPPRESS, allowed)
     duration_hours = int((params or {}).get("duration_hours") or 0)
     if not (params and params.get("account_id") and params.get("scope") and duration_hours > 0):
-        if expired(raw, SUPPRESS, tenant_id):
-            return await reply(SUPPRESS_CARD_TOO_OLD)
+        if expired(raw, SUPPRESS, allowed):
+            return await reply(_branded(SUPPRESS_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams suppress click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
     account_id = params["account_id"]
 
     user_id, tenants = await asyncio.to_thread(validate_and_get_user_tenants, user_email)
@@ -570,7 +587,7 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
     cache = Cache()
     # The claim covers the action while it runs; once it's done, the stored card
     # refuses repeats.
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(STILL_SUPPRESSING)
     try:
         await _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_id, user_email)
@@ -578,7 +595,7 @@ async def _suppress(common_service, activity, user_email, aad_tenant_id) -> None
         LOG.exception("Suppressing from Teams failed: %s", e)
         await reply(UNABLE_TO_PROCESS_REQUEST)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)
 
 
 async def _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_id, user_email) -> None:
@@ -645,20 +662,6 @@ async def _suppress_claimed(activity, reply, card_ref, params, tenant_id, user_i
     )
 
 
-def _post_approval(token: str, status: str) -> Optional[int]:
-    """The workflow server's HTTP status for the decision, or None when it
-    couldn't be reached."""
-    try:
-        # The token comes from signed data and is colon-joined ids; it's still
-        # escaped so nothing in it can change the path.
-        url = f"{settings.services.workflow_server.rstrip('/')}/approvals/{quote(token, safe=':')}"
-        response = requests.post(url, json={"status": status}, timeout=30)
-        return response.status_code
-    except requests.RequestException as e:
-        LOG.warning("Recording a Teams approval decision failed: %s", e)
-        return None
-
-
 async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     # Imported here: actions_common imports events, which imports this module.
     from notifications_server.services.actions import validate_and_get_user_tenants
@@ -670,13 +673,14 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     raw = activity.value.get(APPROVAL_DATA) or activity.value.get(APPROVAL_CHOICE)
     if not raw:
         return await reply(PICK_AN_OPTION)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, APPROVE, tenant_id)
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, APPROVE, allowed)
     if not (params and params.get("token") and params.get("status")):
-        if expired(raw, APPROVE, tenant_id):
-            return await reply(APPROVAL_CARD_TOO_OLD)
+        if expired(raw, APPROVE, allowed):
+            return await reply(_branded(APPROVAL_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams approval click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     # The approval token is the authority to decide, as on Slack; the clicker
     # must also be a user of the workspace the approval belongs to.
@@ -694,7 +698,7 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
     cache = Cache()
     # The claim covers the decision while it's recorded; once it's done, the
     # stored card refuses repeats.
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(STILL_RECORDING)
     try:
         await _approve_claimed(activity, reply, card_ref, params, user_email)
@@ -702,11 +706,14 @@ async def _approve(common_service, activity, user_email, aad_tenant_id) -> None:
         LOG.exception("Recording a Teams approval failed: %s", e)
         await reply(APPROVAL_FAILED)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)
 
 
 async def _approve_claimed(activity, reply, card_ref, params, user_email) -> None:
     """Records the decision, once the click is checked and claimed."""
+    # Imported here: actions_common imports events, which imports this module.
+    from notifications_server.services.actions_common import USER_NOT_FOUND_MESSAGE
+
     started = await asyncio.to_thread(begin, card_ref, APPROVE, lambda c: with_status(c, "Recording your decision…"))
     if started is REFUSED:
         return await reply(APPROVAL_ANSWERED)
@@ -715,19 +722,33 @@ async def _approve_claimed(activity, reply, card_ref, params, user_email) -> Non
     if started is not None:
         await _show(activity, started)
 
-    status_code = await asyncio.to_thread(_post_approval, params["token"], params["status"])
     clicker = (activity.from_property.name if activity.from_property else None) or user_email
-    if status_code is not None and status_code < 300:
-        outcome = f"{clicker} chose **{_label(params['status'])}**"
-    elif status_code == 409:
-        outcome = APPROVAL_ANSWERED
-    elif status_code == 404:
-        outcome = APPROVAL_EXPIRED
+    not_decided = None
+    if auto_optimize_approval.is_auto_optimize_token(params["token"]):
+        decided = await asyncio.to_thread(auto_optimize_approval.decide, params["token"], params["status"], user_email)
+        if decided.settled:
+            outcome = f"{clicker}: {decided.message}"
+        else:
+            not_decided = decided.message
     else:
+        decision = await asyncio.to_thread(workflow_approval.decide, params["token"], params["status"], user_email)
+        if decision is Decision.DECIDED:
+            outcome = f"{clicker} chose **{_label(params['status'])}**"
+        elif decision is Decision.ANSWERED:
+            outcome = APPROVAL_ANSWERED
+        elif decision is Decision.NOT_FOUND:
+            outcome = APPROVAL_EXPIRED
+        elif decision is Decision.NOT_A_USER:
+            not_decided = USER_NOT_FOUND_MESSAGE
+        elif decision is Decision.NO_ACCESS:
+            not_decided = workflow_approval.no_access_message()
+        else:
+            not_decided = APPROVAL_FAILED
+    if not_decided:
         card = await asyncio.to_thread(finish, card_ref, APPROVE, None, lambda c: with_status(c, None))
         if card:
             await _show(activity, card)
-        return await reply(APPROVAL_FAILED)
+        return await reply(not_decided)
 
     card = await asyncio.to_thread(finish, card_ref, APPROVE, DONE, lambda c: with_status(without_approval(c), outcome))
     if card:
@@ -768,13 +789,14 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
         await common_service.teams_reply(activity, text, aad_tenant_id)
 
     raw = activity.value.get(ASK_NUBI_DATA)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, ASK_NUBI, tenant_id) if raw else None
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, ASK_NUBI, allowed) if raw else None
     if not (params and params.get("event_id") and params.get("account_id")):
-        if raw and expired(raw, ASK_NUBI, tenant_id):
-            return await reply(ASK_NUBI_CARD_TOO_OLD)
+        if raw and expired(raw, ASK_NUBI, allowed):
+            return await reply(_branded(ASK_NUBI_CARD_TOO_OLD))
         LOG.warning("Rejecting a Teams Ask Nubi click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     # As on Slack, anyone in the workspace can ask: the alert is already
     # visible in this channel.
@@ -790,7 +812,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
     event_id = params["event_id"]
     cache = Cache()
     token = uuid.uuid4().hex
-    if not cache.claim_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token):
+    if not (await cache.aio.claim_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token)):
         return await reply(STILL_ANALYZING)
     with _analyses_lock:
         if _active_analyses >= settings.slack.event_analysis_max_pollers:
@@ -799,8 +821,8 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
             busy = False
             _active_analyses += 1
     if busy:
-        cache.release_teams_analysis(event_id, token)
-        return await reply(ANALYSIS_BUSY)
+        await cache.aio.release_teams_analysis(event_id, token)
+        return await reply(_branded(ANALYSIS_BUSY))
 
     started = False
     card_ref = (tenant_id, channel_id, message_id)
@@ -825,7 +847,7 @@ async def _ask_nubi(common_service, activity, user_email, aad_tenant_id) -> None
         started = True
     finally:
         if not started:
-            cache.release_teams_analysis(event_id, token)
+            await cache.aio.release_teams_analysis(event_id, token)
             with _analyses_lock:
                 _active_analyses -= 1
             await asyncio.to_thread(_clear_analysis_stamp, card_ref)
@@ -856,6 +878,17 @@ def _run_analysis(job) -> None:
             _active_analyses -= 1
 
 
+CHART_NOTE = "_Chart: open the investigation in {brand} to view it._"
+
+
+def _charts_as_notes(text: str) -> str:
+    """The text with each nb-chart block replaced by a one-line note: a Teams
+    message has no chart element, and the chart's JSON spec would otherwise
+    post as raw text (and use up the size limit)."""
+    note = _branded(CHART_NOTE)
+    return "".join(note if segment.is_chart else segment.text for segment in split_nb_chart_segments(text))
+
+
 def _cut(text: str, event_id) -> str:
     """The text within WRITEUP_LIMIT bytes (Teams limits a message's size, not
     its characters), ending with a link to the rest."""
@@ -865,45 +898,74 @@ def _cut(text: str, event_id) -> str:
     head = data[:WRITEUP_LIMIT].decode(errors="ignore").rstrip()
     if head.count("```") % 2:
         head += "\n```"  # close a cut code block, so the link isn't inside it
-    url = f"{settings.base_url}/investigate?id={event_id}"
-    return f"{head}\n\n… [See the full analysis in NudgeBee]({url})"
+    from notifications_server.services.actions_common import investigation_url
+
+    return f"{head}\n\n… [See the full analysis in {settings.urls.branding_name}]({investigation_url(event_id)})"
 
 
-async def _take_result(result, progress, post, stamp) -> bool:
+async def _take_result(result, progress, post, stamp, rerun, event_id) -> bool:
     """Post what a poll result newly completed. True once the analysis ended."""
-    from notifications_server.services.actions_common import final_writeup
+    from notifications_server.services.actions_common import final_writeup, investigation_url
 
     sent = progress["sent"]
     statuses = result.get("task_statuses") or {}
     status = (result.get("status") or "").upper()
+    failed = _branded(ANALYSIS_FAILED, url=investigation_url(event_id))
+    if progress["first"] and status == "FAILED":
+        # It failed before this ask: run it again rather than report that failure.
+        progress["first"] = False
+        reason = await rerun()
+        if reason is None:
+            return False
+        await post(reason)
+        await stamp(_branded(ANALYSIS_FAILED_LINE))
+        return True
     if progress["first"] and status == "COMPLETED":
-        # Finished earlier: its sections are already in the thread.
+        # Finished earlier (a repeat ask, or an analysis reused for a repeat of
+        # the alert): its sections are not posted one by one; the write-up
+        # below goes out whole, since this job posted no investigation.
         sent.update(field for field, _ in ANALYSIS_SECTIONS)
     progress["first"] = False
+    posted = progress.setdefault("posted", set())
     for field, preamble in ANALYSIS_SECTIONS:
         if field not in sent and statuses.get(field) == "COMPLETED":
             if await post(result.get(field), preamble):
                 sent.add(field)
+                posted.add(field)
     if statuses.get("detailed_response") == "COMPLETED":
         content, preamble = final_writeup(
-            result.get("detailed_response"), result.get("investigation"), result.get("summary")
+            result.get("detailed_response"),
+            result.get("investigation"),
+            result.get("summary"),
+            investigation_posted="investigation" in posted,
         )
         if await post(content, preamble):
-            await stamp("Analyzed by Nubi. See the thread.")
+            await stamp(f"Analyzed by {settings.urls.assistant_name}. See the thread.")
             return True
     elif status == "FAILED":
-        await post(ANALYSIS_FAILED)
-        await stamp(None)
+        await post(failed)
+        await stamp(_branded(ANALYSIS_FAILED_LINE))
         return True
+    reason = result.get("status_reason") or ""
+    if status == "IN_PROGRESS" and reason.startswith("waiting") and progress.get("waiting") != reason:
+        # A parked run says why it waits, in the words the event page shows.
+        if await post(ANALYSIS_WAITING.format(reason=reason)):
+            progress["waiting"] = reason
     return False
 
 
 async def _analyze(job) -> None:
     """Poll the event analysis, post each section to the card's thread as it
     completes, then mark the card. regenerate is False, so this only reads
-    llm-server's state; a repeat after it finished re-posts just the write-up,
-    as on Slack."""
+    llm-server's state; an analysis that had finished before the job (a repeat
+    ask, or one reused for a repeat of the alert) posts the whole write-up, as
+    on Slack."""
     from notifications_server import slack_app, teams_app
+    from notifications_server.services.actions_common import (
+        analysis_refusal,
+        investigation_url,
+        rerun_failed_event_analysis,
+    )
     from notifications_server.services.common import CommonService
     from notifications_server.services.events import Events
 
@@ -915,7 +977,7 @@ async def _analyze(job) -> None:
         content = (content or "").strip()
         if not content:
             return True
-        text = _cut(f"{preamble}\n\n{content}" if preamble else content, event_id)
+        text = _cut(_charts_as_notes(f"{preamble}\n\n{content}" if preamble else content), event_id)
         return await service.teams_reply(activity, text, job["aad_tenant_id"])
 
     async def stamp(text):
@@ -924,12 +986,24 @@ async def _analyze(job) -> None:
             await _show(activity, card)
 
     try:
-        progress = {"sent": set(), "first": True}
+        progress = {"sent": set(), "posted": set(), "first": True}
         failures, calls = 0, 0
         token = job["token"]
+
+        async def rerun():
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=True), token)
+            return await asyncio.to_thread(
+                rerun_failed_event_analysis,
+                event_id,
+                job["account_id"],
+                job["user_id"],
+                job["tenant_id"],
+                ANALYSIS_KICKOFF_TIMEOUT_SECONDS,
+            )
+
         while time.monotonic() < job["deadline"]:
             kickoff = calls == 0
-            cache.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=kickoff), token)
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(kickoff=kickoff), token)
             timeout = (
                 ANALYSIS_KICKOFF_TIMEOUT_SECONDS if kickoff else settings.slack.event_analysis_poll_timeout_seconds
             )
@@ -944,6 +1018,11 @@ async def _analyze(job) -> None:
                     timeout,
                 )
             except Exception as e:
+                refused = analysis_refusal(e)
+                if refused:
+                    await post(refused)
+                    await stamp(_branded(ANALYSIS_FAILED_LINE))
+                    return
                 LOG.debug("Teams event analysis poll failed: %s", e)
                 result = None
             if not isinstance(result, dict):
@@ -954,11 +1033,17 @@ async def _analyze(job) -> None:
                     break
             else:
                 failures = 0
-                if await _take_result(result, progress, post, stamp):
+                if await _take_result(result, progress, post, stamp, rerun, event_id):
                     return
-            cache.refresh_teams_analysis(event_id, _analysis_claim_ttl(), token)
+            await cache.aio.refresh_teams_analysis(event_id, _analysis_claim_ttl(), token)
             await asyncio.sleep(settings.slack.event_analysis_poll_seconds)
-        await stamp("Still analyzing. Check the event in NudgeBee.")
+        url = investigation_url(event_id)
+        if failures >= ANALYSIS_MAX_POLL_FAILURES:
+            await post(_branded(ANALYSIS_LOST, url=url))
+            await stamp(_branded(ANALYSIS_LOST_LINE))
+        else:
+            await post(_branded(ANALYSIS_SLOW, url=url))
+            await stamp(_branded(ANALYSIS_SLOW_LINE))
     finally:
         service.close()
 
@@ -1016,13 +1101,14 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
         await common_service.teams_reply(activity, text, aad_tenant_id)
 
     raw = activity.value.get(FEEDBACK_DATA)
-    tenant_id = await asyncio.to_thread(_tenant_for, aad_tenant_id)
-    params = verify(raw, FEEDBACK, tenant_id) if raw else None
+    allowed = await asyncio.to_thread(_allowed_for, activity)
+    params = verify(raw, FEEDBACK, allowed) if raw else None
     if not (params and params.get("answer_id") and params.get("account_id") and params.get("session_id")):
-        if raw and expired(raw, FEEDBACK, tenant_id):
+        if raw and expired(raw, FEEDBACK, allowed):
             return await reply(FEEDBACK_CARD_TOO_OLD)
         LOG.warning("Rejecting a Teams feedback click with invalid data")
         return await reply(UNABLE_TO_PROCESS_REQUEST)
+    tenant_id = uuid.UUID(str(params["tenant_id"]))
 
     user_id, tenants = await asyncio.to_thread(validate_and_get_user_tenants, user_email)
     if not user_id or str(tenant_id) not in {str(t) for t in tenants or []}:
@@ -1036,7 +1122,7 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
     card_ref = (tenant_id, channel_id, message_id)
     claim = f"{tenant_id}:{message_id}:{FEEDBACK}"
     cache = Cache()
-    if not cache.claim_card_action(claim, CLAIM_SECONDS):
+    if not (await cache.aio.claim_card_action(claim, CLAIM_SECONDS)):
         return await reply(FEEDBACK_ALREADY)
     try:
         started = await asyncio.to_thread(begin, card_ref, FEEDBACK, lambda c: c)
@@ -1058,4 +1144,4 @@ async def _feedback(common_service, activity, user_email, aad_tenant_id) -> None
         LOG.exception("Recording Teams feedback failed: %s", e)
         await reply(FEEDBACK_FAILED)
     finally:
-        cache.release_card_action(claim)
+        await cache.aio.release_card_action(claim)

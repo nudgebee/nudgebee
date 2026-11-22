@@ -1,5 +1,11 @@
 package common
 
+import (
+	"errors"
+
+	"github.com/lib/pq"
+)
+
 type Error struct {
 	Message string `json:"message,omitempty"`
 	Code    int    `json:"code,omitempty"`
@@ -79,4 +85,16 @@ func ErrorConflict(message string) Error {
 		Message: message,
 		Code:    409,
 	}
+}
+
+// ErrorRefusedOr returns the database's own message, as a 400, when it refused a
+// write with a CHECK rule (SQLSTATE 23514) — e.g. a bee account given a built-in
+// role or a user group — so the caller learns why. Any other error becomes a 500
+// with the fallback message.
+func ErrorRefusedOr(err error, fallback string) Error {
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23514" {
+		return ErrorBadRequest(pqErr.Message)
+	}
+	return ErrorInternal(fallback)
 }

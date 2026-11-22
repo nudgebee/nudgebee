@@ -13,19 +13,47 @@ type UtilisationKey string
 
 const (
 	// Workload and node usage, requests and limits, summed into one series.
-	KeyCPUUsage          UtilisationKey = "cpu_usage"
-	KeyCPURequest        UtilisationKey = "cpu_request"
-	KeyCPULimit          UtilisationKey = "cpu_limit"
-	KeyMemoryUsage       UtilisationKey = "memory_usage"
-	KeyMemoryRequest     UtilisationKey = "memory_request"
-	KeyMemoryLimit       UtilisationKey = "memory_limit"
-	KeyCPUUsageLine      UtilisationKey = "cpu_usage_line"
-	KeyMemoryUsageLine   UtilisationKey = "memory_usage_line"
-	KeyCPUUsageTrend     UtilisationKey = "cpu_usage_trend"
-	KeyMemUsageTrend     UtilisationKey = "mem_usage_trend"
-	KeyCPUThrottling     UtilisationKey = "cpu_throttling"
-	KeyCPUAllocatable    UtilisationKey = "cpu_allocatable"
-	KeyMemoryAllocatable UtilisationKey = "memory_allocatable"
+	KeyCPUUsage        UtilisationKey = "cpu_usage"
+	KeyCPURequest      UtilisationKey = "cpu_request"
+	KeyCPULimit        UtilisationKey = "cpu_limit"
+	KeyMemoryUsage     UtilisationKey = "memory_usage"
+	KeyMemoryRequest   UtilisationKey = "memory_request"
+	KeyMemoryLimit     UtilisationKey = "memory_limit"
+	KeyCPUUsageLine    UtilisationKey = "cpu_usage_line"
+	KeyMemoryUsageLine UtilisationKey = "memory_usage_line"
+	KeyCPUUsageTrend   UtilisationKey = "cpu_usage_trend"
+	KeyMemUsageTrend   UtilisationKey = "mem_usage_trend"
+	KeyCPUThrottling   UtilisationKey = "cpu_throttling"
+	// KeyCPUThrottlingRatio is the share of CFS periods in which the workload was
+	// throttled, as a ratio 0–1. It is not cpu_throttling, which is throttled seconds
+	// per second and cannot be held against a percentage threshold such as the 25% of
+	// kube-prometheus's CPUThrottlingHigh.
+	KeyCPUThrottlingRatio UtilisationKey = "cpu_throttling_ratio"
+	// KeyCPUUsageLimited is CPU usage in cores of only the containers that have a CPU
+	// limit. Divided by cpu_limit it is a share of that limit; cpu_usage would also
+	// count containers without a limit and overstate it.
+	KeyCPUUsageLimited UtilisationKey = "cpu_usage_limited"
+	// The memory forecast's keys. Each answers for ONE container (the request's
+	// container_name) and per pod, never summed across pods, so replicas and HPA scaling
+	// do not change them. RSS, not working set: working set includes page cache, which
+	// the kernel reclaims before it OOM-kills, so a cache climb would read as a leak.
+	//
+	// KeyContainerMemoryRSSLimitRatio is, per pod, RSS over that pod's own memory limit,
+	// the highest across pods, as a ratio 0–1. Pods with different limits (a rollout,
+	// VPA) are each measured against their own.
+	KeyContainerMemoryRSSLimitRatio UtilisationKey = "container_memory_rss_limit_ratio"
+	// KeyContainerMemoryLimitPerPodMiB is the highest per-pod memory limit, in MiB.
+	KeyContainerMemoryLimitPerPodMiB UtilisationKey = "container_memory_limit_per_pod_mib"
+	// KeyContainerMemoryRSSMiB is the busiest pod's RSS, in MiB.
+	KeyContainerMemoryRSSMiB UtilisationKey = "container_memory_rss_mib"
+	// KeyContainerRestartsLastOOM6h is the container's restarts in the last 6h, present
+	// only where its last termination was an OOM kill. kube-state-metrics has no count
+	// of OOM restarts, so it is evidence ("restarts, last exit OOMKilled"), never a count
+	// of kills, and it misses a worker process killed inside a container that keeps
+	// running.
+	KeyContainerRestartsLastOOM6h UtilisationKey = "container_restarts_6h_last_oom"
+	KeyCPUAllocatable             UtilisationKey = "cpu_allocatable"
+	KeyMemoryAllocatable          UtilisationKey = "memory_allocatable"
 
 	// Totals and percentiles that collapse a series to a headline number.
 	KeyCPUReal     UtilisationKey = "cpu_real"
@@ -72,6 +100,23 @@ const (
 	KeyDiskUsed           UtilisationKey = "disk_used"
 	KeyDiskReadBytes      UtilisationKey = "disk_read_bytes"
 	KeyDiskWriteBytes     UtilisationKey = "disk_write_bytes"
+
+	// Self-hosted VM services: one series per service (node-agent `container_id`, e.g. /system.slice/ssh.service) on one VM.
+	KeyVMServiceCPUUsage    UtilisationKey = "vm_service_cpu_usage"
+	KeyVMServiceMemoryUsage UtilisationKey = "vm_service_memory_usage"
+	KeyVMServiceDiskUsed    UtilisationKey = "vm_service_disk_used"
+	// The repository and branch a service declares through a container label or systemd Environment=.
+	KeyVMServiceGit UtilisationKey = "vm_service_git"
+
+	// Self-hosted VM fleet: one series per node-agent `instance` across the whole store, so
+	// a list of VMs gets its CPU and memory gauges from a handful of queries, not one set
+	// per VM. The identity keys carry the labels that map an `instance` back to a VM.
+	KeyVMFleetCPUUsed  UtilisationKey = "vm_fleet_cpu_used"
+	KeyVMFleetCPUCores UtilisationKey = "vm_fleet_cpu_cores"
+	KeyVMFleetMemUsed  UtilisationKey = "vm_fleet_mem_used"
+	KeyVMFleetMemTotal UtilisationKey = "vm_fleet_mem_total"
+	KeyVMFleetIdentity UtilisationKey = "vm_fleet_identity"
+	KeyVMFleetHostname UtilisationKey = "vm_fleet_hostname"
 
 	// Network.
 	KeyNetworkReceivePacket         UtilisationKey = "network_receive_packet"
@@ -146,6 +191,12 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyCPUUsageTrend,
 		KeyMemUsageTrend,
 		KeyCPUThrottling,
+		KeyCPUThrottlingRatio,
+		KeyCPUUsageLimited,
+		KeyContainerMemoryRSSLimitRatio,
+		KeyContainerMemoryLimitPerPodMiB,
+		KeyContainerMemoryRSSMiB,
+		KeyContainerRestartsLastOOM6h,
 		KeyCPUAllocatable,
 		KeyMemoryAllocatable,
 		KeyCPUReal,
@@ -184,6 +235,16 @@ var utilisationKeys = func() map[UtilisationKey]bool {
 		KeyDiskUsed,
 		KeyDiskReadBytes,
 		KeyDiskWriteBytes,
+		KeyVMServiceCPUUsage,
+		KeyVMServiceMemoryUsage,
+		KeyVMServiceDiskUsed,
+		KeyVMServiceGit,
+		KeyVMFleetCPUUsed,
+		KeyVMFleetCPUCores,
+		KeyVMFleetMemUsed,
+		KeyVMFleetMemTotal,
+		KeyVMFleetIdentity,
+		KeyVMFleetHostname,
 		KeyNetworkReceivePacket,
 		KeyNetworkTransmitPackets,
 		KeyNetworkUsage,

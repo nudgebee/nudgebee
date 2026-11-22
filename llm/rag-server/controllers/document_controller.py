@@ -168,7 +168,7 @@ def _load_all_docs(account_ids: Optional[List[str]], force: bool = False) -> Non
             logger.info(f"Completed loading {module_name} documents")
 
         except Exception as e:
-            logger.error(f"Error loading {module_name} documents: {e}")
+            logger.exception(f"Error loading {module_name} documents: {e}")
             # Continue with next module even if one fails
             continue
         finally:

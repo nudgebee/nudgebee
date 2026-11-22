@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/memory"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -23,8 +24,14 @@ func TestReadOnlyRunMarksOnlyTheCopy(t *testing.T) {
 }
 
 // readOnlyWriteExecutor returns an executor for a read-only run whose agent
-// has one write tool, and an action calling it.
-func readOnlyWriteExecutor() (*plannerExecutor, map[string]toolcore.NBTool, NBAgentPlannerToolAction) {
+// has one write tool, and an action calling it. Tool-call rows go to the
+// returned DAO.
+func readOnlyWriteExecutor(t *testing.T) (*plannerExecutor, map[string]toolcore.NBTool, NBAgentPlannerToolAction, *toolCallRowDao) {
+	dao := &toolCallRowDao{}
+	previous := GetConversationDao()
+	SetConversationDao(dao)
+	t.Cleanup(func() { SetConversationDao(previous) })
+
 	tool := &MockClassifiedTool{
 		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
 		RequestType:              toolcore.ToolRequestTypeCreate,
@@ -33,13 +40,13 @@ func readOnlyWriteExecutor() (*plannerExecutor, map[string]toolcore.NBTool, NBAg
 	ctx := WithReadOnlyRun(security.NewRequestContextForSuperAdmin())
 	executor := newPlannerExecutor(ctx, &mockNBAgentPlanner{}, &MockAgent{SupportedTools: []toolcore.NBTool{tool}}, request, 3)
 	action := NBAgentPlannerToolAction{ToolID: "probe", Tool: "write_tool", ToolInput: "redis-cli set test 1"}
-	return executor, getNameToTool([]toolcore.NBTool{tool}), action
+	return executor, getNameToTool([]toolcore.NBTool{tool}), action, dao
 }
 
 // A write in a read-only run is refused as a step, with no approval prompt,
 // and the first refusal says how to get the evidence without a change.
 func TestReadOnlyRunRefusesWriteWithoutPrompt(t *testing.T) {
-	executor, nameToTool, action := readOnlyWriteExecutor()
+	executor, nameToTool, action, _ := readOnlyWriteExecutor(t)
 	step, finish, err := executor.doAction(nameToTool, action, "")
 	require.NoError(t, err)
 	assert.Nil(t, finish, "no approval prompt and no end of run")
@@ -51,7 +58,7 @@ func TestReadOnlyRunRefusesWriteWithoutPrompt(t *testing.T) {
 
 // Later refusals in the same run tell the model to stop trying writes.
 func TestReadOnlyRunRepeatedRefusalSaysStop(t *testing.T) {
-	executor, nameToTool, action := readOnlyWriteExecutor()
+	executor, nameToTool, action, _ := readOnlyWriteExecutor(t)
 	_, _, err := executor.doAction(nameToTool, action, "")
 	require.NoError(t, err)
 	action.ToolID = "probe-2"
@@ -105,6 +112,7 @@ func TestReadOnlyRunCompletesInsteadOfWaitingForApproval(t *testing.T) {
 	previousDao := GetConversationDao()
 	SetConversationDao(readOnlyLoopDao{})
 	defer SetConversationDao(previousDao)
+	defer memory.SetStore(memory.SetStore(readOnlyLoopMemory{}))
 
 	tool := &MockClassifiedTool{
 		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
@@ -150,6 +158,7 @@ func TestSameLoopWithoutReadOnlyRunAsksForApproval(t *testing.T) {
 	previousDao := GetConversationDao()
 	SetConversationDao(readOnlyLoopDao{})
 	defer SetConversationDao(previousDao)
+	defer memory.SetStore(memory.SetStore(readOnlyLoopMemory{}))
 
 	tool := &MockClassifiedTool{
 		MockContextCapturingTool: MockContextCapturingTool{NameVal: "write_tool"},
@@ -176,7 +185,16 @@ func (readOnlyLoopDao) SaveConversationMessage(_, _, _, _ string, _ MessageRole,
 
 func (readOnlyLoopDao) UpdateConversationAgentWithFollowup(_, _ string) error { return nil }
 
-func (readOnlyLoopDao) LoadLongTermMemories(_ string, _ string, _ int) ([]string, error) {
+func (readOnlyLoopDao) SaveConversationToolCall(_, _, _, _, _, _, _, _, _, _, _ string, _ toolcore.NBToolResponseStatus, _ toolcore.NBToolType, _ *string, _ []toolcore.NBToolResponseReference, _, _ []byte) error {
+	return nil
+}
+
+func (readOnlyLoopDao) GetConversationAgentInput(_, _ string) (string, error) { return "", nil }
+
+// readOnlyLoopMemory is a memory store with nothing in it.
+type readOnlyLoopMemory struct{ memory.Store }
+
+func (readOnlyLoopMemory) LoadLongTermMemories(_ string, _ string, _ int) ([]string, error) {
 	return nil, nil
 }
 
@@ -212,6 +230,10 @@ func TestReadOnlyRunConfigurationChoiceRefusedThroughDoAction(t *testing.T) {
 	const account = "read-only-doaction-config-test"
 	const toolName = "ticket_master_v2"
 	seedConfigs(t, account, toolName, "jira-primary", "servicenow-eu")
+	dao := &toolCallRowDao{}
+	previousDao := GetConversationDao()
+	SetConversationDao(dao)
+	defer SetConversationDao(previousDao)
 
 	tool := &countingConfigurableTool{MockConfigurableTool: MockConfigurableTool{MockContextCapturingTool{NameVal: toolName}}}
 	request := NBAgentRequest{AccountId: account, AgentId: uuid.NewString()}
@@ -225,4 +247,6 @@ func TestReadOnlyRunConfigurationChoiceRefusedThroughDoAction(t *testing.T) {
 	assert.Equal(t, ToolStatusFailure, step.Status)
 	assert.Contains(t, step.Observation, "no one available to answer questions")
 	assert.Equal(t, 0, tool.calls, "the tool must not run without a chosen configuration")
+	require.NotEmpty(t, dao.rows, "the refused call is recorded")
+	assert.Equal(t, toolcore.NBToolResponseStatusError, dao.rows[len(dao.rows)-1].status)
 }

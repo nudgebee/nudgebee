@@ -30,6 +30,7 @@ const (
 	EventChatActions               EventCategory = "NOTIFICATIONS_CHAT_ACTIONS"
 	// EventCategoryChatActions buckets in-app ("Nubi") web chat interactions (follow-up answers, delete); distinct from EventChatActions ("NOTIFICATIONS_CHAT_ACTIONS"), the messaging-platform transport layer.
 	EventCategoryChatActions EventCategory = "CHAT_ACTIONS"
+	EventCategorySecurity    EventCategory = "SECURITY"
 	EventAgentToken          EventCategory = "AGENT_TOKEN"
 	EventCategoryIntegration EventCategory = "INTEGRATIONS"
 	EventCategoryTriage      EventCategory = "TRIAGE"
@@ -105,6 +106,8 @@ const (
 	EventTypeKGNodeDeleteAll       EventType = "KG_NODE_DELETE_ALL"
 	EventTypeKGDeclarationsImport  EventType = "KG_DECLARATIONS_IMPORT"
 	EventTypeKGNodeMerge           EventType = "KG_NODE_MERGE"
+	EventTypeKGNodeRoleUpsert      EventType = "KG_NODE_ROLE_UPSERT"
+	EventTypeKGNodeRoleDelete      EventType = "KG_NODE_ROLE_DELETE"
 
 	EventTypeUserLogin       EventType = "USER_AUTH_LOGIN"
 	EventTypeUserLoginCreate EventType = "USER_AUTH_CREATE"

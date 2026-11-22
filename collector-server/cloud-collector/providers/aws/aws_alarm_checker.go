@@ -2,9 +2,11 @@ package aws
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 )
 
@@ -15,13 +17,18 @@ type AlarmCheckResult struct {
 	AlarmState  string
 }
 
+// ErrAlarmDetailsUnknown means the resource carries no alarm listing: the sync
+// that stored it could not list the region's alarms, or does not list them for
+// this service. Whether the alarm exists is then unknown, not missing.
+var ErrAlarmDetailsUnknown = errors.New("alarm details unknown")
+
 // IsAlarmMissing checks if an alarm matching the template exists for the resource
-// Returns true if the alarm is missing (should be recommended)
+// Returns true if the alarm is missing (should be recommended), and
+// ErrAlarmDetailsUnknown when the resource has no alarm listing to check
 func IsAlarmMissing(resource providers.Resource, template providers.AlarmTemplate, dimensionValue string) (bool, error) {
 	alarmDetails, ok := resource.Meta["AlarmDetails"]
 	if !ok {
-		// No alarms configured at all - alarm is missing
-		return true, nil
+		return false, ErrAlarmDetailsUnknown
 	}
 
 	alarmArray, ok := alarmDetails.([]interface{})
@@ -72,72 +79,59 @@ func doesAlarmMatchTemplate(alarmInterface interface{}, template providers.Alarm
 		}
 	}
 
-	// Get the expected dimension name for this namespace
-	expectedDimensionName := getDimensionNameForNamespace(template.Configuration.Namespace)
-	if expectedDimensionName == "" {
-		// Unknown namespace - can't validate dimensions
-		return false, fmt.Errorf("unknown namespace: %s", template.Configuration.Namespace)
+	// An alarm on any one of the template's covering metrics, scoped to this
+	// resource, counts as the template's alarm
+	for _, metric := range coveringMetrics(template) {
+		// Get the expected dimension name for this namespace
+		expectedDimensionName := getDimensionNameForNamespace(metric.Namespace)
+		if expectedDimensionName == "" {
+			// Unknown namespace - can't validate dimensions
+			return false, fmt.Errorf("unknown namespace: %s", metric.Namespace)
+		}
+		if alarmWatchesMetric(alarm, metric, expectedDimensionName, dimensionValue) {
+			return true, nil
+		}
 	}
 
-	// Check if this is a metric math alarm (has Metrics array) or simple metric alarm
-	if len(alarm.Metrics) > 0 {
-		// Metric Math Alarm (e.g., ALB HTTP error rate)
-		// Check if any of the metrics in the array match our template
-		return matchMetricMathAlarm(alarm, template, expectedDimensionName, dimensionValue)
-	}
-
-	// Simple Metric Alarm (e.g., EC2 CPU, RDS memory)
-	// Check namespace match
-	if alarm.Namespace == nil || *alarm.Namespace != template.Configuration.Namespace {
-		return false, nil
-	}
-
-	// Check metric name match
-	if alarm.MetricName == nil || *alarm.MetricName != template.Configuration.MetricName {
-		return false, nil
-	}
-
-	// Check dimensions match (both name and value)
-	if !dimensionsMatch(alarm.Dimensions, expectedDimensionName, dimensionValue) {
-		return false, nil
-	}
-
-	// All criteria match - alarm exists
-	return true, nil
+	return false, nil
 }
 
-// matchMetricMathAlarm checks if a metric math alarm matches the template
-// Metric math alarms have a Metrics array with multiple MetricDataQuery entries
-func matchMetricMathAlarm(alarm types.MetricAlarm, template providers.AlarmTemplate, expectedDimensionName string, dimensionValue string) (bool, error) {
-	// For metric math alarms, we need to check if any of the data metrics (not expressions)
-	// match our namespace, metric name, and dimensions
-	for _, metric := range alarm.Metrics {
-		if metric.MetricStat == nil {
-			// This is an expression, not a data metric - skip it
-			continue
-		}
+// coveringMetrics returns the metrics an alarm can watch to count as the
+// template's alarm: the template's satisfied_by list, or else its own metric
+func coveringMetrics(template providers.AlarmTemplate) []providers.MetricInfo {
+	if len(template.Configuration.SatisfiedBy) > 0 {
+		return template.Configuration.SatisfiedBy
+	}
+	return []providers.MetricInfo{{
+		Namespace:  template.Configuration.Namespace,
+		MetricName: template.Configuration.MetricName,
+	}}
+}
 
-		metricStat := metric.MetricStat
-		if metricStat.Metric == nil {
-			continue
-		}
-
-		// Check if this metric matches our template
-		if metricStat.Metric.Namespace != nil &&
-			*metricStat.Metric.Namespace == template.Configuration.Namespace &&
-			metricStat.Metric.MetricName != nil &&
-			*metricStat.Metric.MetricName == template.Configuration.MetricName {
-
-			// Check if dimensions match
-			if dimensionsMatch(metricStat.Metric.Dimensions, expectedDimensionName, dimensionValue) {
-				// Found a matching metric in the metric math alarm
-				return true, nil
+// alarmWatchesMetric checks if the alarm watches the metric for the resource
+// (dimension name and value). A metric math alarm (e.g., ALB HTTP error rate)
+// watches each data metric in its Metrics array; a simple alarm (e.g., EC2 CPU)
+// watches its own metric.
+func alarmWatchesMetric(alarm types.MetricAlarm, metric providers.MetricInfo, expectedDimensionName string, dimensionValue string) bool {
+	if len(alarm.Metrics) > 0 {
+		for _, query := range alarm.Metrics {
+			// Expressions have no MetricStat - skip them
+			if query.MetricStat == nil || query.MetricStat.Metric == nil {
+				continue
+			}
+			watched := query.MetricStat.Metric
+			if aws.ToString(watched.Namespace) == metric.Namespace &&
+				aws.ToString(watched.MetricName) == metric.MetricName &&
+				dimensionsMatch(watched.Dimensions, expectedDimensionName, dimensionValue) {
+				return true
 			}
 		}
+		return false
 	}
 
-	// No matching metrics found in the metric math alarm
-	return false, nil
+	return aws.ToString(alarm.Namespace) == metric.Namespace &&
+		aws.ToString(alarm.MetricName) == metric.MetricName &&
+		dimensionsMatch(alarm.Dimensions, expectedDimensionName, dimensionValue)
 }
 
 // getDimensionNameForNamespace returns the expected CloudWatch dimension name for a given namespace

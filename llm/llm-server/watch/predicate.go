@@ -83,9 +83,18 @@ func CompilePredicate(kind PredicateKind, expr string) (Predicate, error) {
 		return &substringPredicate{needle: expr}, nil
 	case PredicateKindLLMJudge:
 		return &llmJudgePredicate{question: expr}, nil
+	case PredicateKindNever:
+		return neverPredicate{}, nil
 	default:
 		return nil, fmt.Errorf("predicate: unsupported kind %q", kind)
 	}
+}
+
+// neverPredicate never matches: a timer watch runs to its deadline.
+type neverPredicate struct{}
+
+func (neverPredicate) Eval(_ *security.RequestContext, _ Watch, _ Observation) (PredicateResult, error) {
+	return PredicateResult{Met: false, Summary: "waiting until the set time"}, nil
 }
 
 type regexPredicate struct {

@@ -93,6 +93,7 @@ func (t *TicketsAddCommentTask) InputSchema() *types.Schema {
 			},
 			"integration_id": {
 				Type:        types.PropertyTypeTicket,
+				SubTypes:    ticketPlatforms,
 				Description: "Ticket integration to use",
 				Required:    true,
 				Order:       2,

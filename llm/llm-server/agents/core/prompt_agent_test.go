@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/tools/core" // Assuming this is the correct import path for toolcore
 	"testing"
 
@@ -300,7 +301,7 @@ func TestGetPromptTemplate_ImageInstructions_Orchestrating(t *testing.T) {
 		ConversationId: uuid.NewString(),
 		UserId:         uuid.NewString(),
 		MessageId:      uuid.NewString(),
-		Images: []ImageAttachment{
+		Images: []attachments.ImageAttachment{
 			{Data: "dGVzdA==", MIMEType: "image/png"},
 		},
 	}
@@ -329,7 +330,7 @@ func TestGetPromptTemplate_ImageInstructions_ReAct(t *testing.T) {
 		ConversationId: uuid.NewString(),
 		UserId:         uuid.NewString(),
 		MessageId:      uuid.NewString(),
-		Images: []ImageAttachment{
+		Images: []attachments.ImageAttachment{
 			{URL: "https://example.com/screenshot.png", MIMEType: "image/png"},
 		},
 	}

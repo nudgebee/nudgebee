@@ -136,3 +136,17 @@ describe('MessageStream task count', () => {
     expect(taskCount()).toBe('taskCount=2');
   });
 });
+
+describe('MessageStream plan card', () => {
+  const plan = { steps: [{ id: 'h1', title: 'OOMKill', kind: 'hypothesis', status: 'testing' }], toolCallsByStep: {} };
+
+  it('shows the plan card under a question that carries a plan', () => {
+    render(<MessageStream messages={[{ type: 'question', text: 'q', plan }]} {...baseProps} />);
+    expect(screen.getByTestId('nubi-plan-card')).toBeInTheDocument();
+  });
+
+  it('shows no plan card without a plan', () => {
+    render(<MessageStream messages={[{ type: 'question', text: 'q' }]} {...baseProps} />);
+    expect(screen.queryByTestId('nubi-plan-card')).not.toBeInTheDocument();
+  });
+});

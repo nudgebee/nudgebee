@@ -15,7 +15,10 @@ func init() {
 	})
 }
 
-type DatadogResourceSearchTool struct{}
+type DatadogResourceSearchTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 type DatadogResourceSearchRequest struct {
 	ResourceType string `json:"resource_type"`

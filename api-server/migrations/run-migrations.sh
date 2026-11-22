@@ -267,6 +267,24 @@ PY
     echo "Atlas migration search_path: $atlas_search_path"
 fi
 
+# Session-level default so a blocked ALTER TABLE in a migration file fails
+# fast instead of queuing indefinitely and backing up every later reader of
+# the same table. A file's own `SET LOCAL lock_timeout` still overrides this
+# for its transaction only.
+atlas_database_url=$(ATLAS_DATABASE_URL="$atlas_database_url" \
+    MIGRATION_LOCK_TIMEOUT="${MIGRATION_LOCK_TIMEOUT:-10s}" python3 - <<'PY'
+import os
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+url = urlsplit(os.environ["ATLAS_DATABASE_URL"])
+params = parse_qsl(url.query, keep_blank_values=True)
+options = next((value for key, value in params if key == "options"), "")
+params = [(key, value) for key, value in params if key != "options"]
+params.append(("options", (options + " -c lock_timeout=" + os.environ["MIGRATION_LOCK_TIMEOUT"]).strip()))
+print(urlunsplit(url._replace(query=urlencode(params, quote_via=quote))))
+PY
+)
+
 echo "Applying migrations via atlas..."
 atlas migrate apply \
     -c file://atlas.hcl --env default \

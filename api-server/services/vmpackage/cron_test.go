@@ -225,3 +225,17 @@ func TestMaxInt(t *testing.T) {
 	assert.Equal(t, 3, maxInt([]int{1, 3, 2}))
 	assert.Equal(t, 0, maxInt(nil))
 }
+
+func TestMarkVMSeen_ReportsDecommissionedHostAsInactive(t *testing.T) {
+	for _, active := range []bool{true, false} {
+		mock := withMockDB(t)
+		mock.ExpectQuery("UPDATE cloud_resourses\\s+SET last_seen = now\\(\\), first_seen = COALESCE").
+			WithArgs("res-1", "acct-1", "tenant-1").
+			WillReturnRows(sqlmock.NewRows([]string{"?column?"}).AddRow(active))
+
+		got, err := markVMSeen(mockDBManager, "tenant-1", "acct-1", "res-1")
+		require.NoError(t, err)
+		assert.Equal(t, active, got)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	}
+}

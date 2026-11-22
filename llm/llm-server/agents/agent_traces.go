@@ -242,6 +242,7 @@ func (f *fallbackTracesAgent) Execute(ctx *security.RequestContext, query core.N
 		nbRequestContext := toolcore.NbToolContext{
 			Ctx:            ctx,
 			AccountId:      f.accountId,
+			AccountContext: delegatedAccountContext(ctx, query, f.accountId),
 			ConversationId: query.ConversationId,
 			ParentAgentId:  nestedAgentParentID(query),
 			MessageId:      query.MessageId,

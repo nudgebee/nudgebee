@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -48,8 +49,8 @@ func TestUpdateConversationModelBlanket_RejectsEmptyID(t *testing.T) {
 func TestUpdateConversationTierOverrides_ClearsBlanketColumns(t *testing.T) {
 	dao, mock := setupConversationDAOMock(t)
 	conversationID := uuid.New().String()
-	overrides := ConversationTierOverrides{
-		Picks: map[string]TierModelPick{
+	overrides := llmruntime.ConversationTierOverrides{
+		Picks: map[string]llmruntime.TierModelPick{
 			"reasoning": {Provider: "googleai", Model: "gemini-2.5-pro"},
 			"retrieval": {Provider: "openai", Model: "gpt-4o-mini"},
 		},
@@ -68,7 +69,7 @@ func TestUpdateConversationTierOverrides_ClearsBlanketColumns(t *testing.T) {
 
 func TestUpdateConversationTierOverrides_RejectsEmptyID(t *testing.T) {
 	dao, mock := setupConversationDAOMock(t)
-	err := dao.UpdateConversationTierOverrides("", ConversationTierOverrides{Picks: map[string]TierModelPick{"reasoning": {Provider: "x", Model: "y"}}})
+	err := dao.UpdateConversationTierOverrides("", llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "x", Model: "y"}}})
 	require.Error(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet(), "no SQL should be issued for empty id")
 }

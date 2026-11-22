@@ -92,7 +92,7 @@ const ManualInvestigated = () => {
   useEffect(() => {
     if (!canFilterByUser) return;
     apiUser
-      .listUsers({ status: 'active' })
+      .listUsers({ status: 'active', includeBees: true })
       .then((response) => {
         const users = response?.data || [];
         const options = users

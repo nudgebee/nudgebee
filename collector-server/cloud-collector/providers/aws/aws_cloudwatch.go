@@ -10,6 +10,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
+	logstypes "github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs/types"
 )
 
 type amazonCloudwatch struct {
@@ -56,11 +57,12 @@ func (a *amazonCloudwatch) GetResources(ctx providers.CloudProviderContext, acco
 			}
 
 			tags := make(map[string][]string)
+			taggingArn := logGroupTaggingArn(logGroup)
 			tagsOutput, err := svc.ListTagsForResource(ctx.GetContext(), &cloudwatchlogs.ListTagsForResourceInput{
-				ResourceArn: logGroup.Arn,
+				ResourceArn: aws.String(taggingArn),
 			})
 			if err != nil {
-				ctx.GetLogger().Warn("failed to fetch tags for log group", "error", err, "logGroupArn", *logGroup.Arn)
+				ctx.GetLogger().Warn("failed to fetch tags for log group", "error", err, "logGroupArn", taggingArn)
 			} else {
 				for k, v := range tagsOutput.Tags {
 					tags[k] = append(tags[k], v)
@@ -84,6 +86,18 @@ func (a *amazonCloudwatch) GetResources(ctx providers.CloudProviderContext, acco
 	}
 
 	return resources, nil
+}
+
+// logGroupTaggingArn returns the log group ARN the tagging APIs accept. AWS returns
+// two ARNs for a log group: Arn ends in ":*", which ListTagsForResource rejects with
+// "Invalid resourceArn", while LogGroupArn has no suffix and is the one AWS documents
+// for the tagging APIs. A response without LogGroupArn falls back to Arn with the
+// suffix removed.
+func logGroupTaggingArn(logGroup logstypes.LogGroup) string {
+	if arn := aws.ToString(logGroup.LogGroupArn); arn != "" {
+		return arn
+	}
+	return strings.TrimSuffix(aws.ToString(logGroup.Arn), ":*")
 }
 
 const (

@@ -140,3 +140,18 @@ func TestNewTeamNodeFallsBackToSlugWhenNameMissing(t *testing.T) {
 		t.Errorf("NodeType = %v, want %v", node.NodeType, core.NodeTypeUserGroup)
 	}
 }
+
+// As in the GitLab source: the key comes from BaseSource, which keys UserAccount on
+// the login (#41505). Pinned per source so a future GenerateUniqueKey override here
+// cannot silently go back to display-name keys.
+func TestNewUserNodeKeysOnLogin(t *testing.T) {
+	s := newGitHubSourceForTest()
+	userNodes := make(map[string]*core.DbNode)
+
+	login, name := "octocat", "The Octocat"
+	node, _ := s.newUserNode(&gogithub.User{Login: &login, Name: &name}, userNodes, testReq())
+	want := "github:integration-1::UserAccount::octocat"
+	if node.UniqueKey != want {
+		t.Errorf("UniqueKey = %q, want %q", node.UniqueKey, want)
+	}
+}

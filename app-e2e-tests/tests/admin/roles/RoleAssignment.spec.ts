@@ -153,7 +153,9 @@ test.describe("Admin → Roles: assignment", () => {
     test.skip(groups.length === 0, "needs at least one group");
     const id = await createRole(page, roleName("foreign-account"), [{ module: "k8s", class: "Read" }]);
     const res = await assignRoleToGroupAccounts(page, id, groups[0].id, ["00000000-0000-0000-0000-000000000000"]);
-    expect(graphQLErrorMessage(res.body) ?? "", "cross-tenant account must be rejected").toMatch(/not in this tenant/i);
+    // The account-tenant floor refuses before the handler ("access denied for
+    // account"); the handler's own check answers "not in this tenant". Either is the refusal.
+    expect(graphQLErrorMessage(res.body) ?? "", "cross-tenant account must be rejected").toMatch(/not in this tenant|access denied for account/i);
     await deleteRole(page, id);
   });
 

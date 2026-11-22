@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"nudgebee/services/internal/database/models"
@@ -27,17 +29,95 @@ var ErrMintSuperseded = errors.New("signal-class mint superseded")
 // DB-slow-query alert -> one class) while separating conflated generic buckets (e.g. a
 // "prod-alert" webhook carrying both RabbitMQ and slow-query alerts -> distinct scopes).
 // Empirically validated against live data before adoption.
+//
+// A CloudWatch metric alarm is the exception: its aggregation key is the alarm name, which
+// customers commonly build per resource ("<instance-id>-<host>-CPU-Alarm-P1"), so one check on N
+// hosts became N classes with N independent verdicts. Its first segment is the metric check
+// instead (see cloudWatchCheck), taken from labels the collector sets at ingest.
 func ClassKey(event *models.Event) string {
-	return classKeyFromParts(deref(event.AggregationKey), deref(event.FindingType), classSubjectOf(event))
+	return classKeyFromParts(deref(event.AggregationKey), deref(event.FindingType), classSubjectOf(event), jsonObject(event.Labels))
 }
 
 // classKeyFromParts builds the class key from raw string parts, so callers that only have a
 // partial event projection (e.g. eventBasicInfo) can derive the same key as ClassKey.
-func classKeyFromParts(aggregationKey, findingType string, subject classSubject) string {
+func classKeyFromParts(aggregationKey, findingType string, subject classSubject, labels map[string]any) string {
 	aggKey := strings.ToLower(strings.TrimSpace(aggregationKey))
+	if check, ok := cloudWatchCheckOf(labels); ok {
+		aggKey = check.key()
+	}
 	finding := strings.ToLower(strings.TrimSpace(findingType))
 	_, _, scope := subject.identity()
 	return aggKey + "|" + finding + "|" + scope
+}
+
+// cloudWatchCheck is what a CloudWatch metric alarm checks, with the resource it watches left
+// out: the metric, how it is aggregated, the threshold, and the kind of dimension it is scoped to
+// (an instance and an Auto Scaling group alarm on the same metric are different checks).
+type cloudWatchCheck struct {
+	Namespace     string
+	Metric        string
+	Statistic     string
+	Threshold     string
+	DimensionKind string
+}
+
+// cloudWatchCheckOf reads the check from the collector's ingest-time aws_event_* labels. Only
+// ingest-time labels are used: enrichment adds others later, and a key that changes after the
+// first score would split one alarm's events across two classes. Only an alarm the collector
+// reports as single-metric qualifies: on a metric-math expression or an anomaly band the metric
+// labels name just one input, so two different expressions would share a class. An alarm with no
+// statistic or no numeric threshold is not a check this can describe either. Those, and events
+// from a collector too old to report the expression flag, keep the alarm-name key.
+func cloudWatchCheckOf(labels map[string]any) (cloudWatchCheck, bool) {
+	label := func(k string) string {
+		s, _ := labels[k].(string)
+		return strings.ToLower(strings.TrimSpace(s))
+	}
+	if label("aws_event_metric_expression") != "false" {
+		return cloudWatchCheck{}, false
+	}
+	check := cloudWatchCheck{
+		Namespace:     label("aws_event_metric_namespace"),
+		Metric:        label("aws_event_metric_name"),
+		Statistic:     label("aws_event_metric_statistic"),
+		DimensionKind: label("aws_event_instance_type"),
+	}
+	if check.Metric == "" || check.Statistic == "" {
+		return cloudWatchCheck{}, false
+	}
+	rawThreshold := label("aws_event_threshold")
+	if rawThreshold == "" {
+		// A state-change notification carries no threshold field, only the reason AWS
+		// wrote, which names it in a fixed form: "... was greater than the threshold (90.0)."
+		if m := stateReasonThreshold.FindStringSubmatch(label("aws_event_state_reason")); m != nil {
+			rawThreshold = m[1]
+		}
+	}
+	threshold, err := strconv.ParseFloat(rawThreshold, 64)
+	if err != nil {
+		return cloudWatchCheck{}, false
+	}
+	// The poll path writes "90.000000" and the push path "90" for the same alarm.
+	check.Threshold = strconv.FormatFloat(threshold, 'g', -1, 64)
+	return check, true
+}
+
+// stateReasonThreshold reads the threshold from a CloudWatch alarm's state reason. An anomaly
+// band's reason speaks of "thresholds" with no single number and does not match.
+var stateReasonThreshold = regexp.MustCompile(`\bthe threshold \((-?[0-9]+(?:\.[0-9]+)?(?:e[-+]?[0-9]+)?)\)`)
+
+// key is the class key segment. The "cw:" prefix keeps these keys apart from alarm-name keys.
+func (c cloudWatchCheck) key() string {
+	return "cw:" + c.Namespace + "/" + c.Metric + "/" + c.Statistic + "/" + c.Threshold + "/" + c.DimensionKind
+}
+
+// jsonObject returns a JSON column as a map, or nil when it is empty or not an object.
+func jsonObject(j *models.Json) map[string]any {
+	if j == nil {
+		return nil
+	}
+	m, _ := j.Object().(map[string]any)
+	return m
 }
 
 // classSubject is the part of an event that says what a signal class is about.
@@ -142,19 +222,49 @@ func claimSignalClass(ctx context.Context, db *sqlx.DB, tenantID, classKey strin
 	// keeps the WHERE false → no steal → claim returns false (correct). Self-heals orphaned claims.
 	// updated_at is set explicitly (not relying on the column default) since the lease TTL check
 	// below depends on it being a real timestamp, never NULL.
+	//
+	// A 'failed' row (the last mint errored) is re-claimable only once it is an hour old, so a
+	// tenant whose LLM is missing or broken makes one attempt per class per hour, not one per alert.
 	res, err := db.ExecContext(ctx, `
 		INSERT INTO triage_signal_class (tenant_id, class_key, status, updated_at)
 		VALUES ($1, $2, 'minting', now())
 		ON CONFLICT (tenant_id, class_key) DO UPDATE
 		    SET status = 'minting', updated_at = now()
-		    WHERE triage_signal_class.status = 'minting'
-		      AND triage_signal_class.updated_at < now() - interval '15 minutes'`, tenantID, classKey)
+		    WHERE (triage_signal_class.status = 'minting'
+		           AND triage_signal_class.updated_at < now() - interval '15 minutes')
+		       OR (triage_signal_class.status = 'failed'
+		           AND triage_signal_class.updated_at < now() - interval '1 hour')`, tenantID, classKey)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to claim signal class", "tenant_id", tenantID, "class_key", classKey, "error", err)
 		return false
 	}
 	n, _ := res.RowsAffected()
 	return n > 0
+}
+
+// isSignalClassFailed reports whether the class's last mint failed and it is waiting out its retry
+// hour. A failed lookup reads as not failed, so the caller keeps today's fallback scoring.
+func isSignalClassFailed(ctx context.Context, db *sqlx.DB, tenantID, classKey string) bool {
+	var failed bool
+	if err := db.GetContext(ctx, &failed,
+		`SELECT EXISTS (SELECT 1 FROM triage_signal_class WHERE tenant_id = $1 AND class_key = $2 AND status = 'failed')`,
+		tenantID, classKey); err != nil {
+		slog.WarnContext(ctx, "failed to check whether a signal class is waiting to retry its mint",
+			"tenant_id", tenantID, "class_key", classKey, "error", err)
+		return false
+	}
+	return failed
+}
+
+// markSignalClassFailed parks a claimed class after its mint failed. The row stays, so the claim
+// above refuses it for an hour; deleting it instead let the very next alert retry the LLM.
+func markSignalClassFailed(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
+	if _, err := db.ExecContext(ctx,
+		`UPDATE triage_signal_class SET status = 'failed', updated_at = now()
+		 WHERE tenant_id = $1 AND class_key = $2 AND status = 'minting'`,
+		tenantID, classKey); err != nil {
+		slog.WarnContext(ctx, "failed to park signal class after a failed mint", "class_key", classKey, "error", err)
+	}
 }
 
 // saveSignalVerdict promotes a class to active with the minted verdict and stamps the prompt

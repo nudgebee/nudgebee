@@ -25,7 +25,6 @@ import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import { Button } from '@ui/Button';
 import { Chip } from '@ui/Chip';
-import { CostCallout } from '@ui/CostCallout';
 import { EmptyState } from '@ui/EmptyState';
 import { isSuperAdmin, isTenantAdmin } from '@lib/auth';
 import HeaderLabel from '../components/HeaderLabel';
@@ -60,28 +59,30 @@ const H = {
   daily: (
     <HeaderLabel
       label='Daily'
+      alignRight
       info='Total AI cost for the 24 hours starting at your configured send hour on the selected date — see the schedule gear above for that hour.'
     />
   ),
-  mtd: <HeaderLabel label='MTD' info='Total AI cost from the 1st of the month through the selected date.' />,
-  prevMonth: <HeaderLabel label='Prev month' info='Total AI cost for the entire previous calendar month.' />,
-  avgThisMonth: <HeaderLabel label='Avg/day (this mo)' info='Month-to-date cost divided by days elapsed this month.' />,
-  avgPrevMonth: <HeaderLabel label='Avg/day (prev mo)' info='Previous month’s total cost divided by days in that month.' />,
-  delta: <HeaderLabel label='%Δ' info='Change in average daily spend, this month vs previous month.' />,
+  mtd: <HeaderLabel label='MTD' alignRight info='Total AI cost from the 1st of the month through the selected date.' />,
+  prevMonth: <HeaderLabel label='Prev month' alignRight info='Total AI cost for the entire previous calendar month.' />,
+  avgThisMonth: <HeaderLabel label='Avg/day (this mo)' alignRight info='Month-to-date cost divided by days elapsed this month.' />,
+  avgPrevMonth: <HeaderLabel label='Avg/day (prev mo)' alignRight info='Previous month’s total cost divided by days in that month.' />,
+  delta: <HeaderLabel label='%Δ' alignRight info='Change in average daily spend, this month vs previous month.' />,
   dailyDrivers: <HeaderLabel label='Top daily drivers' info='Top 5 cost contributors in that same 24-hour window, by model and by source.' />,
   mtdDrivers: (
     <HeaderLabel label='Top MTD drivers' info='Top 5 cost contributors month-to-date (through the selected date), by model and by source.' />
   ),
 };
 
+// Numeric columns are right-aligned (header `align` drives the cells too) so amounts scan by magnitude.
 const HEADERS = [
   { name: 'Account', width: '13%', sortEnabled: true, component: H.account },
-  { name: 'Daily', width: '8%', sortEnabled: true, component: H.daily },
-  { name: 'MTD', width: '8%', sortEnabled: true, component: H.mtd },
-  { name: 'Prev month', width: '9%', sortEnabled: true, component: H.prevMonth },
-  { name: 'Avg/day (this mo)', width: '10%', sortEnabled: true, component: H.avgThisMonth },
-  { name: 'Avg/day (prev mo)', width: '10%', sortEnabled: true, component: H.avgPrevMonth },
-  { name: '%Δ', width: '6%', sortEnabled: true, component: H.delta },
+  { name: 'Daily', width: '8%', align: 'right' as const, sortEnabled: true, component: H.daily },
+  { name: 'MTD', width: '8%', align: 'right' as const, sortEnabled: true, component: H.mtd },
+  { name: 'Prev month', width: '9%', align: 'right' as const, sortEnabled: true, component: H.prevMonth },
+  { name: 'Avg/day (this mo)', width: '10%', align: 'right' as const, sortEnabled: true, component: H.avgThisMonth },
+  { name: 'Avg/day (prev mo)', width: '10%', align: 'right' as const, sortEnabled: true, component: H.avgPrevMonth },
+  { name: '%Δ', width: '6%', align: 'right' as const, sortEnabled: true, component: H.delta },
   { name: 'Top daily drivers', width: '18%', component: H.dailyDrivers },
   { name: 'Top MTD drivers', width: '18%', component: H.mtdDrivers },
 ];
@@ -152,8 +153,10 @@ function toRow(r: AiCostAccountRow, costSev: (v: number) => Severity, provider: 
     {
       data: r.daily_cost_usd,
       component: (
+        // Same numCell + fmtCost as the sibling amounts — CostCallout size='sm' rendered
+        // smaller, lighter and with a tighter line-height, so it sat above the row's baseline.
         <SeverityCell severity={costSev(r.daily_cost_usd)} metric='cost'>
-          <CostCallout value={r.daily_cost_usd} size='sm' tone='neutral' fractionDigits={2} />
+          <Box sx={numCell}>{fmtCost(r.daily_cost_usd)}</Box>
         </SeverityCell>
       ),
     },

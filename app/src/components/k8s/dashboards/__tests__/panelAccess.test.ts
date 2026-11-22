@@ -1,16 +1,18 @@
 import { canQueryTable, grantTooltip, missingDatasourceGrant, missingPanelGrant, missingTableGrant, queryableTables } from '../panelAccess';
 import { findTable, tablesFor } from '../entityQuery';
 import { PANEL_TEMPLATES } from '../panelTemplates';
-import { hasPermission, isGrantsOnlyUser } from '@lib/auth';
+import { hasGrantOnAccount, hasPermission, isGrantsOnlyUser } from '@lib/auth';
 
 jest.mock('@lib/auth', () => ({
   hasPermission: jest.fn(),
+  hasGrantOnAccount: jest.fn(() => false),
   isGrantsOnlyUser: jest.fn(),
   missingPermissionMessage: (permission: string) => `You need the "${permission}" permission. Ask an admin to grant it.`,
 }));
 
 const mockGrantsOnly = isGrantsOnlyUser as jest.Mock;
 const mockHasPermission = hasPermission as jest.Mock;
+const mockHasGrantOnAccount = hasGrantOnAccount as jest.Mock;
 
 /** A viewer whose access comes purely from custom-role grants, holding `grants`. */
 function grantsOnlyWith(...grants: string[]) {
@@ -50,6 +52,17 @@ describe('missingDatasourceGrant', () => {
     expect(missingDatasourceGrant('metrics')).toBeUndefined();
     expect(missingDatasourceGrant('redis')).toBeUndefined();
     expect(missingDatasourceGrant('logs')).toBe('logs:Read');
+  });
+
+  it('clears a datasource whose grant is bound to every account the panel reads', () => {
+    grantsOnlyWith();
+    mockHasGrantOnAccount.mockImplementation(
+      (module: string, cls: string, accountId: string) => module === 'metrics' && cls === 'Read' && accountId === 'acct-a'
+    );
+    expect(missingDatasourceGrant('metrics', ['acct-a'])).toBeUndefined();
+    expect(missingDatasourceGrant('metrics', ['acct-a', 'acct-b'])).toBe('metrics:Read');
+    expect(missingDatasourceGrant('metrics')).toBe('metrics:Read');
+    mockHasGrantOnAccount.mockReturnValue(false);
   });
 
   it('never gates a text panel, which reads nothing', () => {

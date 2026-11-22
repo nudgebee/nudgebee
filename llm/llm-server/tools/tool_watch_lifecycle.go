@@ -163,6 +163,10 @@ func (WatchCancelTool) Call(nbCtx core.NbToolContext, input core.NBToolCallReque
 		// watch's account. Reported as not found, so nothing leaks about it.
 		return errorResponse(fmt.Sprintf("watch %s not found", id)), nil
 	}
+	if existing.IsNudgeBees() {
+		// A remediation follow-up's own wait ends with the follow-up; cancelling it would start the next check early.
+		return errorResponse(fmt.Sprintf("watch %s is NudgeBee's own wait for a remediation follow-up and ends with it; it cannot be cancelled", id)), nil
+	}
 	if existing.Status.IsTerminal() {
 		// Already over: nothing to cancel, and its outcome stays as it is.
 		return jsonResponse(map[string]any{
@@ -266,8 +270,7 @@ func canAccessWatchAccount(nbCtx core.NbToolContext, w *watch.Watch, access secu
 		return sc.CanReadAccountData(account, watchModule)
 	}
 	return sc.HasAccountAccess(account, access) ||
-		sc.HasScopedPermission(account, watchModule, "Execute") ||
-		sc.HasScopedPermission(account, watchModule, "Write")
+		sc.HasScopedPermission(account, watchModule, "Execute")
 }
 
 // watchSummary projects a Watch into the shape the agent shows to the

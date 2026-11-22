@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/llm/config"
+	"nudgebee/llm/tools/core"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -69,5 +72,33 @@ func TestWrapCliError(t *testing.T) {
 		assert.NoError(t, json.Unmarshal([]byte(out), &env))
 		assert.Equal(t, hint, env["error_hint"])
 		assert.Equal(t, raw, env["original_error"])
+	})
+}
+
+func TestGithubReply(t *testing.T) {
+	graphqlErr := `{"errors":[{"message":"Could not resolve to a Repository"}],"data":null}`
+	t.Run("log mode keeps success and does not change the reply", func(t *testing.T) {
+		got := githubReply(core.NbToolContext{}, graphqlErr)
+		assert.Equal(t, core.NBToolResponseStatusSuccess, got.Status)
+		assert.Equal(t, graphqlErr, got.Data)
+	})
+	t.Run("enforced tool fails a reply with a top-level errors field", func(t *testing.T) {
+		prev := config.Config.LlmServerToolReportedFailureEnforceTools
+		config.Config.LlmServerToolReportedFailureEnforceTools = ToolExecuteGithubCliCommand
+		t.Cleanup(func() { config.Config.LlmServerToolReportedFailureEnforceTools = prev })
+
+		got := githubReply(core.NbToolContext{}, graphqlErr)
+		assert.Equal(t, core.NBToolResponseStatusError, got.Status)
+		assert.Equal(t, core.FailureReasonReportedFailed, got.Metadata.FailureReason)
+
+		for name, body := range map[string]string{
+			"json array":           `[{"number":1,"title":"error handling"}]`,
+			"clean object":         `{"data":{"repository":{"name":"x"}},"errors":null}`,
+			"workflow run":         `{"status":"completed","conclusion":"failure"}`,
+			"plain text with word": "Error: this is log text, judged by exit code only",
+		} {
+			got := githubReply(core.NbToolContext{}, body)
+			assert.Equal(t, core.NBToolResponseStatusSuccess, got.Status, name)
+		}
 	})
 }

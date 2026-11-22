@@ -239,7 +239,7 @@ def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
 def choose_account_llm_integration(cloud_account_id, candidates):
     """The integration an account resolves against, or None for the environment defaults.
 
-    Mirrors llm-server's chooseAccountLLMIntegration (agents/core/llm_default_pick.go),
+    Mirrors llm-server's chooseAccountLLMIntegration (llms/runtime/llm_default_pick.go),
     and both run llm/llm-server/agents/core/testdata/llm_default_cases.json. Each
     candidate is (id, linked to the account, marked default on the account's link,
     tenant default). The account's own default wins, otherwise the tenant default.
@@ -774,20 +774,23 @@ def set_kb_collection_summary(
         logger.exception("Error writing the KB classification summary of collection %s: %s", collection_name, e)
 
 
-def seed_kb_document_labels(rows: list[dict]) -> int:
-    """Insert entry_type = 'kb_document' rows that do not exist yet. An existing row is left
-    alone, with one exception: a row whose ``capabilities`` are empty takes the capabilities
-    the page's chunks now carry (non-empty only). Those empties were written while the
-    catalog was empty or unreachable, so they are not a classification to protect; kind,
-    shape and source_version are never changed.
+def upsert_kb_document_labels(rows: list[dict]) -> int:
+    """Write entry_type = 'kb_document' rows: insert the missing ones and bring an existing
+    row up to date when its labels differ from the ones its page's chunks now carry.
 
-    Each row is ``{collection_name, document_key, kind, shape, capabilities, source_version}``. Rows
-    seeded from labels that already sit on a page's chunks carry no source_version
-    (NULL = "version unknown"). The seed is idempotent: a second run changes nothing.
+    The chunks' vector payload is the only classifier output, and this rag-server code is
+    the only writer of these rows, so a row is a copy of the payload, kept current by the
+    startup seed and by every ``refresh_kb_collection_summary``. A page that is
+    re-classified therefore changes its row too. A figure-only page carries no
+    source_version and leaves a known one in place.
 
-    Returns the number of rows written (inserted, or capabilities filled in). Raises on a
-    database error: the caller retries, and a swallowed failure would look like a run that
-    seeded nothing.
+    Each row is ``{collection_name, document_key, kind, shape, capabilities, source_version}``
+    (source_version None = "version unknown"). A second run over the same labels changes
+    nothing.
+
+    Returns the number of rows written (inserted or changed). Raises on a database error:
+    the caller retries or logs, and a swallowed failure would look like a run that wrote
+    nothing.
     """
     if not rows:
         return 0
@@ -798,7 +801,9 @@ def seed_kb_document_labels(rows: list[dict]) -> int:
         key = (row["collection_name"], row["document_key"])
         if key not in unique or (row.get("capabilities") and not unique[key].get("capabilities")):
             unique[key] = row
-    rows = list(unique.values())
+    # A fixed key order, so two writers upserting overlapping pages (the startup seed and a refresh)
+    # take their row locks in the same order and cannot deadlock.
+    rows = sorted(unique.values(), key=lambda r: (r["collection_name"], r["document_key"]))
     values, params = [], {}
     for i, row in enumerate(rows):
         values.append(
@@ -812,14 +817,20 @@ def seed_kb_document_labels(rows: list[dict]) -> int:
         params[f"capabilities_{i}"] = row.get("capabilities") or []
         params[f"source_version_{i}"] = row.get("source_version")
     # One statement per batch, one round trip; rowcount is the rows inserted plus the
-    # rows whose empty capabilities were filled.
+    # rows whose labels changed.
     statement = (
         "INSERT INTO llm_kb_capability_entries "
         "(entry_type, collection_name, document_key, kinds, shapes, capabilities, source_version, updated_at) "
         f"VALUES {', '.join(values)} "
         "ON CONFLICT (collection_name, document_key) WHERE entry_type = 'kb_document' DO UPDATE "
-        "SET capabilities = EXCLUDED.capabilities, updated_at = NOW() "
-        "WHERE llm_kb_capability_entries.capabilities = '{}' AND EXCLUDED.capabilities <> '{}'"
+        "SET kinds = EXCLUDED.kinds, shapes = EXCLUDED.shapes, capabilities = EXCLUDED.capabilities, "
+        "source_version = COALESCE(EXCLUDED.source_version, llm_kb_capability_entries.source_version), "
+        "updated_at = NOW() "
+        "WHERE (llm_kb_capability_entries.kinds, llm_kb_capability_entries.shapes, "
+        "llm_kb_capability_entries.capabilities) IS DISTINCT FROM "
+        "(EXCLUDED.kinds, EXCLUDED.shapes, EXCLUDED.capabilities) "
+        "OR (EXCLUDED.source_version IS NOT NULL "
+        "AND llm_kb_capability_entries.source_version IS DISTINCT FROM EXCLUDED.source_version)"
     )
     with engine.connect() as connection:
         with connection.begin():

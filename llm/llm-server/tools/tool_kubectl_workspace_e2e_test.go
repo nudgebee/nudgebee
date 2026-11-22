@@ -3,6 +3,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -43,21 +44,25 @@ func newKubectlTestEnv(t *testing.T) func(conversationId, command string) (toolc
 	}
 
 	tool := KubectlExecuteTool{}
+	// The account's real cluster config, so the call reaches a cluster
+	// instead of stopping at "selected cluster has no account id". Falls
+	// back to a stub when the account has none configured, which still
+	// exercises the request-shaping code above the cluster lookup.
+	sc := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
+	toolConfig := toolcore.ToolConfig{Name: "e2e-test-config", Values: []toolcore.ToolConfigValue{}}
+	if configs, cfgErr := toolcore.ListToolConfigs(sc, account, tool); cfgErr == nil && len(configs) > 0 {
+		toolConfig = configs[0]
+		t.Logf("using live cluster config %q", toolConfig.Name)
+	} else {
+		t.Logf("no live cluster config for account (%v); using stub", cfgErr)
+	}
 	return func(conversationId, command string) (toolcore.NBToolResponse, error) {
-		sc := security.NewRequestContextForTenantAccountAdmin(tenant, user, []string{account})
 		nctx := toolcore.NbToolContext{
 			Ctx:            sc,
 			AccountId:      account,
 			UserId:         user,
 			ConversationId: conversationId,
-			// Non-empty Name bypasses the "no tool configs found"
-			// guard at tool_kubectl.go:440 — we want to exercise the
-			// workspace-mode code path that follows, even though the
-			// docker-desktop workspace pod has no actual cluster config.
-			ToolConfig: toolcore.ToolConfig{
-				Name:   "e2e-test-config",
-				Values: []toolcore.ToolConfigValue{},
-			},
+			ToolConfig:     toolConfig,
 		}
 		return tool.Call(nctx, toolcore.NBToolCallRequest{Command: command})
 	}
@@ -276,4 +281,63 @@ func TestKubectlExecute_PipelineNonNoMatchStillError_E2E(t *testing.T) {
 		t.Fatalf("expected pipeline ending in `false` (not a no-match command) to remain Error, got Success+no_matches: %q", resp.Data)
 	}
 	t.Logf("✓ Regression guard: non-grep-family pipeline tail stays Error")
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Scenario 7 — an unbounded `kubectl logs` is capped, and says so
+// ──────────────────────────────────────────────────────────────────────
+//
+// Issue #40196. The tool adds --tail 500 to a logs command that bounded
+// itself neither by lines nor by time (72 real calls in 30 days of dev
+// traffic), and the caller used to get no sign of it: the response was
+// {"stdout": ...} whether the log had been cut or not.
+//
+// Runs against the live workspace pod, which logs continuously, so the
+// capped and uncapped reads of the same container can be compared.
+func TestKubectlExecute_UnboundedLogsReadDisclosesTheCap_E2E(t *testing.T) {
+	run := newKubectlTestEnv(t)
+	account := os.Getenv("TEST_ACCOUNT")
+	podName := fmt.Sprintf("workspace-%s", strings.ToLower(account))
+
+	capped, err := run("e2e-kubectl-autotail-"+uniqueSuffix(),
+		fmt.Sprintf("kubectl logs %s -n nudgebee", podName))
+	dumpResponse(t, "kubectl logs (no bound — auto-tailed)", capped, err)
+
+	if capped.Status == toolcore.NBToolResponseStatusError {
+		t.Fatalf("unbounded kubectl logs of a live pod must succeed; got Data=%s", capped.Data)
+	}
+	var envelope map[string]string
+	if jsonErr := json.Unmarshal([]byte(capped.Data), &envelope); jsonErr != nil {
+		t.Fatalf("response is not the {\"stdout\":...} envelope: %v (Data=%s)", jsonErr, capped.Data)
+	}
+	note, ok := envelope["read_coverage"]
+	if !ok {
+		t.Fatalf("the tool capped the read at %d lines and said nothing — issue #40196. Envelope keys: %v",
+			kubectlAutoTailLines, keysOf(envelope))
+	}
+	assert.Contains(t, note, "partial read")
+	assert.Contains(t, note, "--tail 500")
+	t.Logf("read_coverage: %s", note)
+
+	// A command that set its own bound is not capped by us, so it must
+	// carry no coverage: a note on every read would be noise the caller
+	// learns to skip.
+	bounded, err := run("e2e-kubectl-own-tail-"+uniqueSuffix(),
+		fmt.Sprintf("kubectl logs %s -n nudgebee --tail=5", podName))
+	dumpResponse(t, "kubectl logs --tail=5 (caller's own bound)", bounded, err)
+
+	var boundedEnvelope map[string]string
+	if jsonErr := json.Unmarshal([]byte(bounded.Data), &boundedEnvelope); jsonErr == nil {
+		if _, present := boundedEnvelope["read_coverage"]; present {
+			t.Errorf("a self-bounded read must carry no coverage; got %q", boundedEnvelope["read_coverage"])
+		}
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

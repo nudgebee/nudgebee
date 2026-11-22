@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -31,7 +32,7 @@ func init() {
 	llmToolInput := "User Question"
 	llmToolOutput := "The tool will return the output of the LLM query"
 
-	RegisterNBAgentFactoryAndTool(ToolLlm, func(accountId string) (NBAgent, error) {
+	RegisterNBAgentFactoryAndTool(llmruntime.ToolLlm, func(accountId string) (NBAgent, error) {
 		return LLMAgent{}, nil
 	}, llmToolDescription, llmToolInput, llmToolOutput)
 
@@ -47,8 +48,11 @@ func init() {
 type LLMAgent struct {
 }
 
+// ConsumesPriorObservations: LLM summarizes the caller's earlier observations.
+func (p LLMAgent) ConsumesPriorObservations() {}
+
 func (p LLMAgent) GetName() string {
-	return ToolLlm
+	return llmruntime.ToolLlm
 }
 
 func (a LLMAgent) GetNameAliases() []string {
@@ -71,8 +75,8 @@ func (l LLMAgent) GetPlannerType() AgentPlannerType {
 	return AgentPlannerTypeCustom
 }
 
-func (l LLMAgent) GetModelCategory() ModelTier {
-	return ModelTierRetrieval
+func (l LLMAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }
 
 func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) (NBAgentResponse, error) {
@@ -114,7 +118,7 @@ func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) 
 	// rewriteToolInput, which rewrites tool input strings — not a
 	// "summarize the context" task) and the condensed prompt would mis-shape
 	// the response.
-	if modelTierFromContext(ctx) == ModelTierSummary {
+	if llmruntime.ModelTierFromContext(ctx) == llmruntime.ModelTierSummary {
 		systemPrompt = groundedSummarySystemPrompt
 	}
 
@@ -123,7 +127,12 @@ func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) 
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf(`<context>%s</context>`, queryContext)),
 		llms.TextParts(llms.ChatMessageTypeHuman, command),
 	}
-	completion, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true)
+	var opts []llms.CallOption
+	// Alert triage fills fixed fields; replayed on stored calls, low thinking agreed as well as the default at half the cost.
+	if request.ConversationSource == ConversationSourceTriageClassification {
+		opts = append(opts, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
+	}
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true, opts...)
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to generate content", "error", err)
 		return NBAgentResponse{Response: nil}, err
@@ -144,6 +153,9 @@ const ToolClarification = "clarification"
 
 type ClarificationAgent struct {
 }
+
+// ConsumesPriorObservations: with a QueryContext, clarification answers from it.
+func (p ClarificationAgent) ConsumesPriorObservations() {}
 
 func (p ClarificationAgent) GetName() string {
 	return ToolClarification
@@ -192,7 +204,7 @@ func (l ClarificationAgent) Execute(ctx *security.RequestContext, request NBAgen
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a seasoned technology expert with deep experience in software engineering and infrastructure operations."),
 		llms.TextParts(llms.ChatMessageTypeHuman, command),
 	}
-	completion, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, true)
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to generate content", "error", err)
 		return NBAgentResponse{}, err

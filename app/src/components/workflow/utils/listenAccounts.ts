@@ -22,3 +22,36 @@ export const accessibleAccountOptions = <T extends { value: string }>(options: T
   const allowed = new Set(getSessionAccountIds());
   return options.filter((o) => allowed.has(o.value));
 };
+
+export interface ListenAccountOption {
+  label: string;
+  value: string;
+  cloud_provider: string;
+  group: string;
+}
+
+const OWN_ACCOUNT_LABEL = "This automation's account";
+
+/**
+ * "Listen to accounts" options. An account saved but out of reach stays listed so it can be
+ * removed. While the list loads nothing is called out of reach, and the own account always shows.
+ */
+export const listenAccountPickerOptions = (
+  accountOptions: ListenAccountOption[],
+  shownIds: string[],
+  ownId: string,
+  isLoading: boolean
+): ListenAccountOption[] => {
+  if (isLoading) {
+    return shownIds.map((id) => ({ label: id === ownId ? OWN_ACCOUNT_LABEL : 'Loading…', value: id, cloud_provider: '', group: '' }));
+  }
+  const accessible = accessibleAccountOptions(accountOptions);
+  // With no account list (fetch failed or empty) there is nothing to judge access against.
+  const unreachableGroup = accountOptions.length > 0 ? 'No access' : '';
+  const unreachable = shownIds
+    .filter((id) => id !== ownId && !accessible.some((o) => o.value === id))
+    .map((id) => ({ label: id, value: id, cloud_provider: '', group: unreachableGroup }));
+  const own =
+    accountOptions.find((o) => o.value === ownId) ?? (ownId ? { label: OWN_ACCOUNT_LABEL, value: ownId, cloud_provider: '', group: '' } : undefined);
+  return [...(own && !accessible.includes(own) ? [own] : []), ...accessible, ...unreachable];
+};

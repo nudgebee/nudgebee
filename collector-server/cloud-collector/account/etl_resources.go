@@ -233,7 +233,7 @@ var globalServices = map[string]bool{
 	"awsiam":           true,
 	"amazons3":         true, // S3 buckets are global (though they have a region attribute)
 	"amazonroute53":    true,
-	"awscloudfront":    true,
+	"amazoncloudfront": true, // the provider lists distributions once, account-wide
 	"awswaf":           true,
 	"awsorganizations": true,
 	"awsconfig":        true, // AWS Config is account-level, not region-scoped
@@ -266,6 +266,14 @@ func resolveArchiveRegions(crawled, archive []string) []string {
 		return archive
 	}
 	return crawled
+}
+
+// boundRequestedRegions splits regions a caller asked to sync on an account with
+// a region allowlist: crawl is the part the allowlist permits, and archive is
+// every requested region, so rows in a requested region that left the list are
+// retired rather than left active with nothing to refresh them.
+func boundRequestedRegions(requested, allowed []string) (crawl, archive []string) {
+	return lo.Intersect(requested, allowed), append([]string(nil), requested...)
 }
 
 func StoreResources(ctx *security.RequestContext, accountId string, serviceName string, regions ...string) (StoreResourcesResponse, error) {
@@ -434,6 +442,23 @@ func StoreResources(ctx *security.RequestContext, accountId string, serviceName 
 			"service", serviceName,
 			"account", accountId,
 			"provider", accountInfo.CloudProvider)
+	} else if len(regions) > 0 && strings.EqualFold(accountInfo.CloudProvider, "aws") && !isGlobalAwsService(serviceName) {
+		// Regions a caller passes in are bounded by the allowlist too. A region
+		// outside it is one the account's policy forbids calling, and one denied
+		// region fails the whole service, so crawling it would stop the service
+		// from being stored at all. A requested region that left the list is not
+		// crawled but is still archived, so its rows are retired just as on the
+		// self-discovery path above.
+		if allowed := awsProvider.ConfiguredRegions(accountInfo); len(allowed) > 0 {
+			regions, archiveRegions = boundRequestedRegions(regions, allowed)
+			if len(regions) == 0 {
+				ctx.GetLogger().Info("skipping resource sync: no requested region is in the account allowlist",
+					"service", serviceName,
+					"account", accountId,
+					"requested_regions", archiveRegions)
+				return StoreResourcesResponse{Duration: time.Since(t0)}, nil
+			}
+		}
 	}
 
 	// For global AWS services, the regions list above is a stale cache of where

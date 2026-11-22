@@ -46,6 +46,7 @@ func TestFindNodesByProviderIdentifier_DB(t *testing.T) {
 		tenant_id text NOT NULL,
 		cloud_account_id text,
 		node_type text NOT NULL,
+		specific_type text,
 		level text NOT NULL,
 		is_active boolean NOT NULL DEFAULT true,
 		properties jsonb NOT NULL DEFAULT '{}'::jsonb
@@ -58,7 +59,7 @@ func TestFindNodesByProviderIdentifier_DB(t *testing.T) {
 		tenant  = "t-1"
 		account = "a-1"
 		instID  = "i-0dcee3621b8456783"
-		arn     = "arn:aws:ec2:us-east-1:864186153326:instance/" + instID
+		arn     = "arn:aws:ec2:us-east-1:888888888888:instance/" + instID
 	)
 	insert := func(id, acct, nodeType, level string, active bool, props string) {
 		mustExec(fmt.Sprintf(
@@ -138,5 +139,51 @@ func TestFindNodesByProviderIdentifier_DB(t *testing.T) {
 		got, err = findNodesByProviderIdentifierInTable(dbms, table, tenant, "", instID)
 		require.NoError(t, err)
 		require.Equal(t, []string{"node-order"}, got)
+	})
+
+	// A host scanned through a self-hosted VM account is a SelfHostedVM node in
+	// the VM account carrying the instance id as instance_id, never resource_id.
+	const vmAccount = "a-vm"
+	insertVM := func(id, instanceID string) {
+		mustExec(fmt.Sprintf(
+			`INSERT INTO %s (id, tenant_id, cloud_account_id, node_type, specific_type, level, is_active, properties)
+			 VALUES ($1,$2,$3,$4,$5,'Tenant',true,$6::jsonb)`, table),
+			id, tenant, vmAccount, string(NodeTypeComputeInstance), SpecificTypeSelfHostedVM,
+			fmt.Sprintf(`{"name":%q,"instance_id":%q,"host_kind":"cloud_identified"}`, instanceID, instanceID))
+	}
+	insertVM("node-vm-twin", instID)
+
+	t.Run("an event filed under the VM account resolves to its SelfHostedVM node", func(t *testing.T) {
+		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, vmAccount, instID)
+		require.NoError(t, err)
+		require.Equal(t, []string{"node-vm-twin"}, got,
+			"nothing in the VM account carries resource_id, so the instance_id fallback must find the twin")
+	})
+
+	t.Run("a tenant-wide lookup still resolves the cloud node, not its twin", func(t *testing.T) {
+		// The fallback runs only when resource_id/arn match nothing. OR-ing it in
+		// would return both nodes and the caller would refuse to resolve at all.
+		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, "", instID)
+		require.NoError(t, err)
+		require.Equal(t, []string{"node-order"}, got)
+	})
+
+	t.Run("instance_id on another specific_type is not a fallback match", func(t *testing.T) {
+		mustExec(fmt.Sprintf(
+			`INSERT INTO %s (id, tenant_id, cloud_account_id, node_type, specific_type, level, is_active, properties)
+			 VALUES ('node-not-vm',$1,$2,$3,'EC2Instance','Tenant',true,'{"instance_id":"i-only-instance-id"}'::jsonb)`, table),
+			tenant, vmAccount, string(NodeTypeComputeInstance))
+		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, vmAccount, "i-only-instance-id")
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
+
+	t.Run("two SelfHostedVM twins and no cloud node is ambiguous", func(t *testing.T) {
+		const orphan = "i-0aaaaaaaaaaaaaaaa"
+		insertVM("node-vm-orphan-1", orphan)
+		insertVM("node-vm-orphan-2", orphan)
+		got, err := findNodesByProviderIdentifierInTable(dbms, table, tenant, "", orphan)
+		require.NoError(t, err)
+		require.Len(t, got, 2, "both claimants must be returned so the caller can refuse to guess")
 	})
 }

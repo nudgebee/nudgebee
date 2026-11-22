@@ -1,0 +1,1473 @@
+{
+  "_comment": "SecurityContext.Can and MayUseIntegration cases. runbook-server and llm-server both read this file, so the two copies answer the same. Every context is in tenant t with accounts acct-a and acct-b. use_cases: MayUseIntegration, which a built-in role passes exactly as it passes Can on any module (read: read, change: create).",
+  "cases": [
+    {
+      "name": "account admin may write its account",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "account admin may not write another account",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "read-only account admin may read",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "read-only account admin may not execute",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "tenant admin may write any tenant account",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-b",
+      "module": "integrations.jira",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "tenant admin may not touch an account outside the tenant",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-x",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Read grant reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "scoped Read grant does not execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "scoped Read grant covers only its account",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Read": true
+          }
+        }
+      },
+      "account": "acct-b",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant executes",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "scoped Execute grant does not read",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant does not write",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.jira",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "scoped Write grant implies Read",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "scoped Write grant does not imply Execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "scoped Execute grant allows Execute",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "scoped Execute grant does not imply Write",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "k8s:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "a grant covers only its module",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations.github",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "tenant-wide grant covers every tenant account",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Read": true
+        }
+      },
+      "account": "acct-b",
+      "module": "integrations.mcp",
+      "class": "Read",
+      "want": true
+    },
+    {
+      "name": "tenant-wide grant does not cover an account outside the tenant",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Read": true
+        }
+      },
+      "account": "acct-x",
+      "module": "integrations.mcp",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "no role, no grant",
+      "context": {},
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Read",
+      "want": false
+    },
+    {
+      "name": "unknown class",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Admin",
+      "want": false
+    },
+    {
+      "name": "built-in tenant_admin: Execute is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin: Write is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin_readonly: Execute is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "built-in tenant_admin_readonly: Write is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "built-in account_admin: Execute is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "built-in account_admin: Write is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "built-in account_admin_readonly: Execute is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "built-in account_admin_readonly: Write is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin: Execute is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin: Write is allowed, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly: Execute is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Execute",
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly: Write is refused, as the other change class (create and update agree)",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "module": "k8s",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "custom integrations:Execute does not grant integrations:Write (its change steps stay on Write)",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "integrations",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "custom notifications:Execute does not grant notifications:Write (its change steps stay on Write)",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "notifications:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "notifications",
+      "class": "Write",
+      "want": false
+    },
+    {
+      "name": "custom events:Execute does not grant events:Write (its change steps stay on Write)",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "events:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "module": "events",
+      "class": "Write",
+      "want": false
+    }
+  ],
+  "use_cases": [
+    {
+      "name": "Read grant reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "Read grant does not change",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "Execute grant changes",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "Execute grant also reads",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "Write (manage) grant does not let the holder use it",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "a grant covers only its type",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "github",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "a grant covers only its account",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "the stored type is matched lower-cased",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.es:Read": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "ES",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "tenant-wide use grant covers every tenant account",
+      "context": {
+        "CustomPermissions": {
+          "integrations.mcp:Execute": true
+        }
+      },
+      "account": "acct-b",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "the integrations module alone is not a use grant",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "GitHub Execute grant lets the holder change through a GitHub integration",
+      "context": {
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.github:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "github",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin changes through jira, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin changes through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin changes through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin_readonly reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin_readonly does not change through jira, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in tenant_admin_readonly reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin_readonly does not change through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in tenant_admin_readonly reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in tenant_admin_readonly does not change through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in super_admin reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin changes through jira, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin changes through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin changes through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin_readonly reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin_readonly does not change through jira, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in super_admin_readonly reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin_readonly does not change through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in super_admin_readonly reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in super_admin_readonly does not change through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "super_admin_readonly"
+        ]
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in account_admin reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin changes through jira, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin changes through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin changes through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin on acct-a uses nothing on acct-b",
+      "context": {
+        "Roles": [
+          "account_admin"
+        ],
+        "ScopedEntityIds": {
+          "account_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "built-in account_admin_readonly reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin_readonly does not change through jira, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in account_admin_readonly reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin_readonly does not change through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in account_admin_readonly reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in account_admin_readonly does not change through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in account_admin_readonly on acct-a uses nothing on acct-b",
+      "context": {
+        "Roles": [
+          "account_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "account_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin changes through jira, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin changes through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin changes through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin on acct-a uses nothing on acct-b",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly reads through jira as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly does not change through jira, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly reads through mcp as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly does not change through mcp, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "mcp",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly reads through postgresql as it reads any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": false,
+      "want": true
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly does not change through postgresql, as with any module",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-a",
+      "type": "postgresql",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "built-in k8s_namespace_admin_readonly on acct-a uses nothing on acct-b",
+      "context": {
+        "Roles": [
+          "k8s_namespace_admin_readonly"
+        ],
+        "ScopedEntityIds": {
+          "k8s_namespace_admin_readonly": [
+            "acct-a"
+          ]
+        }
+      },
+      "account": "acct-b",
+      "type": "jira",
+      "write": false,
+      "want": false
+    },
+    {
+      "name": "a read-only built-in role plus a manage grant still does not change",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ],
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Write": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": false
+    },
+    {
+      "name": "a read-only built-in role plus an Execute grant changes",
+      "context": {
+        "Roles": [
+          "tenant_admin_readonly"
+        ],
+        "ScopedCustomPermissions": {
+          "acct-a": {
+            "integrations.jira:Execute": true
+          }
+        }
+      },
+      "account": "acct-a",
+      "type": "jira",
+      "write": true,
+      "want": true
+    }
+  ]
+}

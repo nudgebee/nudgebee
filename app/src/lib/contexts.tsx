@@ -1,4 +1,4 @@
-import React, { useContext, useState, createContext } from 'react';
+import React, { useContext, useState, useMemo, useCallback, createContext } from 'react';
 import { getStartOfMonth, getEndOfMonth } from '@lib/datetime';
 
 const currentDate = new Date();
@@ -35,23 +35,25 @@ export const GlobalFilterContextProvider = ({ children }: any) => {
   const [startDate, _setStartDate] = useState(globalFilter.startDate);
   const [endDate, _setEndDate] = useState(globalFilter.endDate);
 
-  function setEndDate(d: Date | any) {
+  const setEndDate = useCallback((d: Date | any) => {
     if (d.toDate) {
       d = d.toDate();
     }
     d.setHours(23, 59, 59, 999);
     _setEndDate(d);
     globalFilter.setEndDate(d);
-  }
+  }, []);
 
-  function setStartDate(d: Date | any) {
+  const setStartDate = useCallback((d: Date | any) => {
     if (d.toDate) {
       d = d.toDate();
     }
     d.setHours(0, 0, 0, 0);
     _setStartDate(d);
     globalFilter.setStartDate(d);
-  }
+  }, []);
 
-  return <GlobalFilterContxt.Provider value={{ startDate, endDate, setStartDate, setEndDate }}>{children}</GlobalFilterContxt.Provider>;
+  const value = useMemo(() => ({ startDate, endDate, setStartDate, setEndDate }), [startDate, endDate, setStartDate, setEndDate]);
+
+  return <GlobalFilterContxt.Provider value={value}>{children}</GlobalFilterContxt.Provider>;
 };

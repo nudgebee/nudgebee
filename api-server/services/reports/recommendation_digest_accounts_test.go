@@ -97,11 +97,23 @@ func TestDigestAccountQueries_DB(t *testing.T) {
 		finops_band text, estimated_savings double precision, severity text, category text,
 		cloud_account_id uuid, created_at timestamp, updated_at timestamp, status text,
 		last_nudged_at timestamp, recommendation jsonb)`)
+	mustExec(`CREATE TABLE agent (cloud_account_id uuid, type text, connection_status jsonb)`)
+	mustExec(`CREATE TABLE cloud_account_attrs (cloud_account_id uuid, name text, value text)`)
 
 	const tenant = "00000000-0000-0000-0000-0000000000f1"
 	const prod = "00000000-0000-0000-0000-0000000000a1"
 	const dev = "00000000-0000-0000-0000-0000000000a2"
 	mustExec(`INSERT INTO cloud_accounts VALUES ($1, 'k8s-prod'), ($2, 'k8s-dev')`, prod, dev)
+	// NudgeBee's own agent runs on k8s-prod: its recommendations stay out of the
+	// lists and every total.
+	mustExec(`INSERT INTO agent VALUES ($1, 'k8s', '{"installationNamespace": "nudgebee-agent"}')`, prod)
+	for i, status := range []string{"Open", "Open", "Closed"} {
+		mustExec(`INSERT INTO recommendation (id, tenant_id, rule_name, finops_score, finops_band, estimated_savings,
+			severity, category, cloud_account_id, created_at, updated_at, status, recommendation)
+			VALUES ($1, $2, 'rule_own', 999, $3, 1000, 'High', 'RightSizing', $4, $5, now(), $6, '{"namespace": "nudgebee-agent"}')`,
+			fmt.Sprintf("00000000-0000-0000-0000-%012d", 900+i), tenant, []string{"Act Now", "Act Now", "High"}[i], prod,
+			time.Now().UTC().Add(time.Duration(-48*(1-i%2))*time.Hour), status)
+	}
 	now := time.Now().UTC()
 	insert := func(i int, account, rule, band, status string, score int, savings float64, created time.Time) {
 		mustExec(`INSERT INTO recommendation (id, tenant_id, rule_name, finops_score, finops_band, estimated_savings,
@@ -132,11 +144,14 @@ func TestDigestAccountQueries_DB(t *testing.T) {
 	for family, n := range perFamily {
 		assert.LessOrEqual(t, n, 3, family)
 	}
+	assert.Zero(t, perFamily[prod+"/rule_own"], "recommendations on NudgeBee's own workloads stay out")
 
 	cutoff := now.Add(-24 * time.Hour)
 	deltas, err := queryDigestDeltasByAccount(db, tenant, cutoff)
 	require.NoError(t, err)
 	assert.Equal(t, 30, deltas[prod].CarryoverCount)
+	assert.Zero(t, deltas[prod].NewCounts["act_now"])
+	assert.Zero(t, deltas[prod].ResolvedCount)
 	assert.Equal(t, 1, deltas[dev].NewCounts["high"])
 	assert.Equal(t, 1, deltas[dev].NewCounts["critical"])
 	assert.Equal(t, 1, deltas[dev].ResolvedCount)
@@ -194,7 +209,10 @@ func TestSecurityPostureAccountQueries_DB(t *testing.T) {
 	mustExec(`CREATE TABLE recommendation (
 		id uuid PRIMARY KEY, tenant_id uuid, rule_name text, account_object_id text, finops_score int,
 		finops_band text, estimated_savings double precision, severity text, category text,
-		cloud_account_id uuid, created_at timestamp, status text, last_nudged_at timestamp)`)
+		cloud_account_id uuid, created_at timestamp, status text, last_nudged_at timestamp, recommendation jsonb)`)
+	mustExec(`CREATE TABLE agent (cloud_account_id uuid, type text, connection_status jsonb)`)
+	mustExec(`CREATE TABLE cloud_account_attrs (cloud_account_id uuid, name text, value text)`)
+	mustExec(`CREATE TABLE k8s_pods (tenant_id uuid, cloud_account_id uuid, namespace text, is_active boolean, meta jsonb)`)
 
 	const tenant = "00000000-0000-0000-0000-0000000000f1"
 	const prod = "00000000-0000-0000-0000-0000000000a1"
@@ -214,6 +232,14 @@ func TestSecurityPostureAccountQueries_DB(t *testing.T) {
 	}
 	insert(100, dev, "cve_a", "High", false)
 	insert(101, dev, "cve_b", "High", true) // counted, but within its reminder window
+	// A finding on NudgeBee's own agent is neither listed nor counted.
+	mustExec(`INSERT INTO agent VALUES ($1, 'k8s', '{"installationNamespace": "nudgebee-agent"}')`, dev)
+	insert(102, dev, "cve_c", "High", false)
+	mustExec(`UPDATE recommendation SET recommendation = '{"namespace": "nudgebee-agent"}' WHERE id = '00000000-0000-0000-0000-000000000102'`)
+	// Nor is a vulnerable image that only the agent runs.
+	mustExec(`INSERT INTO k8s_pods VALUES ($1, $2, 'nudgebee-agent', true, '{"config": {"containers": [{"image": "registry/agent:1"}]}}')`, tenant, dev)
+	insert(103, dev, "image_scan", "High", false)
+	mustExec(`UPDATE recommendation SET recommendation = '{"image_name": "registry/agent:1"}' WHERE id = '00000000-0000-0000-0000-000000000103'`)
 
 	recs, err := querySecurityPostureAccountFindings(db, tenant)
 	require.NoError(t, err)

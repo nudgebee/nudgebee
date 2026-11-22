@@ -1,7 +1,6 @@
 package adapter
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1740,32 +1738,13 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		}, nil
 	}
 
-	_, authType, _, password, err := getGitCredentials(ctx, providerConfigMap["name"].(string))
+	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return unverifiedPRStatus("GitHub integration: " + err.Error()), nil
 	}
-
-	// Get the actual GitHub token based on auth type
-	var githubToken string
-	if authType == "application" {
-		// For GitHub App, password is the installation ID - need to get installation token
-		ctx.GetLogger().Info("Using GitHub App authentication", "installation_id", password)
-
-		// Use a fresh context with timeout for GitHub API call to avoid "context canceled" errors
-		// when the parent cron job context is cancelled. This ensures the GitHub API call
-		// can complete even if the HTTP request context is cancelled after sending response.
-		span := trace.SpanFromContext(ctx.GetContext())
-		tokenCtx, cancel := context.WithTimeout(trace.ContextWithSpan(context.Background(), span), 30*time.Second)
-		defer cancel()
-
-		githubToken, err = common.GetGithubAppInstallationToken(tokenCtx, password)
-		if err != nil {
-			ctx.GetLogger().Error("Failed to get GitHub App installation token", "error", err)
-			return unverifiedPRStatus("GitHub authentication failed: " + err.Error()), nil
-		}
-	} else {
-		// For token auth, use the password directly as the token
-		githubToken = password
+	integrations, err := loadGitIntegrationConfigs(ctx.GetLogger(), dbms, ctx.GetSecurityContext().GetTenantId(), "github", providerConfigMap["name"].(string))
+	if err != nil {
+		return unverifiedPRStatus("GitHub integration: " + err.Error()), nil
 	}
 
 	prUrlParts := strings.Split(prUrl, "/")
@@ -1783,23 +1762,62 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 	repo := prUrlParts[len(prUrlParts)-3]
 	org := prUrlParts[len(prUrlParts)-4]
 
-	resp, err := common.HttpGet(fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%s", org, repo, prId), common.HttpWithHeaders(map[string]string{
-		"Authorization": fmt.Sprintf("Bearer %s", githubToken),
+	return githubPRStatusFromIntegrations(ctx, integrations, org, repo, prId), nil
+}
+
+// githubPRStatusFromIntegrations asks GitHub for the pull request with each
+// integration in turn, moving on only while the answer is that the credential
+// cannot see it. The first failure is the one reported: it is the picked
+// integration's.
+func githubPRStatusFromIntegrations(ctx AccountAdapterContext, integrations []gitIntegrationConfig, org, repo, prID string) GetRecommendationResolutionStatusResponse {
+	var firstFailure GetRecommendationResolutionStatusResponse
+	failed := false
+	for _, integration := range integrations {
+		statusCode, body, err := lookupGitHubPR(ctx, integration.Values, org, repo, prID)
+		if err == nil && statusCode == 200 {
+			return githubPRStatusFromResponse(statusCode, body)
+		}
+		var answer GetRecommendationResolutionStatusResponse
+		if err != nil {
+			ctx.GetLogger().Error("Error getting PR status", "integration", integration.Name, "error", err)
+			answer = unverifiedPRStatus(err.Error())
+		} else {
+			ctx.GetLogger().Error("Error getting PR status", "integration", integration.Name, "status", statusCode, "data", string(body))
+			answer = githubPRStatusFromResponse(statusCode, body)
+		}
+		if !failed {
+			firstFailure, failed = answer, true
+		}
+		if !errors.Is(err, errAppTokenFailed) && (err != nil || !credentialCannotSee(statusCode)) {
+			return answer
+		}
+	}
+	if !failed {
+		return unverifiedPRStatus("no GitHub integration to ask")
+	}
+	return firstFailure
+}
+
+// lookupGitHubPR asks GitHub for a pull request with one integration's
+// credential. err is set only when no answer was read; its text is shown to
+// the user.
+func lookupGitHubPR(ctx AccountAdapterContext, cfg map[string]string, org, repo, prID string) (int, []byte, error) {
+	token, err := githubAPIToken(ctx.GetContext(), cfg)
+	if err != nil {
+		return 0, nil, fmt.Errorf("GitHub authentication failed: %w", err)
+	}
+	resp, err := common.HttpGet(fmt.Sprintf("%s/repos/%s/%s/pulls/%s", githubAPIBase, org, repo, prID), common.HttpWithHeaders(map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", token),
 	}))
 	if err != nil {
-		ctx.GetLogger().Error("Error getting PR status", "error", err)
-		return unverifiedPRStatus("GitHub request failed: " + err.Error()), nil
+		return 0, nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-
-	jsonBodyBytes, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return unverifiedPRStatus("reading GitHub's response: " + err.Error()), nil
+		return 0, nil, fmt.Errorf("reading GitHub's response: %w", err)
 	}
-	if resp.StatusCode != 200 {
-		ctx.GetLogger().Error("Error getting PR status", "status", resp.StatusCode, "data", string(jsonBodyBytes))
-	}
-	return githubPRStatusFromResponse(resp.StatusCode, jsonBodyBytes), nil
+	return resp.StatusCode, body, nil
 }
 
 // githubPRStatusFromResponse maps GitHub's answer for a pull request onto a

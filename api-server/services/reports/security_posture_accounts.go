@@ -3,6 +3,7 @@ package reports
 import (
 	"nudgebee/services/account"
 	"nudgebee/services/config"
+	"nudgebee/services/notification"
 
 	"github.com/jmoiron/sqlx"
 )
@@ -74,6 +75,8 @@ func querySecurityPostureAccountFindings(db *sqlx.DB, tenantID string) ([]digest
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
+					AND `+notification.NotOwnImageSQL("$1")+`
 					AND r.category = 'Security'
 					AND r.status = 'Open'
 					AND r.severity IN ('Critical', 'High')
@@ -106,8 +109,10 @@ func querySecurityPostureCountsByAccount(db *sqlx.DB, tenantID string) (map[stri
 	}
 	err := db.Select(&rows, `
 		SELECT COALESCE(cloud_account_id::text, '') AS account_id, severity, COUNT(*) AS cnt
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
+		  AND `+notification.NotOwnImageSQL("$1")+`
 		  AND category = 'Security'
 		  AND status = 'Open'
 		  AND severity IN ('Critical', 'High')

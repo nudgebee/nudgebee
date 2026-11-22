@@ -73,10 +73,19 @@ const Tabs = ({
         flex.style.setProperty('--ct-indicator-width', '0px');
         return;
       }
-      const containerRect = flex.getBoundingClientRect();
-      const tabRect = selected.getBoundingClientRect();
-      flex.style.setProperty('--ct-indicator-x', `${tabRect.left - containerRect.left}px`);
-      flex.style.setProperty('--ct-indicator-width', `${tabRect.width}px`);
+      // offsetLeft/offsetWidth, not getBoundingClientRect(): the latter
+      // reflects any CSS transform on an ancestor (e.g. the modal's own
+      // open/enter transition, still mid-animation when a deep-linked tab
+      // mounts straight onto a non-default sub-tab). A transform active at
+      // measurement time scales or shifts both rects together, so the
+      // computed offset comes out wrong relative to the transform's final
+      // (settled) state — and since nothing but a size change re-triggers
+      // this effect, that wrong value sticks forever once the transform
+      // finishes. offsetLeft/offsetWidth are pure layout-box values (relative
+      // to `flex`, which is the nearest `position`-ed ancestor), unaffected
+      // by transforms on anything above it.
+      flex.style.setProperty('--ct-indicator-x', `${selected.offsetLeft}px`);
+      flex.style.setProperty('--ct-indicator-width', `${selected.offsetWidth}px`);
     };
 
     update();
@@ -90,7 +99,11 @@ const Tabs = ({
   const router = useRouter();
   const selectedOption = options?.tabOptions?.find((opt) => opt.value === value);
   const showBottomMargin = selectedOption?.showBottomMargin || false;
-  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && !opt.disabled && opt.value === value) ? value : false;
+  // A disabled sub-tab can still be the active one (a page may highlight it on
+  // purpose, e.g. a permission-gated #events/anomaly deep link, and render a
+  // permission-denied placeholder for its content) -- only exclude hidden
+  // options here, so MUI Tabs still underlines it instead of selecting nothing.
+  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && opt.value === value) ? value : false;
 
   const getTabUrl = (opt) => {
     // 1. Get the current resolved path (e.g., "/kubernetes/details/123?tab=1")
@@ -387,7 +400,7 @@ const Tabs = ({
                     component={behavior === 'router' && !softDisabled ? Link : 'button'}
                     value={opt.value}
                     icon={
-                      opt.count ? (
+                      opt.count && !opt.disabled ? (
                         <Chip variant='count' size='2xs' tone={opt.value === value ? 'info' : 'neutral'}>
                           {formatTabCount(opt.count)}
                         </Chip>

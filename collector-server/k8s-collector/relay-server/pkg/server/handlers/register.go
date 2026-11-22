@@ -246,7 +246,14 @@ func RegisterHandler(
 		}
 
 		// —— update relay connection status when agent connects successfully ——
-		connTransitioned, connTenant, cerr := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart)
+		connTransitioned, connTenant, connectedAt, cerr := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart)
+		// The disconnect guard compares against the last_connected_at our own connect
+		// write stored, not sessionStart, which that write always postdates. If the
+		// connect write failed, sessionStart is the fallback: the row is older than it.
+		sessionMark := sessionStart
+		if cerr == nil && !connectedAt.IsZero() {
+			sessionMark = connectedAt
+		}
 		if cerr != nil {
 			logger.Error("failed to update relay connection status", "err", cerr, "account", accountID, "agent_type", agentType)
 			// Continue processing even if status update fails
@@ -688,7 +695,7 @@ func RegisterHandler(
 		}
 
 		// —— mark agent as disconnected (only if no newer session has connected) ——
-		discTransitioned, discTenant, derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionStart)
+		discTransitioned, discTenant, _, derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionMark)
 		if derr != nil {
 			logger.Error("failed to update relay disconnect status", "err", derr, "account", accountID, "agent_type", agentType)
 		} else {

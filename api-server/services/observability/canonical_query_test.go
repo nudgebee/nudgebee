@@ -105,7 +105,7 @@ func TestShiftCanonicalQueryToWhere_Window(t *testing.T) {
 	})
 
 	t.Run("absent or unusable time_range keeps the caller's window", func(t *testing.T) {
-		for _, tr := range []string{"", "last tuesday", "0h", "-1h"} {
+		for _, tr := range []string{"", "last tuesday", "0h", "-1h", "200000d"} {
 			req := FetchLogRequest{Query: `{"where": {"a": {"_eq": "1"}}, "time_range": "` + tr + `"}`, StartTime: 111, EndTime: 222}
 			require.NoError(t, shiftCanonicalQueryToWhere(&req), tr)
 			assert.Equal(t, int64(111), req.StartTime, tr)

@@ -40,6 +40,9 @@ export class AutomationsLocators extends CommonLocators {
 
   readonly configsModal: Locator;
   readonly configAccountSelect: Locator;
+  readonly configFormAccountSelect: Locator;
+  readonly configFormAccountError: Locator;
+  readonly configFormAccountSearch: Locator;
   readonly configOverlaySearch: Locator;
   readonly addConfigBtn: Locator;
   readonly configFormModal: Locator;
@@ -138,6 +141,13 @@ export class AutomationsLocators extends CommonLocators {
       .locator("#config-account-select")
       .or(this.configsModal.getByRole("button", { name: /Account/ }))
       .first();
+    this.configFormAccountSelect = page.locator("#config-form-account-select").or(this.configFormModal.getByRole("button", { name: /Select an account|Account/ })).first();
+    this.configFormAccountError = page
+      .locator("#config-form-account-select-error")
+      .or(this.configFormModal.getByRole("alert").filter({ hasText: "Account is required" }))
+      .first();
+    // The search input sits above the listbox in the portaled overlay, not inside it.
+    this.configFormAccountSearch = page.getByPlaceholder("Search…", { exact: true }).first();
     // ds/Select shows its own search box inside the portaled listbox.
     this.configOverlaySearch = page
       .getByRole("listbox")

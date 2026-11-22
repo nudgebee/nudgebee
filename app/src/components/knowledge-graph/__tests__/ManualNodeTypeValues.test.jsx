@@ -75,3 +75,11 @@ it('renders nothing until the schema has loaded', () => {
   const { container } = render(<ManualNodeTypeValues schema={[]} />);
   expect(container).toBeEmptyDOMElement();
 });
+
+it('lists a kind of the tenant’s own by its name, beside its category', () => {
+  const custom = { specific_type: 'NetworkSwitch', node_type: 'CloudResource', key_fields: [name], properties: [], free_properties: true };
+  const schema = [{ ...SCHEMA[3], kinds: [...SCHEMA[3].kinds, custom] }];
+  render(<ManualNodeTypeValues schema={schema} />);
+  const row = screen.getByText('NetworkSwitch').closest('tr');
+  expect(within(row).getByText('CloudResource')).toBeInTheDocument();
+});

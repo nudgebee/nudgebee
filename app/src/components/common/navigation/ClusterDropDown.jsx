@@ -115,11 +115,13 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
       overriddenUrlIdRef.current = requestedId && requestedId !== initialId ? requestedId : null;
       const newClusterObj = currentClusters?.find((item) => item.value === initialId);
       if (!disableRouteChanges && router.pathname !== '/kubernetes/details/[KubernetesDetails]') {
-        // Only push route if ID is different or missing to avoid redundant history entries
+        // Only update the route if ID is different or missing. Replace, not push:
+        // filling in the default account is not a navigation, so Back must not
+        // land on the same page without it.
         const query = { ...router.query, accountId: initialId };
         if (urlAccountId !== initialId) {
           // Simple check to prevent replacing URL with identical URL
-          router.push({ pathname: router.pathname, query }, undefined, { shallow: true });
+          router.replace({ pathname: router.pathname, query }, undefined, { shallow: true });
         }
       }
       setSelectedCluster(newClusterObj);
@@ -173,8 +175,10 @@ const ClusterDropdown = ({ onChange, onClusterDataLoaded, disableRouteChanges = 
           if (!disableRouteChanges && router.pathname !== '/kubernetes/details/[KubernetesDetails]') {
             const query = { ...router.query, accountId: selectedCluster.value };
             if (urlAccountId !== selectedCluster.value) {
-              // Simple check to prevent replacing URL with identical URL
-              router.push({ pathname: router.pathname, query }, undefined, { shallow: true });
+              // Simple check to prevent replacing URL with identical URL. A replace, not a
+              // push: filling in the default account is not a navigation, so Back must not
+              // land on the same page without it.
+              router.replace({ pathname: router.pathname, query }, undefined, { shallow: true });
             }
           }
         } else {

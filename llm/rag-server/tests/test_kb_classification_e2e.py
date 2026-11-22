@@ -156,8 +156,8 @@ class ScriptedLLM:
 
 class FakeKBTable:
     """Postgres stand-in for llm_kb_capability_entries as the KB path uses it: one
-    'kb_collection' rollup row per collection, plus the platform capability
-    catalog and the classification usage rows.
+    'kb_collection' rollup row per collection, one 'kb_document' label row per page,
+    plus the platform capability catalog and the classification usage rows.
 
     The semantics copy the SQL in db_query: the rollup is an upsert keyed by
     collection name, an all-empty rollup deletes the row, and every write is
@@ -168,6 +168,7 @@ class FakeKBTable:
         self.summaries = {}  # collection_name -> {"kinds", "shapes", "capabilities"}
         self.writes = []  # every set_kb_collection_summary call, attempted or not
         self.deletes = []  # every delete_kb_capabilities call
+        self.pages = {}  # (collection_name, document_key) -> the page's label row
         self.usage = []
         self.catalog = []
         self.down = False  # Postgres unreachable
@@ -190,6 +191,13 @@ class FakeKBTable:
             "capabilities": list(capabilities),
         }
 
+    def upsert_kb_document_labels(self, rows):
+        if self.down:
+            raise RuntimeError("postgres unavailable")  # the real function raises; its caller logs
+        for row in rows:
+            self.pages[(row["collection_name"], row["document_key"])] = dict(row)
+        return len(rows)
+
     def get_kb_summary_collection_names(self):
         if self.down or self.list_raises:
             raise RuntimeError("postgres unavailable")
@@ -205,6 +213,8 @@ class FakeKBTable:
         if self.down:
             return
         self.summaries.pop(collection_name, None)
+        if not keep_documents:
+            self.pages = {key: row for key, row in self.pages.items() if key[0] != collection_name}
 
     def get_capability_catalog(self):
         return [] if self.down else self.catalog  # fails closed, like the real read
@@ -310,6 +320,7 @@ def server(qdrant, monkeypatch):
 def pg(monkeypatch):
     table = FakeKBTable()
     monkeypatch.setattr(db_query, "set_kb_collection_summary", table.set_kb_collection_summary)
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", table.upsert_kb_document_labels)
     monkeypatch.setattr(db_query, "get_kb_summary_collection_names", table.get_kb_summary_collection_names)
     monkeypatch.setattr(db_query, "has_kb_collection_summary", table.has_kb_collection_summary)
     monkeypatch.setattr(db_query, "delete_kb_capabilities", table.delete_kb_capabilities)
@@ -782,6 +793,13 @@ class TestIntegrationIngest:
                 "shapes": ["decision_tree", "deterministic_procedure", "narrative_reference"],
                 "capabilities": [],
             }
+        }
+        # And one label row per page, written in the same refresh: the documents modal reads
+        # these, so they must not wait for a restart.
+        assert {key: row["kind"] for key, row in stack.pg.pages.items()} == {
+            (INT_KB, f"{INT_KB}|0"): "sop",
+            (INT_KB, f"{INT_KB}|1"): "knowledge",
+            (INT_KB, f"{INT_KB}|2"): "sop",
         }
 
     def test_a_long_page_is_one_call_and_its_chunks_share_the_page_label(self, stack):

@@ -35,9 +35,12 @@ import { getGraphqlErrorMessage } from '@lib/errorMessages';
 import SafeIcon from '@shared/icons/SafeIcon';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { useData } from '@context/DataContext';
-import { hasFeatureAccess, hasPermission, hasReadAccess, isUiFeatureEnabled } from '@lib/auth';
+import { navSections } from '@lib/authHooks';
+import { canViewGatewayUserAccess, getSessionAccountIds, hasFeatureAccess, hasReadAccess, isTenantWideRole, isUiFeatureEnabled } from '@lib/auth';
 import { trackProductEvent } from '@lib/productAnalytics';
 import { useTenantBranding } from '@hooks/useTenantBranding';
+import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
+import { bCortexOpener } from '@lib/bCortexOpenService';
 import apiUser, { PREFERENCE_LAST_ACCOUNT_ID } from '@api1/user';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiDashboards from '@api1/dashboards';
@@ -49,8 +52,9 @@ import OptimiseIconBlue from '@assets/header/OptimiseIconBlue.icon.svg';
 import TicketIconBlue from '@assets/header/TicketIconBlue.icon.svg';
 import TroubleshootIconBlue from '@assets/header/TroubleshootIconBlue.icon.svg';
 import WorkflowIconBlue from '@assets/workflow/workflow-icon-blue.icon.svg';
+import BCortexIcon from '@assets/ask-nudgebee/bcortex-icon.icon.svg';
 import { checkConnections } from '@shared/widgets/ClusterStatusIndicator';
-import { AgentIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
+import { AgentIconBlue, BeesIconBlue, dashboardIcon1, KubernetesClusterIcon, VmIcon } from '@assets';
 import {
   navSearchPages,
   accountScopedSearchFragments,
@@ -61,6 +65,7 @@ import {
   azureDetailsSearchFragments,
   gcpDetailsSearchFragments,
   cloudFoundryDetailsSearchFragments,
+  bCortexSearchFragments,
   pathAcronym,
   wordsOf,
   fuzzyTokenMatches,
@@ -113,6 +118,8 @@ const NAV_SEARCH_GROUP_ICON = {
   Admin: AdminIconBlue,
   Overview: recoloredSidebarIcon(KubernetesClusterIcon),
   VM: recoloredSidebarIcon(VmIcon),
+  'b-Cortex': recoloredSidebarIcon(BCortexIcon),
+  Bees: BeesIconBlue,
 };
 
 // Keyboard-hint bar rendered below the options list — static markup (no
@@ -469,6 +476,31 @@ const navSearchIntegrationItems = integrationProviders.map((provider) => {
     searchText: `Admin ${fragmentPath} ${pathAcronym(fragmentPath)}`,
     group: 'Admin',
     sectionLabel: 'Integrations',
+  };
+});
+
+// Search rows for every b-Cortex tab. b-Cortex is a modal mounted on every
+// page, not a route — picking one of these opens it directly via the
+// bCortexOpener seam (see handleOptionSelect below) rather than navigating
+// anywhere. `value`/`path` are still opaque, stable strings (not real URLs)
+// since they're only used as the Recents dedupe key, same role every other
+// row's `value` plays there. Visibility (OSS mode, plus each tab's own
+// memoryOnly/requiresFeedbackScope gate) is handled in
+// isNavSearchItemVisible below, not here.
+const navSearchBCortexItems = bCortexSearchFragments.map((entry) => {
+  const path = `bcortex:${entry.tab}`;
+  return {
+    label: entry.label,
+    icon: NAV_SEARCH_GROUP_ICON['b-Cortex'],
+    type: `/${entry.slug}`,
+    value: path,
+    path,
+    group: 'b-Cortex',
+    bcortexTab: entry.tab,
+    bcortexMemoryOnly: entry.memoryOnly,
+    bcortexRequiresFeedbackScope: entry.requiresFeedbackScope,
+    acronym: pathAcronym(entry.slug),
+    searchText: `b-Cortex ${entry.slug} ${pathAcronym(entry.slug)}`,
   };
 });
 
@@ -1154,11 +1186,31 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       .then(setLlmAnalyserEnabled)
       .catch(() => setLlmAnalyserEnabled(false));
   }, []);
+  // MEMORY_MODULE — same tri-state as BCortexModal.jsx's own bcortexEnabled
+  // (useBCortexEnabled): null (still resolving) renders optimistically so the
+  // Account Context row doesn't flash in and out while the flag loads; only
+  // an explicit `false` hides it, matching the modal's own rule for a
+  // memoryOnly tab exactly (visible unless bcortexEnabled === false).
+  const [memoryModuleEnabled, setMemoryModuleEnabled] = useState(null);
+  useEffect(() => {
+    hasFeatureAccess('MEMORY_MODULE')
+      .then((v) => setMemoryModuleEnabled(Boolean(v)))
+      .catch(() => {});
+  }, []);
 
   // Same gate the sidebar's own "Admin" nav item uses (layout/index.jsx) — a
   // user who can't see that nav entry shouldn't find its pages (Users,
   // Groups, Audits, Notifications, Integrations, Ownership) via search either.
   const canAccessAdmin = hasReadAccess();
+  // Same OSS-mode gate the b-Cortex rail button itself uses (NubiBrainNav.jsx)
+  // — resolved once here rather than inside isNavSearchItemVisible's filter,
+  // same pattern as canAccessTaskRunner/canAccessBilling below.
+  const canAccessBCortex = !isOSSDeploymentMode();
+  // Account Context sub-tab gate — mirrors BCortexModal.jsx's own knowledgeSubTabs filter.
+  const canAccessBCortexAccountContext = memoryModuleEnabled !== false;
+  // Feedback sub-tab gate — same isTenantWideRole() || getSessionAccountIds().length > 0
+  // check BCortexModal.jsx's own hasFeedbackScope uses; session-derived, not async.
+  const canAccessBCortexFeedback = isTenantWideRole() || getSessionAccountIds().length > 0;
   // Same gate the Automation page's own Task Runner tab uses (automation/index.jsx's
   // isAdmin) — only tenant_admin/account_admin can see that tab there, so a
   // non-admin shouldn't be able to jump to it via search either.
@@ -1180,17 +1232,32 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       data?.isSuperAdmin ||
       data?.permissions?.includes('customroles:Read'))
   );
-  // Same two gates optimise/index.jsx's own LLM Analyser/AI Gateway tabs use.
-  // They are different KINDS of gate: LLM_ANALYSER is a per-tenant feature flag
-  // (resolved asynchronously, hence the state above), while AI Gateway is still
-  // a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the session by
-  // isUiFeatureEnabled. Both are then narrowed by
-  // hasReadAccess(selectedCluster?.value), mirroring the page's per-account check.
+  // Same gates the LLM Analyser tab (optimise/index.jsx) and the AI Gateway page
+  // (pages/ai-gateway/index.tsx) use. They are different KINDS of gate:
+  // LLM_ANALYSER is a per-tenant feature flag (resolved asynchronously, hence the
+  // state above), narrowed by hasReadAccess(selectedCluster?.value) as its page is;
+  // AI Gateway is a per-deployment UI_ENABLE_LLM_GATEWAY env var read off the
+  // session by isUiFeatureEnabled.
   const canAccessLlmAnalyser = llmAnalyserEnabled && hasReadAccess(selectedCluster?.value);
-  // The `llm:Read` disjunct mirrors the page too: the gateway usage API is
-  // tenant-scoped, so hasReadAccess (per-account) never sees that grant and the
-  // row went missing for grant holders. Keep in lockstep with optimise/index.jsx.
-  const canAccessAiGateway = isUiFeatureEnabled('llmGateway') && (hasReadAccess(selectedCluster?.value) || hasPermission('llm', 'Read'));
+  // Cost Report is the one LLM Analyser sub-tab CostAnalyser.tsx itself only puts in
+  // its tabOptions for a tenant-wide role (showCostReportTab) — every other sub-tab
+  // is reachable by anyone who clears canAccessLlmAnalyser.
+  const canAccessLlmAnalyserCostReport = canAccessLlmAnalyser && isTenantWideRole();
+  // AI Gateway is tenant-level: any signed-in tenant user reads their own usage, so
+  // only the deployment toggle gates it. Keep in lockstep with pages/ai-gateway.
+  const canAccessAiGateway = isUiFeatureEnabled('llmGateway');
+  // The Bees rows lead to a section an extension registers (navSections); shown
+  // when it is registered and its feature flag is on, as the side navigation does.
+  const [canAccessBees, setCanAccessBees] = useState(false);
+  useEffect(() => {
+    const section = navSections().find((s) => s.id === 'bees-sidenav');
+    if (!section) {
+      return;
+    }
+    (section.feature ? hasFeatureAccess(section.feature) : Promise.resolve(true))
+      .then((v) => setCanAccessBees(Boolean(v)))
+      .catch(() => setCanAccessBees(false));
+  }, []);
 
   // Provider-agnostic "some account" resolution — used by Automation/Agent
   // Health's search entries (no K8s/AWS/Azure/GCP/CloudFoundry concept to key
@@ -1218,6 +1285,17 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.group === 'Admin' && !canAccessAdmin) {
         return false;
       }
+      if (opt.group === 'b-Cortex') {
+        if (!canAccessBCortex) {
+          return false;
+        }
+        if (opt.bcortexMemoryOnly && !canAccessBCortexAccountContext) {
+          return false;
+        }
+        if (opt.bcortexRequiresFeedbackScope && !canAccessBCortexFeedback) {
+          return false;
+        }
+      }
       if (opt.label === 'Task Runner' && !canAccessTaskRunner) {
         return false;
       }
@@ -1227,15 +1305,33 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       if (opt.label === 'Roles' && !canAccessRoles) {
         return false;
       }
-      if (opt.label === 'LLM Analyser' && !canAccessLlmAnalyser) {
+      if (opt.label?.startsWith('LLM Analyser') && !canAccessLlmAnalyser) {
         return false;
       }
-      if (opt.label === 'AI Gateway' && !canAccessAiGateway) {
+      if (opt.label === 'LLM Analyser - Cost Report' && !canAccessLlmAnalyserCostReport) {
+        return false;
+      }
+      if (opt.group === 'AI Gateway' && (!canAccessAiGateway || (opt.label === 'AI Gateway - Users' && !canViewGatewayUserAccess()))) {
+        return false;
+      }
+      if (opt.group === 'Bees' && !canAccessBees) {
         return false;
       }
       return true;
     },
-    [canAccessAdmin, canAccessTaskRunner, canAccessBilling, canAccessRoles, canAccessLlmAnalyser, canAccessAiGateway]
+    [
+      canAccessAdmin,
+      canAccessBCortex,
+      canAccessBCortexAccountContext,
+      canAccessBCortexFeedback,
+      canAccessTaskRunner,
+      canAccessBilling,
+      canAccessRoles,
+      canAccessLlmAnalyser,
+      canAccessLlmAnalyserCostReport,
+      canAccessAiGateway,
+      canAccessBees,
+    ]
   );
 
   const accountScopedNavItems = useMemo(
@@ -1261,6 +1357,14 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     [isNavSearchItemVisible, automationNavItems, accountScopedNavItems, k8sNavItems, awsNavItems, azureNavItems, gcpNavItems, cfNavItems]
   );
 
+  // b-Cortex gets its own section (like Dashboards/Integrations) rather than
+  // folding into "Suggested Pages" — kept out of navSearchItems above for
+  // that reason.
+  const bcortexSearchOptions = useMemo(
+    () => navSearchBCortexItems.filter(isNavSearchItemVisible).map((opt) => ({ ...opt, sectionLabel: 'b-Cortex' })),
+    [isNavSearchItemVisible]
+  );
+
   // Kept out of navSearchItems/Suggested Pages so Integrations gets its own
   // section, same as Dashboards/Automations.
   const integrationSearchOptions = useMemo(() => navSearchIntegrationItems.filter(isNavSearchItemVisible), [isNavSearchItemVisible]);
@@ -1271,7 +1375,10 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   // drops silently, same as a renamed/removed static page already does.
   const resolveRecentOption = useCallback(
     (value) => {
-      const staticMatch = navSearchStaticItems.find((opt) => opt.value === value) || navSearchIntegrationItems.find((opt) => opt.value === value);
+      const staticMatch =
+        navSearchStaticItems.find((opt) => opt.value === value) ||
+        navSearchIntegrationItems.find((opt) => opt.value === value) ||
+        navSearchBCortexItems.find((opt) => opt.value === value);
       if (staticMatch) {
         return isNavSearchItemVisible(staticMatch) ? staticMatch : null;
       }
@@ -1378,14 +1485,14 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
   }, [scopedAccount, isNavSearchItemVisible, workflowSearchItems]);
 
   // The full (unfiltered) option list for whichever mode is active — mirrors
-  // ds/FilterDropdown.jsx's `options` prop. Five peer sections (opt.sectionLabel):
-  // Recents, Suggested Pages, Dashboards, Automations, Integrations — each
-  // renders only when it has rows. Suggested Pages sits right below Recents;
-  // its ~200 rows are capped to a MAX_SECTION_ROWS preview, so the sections
-  // below it stay reachable without being buried.
+  // ds/FilterDropdown.jsx's `options` prop. Six peer sections (opt.sectionLabel):
+  // Recents, Suggested Pages, Dashboards, Automations, b-Cortex, Integrations —
+  // each renders only when it has rows. Suggested Pages sits right below
+  // Recents; its ~200 rows are capped to a MAX_SECTION_ROWS preview, so the
+  // sections below it stay reachable without being buried.
   //
-  // Dashboards and Integrations stay out of the "@account" scoped list —
-  // neither is tied to one connected account. Automations IS, so it's
+  // Dashboards, b-Cortex and Integrations stay out of the "@account" scoped
+  // list — none is tied to one connected account. Automations IS, so it's
   // included there too, under scopedSearchItems' own two-section split.
   const searchBoxOptions = useMemo(() => {
     if (mentionMode) {
@@ -1394,7 +1501,14 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     if (scopedAccount) {
       return scopedSearchItems;
     }
-    return [...recentSearchOptions, ...suggestedPageOptions, ...dashboardSearchItems, ...workflowSearchItems, ...integrationSearchOptions];
+    return [
+      ...recentSearchOptions,
+      ...suggestedPageOptions,
+      ...dashboardSearchItems,
+      ...workflowSearchItems,
+      ...bcortexSearchOptions,
+      ...integrationSearchOptions,
+    ];
   }, [
     mentionMode,
     accountMentionOptions,
@@ -1403,6 +1517,7 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
     recentSearchOptions,
     dashboardSearchItems,
     workflowSearchItems,
+    bcortexSearchOptions,
     integrationSearchOptions,
     suggestedPageOptions,
   ]);
@@ -1646,6 +1761,15 @@ function GlobalPageSearch({ hasClusterDropdown = true }) {
       }
       apiUser.addRecentPageSearch(option.value, data?.tenant?.id);
       setRecentSearchValues(apiUser.getRecentPageSearches(data?.tenant?.id));
+      // b-Cortex is a modal mounted on every page, not a route — open it
+      // directly on the requested tab via the bCortexOpener seam instead of
+      // navigating anywhere, so picking it doesn't pull the user off whatever
+      // page (e.g. a K8s details tab) they were already on.
+      if (option.group === 'b-Cortex' && option.bcortexTab) {
+        bCortexOpener.open(option.bcortexTab);
+        setAnchorEl(null);
+        return;
+      }
       navigateToSearchResult(option.path, option.accountId);
       setAnchorEl(null);
     },

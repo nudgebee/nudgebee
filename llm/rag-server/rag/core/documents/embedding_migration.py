@@ -59,6 +59,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from rag.core.documents.figure_cache import MODULE as FIGURE_MODULE
 from rag.core.documents.source_store import MODULE as SOURCE_MODULE
+from rag.core.types import Document
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +319,16 @@ def _text_of(payload: Optional[Dict[str, Any]]) -> str:
         return ""
     value = payload.get("page_content")
     return "" if value is None else str(value)
+
+
+def _embedding_text_of(payload: Optional[Dict[str, Any]]) -> str:
+    """The text a point's vector is computed from: its chunk_context before the
+    page_content, the same as at ingest (Document.retrieval_text), so a rebuilt
+    vector matches one a fresh sync would write."""
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    return Document(
+        page_content=_text_of(payload), metadata=metadata if isinstance(metadata, dict) else {}
+    ).retrieval_text()
 
 
 def _describe(client: QdrantClient, name: str) -> Optional[Tuple[int, Distance, Dict[str, Any], int]]:
@@ -588,7 +599,7 @@ def _rebuild_into(
                 len(points) - len(usable),
             )
         if usable:
-            vectors = _embed_unique(embeddings, [_text_of(pt.payload) for pt in usable], cache, source)
+            vectors = _embed_unique(embeddings, [_embedding_text_of(pt.payload) for pt in usable], cache, source)
             client.upsert(
                 collection_name=target,
                 points=[PointStruct(id=pt.id, vector=v, payload=pt.payload) for pt, v in zip(usable, vectors)],
@@ -726,7 +737,7 @@ def _catch_up(
             missing = [pt for pt in fetched if _text_of(pt.payload).strip()]
         if missing:
             embeddings = embeddings or load_embeddings()
-            vectors = _embed_unique(embeddings, [_text_of(pt.payload) for pt in missing], cache, source)
+            vectors = _embed_unique(embeddings, [_embedding_text_of(pt.payload) for pt in missing], cache, source)
             client.upsert(
                 collection_name=staging,
                 points=[PointStruct(id=pt.id, vector=v, payload=pt.payload) for pt, v in zip(missing, vectors)],

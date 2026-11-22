@@ -15,6 +15,7 @@ from sqlalchemy.sql.elements import TextClause
 from notifications_server.models.models import NotificationRules
 from notifications_server.services import rules as rules_module
 from notifications_server.services.rules import NotificationRulesService
+from notifications_server.services.cache import AsyncCache
 
 TENANT = "22222222-2222-2222-2222-222222222222"
 DB_COLUMNS_BEFORE_MIGRATION = [c.name for c in NotificationRules.__table__.columns if c.name != "event_types"]
@@ -90,6 +91,7 @@ class _SessionFactory:
 
 class _Cache:
     redis_client = object()
+    aio = property(AsyncCache)
 
     def __init__(self):
         self.cached = []

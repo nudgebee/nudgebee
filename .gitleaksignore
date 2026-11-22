@@ -1,0 +1,19 @@
+# Fingerprints gitleaks itself prints on a finding (commit:file:rule:line).
+# Entries here are historical findings already remediated on `main` by a later
+# commit — the internal-aws-account-id-arn rule (added in #41383) didn't exist
+# yet when the flagged commit landed, so it was never checked against it. The
+# dead commit stays in history and re-surfaces whenever a later full-range scan
+# (e.g. a main->test promotion PR) happens to include it. See #41606.
+#
+# Fixed by a74f86b1f201 (#41383), which replaced these with the allowlisted
+# placeholder (888888888888).
+42f533930a921184c224c29d531c0baf9db630e5:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:107
+42f533930a921184c224c29d531c0baf9db630e5:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:113
+42f533930a921184c224c29d531c0baf9db630e5:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:119
+
+# Same finding, replayed into OSS by the 1.15.0 sync: a9d8b52edc is the OSS copy
+# of the EE commit above, and 652b499dc1 (the OSS copy of a74f86b1f201) replaces
+# the ids later in the same sync.
+a9d8b52edc1cfd32a4f058df25c214b763a745ed:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:107
+a9d8b52edc1cfd32a4f058df25c214b763a745ed:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:113
+a9d8b52edc1cfd32a4f058df25c214b763a745ed:app/src/components/workflow/utils/__tests__/eventFilterOptions.test.ts:internal-aws-account-id-arn:119

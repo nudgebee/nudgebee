@@ -1,6 +1,9 @@
 package triage
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // mkHistory builds a MetricHistory with evenly-spaced timestamps at the given step.
 func mkHistory(step int, values []float64) *MetricHistory {
@@ -542,5 +545,110 @@ func TestDiagnose_IntervalsOutsideHistoryAbstain(t *testing.T) {
 	d := decomposeHistory(h, []firingInterval{away}, 100, true)
 	if d.SampledIntervals != 0 || !d.SelfCheckFailed {
 		t.Errorf("got sampled=%d selfCheckFailed=%v, want 0/true", d.SampledIntervals, d.SelfCheckFailed)
+	}
+}
+
+// ratioSpikeHistory is the shape of a ratio alert whose denominator sometimes drops to zero
+// (#41378): off-alert the ratio is 0, except for bursts where it divides by a near-zero floor and
+// reads in the millions; while the alert fires it sits near 1.
+func ratioSpikeHistory() (*MetricHistory, firingInterval) {
+	base := make([]float64, 228)
+	for i := 0; i < 24; i++ {
+		base[i*9+3] = 300_000 + float64(i)*80_000 // 24 bursts, 0.3M–2.1M
+	}
+	fire := band(166, 1.15, 0.1) // 1.05–1.25
+	h := mkHistory(420, concat(base, fire))
+	return h, idxInterval(h, len(base), len(base)+len(fire)-1)
+}
+
+func TestDiagnose_OffAlertSpikesAboveEveryFiringOfferNoValue(t *testing.T) {
+	h, iv := ratioSpikeHistory()
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 0.5}
+	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, nil)
+	if !ok {
+		t.Fatal("expected baseline path to handle")
+	}
+	finalizeSuggestion(s, ad, nil, h)
+	if s.RecommendationType != "review_alert" {
+		t.Fatalf("a value above every firing must not be a tuning, got %q (sug=%.4g reason=%s)", s.RecommendationType, s.SuggestedThreshold, s.Reason)
+	}
+	if s.SuggestedThreshold != 0.5 || s.EstimatedReduction != 0 {
+		t.Errorf("no new value may be served, got sug=%.4g reduction=%.0f", s.SuggestedThreshold, s.EstimatedReduction)
+	}
+	for _, want := range []string{"would not have fired on any of the", "lie beyond everything the alert fired on"} {
+		if !strings.Contains(s.Reason, want) {
+			t.Errorf("reason must say %q, got: %s", want, s.Reason)
+		}
+	}
+}
+
+func TestDiagnose_ChronicValueAboveEveryFiringOffersNoValue(t *testing.T) {
+	// The metric sits around 30 against θ=10 when the alert is not firing, with a tail to ~200, but
+	// the alert only ever fired at ~12. The value clear of the normal band (~33) is one the metric
+	// still reached, yet it would not have fired on a single one of the alert's own firings.
+	var tail []float64
+	for i := 0; i < 10; i++ {
+		tail = append(tail, 50+float64(i)*15)
+	}
+	// The tail comes after the firing: the interval is padded back by the rule's wait, and the
+	// samples that padding takes in must be ordinary ones.
+	fire := band(10, 12, 1)
+	h := mkHistory(60, concat(band(70, 30, 2), fire, tail))
+	iv := idxInterval(h, 70, 79)
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 10}
+	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, nil)
+	if !ok {
+		t.Fatal("expected baseline path to handle")
+	}
+	finalizeSuggestion(s, ad, nil, h)
+	if s.Diagnosis != "chronic" || s.RecommendationType != "investigate_signal" {
+		t.Fatalf("got diag=%q type=%q sug=%.4g reason=%s", s.Diagnosis, s.RecommendationType, s.SuggestedThreshold, s.Reason)
+	}
+	if s.SuggestedThreshold != 10 {
+		t.Errorf("no new value may be served, got %.4g", s.SuggestedThreshold)
+	}
+	if !strings.Contains(s.Reason, "would not have fired on any of the") {
+		t.Errorf("reason must explain the refusal, got: %s", s.Reason)
+	}
+}
+
+func TestDiagnose_MistunedValueAboveEveryFiringWithoutOutliers(t *testing.T) {
+	// The normal band reaches θ and the firings barely clear it; the re-baselined value lands above
+	// all of them. It is refused, but nothing here points at the query, so the reason does not
+	// blame one.
+	h := mkHistory(60, concat(band(50, 90, 8), band(10, 100.5, 0.2)))
+	iv := idxInterval(h, 50, 59)
+	ad := &AlertDefinition{Operator: ">", CurrentThreshold: 100}
+	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, nil)
+	if !ok {
+		t.Fatal("expected baseline path to handle")
+	}
+	if s.RecommendationType != "review_alert" || s.SuggestedThreshold != 100 {
+		t.Fatalf("got type=%q sug=%.4g reason=%s", s.RecommendationType, s.SuggestedThreshold, s.Reason)
+	}
+	if strings.Contains(s.Reason, "lie beyond everything the alert fired on") {
+		t.Errorf("an off-alert tail below the firings must not be blamed, got: %s", s.Reason)
+	}
+}
+
+func TestDiagnose_MistunedLTValueBelowEveryFiringOffersNoValue(t *testing.T) {
+	// The `<` mirror of the ratio-spike case: off-alert the metric reads 0.995 except for a few
+	// drops to 0.5, while every firing sits at ~0.97. The value read off those drops (~0.45) is
+	// below everything the alert fired on.
+	base := concat(band(5, 0.5, 0), band(45, 0.995, 0))
+	fire := band(10, 0.97, 0.004)
+	h := mkHistory(60, concat(base, fire))
+	iv := idxInterval(h, len(base), len(base)+len(fire)-1)
+	ad := &AlertDefinition{Operator: "<", CurrentThreshold: 0.98}
+	s, ok := diagnoseWithBaseline(ad, h, []firingInterval{iv}, nil)
+	if !ok {
+		t.Fatal("expected baseline path to handle")
+	}
+	finalizeSuggestion(s, ad, nil, h)
+	if s.RecommendationType != "review_alert" || s.SuggestedThreshold != 0.98 || s.EstimatedReduction != 0 {
+		t.Fatalf("got type=%q sug=%.4g reduction=%.0f reason=%s", s.RecommendationType, s.SuggestedThreshold, s.EstimatedReduction, s.Reason)
+	}
+	if !strings.Contains(s.Reason, "(lowest ") || !strings.Contains(s.Reason, "lie beyond everything the alert fired on") {
+		t.Errorf("reason must name the lowest firing and the off-alert outliers, got: %s", s.Reason)
 	}
 }

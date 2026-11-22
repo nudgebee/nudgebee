@@ -2,7 +2,8 @@ package api
 
 import (
 	"context"
-	"nudgebee/services/llm"
+	"nudgebee/services/common"
+	"nudgebee/services/config"
 	"nudgebee/services/observability"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
@@ -27,7 +28,51 @@ func onIntegrationConfigChanged(ctx *security.RequestContext, accountIds []strin
 		return
 	}
 	invalidateIntegrationCaches(ctx, accountIds)
+	requestIntegrationKBSync(ctx)
 	refreshProviderStatusAsync(ctx, accountIds)
+}
+
+// llmServerTask is a message on llm-server's task queue: work one llm-server
+// replica does once. It MUST stay in sync with llm-server's consumer
+// (llm/llm-server/api/llm_server_tasks_mq.go).
+type llmServerTask struct {
+	Type   string   `json:"type"`
+	Keys   []string `json:"keys,omitempty"`
+	Sender string   `json:"sender,omitempty"`
+}
+
+// llmTaskSyncIntegrationKBs asks llm-server to kick the knowledge-base sync
+// for these tenants. Keys: tenant ids.
+const llmTaskSyncIntegrationKBs = "sync_integration_kbs"
+
+// requestIntegrationKBSync asks llm-server, once (one replica takes the task),
+// to kick the knowledge-base sync for the tenant, so a freshly saved
+// integration with sync_knowledge_base=true starts indexing within seconds
+// instead of at llm-server's next periodic sync. The sync is per tenant, so
+// one task covers every account the change touched. The cache drops for the
+// same change go to every replica as the integration_changed replica broadcast.
+//
+// Best-effort: a lost task only means waiting for the periodic sync.
+// WithoutCancel keeps the trace (context values) but not the request's
+// cancellation.
+func requestIntegrationKBSync(ctx *security.RequestContext) {
+	secCtx := ctx.GetSecurityContext()
+	if secCtx == nil || secCtx.GetTenantId() == "" {
+		return
+	}
+	task := llmServerTask{
+		Type:   llmTaskSyncIntegrationKBs,
+		Keys:   []string{secCtx.GetTenantId()},
+		Sender: "services-server/" + config.Config.ServerName,
+	}
+	// One attempt inline; on failure MqPublishWithBackgroundRetry hands the
+	// task to a background retrier instead of retrying with sleeps on the
+	// request (it returns at once when there is no broker connection).
+	if err := common.MqPublish(config.Config.RabbitMqLlmServerTasksExchange, config.Config.RabbitMqLlmServerTasksQueue, task,
+		common.MqPublishWithExpiration(time.Hour), common.MqPublishWithBackgroundRetry(),
+		common.MqPublishWithContext(context.WithoutCancel(ctx.GetContext()))); err != nil {
+		ctx.GetLogger().Warn("integrations: failed to publish llm-server task (best-effort)", "type", task.Type, "error", err)
+	}
 }
 
 // refreshProviderStatusAsync re-checks which provider serves each signal for these
@@ -65,7 +110,8 @@ func refreshProviderStatusAsync(ctx *security.RequestContext, accountIds []strin
 // somebody forgets at the next one.
 //
 // ADD NEW INTEGRATION-DERIVED CACHES HERE, not in the action handlers. History for
-// why this is centralised: 159bb506c9 introduced the llm-server fanout, c654fbd459
+// why this is centralised: 159bb506c9 introduced the llm-server fanout (since replaced
+// by the integration_changed replica broadcast, #40807), c654fbd459
 // added the default-log-filters cache alongside it at two hand-maintained call sites,
 // e5ad9a52d6 added the FinOps account context, the log-label-mappings cache landed at
 // those same two sites again, and each round left another mutation path serving stale
@@ -77,7 +123,9 @@ func invalidateIntegrationCaches(ctx *security.RequestContext, accountIds []stri
 	if len(accountIds) == 0 {
 		return
 	}
-	llm.InvalidateLLMServerCacheForAccounts(ctx, accountIds)
+	// Reaches every replica of every service that caches integration state,
+	// llm-server included (#40807).
+	common.ReplicaBroadcast(ctx.GetContext(), common.ChangeIntegration, accountIds...)
 	for _, accId := range accountIds {
 		observability.InvalidateDefaultLogFiltersCache(accId)
 		observability.InvalidateDefaultTraceFiltersCache(accId)

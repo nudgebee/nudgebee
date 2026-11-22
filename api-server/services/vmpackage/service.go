@@ -23,7 +23,7 @@ const scanTimeout = 15 * time.Minute
 // shape: the RPC caller gets an ack, the real work runs detached with its
 // own timeout.
 func ScanPackages(ctx *security.RequestContext, req ScanRequest) (ScanResponse, error) {
-	if !ctx.GetSecurityContext().HasAccountAccess(req.AccountId, security.SecurityAccessTypeCreate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.AccountId, security.SecurityAccessTypeCreate) {
 		return ScanResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -37,6 +37,9 @@ func ScanPackages(ctx *security.RequestContext, req ScanRequest) (ScanResponse, 
 	}
 	if a.Tenant != ctx.GetSecurityContext().GetTenantId() {
 		return ScanResponse{}, fmt.Errorf("vmpackage: account not found in tenant - %s", req.AccountId)
+	}
+	if a.Status != "active" {
+		return ScanResponse{}, common.ErrorBadRequest(fmt.Sprintf("vmpackage: account %s is not active", req.AccountId))
 	}
 
 	ip, err := verifyCloudResource(req.CloudResourceId, req.AccountId, a.Tenant)

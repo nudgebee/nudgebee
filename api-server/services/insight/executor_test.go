@@ -5,8 +5,10 @@ import (
 	"nudgebee/services/internal/testenv"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -262,6 +264,33 @@ func TestComputeRedirectURL_Families(t *testing.T) {
 			title: "3 Critical severity CVEs open on your VM fleet", cloudProvider: "SelfHosted",
 			want: "/vm?accountId=acct-1#instances",
 		},
+		{
+			name: "self-hosted VM firing alerts (uid 133) route to the Events tab, FIRING only",
+			rule: InsightRule{
+				UniqueID: "133", Source: InsightSourceEvent, Type: InsightTypeAddition, InsightCategory: "Troubleshooting",
+				Filters: []InsightFilters{{Column: "source", Value: []interface{}{"prometheus_alertmanager_webhook", "event_webhook"}, Operator: "in"}, {Column: "status", Value: "FIRING", Operator: "="}},
+			},
+			title: "2 alerts are FIRING on your VM fleet", cloudProvider: "SelfHosted",
+			want: "/vm?accountId=acct-1&eventStatus=FIRING&sortBy=computed_score&source=prometheus_alertmanager_webhook,event_webhook#alerts",
+		},
+		{
+			name: "self-hosted VM P1 alerts (uid 134) keep their priority restriction",
+			rule: InsightRule{
+				UniqueID: "134", Source: InsightSourceEvent, Type: InsightTypeAddition, InsightCategory: "Troubleshooting", Range: 1, RangeUnit: InsightRangeUnitDay,
+				Filters: []InsightFilters{{Column: "computed_priority", Value: "P1", Operator: "="}, {Column: "status", Value: "FIRING", Operator: "="}},
+			},
+			title: "4 P1 alerts need attention on your VM fleet", cloudProvider: "SelfHosted",
+			want: "/vm?accountId=acct-1&eventStatus=FIRING&sortBy=computed_score&eventComputedPriority=P1#alerts",
+		},
+		{
+			name: "self-hosted VM most frequent issue (uid 135) scopes the Events tab to that alert",
+			rule: InsightRule{
+				UniqueID: "135", Source: InsightSourceEvent, Type: InsightTypeRatio, InsightCategory: "Troubleshooting", Range: 7, RangeUnit: InsightRangeUnitDay,
+				InsightFormat: "Most frequent issue: {aggregation_key} ({} FIRING events)",
+			},
+			title: "Most frequent issue: HostDiskSpaceCritical (4 FIRING events)", cloudProvider: "SelfHosted",
+			want: "/vm?accountId=acct-1&eventAggregationKey=HostDiskSpaceCritical&eventStatus=FIRING#alerts",
+		},
 	}
 
 	for _, tc := range cases {
@@ -270,6 +299,23 @@ func TestComputeRedirectURL_Families(t *testing.T) {
 			assert.Equal(t, normalizeRedirectURL(t, tc.want), normalizeRedirectURL(t, got))
 		})
 	}
+}
+
+// Rule 135 counts seven days inside its view but carries no range of its own, so its link must
+// still open a seven-day window or the list can be empty while the insight reports a count.
+func TestComputeVmRedirectURL_FrequentIssueUsesSevenDayWindow(t *testing.T) {
+	rule := InsightRule{
+		UniqueID: "135", Source: InsightSourceEvent, Type: InsightTypeRatio, InsightCategory: "Troubleshooting",
+		InsightFormat: "Most frequent issue: {aggregation_key} ({} FIRING events)",
+	}
+	got := computeRedirectURL(rule, "Most frequent issue: HostDiskSpaceCritical (4 FIRING events)", "acct-1", "SelfHosted")
+	u, err := url.Parse(strings.SplitN(got, "#", 2)[0])
+	require.NoError(t, err)
+	start, err := strconv.ParseInt(u.Query().Get("start_time"), 10, 64)
+	require.NoError(t, err)
+	end, err := strconv.ParseInt(u.Query().Get("end_time"), 10, 64)
+	require.NoError(t, err)
+	assert.InDelta(t, (7 * 24 * time.Hour).Milliseconds(), end-start, float64(time.Minute.Milliseconds()))
 }
 
 func TestExtractFromFormat(t *testing.T) {

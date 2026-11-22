@@ -72,3 +72,25 @@ func TestCostUSD_TenantOverrideWinsAndIsolated(t *testing.T) {
 	// Empty tenant (e.g. unattributed) resolves against built-ins only.
 	assert.InDelta(t, 3.0, p.CostUSD("", model, 1_000_000, 1_000_000, 0, 0), 1e-9)
 }
+
+func TestCacheSavingsUSD(t *testing.T) {
+	// Anthropic-like rates per million: input $3, cached read $0.30, cache write $3.75.
+	p := &Pricer{}
+	p.cur.Store(&catalog{
+		builtin:  map[string]modelPrice{"m": {Input: 3, CachedInput: 0.3, CacheCreation: 3.75}, "nowrite": {Input: 3, CachedInput: 0.3}},
+		byTenant: map[string]map[string]modelPrice{"t1": {"m": {Input: 2, CachedInput: 0.2, CacheCreation: 2.5}}},
+	})
+
+	// 1M cached reads save $2.70; 1M cache writes cost a $0.75 premium.
+	assert.InDelta(t, 2.70, p.CacheSavingsUSD("", "m", 1_000_000, 0), 1e-9)
+	assert.InDelta(t, 2.70-0.75, p.CacheSavingsUSD("", "m", 1_000_000, 1_000_000), 1e-9)
+	assert.InDelta(t, -0.75, p.CacheSavingsUSD("", "m", 0, 1_000_000), 1e-9, "a write-only request cost more than it saved")
+
+	// No cache-write price in the catalog: no premium is assumed.
+	assert.InDelta(t, 0, p.CacheSavingsUSD("", "nowrite", 0, 1_000_000), 1e-9)
+
+	// Tenant override wins, unknown model and no cache tokens are 0.
+	assert.InDelta(t, 1.80, p.CacheSavingsUSD("t1", "m", 1_000_000, 0), 1e-9)
+	assert.Zero(t, p.CacheSavingsUSD("", "unknown", 1_000_000, 0))
+	assert.Zero(t, p.CacheSavingsUSD("", "m", 0, 0))
+}

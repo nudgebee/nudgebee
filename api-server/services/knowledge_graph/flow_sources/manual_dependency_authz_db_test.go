@@ -210,3 +210,42 @@ func TestManualDependencyAuthz_RemovedAccountDoesNotLockTheRow(t *testing.T) {
 		t.Fatalf("a removed account must not lock the row: %v", err)
 	}
 }
+
+// A bulk re-resolve with an authorizer runs only the rows a single re-resolve
+// would allow; without one (internal callers) it runs them all.
+func TestManualDependencyAuthz_ReresolveAllSkipsRowsTheCallerMayNotWrite(t *testing.T) {
+	f := newDepAuthzFixture(t)
+	ctx := context.Background()
+
+	own, err := f.deps.Create(ctx, queueDep(f, "orders", "payments"))
+	if err != nil {
+		t.Fatalf("create own: %v", err)
+	}
+	foreign, err := f.deps.Create(ctx, queueDep(f, "orders", "billing"))
+	if err != nil {
+		t.Fatalf("create foreign: %v", err)
+	}
+	ids := func(rows []flow_sources.ManualDependency) map[int64]bool {
+		out := map[int64]bool{}
+		for _, r := range rows {
+			out[r.ID] = true
+		}
+		return out
+	}
+
+	got, err := f.asAdminA.ReresolveAll(ctx, f.tenantID, nil)
+	if err != nil {
+		t.Fatalf("re-resolve as account admin: %v", err)
+	}
+	if seen := ids(got); !seen[own.ID] || seen[foreign.ID] {
+		t.Errorf("account admin of A re-resolved %v; want only the row in A (%d), not the one touching B (%d)", seen, own.ID, foreign.ID)
+	}
+
+	got, err = f.deps.ReresolveAll(ctx, f.tenantID, nil)
+	if err != nil {
+		t.Fatalf("re-resolve unchecked: %v", err)
+	}
+	if seen := ids(got); !seen[own.ID] || !seen[foreign.ID] {
+		t.Errorf("an unchecked repository re-resolved %v; want both rows", seen)
+	}
+}

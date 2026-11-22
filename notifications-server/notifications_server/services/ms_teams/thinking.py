@@ -81,7 +81,7 @@ async def begin(thread_ts, conversation_ref) -> bool:
     if not settings.ms_teams.thinking_steps_enabled or not conversation_ref:
         return False
     cache = Cache()
-    current = cache.get_event_entry(thread_ts) or {}
+    current = (await cache.aio.get_event_entry(thread_ts)) or {}
     if current.get("thinking_claim") and time.time() - current.get("thinking_at", 0) < _stale_after_seconds():
         # An earlier question still owns its card and will replace it with its
         # answer; this one replies as before.
@@ -98,8 +98,10 @@ async def begin(thread_ts, conversation_ref) -> bool:
         return False
     if not activity_id:
         return False
-    if not cache.update_event_entry(
-        thread_ts, thinking_id=activity_id, thinking_claim=uuid.uuid4().hex, thinking_at=time.time()
+    if not (
+        await cache.aio.update_event_entry(
+            thread_ts, thinking_id=activity_id, thinking_claim=uuid.uuid4().hex, thinking_at=time.time()
+        )
     ):
         LOG.warning("Couldn't record the Teams Thinking card %s for %s", activity_id, thread_ts)
         return False
@@ -112,11 +114,11 @@ def _stale_after_seconds() -> float:
     return settings.slack.thinking_steps_max_minutes * 60
 
 
-def start_poller(thread_ts) -> None:
+async def start_poller(thread_ts) -> None:
     """Start updating this turn's Thinking card with Nubi's steps. Never raises."""
     global _active_pollers
     try:
-        entry = Cache().get_event_entry(thread_ts) or {}
+        entry = (await Cache().aio.get_event_entry(thread_ts)) or {}
         required = ("thinking_id", "thinking_claim", "account_id", "session_id", "tenant_id", "user_id")
         if any(not entry.get(key) for key in required) or not entry.get("conversation_reference"):
             return
@@ -140,13 +142,13 @@ async def replace(thread_ts, conversation_ref, activity: Activity) -> Optional[s
     None when there's no card to replace or Teams refused the update; the caller
     then sends it as a new message."""
     cache = Cache()
-    claim = (cache.get_event_entry(thread_ts) or {}).get("thinking_claim")
-    activity_id = cache.take_teams_thinking(thread_ts, claim)
+    claim = ((await cache.aio.get_event_entry(thread_ts)) or {}).get("thinking_claim")
+    activity_id = await cache.aio.take_teams_thinking(thread_ts, claim)
     if not activity_id or not conversation_ref:
         return None
     token = uuid.uuid4().hex
     deadline = time.monotonic() + LOCK_SECONDS
-    while not cache.lock_teams_message(activity_id, token, LOCK_SECONDS):
+    while not (await cache.aio.lock_teams_message(activity_id, token, LOCK_SECONDS)):
         if time.monotonic() > deadline:
             LOG.warning("Teams Thinking card %s stayed locked; sending the reply as a new message", activity_id)
             return None
@@ -164,7 +166,7 @@ async def replace(thread_ts, conversation_ref, activity: Activity) -> Optional[s
         LOG.warning("Replacing Teams Thinking card %s failed: %s", activity_id, e)
         return None
     finally:
-        cache.unlock_teams_message(activity_id, token)
+        await cache.aio.unlock_teams_message(activity_id, token)
 
 
 def _run_poller(entry, thread_ts) -> None:

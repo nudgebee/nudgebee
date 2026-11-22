@@ -3,6 +3,8 @@ package agents
 import (
 	"testing"
 
+	"nudgebee/llm/security"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -45,4 +47,22 @@ func TestIsK8sOrchestratorVariant(t *testing.T) {
 			assert.Equal(t, tc.want, isK8sOrchestratorVariant(tc.agent))
 		})
 	}
+}
+
+// An @-mention the account can't resolve is reported (#42736) instead of being
+// answered by the help agent; @help and un-mentioned queries keep the fallback.
+// "not-a-uuid" makes the custom-agent lookup fail before touching the DB.
+func TestInferAgentOrHelp_UnavailableMention(t *testing.T) {
+	ctx := security.NewRequestContextForTenantAccountAdmin("tenant", "user", nil)
+
+	agent, err := InferAgentOrHelp(ctx, "user", "not-a-uuid", "", "@test_agent_qa list pods")
+	var unavailable *UnavailableAgentError
+	assert.ErrorAs(t, err, &unavailable)
+	assert.Equal(t, "test_agent_qa", unavailable.AgentName)
+	assert.Equal(t, "@test_agent_qa isn't available on this account.", err.Error())
+	assert.Nil(t, agent)
+
+	agent, err = InferAgentOrHelp(ctx, "user", "not-a-uuid", "", "@help what can you do")
+	assert.NoError(t, err)
+	assert.IsType(t, HelpAgent{}, agent)
 }

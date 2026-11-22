@@ -36,6 +36,7 @@ func TestGenerateTasks_RecordsRunFailureAndResetsState(t *testing.T) {
 
 	mockRepo.On("GetAutoOptimize", mock.Anything, aoID).Return(ao, nil)
 	mockRepo.On("GetAgent", mock.Anything, accountID).Return(&model.Agent{Status: "Connected"}, nil)
+	mockRepo.expectNoApprovals(aoID)
 	mockRepo.On("SaveAutoOptimize", mock.Anything, mock.Anything).Return(nil)
 
 	// Generation fails before any task is produced.
@@ -95,6 +96,7 @@ func TestGenerateTasks_NotConnectedAgentSkipsQuietly(t *testing.T) {
 
 	mockRepo.On("GetAutoOptimize", mock.Anything, aoID).Return(ao, nil)
 	mockRepo.On("GetAgent", mock.Anything, accountID).Return(&model.Agent{Status: "NotConnected"}, nil)
+	mockRepo.expectNoApprovals(aoID)
 
 	tasks, err := svc.GenerateTasks(ctx, aoID)
 

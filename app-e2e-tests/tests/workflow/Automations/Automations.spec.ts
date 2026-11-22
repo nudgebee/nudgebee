@@ -14,6 +14,7 @@ import {
   leaveBuilder,
   countNamed,
   openConfigsModal,
+  CONFIG_ACCOUNT,
   NO_MATCH_TERM,
 } from "./automationsHelper";
 
@@ -37,7 +38,7 @@ const MANUAL_ONLY_HINT =
 
 test(
   "Automations sanity - open Automation from the side nav, land on the Automations tab, verify the listing toolbar and the automations table render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional"] },
   async ({ page }) => {
     test.setTimeout(150000);
 
@@ -76,7 +77,7 @@ test(
 
 test(
   "Automations - search an existing automation by name, press Enter, verify only automations whose name contains the term are listed",
-  { tag: ["@dev", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -112,7 +113,7 @@ test(
 
 test(
   "Automations - search a name no automation can match, press Enter, verify the No Data Available empty state, then clear the search and verify the listing returns",
-  { tag: ["@dev", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -148,7 +149,7 @@ test(
 
 test(
   "Automations - filter Trigger Type by Manual, verify every listed automation shows Manual in its Trigger Type column",
-  { tag: ["@dev", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -181,7 +182,7 @@ test(
 
 test(
   "Automations - filter Status by Paused, verify every listed automation reads Paused in its Status column",
-  { tag: ["@dev", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -212,7 +213,7 @@ test(
 
 test(
   "Automations - open the three-dot menu on an automation, choose Delete, cancel the confirmation, verify the automation is still listed",
-  { tag: ["@dev", "@regression", "@negative", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@negative", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -252,7 +253,7 @@ test(
 
 test(
   'Automations - duplicate a Manual automation, verify "Copy of <name>" is returned by a fresh search, delete the copy, verify it is gone',
-  { tag: ["@dev", "@regression", "@crud"] },
+  { tag: ["@dev", "@test", "@regression", "@crud"] },
   async ({ page }) => {
     test.setTimeout(240000);
 
@@ -312,7 +313,7 @@ test(
 
 test(
   "Automations - open an automation from the listing, verify the builder opens on that automation, go back, verify the listing returns",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -347,7 +348,7 @@ test(
 
 test(
   "Automations - open Configs, add a configuration, leave Key and Value empty and enter invalid JSON metadata, verify each field names its own rejection and Save stays disabled",
-  { tag: ["@dev", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -362,6 +363,7 @@ test(
         timeout: 15000,
       });
       await expect(locators.configValueError).toHaveText("Value is required");
+      await expect(locators.configFormAccountError).toBeVisible();
       await expect(locators.saveConfigBtn).toBeDisabled();
     });
 
@@ -369,7 +371,12 @@ test(
     // cannot collide with a real config. Nothing here is saved — Cancel closes it.
     const probeKey = `e2e-automations-probe-${Date.now()}`;
 
-    await test.step("Filling Key and Value clears both rejections and enables Save", async () => {
+    await test.step("Picking the account, Key and Value clears every rejection and enables Save", async () => {
+      await locators.configFormAccountSelect.click();
+      await locators.configFormAccountSearch.fill(CONFIG_ACCOUNT);
+      await locators.filterOption(CONFIG_ACCOUNT).click();
+      await expect(locators.configFormAccountSelect).toContainText(CONFIG_ACCOUNT);
+      await expect(locators.configFormAccountError).toHaveCount(0);
       await locators.configKeyInput.fill(probeKey);
       await expect(locators.configKeyInput).toHaveValue(probeKey);
       await locators.configValueInput.fill("e2e-probe-value");
@@ -400,7 +407,7 @@ test(
 
 test(
   "Automations - switch to the Executions tab and back to Automations, verify each tab renders its own listing",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

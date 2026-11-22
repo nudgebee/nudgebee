@@ -37,14 +37,44 @@ func traces(n int) []core.ObservabilityTrace {
 func TestCapTraceResponse(t *testing.T) {
 	meta := core.ObservabilityTraceMetadata{StartTime: 1768451400000, EndTime: 1768455000000, Limit: 1000}
 
-	t.Run("more than the tool keeps: cut and said", func(t *testing.T) {
-		resp := capTraceResponse(core.ObservabilityTraceResponse{Traces: traces(250), Metadata: meta}, 100)
+	t.Run("more than the tool keeps, and the query hit its limit: a sample", func(t *testing.T) {
+		m := meta
+		m.Limit = 250
+		resp := capTraceResponse(core.ObservabilityTraceResponse{Traces: traces(250), Metadata: m}, 100)
 		assert.Len(t, resp.Traces, 100)
 		require.NotNil(t, resp.Coverage)
 		assert.Equal(t, 250, resp.Coverage.Received)
 		assert.Equal(t, 100, resp.Coverage.Returned)
+		assert.Nil(t, resp.Coverage.Total, "the backend stopped at the limit, so the real total is unknown")
 		assert.Contains(t, resp.Coverage.Note, "the backend returned 250 traces and only the first 100 are shown")
+		assert.Contains(t, resp.Coverage.Note, "the window may hold more")
 		assert.Contains(t, resp.Coverage.Note, "window 2026-01-15T04:30:00Z to 2026-01-15T05:30:00Z")
+	})
+
+	// The backend ran out of matches before the query's limit, so 147 is the window's real count
+	// even though only 100 traces are shown. Hedging here answered "at least 133 (sampled)" to a
+	// question whose exact answer was already in the response.
+	t.Run("backend stopped short of the limit: the count is exact", func(t *testing.T) {
+		resp := capTraceResponse(core.ObservabilityTraceResponse{Traces: traces(147), Metadata: meta}, 100)
+		assert.Len(t, resp.Traces, 100)
+		require.NotNil(t, resp.Coverage)
+		assert.Equal(t, 147, resp.Coverage.Received)
+		assert.Equal(t, 100, resp.Coverage.Returned)
+		require.NotNil(t, resp.Coverage.Total)
+		assert.Equal(t, 147, *resp.Coverage.Total)
+		assert.Contains(t, resp.Coverage.Note, "all 147 matching traces")
+		assert.Contains(t, resp.Coverage.Note, "147 is the exact count for this window")
+		assert.NotContains(t, resp.Coverage.Note, "may hold more")
+		assert.Contains(t, resp.Coverage.Note, "window 2026-01-15T04:30:00Z to 2026-01-15T05:30:00Z")
+	})
+
+	t.Run("no limit in metadata: still a sample, the total is unknowable", func(t *testing.T) {
+		m := meta
+		m.Limit = 0
+		resp := capTraceResponse(core.ObservabilityTraceResponse{Traces: traces(147), Metadata: m}, 100)
+		require.NotNil(t, resp.Coverage)
+		assert.Nil(t, resp.Coverage.Total)
+		assert.Contains(t, resp.Coverage.Note, "the window may hold more")
 	})
 
 	t.Run("exactly the query's limit came back: may hold more", func(t *testing.T) {

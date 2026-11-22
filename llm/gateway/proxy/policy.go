@@ -156,9 +156,8 @@ func (s policyStage) checkLayer(rc *RequestContext, l policyLayer, provider, mod
 		return false, nil
 	}
 	if rc.Endpoint == endpointMeta {
-		// A provider's own model list is unfiltered, so a restricted caller reads the filtered /v1/models.
 		if rc.Gin.Request.Method == http.MethodGet {
-			return s.deny(rc, l, "endpoint_not_allowed", "", l.subject+" is restricted; list the models it may use at /v1/models.")
+			return s.checkModelRead(rc, l)
 		}
 		return false, nil
 	}
@@ -178,6 +177,27 @@ func (s policyStage) checkLayer(rc *RequestContext, l policyLayer, provider, mod
 	}
 	if model != "" && !allowsModel(rc.Identity.TenantID, p, provider, model) {
 		return s.deny(rc, l, "model_not_allowed", provider+"/"+model, modelMessage(rc, l.subject, provider, model))
+	}
+	return false, nil
+}
+
+// checkModelRead lets a restricted caller list a provider's models, cut to what it may use in
+// the handler, and read one model only when it may use that model on this mount.
+func (s policyStage) checkModelRead(rc *RequestContext, l policyLayer) (bool, error) {
+	provider := string(rc.Provider)
+	if !l.policy.AllowsProvider(provider) {
+		return s.deny(rc, l, "provider_not_allowed", provider+"/", fmt.Sprintf("%s is not allowed to use provider %q.", l.subject, provider))
+	}
+	id, list := modelReadID(rc.Provider, rc.Path)
+	if list {
+		rc.FilterModelList = true
+		return false, nil
+	}
+	if id == "" || strings.Contains(id, "/") {
+		return s.deny(rc, l, "endpoint_not_allowed", "", fmt.Sprintf("%s is restricted and cannot read %s.", l.subject, rc.Path))
+	}
+	if !allowsModel(rc.Identity.TenantID, l.policy, provider, id) {
+		return s.deny(rc, l, "model_not_allowed", provider+"/"+id, fmt.Sprintf("%s is not allowed to use model %q.", l.subject, id))
 	}
 	return false, nil
 }

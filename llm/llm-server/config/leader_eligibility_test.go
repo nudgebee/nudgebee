@@ -33,12 +33,32 @@ func TestIsSchedulerLeaderEligible(t *testing.T) {
 			} else {
 				t.Setenv("KUBERNETES_SERVICE_HOST", "")
 			}
-			prev := Config.SchedulerLeaderEligible
+			prev, prevName, prevService := Config.SchedulerLeaderEligible, Config.ServerName, SERVICE_NAME
 			Config.SchedulerLeaderEligible = tt.setting
-			t.Cleanup(func() { Config.SchedulerLeaderEligible = prev })
+			// A pod-style name: the shared-pool refusal for local names is covered below.
+			Config.ServerName, SERVICE_NAME = "llm-server-86d6595fbb-z2spc", "llm-server-dev"
+			t.Cleanup(func() { Config.SchedulerLeaderEligible, Config.ServerName, SERVICE_NAME = prev, prevName, prevService })
 
 			assert.Equal(t, tt.want, IsSchedulerLeaderEligible())
 		})
+	}
+}
+
+// A local worker forced eligible in the shared pool held the dev leader flag for
+// up to 2.3 h (10-21, 10-23), so no cluster replica ran leader jobs. The override
+// still works in a private pool, which is how leader jobs are tested on a laptop.
+func TestLocalWorkerNeverLeadsTheSharedPool(t *testing.T) {
+	prev, prevName, prevService := Config.SchedulerLeaderEligible, Config.ServerName, SERVICE_NAME
+	t.Cleanup(func() { Config.SchedulerLeaderEligible, Config.ServerName, SERVICE_NAME = prev, prevName, prevService })
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1") // even a laptop that looks in-cluster
+	Config.ServerName = LocalWorkerNamePrefix + "dev-laptop"
+
+	for _, setting := range []string{"true", "auto"} {
+		Config.SchedulerLeaderEligible = setting
+		SERVICE_NAME = DefaultServiceName
+		assert.False(t, IsSchedulerLeaderEligible(), "shared pool, setting %q", setting)
+		SERVICE_NAME = "llm-server-dev"
+		assert.True(t, IsSchedulerLeaderEligible(), "private pool, setting %q", setting)
 	}
 }
 

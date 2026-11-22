@@ -1,6 +1,12 @@
 package integrations
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	tableapi "github.com/michaeldcanady/servicenow-sdk-go/table-api"
@@ -64,6 +70,42 @@ func TestMapServiceNowUser(t *testing.T) {
 // to the package and should stay total.
 func TestMapServiceNowUser_NilRecord(t *testing.T) {
 	assert.Equal(t, core.ExternalUser{}, mapServiceNowUser(nil))
+}
+
+// Offset paging is only safe over a stable order, so every page must ask for a
+// sys_id sort, and the walk must continue until a short page.
+func TestServiceNow_ListUsers_PagesInStableOrder(t *testing.T) {
+	total := serviceNowUserPageSize + 3
+	var queries []string
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/table/sys_user") {
+			http.NotFound(w, r)
+			return
+		}
+		q := r.URL.Query()
+		queries = append(queries, q.Get("sysparm_query"))
+		offset, _ := strconv.Atoi(q.Get("sysparm_offset"))
+		limit, _ := strconv.Atoi(q.Get("sysparm_limit"))
+		rows := make([]string, 0, limit)
+		for i := offset; i < total && i < offset+limit; i++ {
+			rows = append(rows, fmt.Sprintf(`{"sys_id":"u%03d","user_name":"user%03d","email":"user%03d@example.com","name":"User %03d"}`, i, i, i, i))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"result":[` + strings.Join(rows, ",") + `]}`))
+	}))
+	defer ts.Close()
+	orig := http.DefaultTransport
+	http.DefaultTransport = ts.Client().Transport
+	defer func() { http.DefaultTransport = orig }()
+
+	users, err := ServiceNow{}.ListUsers(context.Background(), []core.IntegrationConfigValue{
+		{Name: ServiceNowConfigUrl, Value: ts.URL},
+		{Name: ServiceNowConfigUsername, Value: "u"},
+		{Name: ServiceNowConfigPassword, Value: "p"},
+	})
+	assert.NoError(t, err)
+	assert.Len(t, users, total)
+	assert.Equal(t, []string{"active=true^ORDERBYsys_id", "active=true^ORDERBYsys_id"}, queries)
 }
 
 func TestNormalizeServiceNowURL(t *testing.T) {

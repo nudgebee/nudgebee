@@ -20,8 +20,10 @@ func init() {
 	})
 }
 
-// WorkflowSearchTool searches the automations this account has opted in to AI
-// invocation, ranked against a free-text description of the problem.
+// WorkflowSearchTool searches the automations opted in to AI invocation, in
+// this account and in the user's other readable accounts (each group apart, see
+// tool_workflow_accounts.go), ranked against a free-text description of the
+// problem.
 //
 // It exists because workflow_list answers the wrong question: it returns
 // automations by name and status, which only helps when you already know which
@@ -38,11 +40,13 @@ func (t WorkflowSearchTool) Name() string             { return ToolWorkflowSearc
 func (t WorkflowSearchTool) GetType() core.NBToolType { return core.NBToolTypeTool }
 
 func (t WorkflowSearchTool) Description() string {
-	return "Finds automations this account has approved for you to run, matched against a " +
+	return "Finds automations you are approved to run, matched against a " +
 		"description of the problem rather than an automation name. Use it before answering " +
 		"with manual steps: the team may already have an automation for this. " +
 		"Returns each automation's id, what it does, when to use it, and its input parameters — " +
-		"pass the id to workflow_trigger to run it. " +
+		"pass the id to workflow_trigger to run it. Automations of this conversation's account come under " +
+		"this_account; those of other accounts the user can access come under other_accounts, grouped by " +
+		"account with its account_id and account_name — pass that account_id to workflow_trigger with the id. " +
 		"Call with no query to list everything you are allowed to run. " +
 		"Args: query (string, optional), limit (number, optional, default 5). " + automationURLToolHint
 }
@@ -104,7 +108,36 @@ func (t WorkflowSearchTool) Call(ctx core.NbToolContext, input core.NBToolCallRe
 		return core.NBToolResponse{}, fmt.Errorf("failed to search automations: %w", err)
 	}
 
-	return core.NBToolResponse{Data: string(injectAutomationURLs(resp, ctx.AccountId)), Type: core.NBToolResponseTypeJson}, nil
+	own := withNoMatchNote(injectAutomationURLs(resp, ctx.AccountId))
+	groups, otherTotal, problem := otherWorkflowAccounts(ctx, path, injectAutomationURLs)
+	return core.NBToolResponse{Data: string(withWorkflowAccounts(own, ctx.AccountId, groups, otherTotal, problem)), Type: core.NBToolResponseTypeJson}, nil
+}
+
+// noMatchNote travels with a search that found nothing the assistant may run.
+// An empty list was read as "the automation does not exist" and answered with
+// the assistant's own checks titled as that automation's report; the
+// automation may exist and simply not be runnable by the assistant.
+const noMatchNote = "No automation the assistant may run matched. An automation of that name may still exist but not be runnable " +
+	"by the assistant (paused, not enabled for the assistant, or without a manual trigger); workflow_list shows every " +
+	"automation with its status. Nothing was run."
+
+// withNoMatchNote adds noMatchNote to a search result whose workflows list is
+// empty. Any other result, or one that is not the expected shape, is returned
+// unchanged.
+func withNoMatchNote(raw []byte) []byte {
+	var parsed map[string]any
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return raw
+	}
+	if workflows, ok := parsed["workflows"].([]any); (ok && len(workflows) > 0) || (!ok && parsed["workflows"] != nil) {
+		return raw
+	}
+	parsed["note"] = noMatchNote
+	b, err := marshalNoHTMLEscape(parsed, "")
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // injectAutomationURLs adds the canonical `url` to each item in `workflows`.

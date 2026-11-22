@@ -76,6 +76,26 @@ jest.mock('@ui/Select', () => ({
   ),
 }));
 
+// Toolbar filters: a plain <select>, firing onSelect the way ds/FilterDropdown does (null on clear).
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, value, onSelect, options, placeholder }) => (
+    <select
+      aria-label={label}
+      value={value ?? ''}
+      onChange={(e) => onSelect({ target: { value: e.target.value || null } })}
+      data-testid={`select-${label}`}
+    >
+      <option value=''>{placeholder}</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 jest.mock('@ui/Banner', () => ({
   __esModule: true,
   Banner: ({ tone, title, message }) => (
@@ -856,7 +876,7 @@ describe('ApiTokens', () => {
     render(<ApiTokens {...defaultProps} onClose={onClose} />);
     await userEvent.click(await screen.findByText('All keys'));
     await userEvent.click(within((await screen.findByText('ravi-ci')).closest('tr')).getByTestId('btn-Manage access'));
-    expect(mockPush).toHaveBeenCalledWith('/user-management#ai-tools/gateway');
+    expect(mockPush).toHaveBeenCalledWith('/user-management#ai-tools/gateway/access');
     expect(onClose).toHaveBeenCalled();
   });
 

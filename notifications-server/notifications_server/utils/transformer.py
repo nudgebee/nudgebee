@@ -41,6 +41,10 @@ MAX_MARKDOWN_TABLE_ROWS = 10
 # Splits markdown_to_slack_markdown's input on fenced code blocks; the capturing
 # group keeps the fences in the result so they can skip conversion below.
 _FENCE_SPLIT_RE = re.compile(r"(```.*?```)", re.DOTALL)
+# llm-server answers cite the steps they rest on as [Tool - E3](#task-<step id>).
+# The anchor only means something on the app's investigate page; Slack shows
+# the whole link as text.
+_STEP_CITATION_RE = re.compile(r"\[([^\[\]]*)\]\(#task-([^)\s]+)\)")
 SLACK_SIGNIN_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "signing_secret")
 
 try:
@@ -89,6 +93,26 @@ class Transformer:
             return msg
         truncator = truncator or "..."
         return msg[: max_length - len(truncator)] + truncator
+
+    @staticmethod
+    def apply_byte_length_limit(msg: str, max_bytes: int, truncator: Optional[str] = None) -> str:
+        """Like apply_length_limit, but measured in UTF-8 bytes rather than
+        characters — for platforms (Teams, Google Chat) whose size limit is
+        itself byte-based, where a wide multi-byte character can blow the
+        budget well before the character count does.
+
+        Returns:
+            msg unchanged if it already fits within max_bytes. Otherwise the
+            longest prefix of msg's UTF-8 bytes that leaves room for
+            truncator, decoded leniently so a split multi-byte character is
+            dropped rather than raising.
+        """
+        data = msg.encode()
+        if len(data) <= max_bytes:
+            return msg
+        truncator = truncator or "..."
+        head_bytes = max(max_bytes - len(truncator.encode()), 0)
+        return data[:head_bytes].decode(errors="ignore") + truncator
 
     @staticmethod
     def _format_json_value(value: Any, show_preview: bool = True, depth: int = 0) -> str:
@@ -369,15 +393,40 @@ class Transformer:
         return result
 
     @staticmethod
-    def markdown_to_slack_markdown(markdown_text: str) -> str:
+    def markdown_to_slack_markdown(markdown_text: str, citation_page_url: Optional[str] = None) -> str:
+        """``citation_page_url`` is the investigate page of the event the text
+        was written about; step citations then link to that step there.
+        Without it they are reduced to their label."""
         # Fenced code is real code (Slack already renders ```); the line-based
         # conversion below would mangle it, so fences skip it (odd indices,
         # from _FENCE_SPLIT_RE's capturing group).
         parts = _FENCE_SPLIT_RE.split(markdown_text)
         converted = "".join(
-            part if index % 2 else Transformer.__convert_markdown_segment(part) for index, part in enumerate(parts)
+            (
+                part
+                if index % 2
+                else Transformer.__convert_markdown_segment(
+                    Transformer.step_citations_to_slack(part, citation_page_url)
+                )
+            )
+            for index, part in enumerate(parts)
         )
         return converted.strip()
+
+    @staticmethod
+    def step_citations_to_slack(text: str, citation_page_url: Optional[str] = None) -> str:
+        """[Tool - E3](#task-<id>) -> <page#task-<id>|Tool - E3>, or [Tool - E3]
+        when there is no page to link to (Slack only links absolute URLs)."""
+        if citation_page_url and not citation_page_url.startswith(("http://", "https://")):
+            citation_page_url = None
+
+        def replace(match: re.Match) -> str:
+            label = re.sub(r"[<>|]", "", match.group(1)).strip()
+            if not citation_page_url:
+                return f"[{label}]" if label else ""
+            return f"<{citation_page_url}#task-{match.group(2)}|{label or 'step'}>"
+
+        return _STEP_CITATION_RE.sub(replace, text)
 
     @staticmethod
     def __convert_markdown_segment(markdown_text: str) -> str:

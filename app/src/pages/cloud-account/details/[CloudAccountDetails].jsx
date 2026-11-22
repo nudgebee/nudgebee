@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
+import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { Box } from '@mui/material';
@@ -61,6 +62,7 @@ import { ECSInstances, ECSSummary } from '@components/cloudaccount/ecs';
 import { useData } from '@context/DataContext';
 import { ds } from '@utils/colors';
 import { isSelfHostedProvider } from '@components/overview/providers';
+import { hasGrantOnAccount, hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 
 const optimizeRadioTab = [
   { value: 'right-sizing', label: 'Right Sizing' },
@@ -105,8 +107,26 @@ const CloudAccounts = () => {
   const [optimizeRadioTabValue, setOptimizeRadioTabValue] = useState('right-sizing');
   const [selectedFilter, setSelectedFilter] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
+  // The disabled tab option AnchorComponent resolved the hash onto (if any) --
+  // set when a URL hash explicitly names a disabled tab, so its content area
+  // shows a permission-denied placeholder in place of the real content instead
+  // of silently swapping to another tab.
+  const [blockedTab, setBlockedTab] = useState(null);
 
   const { selectedCluster } = useData();
+
+  // Matches each tab's backing RPC module (classifyAction, permissionCatalog.ts):
+  // Summary reads account metadata (accounts), Optimize reads recommendations,
+  // Troubleshoot reads events, and every resource tab (Services/EC2/RDS/S3/ECS/
+  // the Azure and GCP equivalents/CloudFoundry) reads the generic cloud module.
+  // Monitoring and Security/Tools are intentionally left ungated here -- see PR
+  // discussion; Monitoring needs a per-sub-tab module split (alertmanager/logs/
+  // metrics/traces) not yet verified, and Security/Tools are feature-disabled
+  // for everyone today, not RBAC-gated.
+  const canAccessModule = (module) =>
+    !isGrantsOnlyUser(selectedCluster?.value) || hasPermission(module, 'Read') || hasGrantOnAccount(module, 'Read', selectedCluster?.value);
+  const gateModule = (module) => (opt) =>
+    canAccessModule(module) ? opt : { ...opt, disabled: true, disabledTooltip: missingPermissionMessage(`${module}:Read`) };
 
   useEffect(() => {
     const newAccountId = router.query.accountId || router.query.CloudAccountDetails;
@@ -137,12 +157,16 @@ const CloudAccounts = () => {
         value: 0,
         icon: SummaryIconBlue,
         fragment: 'summary',
+        disabled: !canAccessModule('accounts'),
+        disabledTooltip: missingPermissionMessage('accounts:Read'),
       },
       {
         name: 'Optimize',
         fragment: 'optimize',
         value: 1,
         icon: OptimizeIconBlue,
+        disabled: !canAccessModule('recommendations'),
+        disabledTooltip: missingPermissionMessage('recommendations:Read'),
         tabOptions: [
           { id: 'optimize-right-sizing', text: 'Right Sizing', value: 0, fragment: 'right-sizing', icon: RightSizingIcon },
           { id: 'optimize-configuration', text: 'Configuration', value: 1, fragment: 'configuration', icon: OptimizeSummaryIcon },
@@ -162,12 +186,16 @@ const CloudAccounts = () => {
         fragment: 'services',
         value: 2,
         icon: PvcSightSizing,
+        disabled: !canAccessModule('cloud'),
+        disabledTooltip: missingPermissionMessage('cloud:Read'),
       },
       {
         name: 'Troubleshoot',
         fragment: 'events',
         value: 3,
         icon: TroubleshootIconBlue,
+        disabled: !canAccessModule('events'),
+        disabledTooltip: missingPermissionMessage('events:Read'),
         tabOptions: [
           { id: 'events', text: 'Events', value: 0, fragment: 'events', icon: AllEventsIcon },
           { id: 'triage-rules', text: 'Triage Rules', value: 1, fragment: 'triage-rules', icon: AlertManagerIcon },
@@ -480,11 +508,11 @@ const CloudAccounts = () => {
 
     const merged =
       selectedCluster?.cloud_provider === 'AWS'
-        ? [...baseOptions, ...awsOptions]
+        ? [...baseOptions, ...awsOptions.map(gateModule('cloud'))]
         : selectedCluster?.cloud_provider === 'Azure'
-        ? [...baseOptions, ...azureOptions]
+        ? [...baseOptions, ...azureOptions.map(gateModule('cloud'))]
         : selectedCluster?.cloud_provider === 'GCP'
-        ? [...baseOptions, ...gcpOptions]
+        ? [...baseOptions, ...gcpOptions.map(gateModule('cloud'))]
         : selectedCluster?.cloud_provider === 'CloudFoundry'
         ? [
             ...baseOptions.map((o) => {
@@ -492,7 +520,7 @@ const CloudAccounts = () => {
               if (o.name === 'Monitoring' || o.name === 'Optimize') return { ...o, disabled: true };
               return o;
             }),
-            ...cfOptions,
+            ...cfOptions.map(gateModule('cloud')),
           ]
         : baseOptions;
     return merged.sort((a, b) => a.value - b.value);
@@ -502,24 +530,31 @@ const CloudAccounts = () => {
     const hash = router.asPath.split('#')[1];
     if (!hash) {
       setSelectedFilter(0);
+      setBlockedTab(null);
       return;
     }
     const [fragment, subFragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment);
-    if (filter && !filter.disabled) {
+    if (filter) {
+      // A disabled tab (e.g. Security/Tools) named directly in the hash still
+      // highlights and settles here -- its content area renders a
+      // permission-denied placeholder instead (see the render below) rather
+      // than this effect silently bouncing the user to Summary. Only a
+      // fragment that matches nothing at all falls through to the Summary
+      // fallback below.
       setSelectedFilter(filter.value);
+      setBlockedTab(filter.disabled ? filter : null);
       const subTab = (filter?.tabOptions || []).find((tab) => tab.fragment === subFragment);
       if (subTab) {
         setSelectedSubTab(subTab.value);
       }
     } else if (selectedCluster?.cloud_provider) {
-      // cloud_provider is known so filterOptions is final — a fragment that is not
-      // found, or that points to a disabled tab (Security/Tools), means an invalid
-      // deep link. Fall back to Summary instead of rendering the disabled surface,
-      // and rewrite the hash so the tab strip (AnchorComponent derives its highlight
-      // from the URL) and the deep link both settle on Summary rather than leaving
-      // the disabled tab underlined over Summary content.
+      // cloud_provider is known so filterOptions is final — a fragment that
+      // matches no tab at all means an invalid/stale deep link. Fall back to
+      // Summary and rewrite the hash so the tab strip (AnchorComponent derives
+      // its highlight from the URL) and the deep link both settle there.
       setSelectedFilter(0);
+      setBlockedTab(null);
       router.replace(`${router.asPath.split('#')[0]}#summary`, undefined, { shallow: true });
     }
     // If cloud_provider is not yet set, cloud-specific tabs (ec2, rds, etc.)
@@ -569,16 +604,34 @@ const CloudAccounts = () => {
     return match ? match[1] : '';
   };
 
+  // Named so each tab's `!blockedTab && isXTab && (` guard fits on one line,
+  // rather than adding a term to these already near-the-line-limit multi-
+  // fragment conditions and reflowing their whole JSX block.
+  const isEc2Tab =
+    selectedFilter === getFilterValue('ec2') || selectedFilter === getFilterValue('vm') || selectedFilter === getFilterValue('compute-engine');
+  const isCfOrgTab =
+    selectedFilter === getFilterValue('cf-organizations') ||
+    selectedFilter === getFilterValue('cf-spaces') ||
+    selectedFilter === getFilterValue('cf-routes');
+  const isRdsTab =
+    selectedFilter === getFilterValue('rds') ||
+    selectedFilter === getFilterValue('sql') ||
+    selectedFilter === getFilterValue('sql-mi') ||
+    selectedFilter === getFilterValue('cloud-sql');
+  const isS3Tab =
+    selectedFilter === getFilterValue('s3') || selectedFilter === getFilterValue('blob') || selectedFilter === getFilterValue('cloud-storage');
+
   return (
     <>
       <AnchorComponent
         manageRoute={true}
         options={filterOptions[selectedFilter]?.options || []}
         filterOptions={filterOptions}
-        onChangeFilter={(val, subtab) => {
+        onChangeFilter={(val, subtab, meta) => {
           setSelectedFilter(val);
           setSelectedSubTab(subtab);
           setOptimizeRadioTabValue('right-sizing');
+          setBlockedTab(meta?.blocked || null);
         }}
       />
       {selectedCluster?.account_access === 'readonly' && (
@@ -591,7 +644,8 @@ const CloudAccounts = () => {
       )}
       <ErrorBoundary key={`${accountId}-${selectedFilter}-${selectedSubTab}`}>
         <Box>
-          {[filterOptions[0].value].includes(selectedFilter) && (
+          {blockedTab && <PermissionDeniedContent message={blockedTab.disabledTooltip || `You don't have permission to view ${blockedTab.name}.`} />}
+          {[filterOptions[0].value].includes(selectedFilter) && !blockedTab && (
             <>
               <CloudAccountSummary
                 accountId={accountId}
@@ -603,6 +657,7 @@ const CloudAccounts = () => {
             </>
           )}
           {selectedFilter === getFilterValue('optimize') &&
+            !blockedTab &&
             (!loading ? (
               <>
                 {selectedSubTab == 0 && (
@@ -644,6 +699,7 @@ const CloudAccounts = () => {
               <Loader />
             ))}
           {selectedFilter === getFilterValue('services') &&
+            !blockedTab &&
             (!loading ? (
               <CloudAccountServices
                 accountId={accountId}
@@ -654,14 +710,15 @@ const CloudAccounts = () => {
             ) : (
               <Loader />
             ))}
-          {selectedFilter === getFilterValue('events') && (
+          {selectedFilter === getFilterValue('events') && !blockedTab && (
             <>
               {selectedSubTab === 0 && <CloudAccountEvents title accountId={accountId} stickyColumnIndex='8' heading={''} />}
-              {selectedSubTab === 1 && <TriageRulesManager accountId={accountId} />}
+              {selectedSubTab === 1 && <TriageRulesManager accountId={accountId} provider={selectedCluster?.cloud_provider} />}
               {selectedSubTab === 2 && <ThresholdSuggestionsManager accountId={accountId} provider={selectedCluster?.cloud_provider} />}
             </>
           )}
           {selectedFilter === getFilterValue('monitoring') &&
+            !blockedTab &&
             (!loading ? (
               <>
                 {selectedSubTab === 0 && <CloudAccountAlertManager accountId={accountId} />}
@@ -676,9 +733,7 @@ const CloudAccounts = () => {
             ) : (
               <Loader />
             ))}
-          {(selectedFilter === getFilterValue('ec2') ||
-            selectedFilter === getFilterValue('vm') ||
-            selectedFilter === getFilterValue('compute-engine')) && (
+          {isEc2Tab && !blockedTab && (
             <>
               {selectedSubTab === 0 && <Ec2Summary accountId={accountId} serviceName={getServiceName()} showSummary={true} />}
               {selectedSubTab === 1 && (
@@ -730,7 +785,7 @@ const CloudAccounts = () => {
               {selectedSubTab === 3 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
-          {selectedFilter === getFilterValue('cf-apps') && (
+          {selectedFilter === getFilterValue('cf-apps') && !blockedTab && (
             <>
               {selectedSubTab === 0 && (
                 <CFInstances accountId={accountId} serviceName={getServiceName()} tableHeadingCenter={['Action']} stickyColumnIndex={'5'} />
@@ -741,18 +796,13 @@ const CloudAccounts = () => {
               {selectedSubTab === 2 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
-          {(selectedFilter === getFilterValue('cf-organizations') ||
-            selectedFilter === getFilterValue('cf-spaces') ||
-            selectedFilter === getFilterValue('cf-routes')) && (
+          {isCfOrgTab && !blockedTab && (
             <>
               {selectedSubTab === 0 && <CFResources accountId={accountId} serviceName={getServiceName()} />}
               {selectedSubTab === 1 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
-          {(selectedFilter === getFilterValue('rds') ||
-            selectedFilter === getFilterValue('sql') ||
-            selectedFilter === getFilterValue('sql-mi') ||
-            selectedFilter === getFilterValue('cloud-sql')) && (
+          {isRdsTab && !blockedTab && (
             <>
               {selectedSubTab === 0 && <RdsSummary accountId={accountId} serviceName={getServiceName()} />}
               {selectedSubTab === 1 && (
@@ -802,9 +852,7 @@ const CloudAccounts = () => {
               {selectedSubTab === 3 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} stickyColumnIndex={'8'} />}
             </>
           )}
-          {(selectedFilter === getFilterValue('s3') ||
-            selectedFilter === getFilterValue('blob') ||
-            selectedFilter === getFilterValue('cloud-storage')) && (
+          {isS3Tab && !blockedTab && (
             <>
               {selectedSubTab === 0 && <S3Summary accountId={accountId} serviceName={getServiceName()} />}
               {selectedSubTab === 1 && (
@@ -843,7 +891,7 @@ const CloudAccounts = () => {
               {selectedSubTab === 4 && <CloudAccountMetrices accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
-          {selectedFilter === getFilterValue('ecs') && (
+          {selectedFilter === getFilterValue('ecs') && !blockedTab && (
             <>
               {selectedSubTab === 0 && <ECSSummary accountId={accountId} serviceName={getServiceName()} showSummary={true} />}
               {selectedSubTab === 1 && (
@@ -895,8 +943,8 @@ const CloudAccounts = () => {
               {selectedSubTab === 3 && <CloudAccountEvents accountId={accountId} serviceName={getServiceName()} />}
             </>
           )}
-          {selectedFilter === getFilterValue('security') && (!loading ? <CloudAccountSecurity accountId={accountId} /> : <Loader />)}
-          {selectedFilter === getFilterValue('tools') && (!loading ? <CloudAccountTools accountId={accountId} /> : <Loader />)}
+          {selectedFilter === getFilterValue('security') && !blockedTab && (!loading ? <CloudAccountSecurity accountId={accountId} /> : <Loader />)}
+          {selectedFilter === getFilterValue('tools') && !blockedTab && (!loading ? <CloudAccountTools accountId={accountId} /> : <Loader />)}
         </Box>
       </ErrorBoundary>
     </>

@@ -135,6 +135,17 @@ func sanitize(val any) any {
 
 func registerEncodingFilters() {
 	var err error
+	err = gonja.DefaultEnvironment.Filters.Register("shq", func(e *exec.Evaluator, in *exec.Value, params *exec.VarArgs) *exec.Value {
+		q, err := shellQuote(in.String())
+		if err != nil {
+			panic(err)
+		}
+		return exec.AsValue(q)
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	err = gonja.DefaultEnvironment.Filters.Register("b64encode", func(e *exec.Evaluator, in *exec.Value, params *exec.VarArgs) *exec.Value {
 		return exec.AsValue(base64.StdEncoding.EncodeToString([]byte(in.String())))
 	})

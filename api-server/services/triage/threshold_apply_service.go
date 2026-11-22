@@ -56,7 +56,7 @@ func ApplyThresholdSuggestion(ctx *security.RequestContext, req ApplyThresholdRe
 	if sc == nil || sc.GetTenantId() == "" {
 		return ApplyThresholdResult{}, fmt.Errorf("unauthorized")
 	}
-	if !sc.HasAccountAccess(req.CloudAccountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.CloudAccountID, security.SecurityAccessTypeUpdate) {
 		return ApplyThresholdResult{}, fmt.Errorf("account unauthorized")
 	}
 	if req.AlertRuleKey == "" || req.CloudAccountID == "" {
@@ -183,7 +183,7 @@ func RevertThresholdSuggestion(ctx *security.RequestContext, alertRuleKey, cloud
 	if alertRuleKey == "" || cloudAccountID == "" {
 		return ApplyThresholdResult{}, fmt.Errorf("alert_rule_key and cloud_account_id are required")
 	}
-	if !sc.HasAccountAccess(cloudAccountID, security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(cloudAccountID, security.SecurityAccessTypeUpdate) {
 		return ApplyThresholdResult{}, fmt.Errorf("account unauthorized")
 	}
 
@@ -280,7 +280,7 @@ func GetThresholdApplyOptions(ctx *security.RequestContext, alertRuleKey, cloudA
 	if alertRuleKey == "" || cloudAccountID == "" {
 		return ApplyOptionsResult{}, fmt.Errorf("alert_rule_key and cloud_account_id are required")
 	}
-	if !sc.HasAccountAccess(cloudAccountID, security.SecurityAccessTypeRead) {
+	if !ctx.GetSecurityContext().CanAccessAccount(cloudAccountID, security.SecurityAccessTypeRead) {
 		return ApplyOptionsResult{}, fmt.Errorf("account unauthorized")
 	}
 

@@ -66,7 +66,7 @@ func GetNodeRecommendation(context *security.RequestContext, query NodeRecommend
 		return NodeRecommendationResponse{}, err
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(query.Account, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(query.Account, security.SecurityAccessTypeRead) {
 		return NodeRecommendationResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 
@@ -116,7 +116,7 @@ func GetMetrics(query MetricsRequest, context *security.RequestContext) (Metrics
 		return MetricsResponse{}, err
 	}
 
-	if !context.GetSecurityContext().HasAccountAccess(query.Account, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(query.Account, security.SecurityAccessTypeRead) {
 		return MetricsResponse{}, common.ErrorUnauthorized("unauthorized")
 	}
 

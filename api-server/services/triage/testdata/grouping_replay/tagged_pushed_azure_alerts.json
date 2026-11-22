@@ -1,0 +1,81 @@
+{
+ "name": "tagged_pushed_azure_alerts",
+ "story": "An Azure web app and the Cosmos DB account it reads from, tagged with one application and with no service map between them. The database's request-unit alarm is polled; the web app's 5xx alarm a minute later is pushed by webhook and stored under the webhook's source. They are one incident. A pushed 5xx alarm on another application's web app in the middle of it is not part of it.",
+ "namespace": "cloud",
+ "shape": "tagged",
+ "maps": {},
+ "expect": {
+  "together": [
+   [
+    "ru",
+    "web"
+   ]
+  ],
+  "apart": [
+   [
+    "ru",
+    "other"
+   ],
+   [
+    "web",
+    "other"
+   ]
+  ]
+ },
+ "events": [
+  {
+   "id": "ru",
+   "alert": "normalized-ru-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "databaseaccounts",
+   "subject_namespace": "microsoft.documentdb/databaseaccounts",
+   "subject": "checkout-db",
+   "fingerprint": "fp-checkout-db-normalized-ru-high",
+   "starts_s": 0,
+   "arrives_s": 110,
+   "ends_s": 0,
+   "tags": {
+    "application": "checkout",
+    "environment": "prod"
+   },
+   "source": "Azure_Monitor_Alert"
+  },
+  {
+   "id": "web",
+   "alert": "appservice-5xx-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "sites",
+   "subject_namespace": "microsoft.web/sites",
+   "subject": "checkout-web",
+   "fingerprint": "fp-checkout-web-appservice-5xx-high",
+   "starts_s": 60,
+   "arrives_s": 61,
+   "ends_s": 60,
+   "tags": {
+    "application": "checkout",
+    "environment": "prod"
+   },
+   "source": "azure_monitor_webhook"
+  },
+  {
+   "id": "other",
+   "alert": "appservice-5xx-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "sites",
+   "subject_namespace": "microsoft.web/sites",
+   "subject": "billing-web",
+   "fingerprint": "fp-billing-web-appservice-5xx-high",
+   "starts_s": 90,
+   "arrives_s": 91,
+   "ends_s": 90,
+   "tags": {
+    "application": "billing",
+    "environment": "prod"
+   },
+   "source": "azure_monitor_webhook"
+  }
+ ]
+}

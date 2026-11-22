@@ -200,7 +200,14 @@ func NewRequestHandler(
 		resp, err := rpcClient.Call(ctx, cfg.RabbitMQ.ExchangeName, rk, payload, requestID)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				logger.Error("RPC timeout", "corr", requestID, "action_name", actionName, "action_params", loggableActionParams(actionName, actionParams), "err", err)
+				// llm-server records an MCP timeout as that integration's health and
+				// logs once when the health changes (#40994), so one line per retry
+				// here would only repeat it.
+				logTimeout := logger.Error
+				if actionName == "mcp_request" {
+					logTimeout = logger.Debug
+				}
+				logTimeout("RPC timeout", "corr", requestID, "action_name", actionName, "action_params", loggableActionParams(actionName, actionParams), "err", err)
 				if metrics.AsyncMetricsInstance != nil {
 					metrics.AsyncMetricsInstance.IncWSRequestTimeouts(metrics.AttrAccount(accountID))
 				}

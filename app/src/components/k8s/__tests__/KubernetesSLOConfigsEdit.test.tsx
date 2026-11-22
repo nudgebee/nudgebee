@@ -7,6 +7,7 @@ import KubernetesSLOConfigs from '../KubernetesSLOConfigs';
  * the row's current values, and saving goes through the update action.
  */
 
+const getMemoryLimitedContainers = jest.fn(async (..._args: unknown[]) => [] as string[]);
 const listSLOConfigs = jest.fn();
 const updateSLOConfig = jest.fn();
 const createSLOConfig = jest.fn();
@@ -20,6 +21,7 @@ jest.mock('@api1/kubernetes1', () => ({
     getSLOObservation: async () => ({ data: { data: { slo_report_observation_v2: { rows: [] } } } }),
     deleteSLOConfig: jest.fn(),
     getSLOConfig: jest.fn(),
+    getMemoryLimitedContainers: (...args: unknown[]) => getMemoryLimitedContainers(...args),
   },
 }));
 
@@ -29,7 +31,7 @@ jest.mock('@api1/kubernetes', () => ({
 }));
 
 const hasWriteAccess = jest.fn((_accountId?: string, _namespace?: string) => true);
-jest.mock('@lib/auth', () => ({ hasWriteAccess: (a?: string, n?: string) => hasWriteAccess(a, n) }));
+jest.mock('@lib/auth', () => ({ canOnAccount: (_module: string, _class: string, a?: string, n?: string) => hasWriteAccess(a, n) }));
 jest.mock('@ui/Toast', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
 jest.mock('@components/events/KubernetesEvents', () => () => null);
 jest.mock('../details/KubernetesTracesListing', () => () => null);
@@ -93,4 +95,23 @@ test('a namespace admin can edit SLOs in their namespace but not delete them', a
   fireEvent.click(await screen.findByRole('button', { name: 'Edit SLO config for checkout' }));
   await screen.findByText('Update SLO Config for checkout');
   expect(screen.queryByRole('button', { name: 'Delete SLO config for checkout' })).toBeNull();
+});
+
+test('Edit keeps a memory SLO on its stored container, not the default one', async () => {
+  getMemoryLimitedContainers.mockResolvedValue(['istio-proxy', 'api']);
+  listSLOConfigs.mockResolvedValue({
+    data: { data: { slo_config: [{ ...row('memory_saturation', 'id-m', 0, 90), container: 'istio-proxy' }] } },
+  });
+  render(<KubernetesSLOConfigs accountId='acc-1' />);
+  expect(await screen.findByText('Memory (istio-proxy) ≤ 90%')).toBeInTheDocument();
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit SLO config for checkout' }));
+  await screen.findByText('Update SLO Config for checkout');
+  await waitFor(() => expect(getMemoryLimitedContainers).toHaveBeenCalled());
+  fireEvent.click(within(document.body).getByRole('button', { name: 'Update' }));
+
+  await waitFor(() => expect(updateSLOConfig).toHaveBeenCalledTimes(1));
+  expect(updateSLOConfig.mock.calls[0][0].config).toEqual([
+    expect.objectContaining({ name: 'memory_saturation', threshold: 90, container: 'istio-proxy' }),
+  ]);
 });
