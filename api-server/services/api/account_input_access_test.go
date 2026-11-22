@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	accessTestTenant         = "tenant-1"
+	accessTestTenant         = "44444444-4444-4444-4444-444444444444"
 	accessTestOwnAccount     = "11111111-1111-1111-1111-111111111111"
 	accessTestForeignAccount = "33333333-3333-3333-3333-333333333333"
 )
