@@ -45,6 +45,8 @@ describe('GatewayUsage: applying an Overview drill-down', () => {
   beforeEach(() => {
     mockPicker.mounts = 0;
     mockPicker.value = null;
+    // Already on Overview's own hash, so mount writes no URL.
+    window.location.hash = '#monitor';
   });
 
   it('narrows the window to the clicked day', () => {

@@ -183,3 +183,12 @@ export function resolveServerBranding(host?: string | null): ServerBrandingData 
     return null;
   }
 }
+
+/**
+ * Resolves the theme color for PWA window headers and meta tags.
+ * Falls back to the brand's sidebar background color or brand navy (#1B2D4A).
+ */
+export function resolvePwaThemeColor(branding?: ServerBrandingData | null): string {
+  const palette = (branding?.theme as Record<string, unknown> | undefined)?.palette as Record<string, string> | undefined;
+  return palette?.sidebarBg || palette?.primary || '#1B2D4A';
+}

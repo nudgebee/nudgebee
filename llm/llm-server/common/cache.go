@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"nudgebee/llm/config"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +17,6 @@ import (
 	"github.com/eko/gocache/store/bigcache/v4"
 	redis_store "github.com/eko/gocache/store/redis/v4"
 	"github.com/redis/go-redis/v9"
-	"github.com/samber/lo"
 )
 
 var cacheManager *cache.Cache[any]
@@ -39,12 +35,6 @@ type CacheNamespaceOption func(o *cacheNamespaceOptions)
 func CacheNamespaceWithExpiration(expiration time.Duration) CacheNamespaceOption {
 	return func(o *cacheNamespaceOptions) {
 		o.Expiration = expiration
-	}
-}
-
-func CacheNamespaceWithMaxSizeMb(size int) CacheNamespaceOption {
-	return func(o *cacheNamespaceOptions) {
-		o.MaxSizeMb = size
 	}
 }
 
@@ -215,12 +205,19 @@ func CacheSet(namespace string, key string, value []byte, options ...CacheSetOpt
 	return cache.Set(context.Background(), namespace+":"+key, string(value), storeOptions...)
 }
 
+// cacheDeleteTimeout bounds one delete. Deletes run inline on request paths
+// and on the replica-broadcast subscriber, where a hung call would delay every
+// message behind it.
+const cacheDeleteTimeout = time.Second
+
 func CacheDelete(namespace string, key string) error {
 	cache, err := cacheGetManager(namespace)
 	if err != nil {
 		return err
 	}
-	return cache.Delete(context.Background(), namespace+":"+key)
+	ctx, cancel := context.WithTimeout(context.Background(), cacheDeleteTimeout)
+	defer cancel()
+	return cache.Delete(ctx, namespace+":"+key)
 }
 
 func CacheDeleteWithTag(namespace string, tags ...string) error {
@@ -238,7 +235,9 @@ func CacheDeleteWithTag(namespace string, tags ...string) error {
 	// the given tags — so including it would invalidate the whole namespace
 	// (every user) on every call, not just the entries matching the caller's
 	// tags. The namespace tag is reserved for CacheClear.
-	return cache.Invalidate(context.Background(), store.WithInvalidateTags(tags))
+	ctx, cancel := context.WithTimeout(context.Background(), cacheDeleteTimeout)
+	defer cancel()
+	return cache.Invalidate(ctx, store.WithInvalidateTags(tags))
 }
 
 func CacheClear(namespace string) error {
@@ -247,50 +246,6 @@ func CacheClear(namespace string) error {
 		return err
 	}
 	return cache.Invalidate(context.Background(), store.WithInvalidateTags([]string{"namespace:" + namespace}))
-}
-
-func CacheListNamesapces() []string {
-	return slices.Collect(maps.Keys(cacheManagers))
-}
-
-func CacheListKeys(namespace string) ([]string, error) {
-	_, err := cacheGetManager(namespace)
-	if err != nil {
-		return nil, errors.New("cache: namespace not found")
-	}
-
-	if config.Config.CacheProvider == "redis" {
-		redisClient, err := getRedisClient()
-		if err != nil || redisClient == nil {
-			return nil, errors.New("cache: redis client unavailable")
-		}
-		keys := redisClient.Keys(context.Background(), namespace+":*").Val()
-		keys = lo.Map(keys, func(key string, i int) string {
-			return strings.TrimPrefix(key, namespace+":")
-		})
-		return keys, nil
-	}
-
-	syncCacheManagers.Lock()
-	bigCacheClient, ok := cacheClient.(*bigcache_store.BigCache)
-	syncCacheManagers.Unlock()
-	if !ok || bigCacheClient == nil {
-		return nil, errors.New("cache: local cache client unavailable")
-	}
-
-	iterator := bigCacheClient.Iterator()
-	keys := make([]string, 0)
-	for iterator.SetNext() {
-		k, err := iterator.Value()
-		if err != nil {
-			return nil, err
-		}
-		if strings.HasPrefix(k.Key(), namespace+":") {
-			key := strings.TrimPrefix(k.Key(), namespace+":")
-			keys = append(keys, key)
-		}
-	}
-	return keys, nil
 }
 
 func CachePublish(channel string, message string) error {
@@ -305,23 +260,6 @@ func CachePublish(channel string, message string) error {
 		return redisClient.Publish(context.Background(), channel, message).Err()
 	}
 	return nil
-}
-
-func CacheSubscribe(channel string, handler func(message string)) {
-	if config.Config.CacheProvider == "redis" {
-		redisClient, err := getRedisClient()
-		if err != nil || redisClient == nil {
-			slog.Warn("cache: cannot subscribe to redis channel, client unavailable", "channel", channel, "error", err)
-			return
-		}
-		pubsub := redisClient.Subscribe(context.Background(), channel)
-		go func() {
-			ch := pubsub.Channel()
-			for msg := range ch {
-				handler(msg.Payload)
-			}
-		}()
-	}
 }
 
 // releaseLockScript releases a distributed lock only if the caller still owns it

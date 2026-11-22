@@ -87,7 +87,23 @@ func (s *SolarWindsTraceSource) GetQuery(_ *security.RequestContext, _ TracesV3R
 
 // QueryTraces returns an empty slice. SolarWinds Observability does not provide a REST API
 // for querying individual spans or traces — only pre-aggregated APM metrics are accessible.
-func (s *SolarWindsTraceSource) QueryTraces(_ *security.RequestContext, _ TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+// RawTraceQueryUnsupportedReason implements rawTraceQueryUnsupportedSource. SolarWinds is
+// the one trace provider that cannot run a raw query: there is no span or trace read
+// endpoint to send one to, so this is a hard limitation of the backend rather than
+// something left unimplemented. Stated here once and used both by QueryTraces below and by
+// the capability the API advertises.
+func (s *SolarWindsTraceSource) RawTraceQueryUnsupportedReason() string {
+	return "SolarWinds Observability exposes no span or trace read API, only pre-aggregated APM measurements"
+}
+
+// A caller-supplied raw query is refused here rather than ignored. Every other trace
+// provider executes one, so silently dropping it would reproduce exactly the defect #41426
+// reported: an empty result that reads as "nothing matched your query" when in truth the
+// query never ran and no endpoint exists that could run it.
+func (s *SolarWindsTraceSource) QueryTraces(_ *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	if hasRawTraceQuery(req) {
+		return nil, fmt.Errorf("solarwinds: a raw trace query cannot be run — %s", s.RawTraceQueryUnsupportedReason())
+	}
 	return []common.OpenTelemetryTrace{}, nil
 }
 

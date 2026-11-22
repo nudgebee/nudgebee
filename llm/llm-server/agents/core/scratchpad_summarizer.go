@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -130,7 +131,7 @@ func llmSummarizeObservation(
 	// Build a lite-model context with a timeout. WithoutCancel decouples this call from
 	// parent cancellation — the internal timeout ensures we don't hang indefinitely.
 	timeoutCtx, cancel := context.WithTimeout(
-		context.WithValue(context.WithoutCancel(ctx.GetContext()), ContextKeyModelTier, ModelTierSummary),
+		context.WithValue(context.WithoutCancel(ctx.GetContext()), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary),
 		getScratchpadSummaryTimeout(),
 	)
 	defer cancel()
@@ -144,7 +145,7 @@ func llmSummarizeObservation(
 	)
 
 	t0 := time.Now()
-	completion, err := GenerateAndTrackLLMContent(
+	completion, err := llmruntime.GenerateAndTrackLLMContent(
 		summaryCtx,
 		request.UserId,
 		request.AccountId,
@@ -157,7 +158,7 @@ func llmSummarizeObservation(
 		},
 		false,
 		llms.WithTemperature(0.0),
-		WithThinkingLevel(ThinkingLevelFastTask),
+		llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask),
 	)
 	latency := time.Since(t0).Seconds()
 

@@ -677,6 +677,19 @@ func TestVirtualKubectlConfigUsesAuthorizedContexts(t *testing.T) {
 	require.Equal(t, "k8s-dev\nk8s-prod\nk8s-dev-1\n", result)
 	require.NotContains(t, result, "k8s-secret")
 
+	tools.StubClusterConnections(t, map[string]tools.ClusterConnection{
+		workspaceAccount:     {Connected: true},
+		"virtual-config-dev": {Connected: false},
+	})
+	request.Command = "kubectl config get-contexts"
+	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
+	require.NoError(t, err)
+	require.True(t, handled)
+	require.Contains(t, result, "CURRENT   NAME   CLUSTER   AUTHINFO   STATUS   LAST-SEEN\n")
+	require.Contains(t, result, "*         k8s-prod   k8s-prod   nubi-user   Connected   never\n")
+	require.Contains(t, result, "k8s-dev   k8s-dev   nubi-user   Disconnected   never\n")
+	require.Contains(t, result, "k8s-dev-1   k8s-dev-1   nubi-user   Unknown   -\n", "a cluster with no agent row has no status")
+
 	request.Command = "kubectl config current-context"
 	result, handled, err = virtualKubectlConfig(ctx, request, "k8s-prod")
 	require.NoError(t, err)
@@ -957,6 +970,12 @@ var auditedCommandShapes = []struct {
 	{"url basic auth", "kubectl 'exec' '-n' 'monitoring' 'deployment/grafana' '--' 'curl' '-s' 'http://admin:Qv7rTx2mWp9z@localhost:3000/api/v1/provisioning/alert-rules'", "@localhost:3000/api/v1/provisioning/alert-rules"},
 	{"password env", "kubectl 'exec' 'db-0' '-n' 'shop' '--' 'env' 'PGPASSWORD=Qv7rTx2mWp9z' 'psql' '-U' 'app_user' '-d' 'app_db' '-c' 'SHOW work_mem;'", "'psql' '-U' 'app_user'"},
 	{"token argument", `kubectl 'exec' 'notifier-0' '--' 'python3' '-c' 'from slack_sdk.web.client import WebClient; c = WebClient(token="Qv7rTx2mWp9z"); print(c.retry_handlers)'`, "print(c.retry_handlers)"},
+	// Shapes tool-output masking alone missed: a credential carried by a flag.
+	{"token flag", "kubectl 'get' 'pods' '-n' 'shop' '--token' 'Qv7rTx2mWp9z'", "'get' 'pods' '-n' 'shop'"},
+	{"mysql -p", "kubectl 'exec' 'db-0' '--' 'mysql' '-uroot' '-pQv7rTx2mWp9z' '-e' 'SHOW TABLES'", "'-e' 'SHOW TABLES'"},
+	{"redis-cli -a", "kubectl 'exec' 'cache-0' '--' 'redis-cli' '-a' 'Qv7rTx2mWp9z' 'INFO'", "'INFO'"},
+	{"curl -u", "kubectl 'exec' 'grafana-0' '--' 'curl' '-s' '-u' 'admin:Qv7rTx2mWp9z' 'http://localhost:3000/api/health'", "'http://localhost:3000/api/health'"},
+	{"jwt bearer token", "kubectl get pods --token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJRdjdyVHgybVdwOXoifQ.Qv7rTx2mWp9zQv7rTx2mWp9z", "kubectl get pods"},
 }
 
 // The audit keeps the command but not the credential in it.
@@ -992,6 +1011,21 @@ func TestWorkspaceExecuteAuditMasksCredentials(t *testing.T) {
 		require.Equal(t, "SELECT 1", args["query"])
 		require.Contains(t, args["dsn"], "@db.example.com/app")
 		require.Equal(t, secret, req.Arguments["password"], "the relayed arguments are not changed")
+	})
+
+	t.Run("command-line arguments", func(t *testing.T) {
+		req := WorkspaceExecuteRequest{AccountId: "workspace", Tool: "redis", Command: "redis-cli INFO", Arguments: map[string]any{
+			"extra_args": "--tls --password " + secret,
+			"nested":     map[string]any{"cmd": "redis-cli -a " + secret + " INFO"},
+		}}
+		a := workspaceExecuteAudit(ctx, req, "redis", "workspace", true).Audits[0]
+		stored, err := json.Marshal(a)
+		require.NoError(t, err)
+		require.NotContains(t, string(stored), secret)
+		args := a.EventAttr["arguments"].(map[string]any)
+		require.Contains(t, args["extra_args"], "--tls --password")
+		require.Contains(t, args["nested"].(map[string]any)["cmd"], " INFO")
+		require.Equal(t, "--tls --password "+secret, req.Arguments["extra_args"], "the relayed arguments are not changed")
 	})
 }
 
@@ -1054,4 +1088,30 @@ func TestWorkspaceBoundIntegration_PerCallJobs(t *testing.T) {
 		assert.Equal(t, "prod-id", got.AccountId, job)
 		assert.Equal(t, "prod-id/db-2", got.ToolConfig.Id, "%s: the target's integration of that name", job)
 	}
+}
+
+// A bee's command carries its run's grant scope: the proxy reads the target
+// through the bee's k8s grant, as the run itself did.
+func TestWorkspaceTokenCarriesAGrantScopedRun(t *testing.T) {
+	config.Config.LlmServerJwtSecret = "test-secret"
+	security.SetTenantIdCacheForTest("bee-workspace", "bee-tenant")
+	stubTenantAccounts(t, "bee-workspace", "bee-target")
+	var sc security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"],"ScopedCustomPermissions":{"bee-target":{"k8s:Read":true}}}`), &sc))
+	person := security.NewRequestContext(context.Background(), &sc, slog.Default(), nil, nil)
+
+	// A person whose access to the target comes from a k8s:Read grant reads it
+	// too; with no grant there the target stays out of reach.
+	_, err := workspace.ExecutionToken(person, "bee-workspace", "bee-target", time.Minute)
+	require.NoError(t, err, "a person's k8s:Read grant reaches the target")
+	var noGrant security.SecurityContext
+	require.NoError(t, json.Unmarshal([]byte(`{"TenantId":"bee-tenant","UserId":"bee","AccountIds":["bee-workspace","bee-target"]}`), &noGrant))
+	_, err = workspace.ExecutionToken(security.NewRequestContext(context.Background(), &noGrant, slog.Default(), nil, nil), "bee-workspace", "bee-target", time.Minute)
+	require.ErrorContains(t, err, "access denied", "no built-in role and no grant on the target")
+
+	token, err := workspace.ExecutionToken(security.WithGrantScopedRun(person), "bee-workspace", "bee-target", time.Minute)
+	require.NoError(t, err)
+	ctx, err := authorizeWorkspaceRequest(workspaceTokenRequest(token), "bee-workspace", nil, nil)
+	require.NoError(t, err)
+	assert.True(t, security.IsGrantScopedRun(ctx))
 }

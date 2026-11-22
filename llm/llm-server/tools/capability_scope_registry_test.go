@@ -12,7 +12,6 @@ import (
 // fails this test instead of silently taking the default.
 var unconfirmedTools = map[string]bool{
 	"recommendation_apply":       true,
-	"standard_diagnostic_grep":   true,
 	"ticket_master_v2":           true,
 	"workflow_config_save":       true,
 	"workflow_make_version_live": true,

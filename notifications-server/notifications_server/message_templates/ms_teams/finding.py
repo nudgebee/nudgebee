@@ -11,6 +11,14 @@ from notifications_server.configs.settings import DEFAULT_EVIDENCES, settings
 
 LOG = logging.getLogger(__name__)
 
+# Alert sources (rule text, log excerpts) can send descriptions long enough to
+# push the card past Teams' ~28 KB limit on their own. Capped here rather than
+# at the source so every Teams finding card stays deliverable.
+DESCRIPTION_LIMIT = 4000
+# Fallback if the capped description still doesn't fit alongside a large
+# evidence/properties set.
+DESCRIPTION_SHRINK_LIMIT = 500
+
 
 def get_adaptive_card_template(parameters):
     return {
@@ -53,7 +61,7 @@ def get_ms_teams_finding_message_template(finding, tenant_id=None):
     receive clicks), it also carries the action buttons."""
     parameters = {"title": finding.get("title")}
     if finding.get("description"):
-        parameters["description"] = finding.get("description")
+        parameters["description"] = Transformer.apply_length_limit(finding.get("description"), DESCRIPTION_LIMIT)
 
     properties = [
         {"title": "*Reported At:*", "value": str(datetime.fromisoformat(finding.get("created_at")))},
@@ -73,6 +81,11 @@ def get_ms_teams_finding_message_template(finding, tenant_id=None):
     parameters["viewUrl"] = f"{os.environ.get('BASE_URL')}/investigate?id={finding.get('id')}"
 
     card = get_adaptive_card_template(parameters)
+    if not card_actions.fits(card) and parameters.get("description"):
+        # Evidence/properties pushed it over even with the capped description;
+        # shrink the description further rather than dropping the alert.
+        parameters["description"] = Transformer.apply_length_limit(parameters["description"], DESCRIPTION_SHRINK_LIMIT)
+        card = get_adaptive_card_template(parameters)
     if not tenant_id:
         return card
     ask = card_actions.ask_nubi_action(finding, tenant_id)

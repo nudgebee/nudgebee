@@ -1,6 +1,6 @@
 """Assemble the documents a PDF is indexed as: one per page of text, one per figure.
 
-Ported from llm-server's ``tools/core/knowledgebase_pdf.go``
+Ported from llm-server's ``knowledge/knowledgebase_pdf.go``
 (``buildKBPDFChunkTexts``) as part of moving ingestion into this service, and
 kept behaviourally identical to it — the Go tests in
 ``knowledgebase_pdf_test.go`` have counterparts in ``tests/test_pdf_chunks.py``.

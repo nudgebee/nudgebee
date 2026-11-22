@@ -223,6 +223,7 @@ func (h *handler) handle(c *gin.Context) {
 		Model: model, Path: path, Body: body, Streaming: streaming,
 		Endpoint: endpoint, Generative: generative,
 	}
+	defer rc.ReleaseSlots()
 	if stop, err := h.pipeline.Run(rc); err != nil {
 		cancel()
 		slog.Error("proxy: request pipeline error", "error", err, "provider", provider, "path", path)
@@ -256,6 +257,12 @@ func (h *handler) handle(c *gin.Context) {
 
 	// Fingerprint the stable prompt prefix (system+tools+first-user): the cache-affinity
 	// key + the inferred session id when the client supplies none. Uses the ORIGINAL body.
+	// A model list is never a stream, and only the unary path filters it: a body
+	// "stream":true on the GET must not route a restricted caller around the filter.
+	if rc.FilterModelList {
+		streaming = false
+	}
+
 	fingerprint := prefixFingerprint(rc.Identity, rc.Body)
 	sessionID, sessionSource := resolveSession(c, rc.Body, fingerprint)
 	rm := &reqMeta{
@@ -275,6 +282,7 @@ func (h *handler) handle(c *gin.Context) {
 		reqAttrs:      extractRequestAttributes(provider, rc.Body),
 		identity:      identity,
 		decision:      rc.Decision,
+		filterModels:  rc.FilterModelList,
 	}
 
 	// Cross-provider substitution (P2): a rule resolved a different provider. Translate
@@ -311,12 +319,36 @@ type reqMeta struct {
 	failover       map[string]any // set when a transient primary failure fell over to a fallback
 	dlp            map[string]any // set when the egress filter detected/redacted a secret
 	start          time.Time
+	firstChunk     time.Time // when the first streamed chunk arrived; zero if none
+	attemptStart   time.Time // when a failover attempt began; zero when the primary served
 	sessionID      string
 	sessionSource  string
 	prefixFinger   string // stable-prefix fingerprint (cache-affinity key + inferred session id)
 	reqAttrs       map[string]any
 	identity       auth.Identity
 	decision       routing.Decision
+	filterModels   bool // cut a provider model list to what identity may use
+}
+
+// markFirstChunk records when the first streamed chunk arrived (first call wins).
+func (rm *reqMeta) markFirstChunk() {
+	if rm.firstChunk.IsZero() {
+		rm.firstChunk = time.Now()
+	}
+}
+
+// ttftMs is the time to the first streamed chunk, measured from the attempt that served it,
+// or nil for a request that streamed none.
+func (rm *reqMeta) ttftMs() *int64 {
+	if !rm.streaming || rm.firstChunk.IsZero() {
+		return nil
+	}
+	from := rm.start
+	if !rm.attemptStart.IsZero() {
+		from = rm.attemptStart
+	}
+	ms := rm.firstChunk.Sub(from).Milliseconds()
+	return &ms
 }
 
 // Surface values — the entrypoint a request arrived on, captured on every usage row
@@ -344,6 +376,18 @@ func (h *handler) unary(c *gin.Context, bctx *schemas.BifrostContext, req *schem
 	// fail over before forwarding it to the client.
 	if isRetryable(resp.StatusCode) && h.tryFailoverUnary(c, bctx, rm, resp.StatusCode) {
 		return
+	}
+	if rm.filterModels && resp.StatusCode == http.StatusOK {
+		filtered, err := filterModelList(rm.provider, resp.Body, func(id string) bool {
+			return targetAllowed(rm.identity, string(rm.provider), id)
+		})
+		if err != nil {
+			slog.Warn("proxy: provider model list unreadable, not forwarded", "provider", rm.provider, "error", err)
+			edgeerr.Write(c, string(rm.provider), http.StatusBadGateway, "upstream_error", "the provider's model list could not be read")
+			h.meter(context.WithoutCancel(c.Request.Context()), rm, http.StatusBadGateway, nil, nil, nil)
+			return
+		}
+		resp.Body = filtered
 	}
 	for k, v := range resp.Headers {
 		if _, hop := hopByHopResponseHeaders[strings.ToLower(k)]; !hop {
@@ -412,6 +456,7 @@ func (h *handler) stream(c *gin.Context, bctx *schemas.BifrostContext, cancel fu
 		writeJSONError(c, http.StatusBadGateway, "upstream_error", "passthrough stream returned empty first chunk")
 		return
 	}
+	rm.markFirstChunk()
 	// Valid first chunk: from here the client receives head.StatusCode. Usage may
 	// arrive on this chunk or a later one; meter reflects the status the client got.
 	status = head.StatusCode
@@ -548,6 +593,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		Streaming:  rm.streaming,
 		StatusCode: status,
 		LatencyMS:  time.Since(rm.start).Milliseconds(),
+		TTFTMs:     rm.ttftMs(),
 		Headers:    headers,
 		Usage:      usage,
 		SessionID:  rm.sessionID,
@@ -571,6 +617,7 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		// Tenant-scoped: a tenant's own price override wins over the built-in rate (else the
 		// built-in), so one tenant's negotiated rate never bleeds onto another's cost.
 		ev.CostUsd = h.pricer.CostUSD(ev.TenantID, ev.Model, ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+		ev.CacheSavingsUsd = h.pricer.CacheSavingsUSD(ev.TenantID, ev.Model, ev.CacheReadTokens, ev.CacheWriteTokens)
 	}
 	// Skip recording non-inference admin calls (cache/list/countTokens) unless enabled
 	// — they have no model and 0 tokens, so they'd only clutter the dashboard. The
@@ -580,14 +627,10 @@ func (h *handler) meter(ctx context.Context, rm *reqMeta, status int, headers ma
 		h.sink.Record(ev)
 	}
 
-	// Reconcile token/cost usage against quotas (requests were counted pre-call).
+	// Reconcile token/cost usage against quotas (requests were counted pre-call), on the
+	// target actually served — rm is updated on failover and substitution.
 	if h.limiter.Enabled() && ev.TotalTokens > 0 {
-		h.limiter.Reconcile(ctx, ratelimit.Scope{
-			TenantID: rm.identity.TenantID,
-			UserID:   rm.identity.UserID,
-			APIKeyID: rm.identity.APIKeyID,
-			Model:    ev.RequestedModel,
-		}, ev.TotalTokens, ev.CostUsd)
+		h.limiter.Reconcile(ctx, quotaScope(rm.identity, rm.decision, string(rm.provider), rm.model), ev.TotalTokens, ev.CostUsd)
 	}
 
 	// Full-body logging (off by default). Linked to the usage row via reqID.

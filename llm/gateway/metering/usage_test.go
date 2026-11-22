@@ -69,7 +69,65 @@ func TestNewEvent_CacheTokens(t *testing.T) {
 	})
 	assert.Equal(t, 4003, ev.CacheReadTokens)
 	assert.Equal(t, 0, ev.CacheWriteTokens)
-	assert.Equal(t, 4011, ev.InputTokens)
+	assert.Equal(t, 8, ev.InputTokens, "input_tokens holds only the fresh (uncached) prompt tokens")
+}
+
+func TestNewEvent_InputExcludesCacheReadAndWrite(t *testing.T) {
+	// Anthropic-shaped: 200 fresh + 800 read + 100 written = 1100 prompt tokens.
+	ev := NewEvent(EventInput{
+		Provider: schemas.Anthropic,
+		Usage: &schemas.BifrostPassthroughUsage{
+			LLMUsage: &schemas.BifrostLLMUsage{
+				PromptTokens:     1100,
+				CompletionTokens: 50,
+				TotalTokens:      1150,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens:  800,
+					CachedWriteTokens: 100,
+				},
+			},
+		},
+	})
+	assert.Equal(t, 200, ev.InputTokens)
+	assert.Equal(t, 800, ev.CacheReadTokens)
+	assert.Equal(t, 100, ev.CacheWriteTokens)
+	assert.Equal(t, 1150, ev.TotalTokens, "total is unchanged")
+}
+
+func TestNewEvent_InputNeverNegative(t *testing.T) {
+	ev := NewEvent(EventInput{
+		Provider: schemas.OpenAI,
+		Usage: &schemas.BifrostPassthroughUsage{
+			LLMUsage: &schemas.BifrostLLMUsage{
+				PromptTokens: 10,
+				TotalTokens:  10,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens: 12,
+				},
+			},
+		},
+	})
+	assert.Equal(t, 0, ev.InputTokens)
+}
+
+func TestNewEvent_CostNoLongerDoubleBillsCache(t *testing.T) {
+	// $3/M input, $0.30/M cached read: 200 fresh + 800 cached should cost 200*3 + 800*0.3.
+	ev := NewEvent(EventInput{
+		Provider: schemas.Anthropic,
+		Usage: &schemas.BifrostPassthroughUsage{
+			LLMUsage: &schemas.BifrostLLMUsage{
+				PromptTokens: 1000,
+				TotalTokens:  1000,
+				PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+					CachedReadTokens: 800,
+				},
+			},
+		},
+	})
+	p := &Pricer{}
+	p.cur.Store(&catalog{builtin: map[string]modelPrice{"m": {Input: 3, CachedInput: 0.3}}})
+	got := p.CostUSD("", "m", ev.InputTokens, ev.OutputTokens, ev.CacheReadTokens, ev.CacheWriteTokens)
+	assert.InDelta(t, (200*3+800*0.3)/1e6, got, 1e-12)
 }
 
 func TestNewEvent_StreamingUsageFromFinalChunk(t *testing.T) {

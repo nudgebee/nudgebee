@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -12,11 +13,14 @@ func init() {
 	toolInput := "A question or request about creating, listing, commenting on, or searching tickets."
 	toolOutput := "Result of the ticket operation including ticket details, ticket lists, comments, or search results."
 
-	core.RegisterNBAgentFactoryAndTool(TicketsV2AgentName, func(accountId string) (core.NBAgent, error) {
+	// "tickets" is the retired v1 agent's name; it resolves here so stored
+	// history, @tickets and agents that list it keep working.
+	core.RegisterNBAgentFactoryAndToolWithAliases(TicketsV2AgentName, func(accountId string) (core.NBAgent, error) {
 		return TicketMasterV2Agent{
 			accountId: accountId,
 		}, nil
-	}, toolDescription, toolInput, toolOutput)
+	}, toolDescription, toolInput, toolOutput, "tickets")
+	toolcore.RegisterNBToolAlias("tickets", TicketsV2AgentName)
 }
 
 const TicketsV2AgentName = "tickets_v2"
@@ -50,7 +54,7 @@ func (a TicketMasterV2Agent) GetDescription() string {
 }
 
 func (a TicketMasterV2Agent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	followupEnabled := core.IsAgentsFollowupEnabled()
+	followupEnabled := llmruntime.IsAgentsFollowupEnabled()
 
 	// Review Required Fields instruction varies based on followup support
 	reviewFieldsInstruction := "**Review Required Fields**: After get_create_meta, carefully review ALL required fields. For each required field, check if the user has provided a value. If any required fields are missing values that you cannot reasonably infer, ask the user to provide them BEFORE calling create_ticket. Present the missing fields with their allowed values so the user can choose. For datetime/datepicker fields, ask the user for the date. For select fields, show the allowed values."
@@ -196,7 +200,7 @@ func (a TicketMasterV2Agent) GetSupportedTools(ctx *security.RequestContext) []t
 		tools.TicketMasterV2{},
 	}
 
-	if core.IsAgentsFollowupEnabled() {
+	if llmruntime.IsAgentsFollowupEnabled() {
 		supportedTools = append(supportedTools, FollowupAgent{})
 	}
 	return supportedTools

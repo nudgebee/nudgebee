@@ -41,12 +41,15 @@ type Totals struct {
 	TotalCachedInputTokens int64   `json:"total_cached_input_tokens"`
 	CacheHitRatePct        float64 `json:"cache_hit_rate_pct"`
 	AvgLatencySeconds      float64 `json:"avg_latency_seconds"`
+	// CacheSavingsUsd is what prompt caching saved, net of cache-write premiums.
+	CacheSavingsUsd float64 `json:"cache_savings_usd"`
 }
 
 // GroupRow is one breakdown bucket (e.g. a provider, model, or user).
 type GroupRow struct {
 	Key               string  `json:"key"`
-	ID                string  `json:"id,omitempty"` // stable id for drill-down (user_id on the user breakdown)
+	ID                string  `json:"id,omitempty"`    // stable id for drill-down (user_id on the user breakdown)
+	Owner             string  `json:"owner,omitempty"` // the key's owner, on the api_key breakdown only
 	CostUsd           float64 `json:"cost_usd"`
 	Requests          int64   `json:"requests"`
 	InputTokens       int64   `json:"input_tokens"`
@@ -54,6 +57,7 @@ type GroupRow struct {
 	CachedInputTokens int64   `json:"cached_input_tokens"`
 	CacheHitRatePct   float64 `json:"cache_hit_rate_pct"`
 	AvgLatencySeconds float64 `json:"avg_latency_seconds"`
+	CacheSavingsUsd   float64 `json:"cache_savings_usd"`
 }
 
 // TimeSeriesRow is one point of the overall time series.
@@ -129,6 +133,15 @@ type LatencyPct struct {
 	P99Seconds float64 `json:"p99_seconds"`
 }
 
+// ProviderTTFT is one provider's time to first streamed chunk (ms) over its streamed
+// requests — how long users wait before an answer starts appearing.
+type ProviderTTFT struct {
+	Provider string  `json:"provider" db:"provider"`
+	Requests int64   `json:"requests" db:"requests"` // streamed requests with a recorded TTFT
+	P50Ms    float64 `json:"p50_ms" db:"p50_ms"`
+	P95Ms    float64 `json:"p95_ms" db:"p95_ms"`
+}
+
 // RouteCount is one from→to substitution pair and how often it fired — where the
 // gateway's cross-provider substitution actually sends traffic.
 type RouteCount struct {
@@ -149,6 +162,7 @@ type Governance struct {
 	OutcomesByProvider []ProviderOutcome `json:"outcomes_by_provider"`
 	OutcomeSeries      []OutcomeBucket   `json:"outcome_series"`
 	Latency            LatencyPct        `json:"latency"`
+	TTFTByProvider     []ProviderTTFT    `json:"ttft_by_provider"`    // streamed requests only
 	Rejects            []LabelCount      `json:"rejects"`             // by derived.reject_reason (edge rejections)
 	RoutingReasons     []LabelCount      `json:"routing_reasons"`     // by routing_reason (passthrough/substitute/…)
 	SubstitutionRoutes []RouteCount      `json:"substitution_routes"` // from→to pairs for routing_reason=substitute
@@ -158,7 +172,7 @@ type Governance struct {
 // Metrics is the full aggregation result.
 type Metrics struct {
 	Totals     Totals                `json:"totals"`
-	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user"
+	Breakdowns map[string][]GroupRow `json:"breakdowns"` // "provider", "model", "user", "api_key"
 	Tools      []ToolRow             `json:"tools"`
 	Governance *Governance           `json:"governance,omitempty"`
 	TimeSeries *TimeSeries           `json:"time_series,omitempty"`
@@ -190,6 +204,7 @@ type pmRow struct {
 	CacheWrite int64   `db:"cache_write_tokens"`
 	LatencySum int64   `db:"latency_ms_sum"`
 	Cost       float64 `db:"cost_usd"`
+	Savings    float64 `db:"cache_savings_usd"`
 }
 
 type tsRow struct {
@@ -222,7 +237,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 	if req.EndDate.Before(req.StartDate) {
 		return nil, fmt.Errorf("usage: end_date must be >= start_date")
 	}
-	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}}}
+	m := &Metrics{Breakdowns: map[string][]GroupRow{"provider": {}, "model": {}, "user": {}, "api_key": {}}}
 
 	// (provider, model) grouping → totals + by-provider + by-model. Cost is summed
 	// from the per-row snapshot stored at write time (no runtime pricing catalog join).
@@ -233,7 +248,8 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
 		       COALESCE(sum(cache_write_tokens),0) AS cache_write_tokens,
 		       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
-		       COALESCE(sum(cost_usd),0) AS cost_usd
+		       COALESCE(sum(cost_usd),0) AS cost_usd,
+		       COALESCE(sum(cache_savings_usd),0) AS cache_savings_usd
 		FROM llm_gateway_usage
 		WHERE ` + aggWindow + `
 		GROUP BY provider, model`
@@ -252,6 +268,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		m.Totals.TotalOutputTokens += r.Output
 		m.Totals.TotalCachedInputTokens += r.CacheRead
 		m.Totals.TotalCostUsd += cost
+		m.Totals.CacheSavingsUsd += r.Savings
 		totalLatency += r.LatencySum
 
 		m.Breakdowns["model"] = append(m.Breakdowns["model"], GroupRow{
@@ -259,6 +276,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			CacheHitRatePct:   cacheHitPct(r.CacheRead, r.Input),
 			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests),
+			CacheSavingsUsd:   r.Savings,
 		})
 		p := byProvider[r.Provider]
 		if p == nil {
@@ -266,6 +284,7 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 			byProvider[r.Provider] = p
 		}
 		p.CostUsd += cost
+		p.CacheSavingsUsd += r.Savings
 		p.Requests += r.Requests
 		p.InputTokens += r.Input
 		p.OutputTokens += r.Output
@@ -287,6 +306,12 @@ func Aggregate(ctx context.Context, db *common.DatabaseManager, req Request) (*M
 		return nil, err
 	}
 	m.Breakdowns["user"] = users
+
+	keys, err := byAPIKey(db, req)
+	if err != nil {
+		return nil, err
+	}
+	m.Breakdowns["api_key"] = keys
 
 	tools, err := byTool(db, req)
 	if err != nil {
@@ -365,6 +390,57 @@ func byUser(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
 		g.AvgLatencySeconds = avgLatencySeconds(latency[uid], g.Requests)
 		g.CacheHitRatePct = cacheHitPct(g.CachedInputTokens, g.InputTokens)
 		out = append(out, *g)
+	}
+	sortByRequests(out)
+	return out, nil
+}
+
+type keyRow struct {
+	APIKeyID   string  `db:"api_key_id"`
+	KeyName    string  `db:"key_name"`
+	Owner      string  `db:"owner"`
+	Requests   int64   `db:"requests"`
+	Input      int64   `db:"input_tokens"`
+	Output     int64   `db:"output_tokens"`
+	CacheRead  int64   `db:"cache_read_tokens"`
+	LatencySum int64   `db:"latency_ms_sum"`
+	Cost       float64 `db:"cost_usd"`
+}
+
+// byAPIKey breaks usage down by API key. A revoked key's user_auths row is deleted, so
+// the name falls back to token_id (the key's name when the request ran), then the id.
+func byAPIKey(db *common.DatabaseManager, req Request) ([]GroupRow, error) {
+	const q = `
+		SELECT g.api_key_id,
+		       COALESCE(NULLIF(ua.name,''), NULLIF(g.token_name,''), g.api_key_id) AS key_name,
+		       COALESCE(NULLIF(u.display_name,''), NULLIF(u.username::text,''), g.user_id, '') AS owner,
+		       g.requests, g.input_tokens, g.output_tokens, g.cache_read_tokens, g.latency_ms_sum, g.cost_usd
+		FROM (
+			SELECT api_key_id, max(token_id) AS token_name, max(user_id) AS user_id, count(*) AS requests,
+			       COALESCE(sum(input_tokens),0) AS input_tokens,
+			       COALESCE(sum(output_tokens),0) AS output_tokens,
+			       COALESCE(sum(cache_read_tokens),0) AS cache_read_tokens,
+			       COALESCE(sum(latency_ms),0) AS latency_ms_sum,
+			       COALESCE(sum(cost_usd),0) AS cost_usd
+			FROM llm_gateway_usage
+			WHERE ` + aggWindow + ` AND api_key_id <> ''
+			GROUP BY api_key_id
+		) g
+		LEFT JOIN user_auths ua ON ua.id::text = g.api_key_id
+		LEFT JOIN users u ON u.id::text = g.user_id`
+	var rows []keyRow
+	if err := db.QueryAndScan(&rows, q, req.aggArgs()...); err != nil {
+		return nil, fmt.Errorf("usage: by-key aggregation: %w", err)
+	}
+	out := make([]GroupRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, GroupRow{
+			Key: r.KeyName, ID: r.APIKeyID, Owner: r.Owner,
+			CostUsd: r.Cost, Requests: r.Requests,
+			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
+			CacheHitRatePct:   cacheHitPct(r.CacheRead, r.Input),
+			AvgLatencySeconds: avgLatencySeconds(r.LatencySum, r.Requests),
+		})
 	}
 	sortByRequests(out)
 	return out, nil
@@ -556,6 +632,17 @@ func governance(db *common.DatabaseManager, req Request) (*Governance, error) {
 		g.Latency = LatencyPct{P50Seconds: latRows[0].P50 / 1000, P95Seconds: latRows[0].P95 / 1000, P99Seconds: latRows[0].P99 / 1000}
 	}
 
+	// Time to first streamed chunk, per provider (ttft_ms is NULL for unary requests).
+	g.TTFTByProvider = []ProviderTTFT{}
+	if err := db.QueryAndScan(&g.TTFTByProvider, `
+		SELECT provider, count(*) AS requests,
+		       percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft_ms) AS p50_ms,
+		       percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms) AS p95_ms
+		FROM llm_gateway_usage WHERE `+win+` AND ttft_ms IS NOT NULL
+		GROUP BY provider ORDER BY requests DESC`, args...); err != nil {
+		return nil, fmt.Errorf("usage: governance ttft: %w", err)
+	}
+
 	// Substitution routes: where cross-provider substitution actually sends traffic.
 	var routeRows []routeScan
 	if err := db.QueryAndScan(&routeRows, `
@@ -615,6 +702,7 @@ type ListRequest struct {
 	StartDate     time.Time
 	EndDate       time.Time
 	UserID        string
+	APIKeyID      string   // filter to one API key (drill-down from the Keys tab or the Key filter)
 	Providers     []string // filter to these providers (empty = all)
 	Models        []string // filter to these routed models (empty = all)
 	Status        string   // "" (all) | "success" (2xx) | "error" (everything else)
@@ -635,6 +723,8 @@ type RequestRow struct {
 	ID                string    `json:"id"` // usage row id; the key to fetch the captured body
 	CreatedAt         time.Time `json:"created_at"`
 	User              string    `json:"user"`
+	APIKeyID          string    `json:"api_key_id"`
+	APIKey            string    `json:"api_key"` // the key's name ("" for traffic not sent with an API key)
 	Provider          string    `json:"provider"`
 	Model             string    `json:"model"`
 	RequestedModel    string    `json:"requested_model"`
@@ -647,6 +737,7 @@ type RequestRow struct {
 	OutputTokens      int64     `json:"output_tokens"`
 	CachedInputTokens int64     `json:"cached_input_tokens"`
 	LatencyMs         int64     `json:"latency_ms"`
+	TTFTMs            *int64    `json:"ttft_ms,omitempty"` // streamed requests only
 	CostUsd           float64   `json:"cost_usd"`
 	SessionID         string    `json:"session_id"`
 	SessionSource     string    `json:"session_source"` // header | metadata.user_id | inferred | ""
@@ -694,6 +785,8 @@ type reqScan struct {
 	UserID         string    `db:"user_id"`
 	DisplayName    string    `db:"display_name"`
 	Username       string    `db:"username"`
+	APIKeyID       string    `db:"api_key_id"`
+	KeyName        string    `db:"key_name"`
 	Provider       string    `db:"provider"`
 	Model          string    `db:"model"`
 	RequestedModel string    `db:"requested_model"`
@@ -708,6 +801,7 @@ type reqScan struct {
 	CacheRead      int64     `db:"cache_read_tokens"`
 	CacheWrite     int64     `db:"cache_write_tokens"`
 	LatencyMs      int64     `db:"latency_ms"`
+	TTFTMs         *int64    `db:"ttft_ms"`
 	Cost           float64   `db:"cost_usd"`
 	SessionID      string    `db:"session_id"`
 	SessionSource  string    `db:"session_source"`
@@ -722,6 +816,10 @@ func listRequestsFilter(req ListRequest) (string, []any) {
 	if req.UserID != "" {
 		where += fmt.Sprintf(" AND g.user_id = $%d", len(args)+1)
 		args = append(args, req.UserID)
+	}
+	if req.APIKeyID != "" {
+		where += fmt.Sprintf(" AND g.api_key_id = $%d", len(args)+1)
+		args = append(args, req.APIKeyID)
 	}
 	if len(req.Providers) > 0 {
 		where += inClause("g.provider", req.Providers, &args)
@@ -804,7 +902,10 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 
 	q := fmt.Sprintf(`
 		SELECT g.id, g.created_at, g.user_id, COALESCE(u.display_name,'') AS display_name,
-		       COALESCE(u.username::text,'') AS username, g.provider, g.model,
+		       COALESCE(u.username::text,'') AS username,
+		       COALESCE(g.api_key_id,'') AS api_key_id,
+		       COALESCE(NULLIF(ua.name,''), NULLIF(g.token_id,''), COALESCE(g.api_key_id,'')) AS key_name,
+		       g.provider, g.model,
 		       COALESCE(g.requested_model,'') AS requested_model,
 		       COALESCE(g.responded_model,'') AS responded_model,
 		       COALESCE(g.routing_reason,'') AS routing_reason,
@@ -813,12 +914,13 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		       COALESCE(g.status_code,0) AS status_code, COALESCE(g.streaming,false) AS streaming,
 		       COALESCE(g.input_tokens,0) AS input_tokens, COALESCE(g.output_tokens,0) AS output_tokens,
 		       COALESCE(g.cache_read_tokens,0) AS cache_read_tokens, COALESCE(g.cache_write_tokens,0) AS cache_write_tokens,
-		       COALESCE(g.latency_ms,0) AS latency_ms,
+		       COALESCE(g.latency_ms,0) AS latency_ms, g.ttft_ms,
 		       COALESCE(g.cost_usd,0) AS cost_usd,
 		       COALESCE(g.session_id,'') AS session_id,
 		       COALESCE(NULLIF(g.attributes,'')::jsonb #>> '{derived,session_source}','') AS session_source
 		FROM llm_gateway_usage g
 		LEFT JOIN users u ON u.id::text = g.user_id
+		LEFT JOIN user_auths ua ON g.api_key_id <> '' AND ua.id::text = g.api_key_id
 		WHERE %s
 		ORDER BY g.created_at DESC
 		LIMIT %d OFFSET %d`, where, limit, offset)
@@ -841,11 +943,13 @@ func ListRequests(ctx context.Context, db *common.DatabaseManager, req ListReque
 		}
 		out = append(out, RequestRow{
 			ID:        r.ID,
-			CreatedAt: r.CreatedAt, User: user, Provider: r.Provider, Model: r.Model,
+			CreatedAt: r.CreatedAt, User: user, APIKeyID: r.APIKeyID, APIKey: r.KeyName,
+			Provider: r.Provider, Model: r.Model,
 			RequestedModel: r.RequestedModel, RespondedModel: r.RespondedModel, RoutingReason: r.RoutingReason, Surface: r.Surface,
 			StatusCode: r.StatusCode, Streaming: r.Streaming,
 			InputTokens: r.Input, OutputTokens: r.Output, CachedInputTokens: r.CacheRead,
 			LatencyMs: r.LatencyMs,
+			TTFTMs:    r.TTFTMs,
 			CostUsd:   r.Cost,
 			SessionID: r.SessionID, SessionSource: r.SessionSource,
 			Dlp: parseDLP(r.DlpJSON),

@@ -185,6 +185,29 @@ func (p *Pricer) CostUSD(tenantID, model string, input, output, cacheRead, cache
 	return c / 1_000_000
 }
 
+// CacheSavingsUSD is what prompt caching saved on one request: cache reads at the gap to
+// the full input rate, minus the premium paid to write the cache (negative when a request
+// only wrote). Same tenant precedence as CostUSD; 0 for an unknown model.
+func (p *Pricer) CacheSavingsUSD(tenantID, model string, cacheRead, cacheWrite int) float64 {
+	if cacheRead == 0 && cacheWrite == 0 {
+		return 0
+	}
+	cat := p.cur.Load()
+	if cat == nil {
+		return 0
+	}
+	mp, ok := cat.lookup(tenantID, model)
+	if !ok {
+		return 0
+	}
+	s := float64(cacheRead) * (mp.Input - mp.CachedInput)
+	// A catalog row without a cache-write price stores 0; only a real premium counts.
+	if mp.CacheCreation > mp.Input {
+		s -= float64(cacheWrite) * (mp.CacheCreation - mp.Input)
+	}
+	return s / 1_000_000
+}
+
 func (p *Pricer) Close() error {
 	close(p.done)
 	p.wg.Wait()

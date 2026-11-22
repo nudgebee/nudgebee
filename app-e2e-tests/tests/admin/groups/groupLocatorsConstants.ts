@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, Locator, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { LoginPage } from "../../../pages/LoginPage";
@@ -11,6 +12,12 @@ export const Groups = [
   { name: "K8 Admin" },
   { name: "K8 Readonly" },
 ];
+
+// First line of a caught error for best-effort cleanup warnings; logging the raw error dumps its matcherResult and page snapshot (~300 lines) into CI.
+export function errorSummary(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.split("\n")[0];
+}
 
 // Groups cannot be deleted in the product, so these fixtures are created once and reused by every later run.
 // Each key names the one thing that mutates its group; read-only tests may share a group with its mutator.
@@ -404,7 +411,7 @@ export class GroupLocators extends CommonLocators {
       await this.expectSectionToast(GROUP_TOASTS.accountUpdated);
       await this.closeModal();
     } catch (error) {
-      console.warn(`Could not clear account roles on "${groupName}":`, error);
+      console.warn(`Could not clear account roles on "${groupName}":`, errorSummary(error));
     }
   }
 
@@ -758,9 +765,9 @@ export class GroupLocators extends CommonLocators {
 export async function setup(page: Page): Promise<GroupLocators> {
   const locators = new GroupLocators(page);
   await new LoginPage(page).doFullLogin();
-  await locators.homeBtn.click();
+  await clickSidenavRail(locators.homeBtn);
   await locators.adminBtn.waitFor({ state: "visible", timeout: 15000 });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
   // The sidenav click can land before React attaches its handler, so navigate directly rather than fail on nav flake.
   await page.waitForURL("**/user-management**", { timeout: 20000 }).catch(async () => {
     await page.goto("/user-management");
@@ -774,15 +781,16 @@ export async function setup(page: Page): Promise<GroupLocators> {
 // navigation is the fallback rather than a failed test.
 export async function openUsersPage(page: Page): Promise<UserLocators> {
   const users = new UserLocators(page);
-  await users.adminBtn.click();
+  await clickSidenavRail(users.adminBtn);
   await page.waitForURL("**/user-management**", { timeout: 20000 }).catch(async () => {
     await page.goto("/user-management");
     await page.waitForURL("**/user-management**", { timeout: 20000 });
   });
-  // Admin now defaults to the Overview tab; the Users controls live under Access & Users, so land there.
-  await page.goto("/user-management#access-users");
-  // A hash change inside /user-management does not move the sub-tab, so a page that last showed Groups stays on Groups.
-  await page.locator("#users").or(page.getByRole("tab", { name: "Users", exact: true })).first().click();
+  // Admin now defaults to the Overview tab; the Users controls live under Access
+  // & Users, so land on that tab explicitly before waiting on them. A hash-only goto on
+  // /user-management keeps the Overview body mounted, so the reload is what renders Users.
+  await page.goto("/user-management#access-users", { waitUntil: "domcontentloaded" });
+  await page.reload({ waitUntil: "domcontentloaded" });
   // The URL changes before the list renders, and a click on a control that is not there yet only gets the
   // action timeout to find it - 10s on dev, which a slow load loses.
   await users.statusButton.waitFor({ state: "visible", timeout: 20000 });
@@ -972,6 +980,6 @@ export async function restoreGroup(
 
     console.warn(`Restore skipped - group not found under: ${candidateNames.join(", ")}`);
   } catch (error) {
-    console.warn(`Restore of group "${original.name}" failed - may need manual cleanup:`, error);
+    console.warn(`Restore of group "${original.name}" failed - may need manual cleanup:`, errorSummary(error));
   }
 }

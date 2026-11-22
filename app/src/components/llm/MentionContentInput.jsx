@@ -1,10 +1,9 @@
 /**
  * MentionContentInput — a textarea that recognises `@agent` and `#tool`.
  *
- * Same idea as the prompt box in CreateFunction (type `@AgentName`, get a
- * coloured chip confirming it resolved), with two additions the prompt box
- * doesn't have: a suggestion list while you type, and the mention coloured
- * where it sits in the text rather than only in the summary strip.
+ * Type `@AgentName` and get a coloured chip confirming it resolved, plus a
+ * suggestion list while you type and the mention coloured where it sits in
+ * the text rather than only in a summary strip.
  *
  * Mentions are plain text. Nothing here is persisted separately — the `@`/`#`
  * tokens travel inside the content string, exactly as typed.

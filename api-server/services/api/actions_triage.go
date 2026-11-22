@@ -97,6 +97,8 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventCreateTriageRule(h, c, ctx)
 	case "event_get_triage_rules":
 		handleEventGetTriageRules(h, c, ctx)
+	case "event_list_triage_sources":
+		handleEventListTriageSources(h, c, ctx)
 	case "event_preview_triage_rule", "events_dryrun_triage_rule":
 		handleEventPreviewTriageRule(h, c, ctx)
 	case "event_delete_triage_rule":
@@ -105,6 +107,14 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventUpdateTriageRule(h, c, ctx)
 	case "event_update_nb_status":
 		handleEventUpdateNBStatus(h, c, ctx)
+	// Remediation loop, service-only (actions_remediation_internal.go)
+	case "events_apply_remediation_verdict":
+		handleEventsApplyRemediationVerdict(h, c, ctx)
+	case "events_update_refire_label":
+		handleEventsUpdateRefireLabel(h, c, ctx)
+	// Remediation loop: a person confirms a likely-fixed verdict (actions_remediation_resolve.go)
+	case "events_apply_remediation_resolve":
+		handleEventsApplyRemediationResolve(h, c, ctx)
 	case "event_get_classification":
 		handleEventGetClassification(h, c, ctx)
 	case "event_toggle_system_rule_override", "events_update_rule_override":
@@ -1065,6 +1075,34 @@ func handleEventGetTriageRules(h *ActionRequest, c *gin.Context, ctx *security.R
 	})
 }
 
+// handleEventListTriageSources returns the Source dropdown options, built from the account's own
+// distinct events.source values (grouped/labelled by the triage catalog) with the curated catalog
+// as the fallback when they can't be read.
+func handleEventListTriageSources(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	provider, _ := h.Input["provider"].(string)
+	accountID, _ := h.Input["cloud_account_id"].(string)
+
+	var accountSources []string
+	if accountID != "" {
+		resp, err := event.GetEventFilterValues(ctx, event.GetEventFilterValuesRequest{
+			AccountID:   &accountID,
+			FilterTypes: []event.EventFilterType{event.EventFilterTypeSource},
+		})
+		if err != nil {
+			ctx.GetLogger().Warn("triage sources: could not load account event sources; using curated base", "error", err, "account", accountID)
+		} else {
+			for _, f := range resp.Filters {
+				if f.FilterType == event.EventFilterTypeSource {
+					for _, v := range f.Values {
+						accountSources = append(accountSources, v.Value)
+					}
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"sources": triage.ListTriageSources(provider, accountSources)})
+}
+
 // handleEventPreviewTriageRule previews how many existing events would match a rule's criteria
 func handleEventPreviewTriageRule(h *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
 	cloudAccountID, ok := h.Input["cloud_account_id"].(string)
@@ -1375,6 +1413,12 @@ func handleEventUpdateNBStatus(h *ActionRequest, c *gin.Context, ctx *security.R
 	req := triage.UpdateNBStatusRequest{
 		EventID:  eventID,
 		NBStatus: nbStatus,
+	}
+
+	// Optional free-text reason for the status change (surfaced on the event timeline).
+	if reasonText, ok := h.Input["reason_text"].(string); ok && strings.TrimSpace(reasonText) != "" {
+		trimmed := strings.TrimSpace(reasonText)
+		req.ReasonText = &trimmed
 	}
 
 	// Parse snoozed_until if provided
@@ -1737,7 +1781,8 @@ func handleEventApplyThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx *
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
-	if !requireTriageAccountAccess(c, ctx, req.CloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(req.CloudAccountID, security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
 
@@ -1783,7 +1828,8 @@ func handleEventRevertThresholdSuggestion(h *ActionRequest, c *gin.Context, ctx 
 		c.JSON(http.StatusBadRequest, gin.H{"error": "alert_rule_key and cloud_account_id are required"})
 		return
 	}
-	if !requireTriageAccountAccess(c, ctx, cloudAccountID, "events", security.SecurityAccessTypeUpdate) {
+	if !ctx.GetSecurityContext().CanAccessAccount(cloudAccountID, security.SecurityAccessTypeUpdate) {
+		c.JSON(http.StatusForbidden, common.ErrorActionForbidden("access denied for account"))
 		return
 	}
 

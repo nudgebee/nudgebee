@@ -146,6 +146,12 @@ export class TriageInboxLocators extends TroubleshootEventsLocators {
     return (await cells.allTextContents()).map((value) => value.trim());
   }
 
+  // The Count cell also renders a "run of N" line, so only the event-count node is read.
+  async eventCounts(): Promise<string[]> {
+    const values = await this.rows.getByTestId("inbox-event-count").allTextContents();
+    return values.map((value) => value.trim());
+  }
+
   async cellValue(row: Locator, header: string): Promise<string> {
     const index = await this.columnIndex(header);
     return ((await row.locator(`> td:nth-child(${index + 1})`).textContent()) ?? "").trim();

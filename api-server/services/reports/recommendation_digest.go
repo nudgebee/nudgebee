@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/notification"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -40,14 +41,14 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		return err
 	}
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx, true)
 	if err != nil {
 		ctx.GetLogger().Error("recommendation digest: error listing tenants", "error", err)
 		return err
 	}
 
 	for _, t := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id, true)
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error listing accounts", "error", err, "tenant", t.Id)
 			continue
@@ -91,6 +92,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
 					AND r.status = 'Open'
 					AND r.category <> 'Security'
 					AND r.finops_band IN ('Act Now', 'Critical', 'High')
@@ -141,8 +143,9 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		var categoryRows []categorySaving
 		err = dbms.Db.Select(&categoryRows, `
 			SELECT category, COALESCE(SUM(estimated_savings), 0) AS savings
-			FROM recommendation
+			FROM recommendation r
 			WHERE tenant_id = $1
+			  AND `+notification.NotOwnRecommendationSQL+`
 			  AND status = 'Open'
 			  AND category <> 'Security'
 			  AND estimated_savings > 0
@@ -275,8 +278,9 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		SELECT
 			finops_band AS band,
 			COUNT(*) AS cnt
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status = 'Open'
 		  AND category <> 'Security'
 		  AND created_at > $2
@@ -308,8 +312,9 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 		SELECT
 			COUNT(*) AS cnt,
 			COALESCE(SUM(estimated_savings), 0) AS savings
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status IN ('Closed', 'Dismissed')
 		  AND category <> 'Security'
 		  AND updated_at > $2`, tenantID, cutoff)
@@ -320,8 +325,9 @@ func queryDigestDeltas(db *sqlx.DB, tenantID string, cutoff time.Time) (map[stri
 	var carryover int
 	err = db.Get(&carryover, `
 		SELECT COUNT(*)
-		FROM recommendation
+		FROM recommendation r
 		WHERE tenant_id = $1
+		  AND `+notification.NotOwnRecommendationSQL+`
 		  AND status = 'Open'
 		  AND category <> 'Security'
 		  AND created_at <= $2`, tenantID, cutoff)

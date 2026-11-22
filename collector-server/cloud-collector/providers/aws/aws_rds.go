@@ -802,7 +802,7 @@ func (a *amazonRds) GetResources(ctx providers.CloudProviderContext, account pro
 	instanceTypeMap := make(map[string]map[string]any) // Cache for pricing details
 
 	// Fetch all CloudWatch alarms for this region once, instead of per-instance.
-	alarmsByResource := fetchAlarmsByResource(ctx, account, region)
+	alarmsByResource, alarmsErr := fetchAlarmsByResource(ctx, account, region)
 
 	// Loop to handle pagination for DescribeDBInstances
 	paginator := rds.NewDescribeDBInstancesPaginator(svc, &rds.DescribeDBInstancesInput{})
@@ -882,7 +882,9 @@ func (a *amazonRds) GetResources(ctx providers.CloudProviderContext, account pro
 			}
 
 			// --- Fetch Alarms ---
-			instanceMap["AlarmDetails"] = alarmsByResource[*instance.DBInstanceIdentifier]
+			if alarmsErr == nil {
+				instanceMap["AlarmDetails"] = alarmsByResource[*instance.DBInstanceIdentifier]
+			}
 
 			resource := providers.Resource{
 				Id:          *instance.DBInstanceIdentifier,
@@ -2298,6 +2300,10 @@ func (a *amazonRds) GetRecommendations(ctx providers.CloudProviderContext, accou
 
 				// Check if alarm is missing
 				isMissing, err := IsAlarmMissing(resource, template, resource.Id)
+				if errors.Is(err, ErrAlarmDetailsUnknown) {
+					recommendations = append(recommendations, providers.UnevaluatedRecommendation(template.Name, providers.RecommendationCategoryConfiguration, resource))
+					continue
+				}
 				if err != nil {
 					ctx.GetLogger().Warn("Error checking alarm", "error", err, "template", template.Name, "resourceId", resource.Id)
 					continue

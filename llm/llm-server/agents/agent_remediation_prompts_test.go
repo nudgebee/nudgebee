@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -200,7 +201,7 @@ func TestRemediationToolsetInvariance(t *testing.T) {
 	assert.Equal(t, "", agent.GetSummaryToolName())
 	assert.Equal(t, core.AgentPlannerTypeReAct, agent.GetPlannerType())
 	assert.True(t, agent.IsWatchCapable())
-	assert.Equal(t, core.ModelTierReasoning, agent.GetModelCategory())
+	assert.Equal(t, llmruntime.ModelTierReasoning, agent.GetModelCategory())
 	assert.ElementsMatch(t, []string{"Remediation Planner & Executor", "Remediation", "AutoFix", "Fixer"}, agent.GetNameAliases())
 
 	// The agent-as-tool registration other agents delegate through.

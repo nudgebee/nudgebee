@@ -183,7 +183,7 @@ const configOf = (raw: unknown): Record<string, unknown> => {
 };
 
 // A legacy `messaging_platforms.channels` value: a JSON string or object —
-// `{id, name}` for Slack/Discord, `{team_id, channels: [...]}` for Teams.
+// `{id, name}` for Slack/Discord.
 const legacyHasChannel = (raw: unknown): boolean => {
   let v = raw;
   if (typeof v === 'string') {
@@ -208,7 +208,8 @@ const legacyHasChannel = (raw: unknown): boolean => {
  * and `default_channel_id`) and `_resolve_default_gchat_space` (a single
  * bound space is the implicit default, otherwise the one flagged
  * `is_default`). Integration rows win over legacy `messaging_platforms` rows
- * for the same platform, the same precedence `getMessagingInstallations` uses.
+ * for the same platform, the same precedence `getMessagingInstallations` uses;
+ * MS Teams has only integration rows.
  */
 export const chatDefaultChannelByType = (
   integrationRows: ChatIntegrationRow[],
@@ -229,7 +230,7 @@ export const chatDefaultChannelByType = (
   });
   legacyPlatforms.forEach((m) => {
     const type = typeof m?.platform === 'string' ? m.platform.toLowerCase() : '';
-    if (!type || byType[type]) return;
+    if (!type || type === 'ms_teams' || byType[type]) return;
     result[type] = (result[type] ?? false) || legacyHasChannel(m.channels);
   });
   return result;

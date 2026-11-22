@@ -2,121 +2,123 @@ package mq
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
+	"os"
+	"strings"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
+
+	"nudgebee/relay-server/pkg/config"
 )
 
-// LLMCacheInvalidator asks every llm-server replica to drop its
-// integration-derived caches for the given accounts.
+// LLMCacheInvalidator tells every replica of every service that caches
+// integration state (llm-server, services-server) to drop what it cached for
+// the given accounts.
 type LLMCacheInvalidator interface {
 	InvalidateAccounts(accountIDs ...string)
 }
 
-// LLMCacheInvalidationPayload is the wire format on the llm cache invalidation
-// exchange. It MUST stay in sync with llm-server's consumer
-// (llm/llm-server/api/cache_invalidation_mq.go, cacheInvalidationMessage) and
-// api-server's publisher (api-server/services/llm/cache.go).
-type LLMCacheInvalidationPayload struct {
-	AccountIDs []string `json:"account_ids"`
+// replicaBroadcastChannel is the Redis pub/sub channel every pod of
+// services-server, llm-server and rag-server listens on (#40807). The relay
+// only publishes to it. Design: the 2026-10 replica broadcast entries in
+// docs/architecture-decisions.md.
+const replicaBroadcastChannel = "nb_replica_broadcast"
+
+// changeIntegration has the same value as services-server's and llm-server's
+// ChangeIntegration; its keys are account ids. Each receiving pod only drops
+// caches. No once-per-service work is requested: the knowledge-base sync only
+// takes confluence and servicenow integrations, which agents do not report
+// (relay registers databases, monitoring, ssh, mcp). Should an agent report
+// one, its sync starts at llm-server's next periodic run.
+const changeIntegration = "integration_changed"
+
+// replicaMessage is the wire format; the one sample of it is
+// docs/fixtures/replica_message.json.
+type replicaMessage struct {
+	Type   string   `json:"type"`
+	Keys   []string `json:"keys,omitempty"`
+	Sender string   `json:"sender"`
 }
 
-// llmCacheInvalidationTimeout bounds one best-effort publish. The publish runs
-// off the caller's path, so this only limits how long a broker outage can keep
-// a goroutine around.
-const llmCacheInvalidationTimeout = 10 * time.Second
+// replicaPublishTimeout bounds one publish, made inline by the caller (the
+// relay's datasource handlers already run on their own goroutine per agent
+// message). Dev measured PUBLISH at p50 0.2 ms, p99 ~100 ms (2026-10-23).
+const replicaPublishTimeout = 500 * time.Millisecond
 
-// amqpLLMCacheInvalidator publishes to the fanout exchange llm-server
-// consumes.
+// redisLLMCacheInvalidator publishes integration_changed on the replica
+// broadcast.
 //
 // Without it, integrations the relay registers from a proxy agent's inventory
-// (and label changes from its metadata) only reach Nubi after llm-server's
-// per-cache TTL, because the relay was the one writer to those rows that never
-// said so.
-type amqpLLMCacheInvalidator struct {
-	connMgr  *ConnectionManager
-	exchange string
-	logger   *slog.Logger
-
-	// declared records that the exchange has been declared on this broker.
-	// Reset on any publish failure, so a broker that lost its definitions is
-	// re-declared on the next attempt.
-	declared atomic.Bool
+// (and label changes from its metadata) only reach Nubi after each cache's
+// expiry, because the relay was the one writer to those rows that never said
+// so.
+type redisLLMCacheInvalidator struct {
+	client redis.UniversalClient
+	sender string
+	logger *slog.Logger
 }
 
-// NewLLMCacheInvalidator returns an invalidator publishing to exchange. An
-// empty exchange name disables invalidation (a no-op invalidator), matching
-// api-server's behaviour when the exchange is unset.
-func NewLLMCacheInvalidator(connMgr *ConnectionManager, exchange string, logger *slog.Logger) LLMCacheInvalidator {
-	if exchange == "" || connMgr == nil {
-		if logger != nil {
-			logger.Info("llm cache invalidation disabled: no exchange configured")
-		}
-		return noopLLMCacheInvalidator{}
-	}
+// NewLLMCacheInvalidator publishes on the replica broadcast when the cache
+// provider is redis, like every other service. Otherwise it does nothing and
+// says so at startup: other services then see the relay's integration changes
+// only at their caches' expiry.
+func NewLLMCacheInvalidator(cfg *config.Config, logger *slog.Logger) LLMCacheInvalidator {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &amqpLLMCacheInvalidator{connMgr: connMgr, exchange: exchange, logger: logger}
+	if !strings.EqualFold(strings.TrimSpace(cfg.Cache.Provider), "redis") {
+		logger.Warn("replica broadcast: OFF (CACHE_PROVIDER is not redis); integrations the relay registers reach other services only at their cache expiry")
+		return noopLLMCacheInvalidator{}
+	}
+	client := redis.NewClient(&redis.Options{
+		Addr:     fmt.Sprintf("%s:%d", cfg.Cache.Redis.Host, cfg.Cache.Redis.Port),
+		Username: cfg.Cache.Redis.Username,
+		Password: cfg.Cache.Redis.Password,
+	})
+	return &redisLLMCacheInvalidator{client: client, sender: replicaSender(), logger: logger}
 }
 
-// InvalidateAccounts publishes asynchronously and never blocks or fails the
-// caller: a missed invalidation only means waiting for the TTL, which is
-// exactly the behaviour before this existed.
-func (i *amqpLLMCacheInvalidator) InvalidateAccounts(accountIDs ...string) {
+// replicaSender names this process: "relay-server/<pod>#<random>". The random
+// part keeps it unique even when pods share a hostname.
+func replicaSender() string {
+	host, _ := os.Hostname()
+	suffix := make([]byte, 4)
+	_, _ = rand.Read(suffix)
+	return "relay-server/" + host + "#" + hex.EncodeToString(suffix)
+}
+
+// Close releases the Redis client. The router keeps one invalidator for the
+// life of the process, so only tests need it.
+func (i *redisLLMCacheInvalidator) Close() error {
+	return i.client.Close()
+}
+
+// InvalidateAccounts publishes once, inline and bounded, and never fails the
+// caller: a lost message only means waiting for the caches' expiry.
+func (i *redisLLMCacheInvalidator) InvalidateAccounts(accountIDs ...string) {
 	ids := dedupeNonEmpty(accountIDs)
 	if len(ids) == 0 {
 		return
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				i.logger.Error("llm cache invalidation panicked — recovered", "panic", r, "account_ids", ids)
-			}
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), llmCacheInvalidationTimeout)
-		defer cancel()
-		if err := i.publish(ctx, ids); err != nil {
-			i.declared.Store(false)
-			i.logger.Error("failed to publish llm cache invalidation (best-effort)",
-				"exchange", i.exchange, "account_ids", ids, "err", err)
-			return
-		}
-		i.logger.Info("llm cache invalidation published", "exchange", i.exchange, "account_ids", ids)
-	}()
-}
-
-func (i *amqpLLMCacheInvalidator) publish(ctx context.Context, ids []string) error {
-	body, err := json.Marshal(LLMCacheInvalidationPayload{AccountIDs: ids})
+	payload, err := json.Marshal(replicaMessage{Type: changeIntegration, Keys: ids, Sender: i.sender})
 	if err != nil {
-		return fmt.Errorf("marshal payload: %w", err)
+		i.logger.Warn("replica broadcast: failed to encode message", "type", changeIntegration, "err", err)
+		return
 	}
-	ch, err := i.connMgr.GetChannel(ctx)
-	if err != nil {
-		return fmt.Errorf("get channel: %w", err)
+	// Inline, bounded: no goroutine per publish, so a burst cannot pile up
+	// goroutines on the Redis pool.
+	ctx, cancel := context.WithTimeout(context.Background(), replicaPublishTimeout)
+	defer cancel()
+	if err := i.client.Publish(ctx, replicaBroadcastChannel, payload).Err(); err != nil {
+		i.logger.Warn("replica broadcast: failed to publish (best-effort)", "type", changeIntegration, "account_ids", ids, "err", err)
+		return
 	}
-	defer ch.Close() // nolint:errcheck
-
-	if !i.declared.Load() {
-		// Same arguments as llm-server's consumer and api-server's publisher
-		// (durable fanout, not auto-deleted); a mismatch would make the
-		// broker reject the declare and close the channel.
-		if err := ch.ExchangeDeclare(i.exchange, "fanout", true, false, false, false, nil); err != nil {
-			return fmt.Errorf("declare exchange %q: %w", i.exchange, err)
-		}
-		i.declared.Store(true)
-	}
-
-	return ch.PublishWithContext(ctx, i.exchange, "", false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Transient,
-		Timestamp:    time.Now(),
-		Body:         body,
-	})
+	i.logger.Info("replica broadcast: published", "type", changeIntegration, "account_ids", ids)
 }
 
 func dedupeNonEmpty(in []string) []string {

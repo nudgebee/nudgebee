@@ -17,7 +17,8 @@
  *
  * Surface tinting:
  *   • surface='dark'  — white icons/labels for the main app rail (brand-600 bg).
- *   • surface='light' — grey icons/labels for the Ask-Nubi rail (light bg).
+ *   • surface='light' — grey icons/labels for Nubi's sub-nav (light bg), which
+ *     passes showBCortex={false} — b-Cortex stays on the main rail only.
  */
 import { useCallback, useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
@@ -28,6 +29,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import BCortexIcon from '@assets/ask-nudgebee/bcortex-icon.icon.svg';
 import { isOSSDeploymentMode } from '@hooks/useBCortexEnabled';
 import { hasAdminSurfaceAccess } from '@lib/auth';
+import { bCortexOpener } from '@lib/bCortexOpenService';
 
 // These modals are click-gated (default closed) and client-only, but this nav rail
 // is rendered by the global PageLayout on every authenticated route. Importing them
@@ -83,7 +85,7 @@ RailButton.propTypes = {
   onClick: PropTypes.func,
 };
 
-const NubiBrainNav = ({ surface = 'dark', accountId }) => {
+const NubiBrainNav = ({ surface = 'dark', accountId, showBCortex = true }) => {
   const router = useRouter();
   const resolvedAccountId = accountId ?? router.query?.accountId ?? '';
 
@@ -93,6 +95,8 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
   // notification channels, and its "view the full review" link has to land
   // on the Digests tab — b-Cortex is a modal, so there is no route to point at.
   const [bcortexInitialTab, setBcortexInitialTab] = useState(null);
+  // ?bcortex=knowledge-base&kb=<id>: one knowledge base, such as the runbook a fix step follows.
+  const [bcortexKbId, setBcortexKbId] = useState(null);
 
   // Mount latches: a dynamically-imported modal only fetches its chunk once it is
   // actually rendered. We latch on first open so the chunk loads on the user's first
@@ -112,6 +116,7 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
   const handleCloseBCortex = useCallback(() => {
     setOpenBCortexModal(false);
     setBcortexInitialTab(null);
+    setBcortexKbId(null);
   }, []);
 
   // Only the tabs we actually mint links to. Deliberately not the full tab list
@@ -126,23 +131,42 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
   const DEEP_LINKABLE_TABS = ['digests', 'knowledge-base'];
 
   useEffect(() => {
-    if (!router.isReady) return;
+    // Only the instance that shows b-Cortex answers the link — on /ask-nudgebee
+    // a second, b-Cortex-less instance sits in Nubi's sub-nav.
+    if (!showBCortex || !router.isReady) return;
     const tab = router.query?.bcortex;
     if (typeof tab !== 'string' || !DEEP_LINKABLE_TABS.includes(tab)) return;
 
+    const kb = router.query?.kb;
     setBcortexInitialTab(tab);
+    setBcortexKbId(tab === 'knowledge-base' && typeof kb === 'string' && kb ? kb : null);
     setBcortexMounted(true);
     setOpenBCortexModal(true);
 
     // Drop the param so a refresh (or a back-navigation) doesn't reopen the
     // modal over whatever the user moved on to. shallow: the page's own data
     // does not depend on it, so there is nothing to re-fetch.
-    const { bcortex: _consumed, ...rest } = router.query;
+    const { bcortex: _consumed, kb: _kbConsumed, ...rest } = router.query;
     router.replace({ pathname: router.pathname, query: rest }, undefined, { shallow: true });
     // router identity changes on every navigation; keying on the param alone
     // keeps this from re-firing (and re-opening) on unrelated route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady, router.query?.bcortex]);
+  }, [showBCortex, router.isReady, router.query?.bcortex]);
+
+  // In-app trigger (e.g. a GlobalPageSearch.jsx pick) — opens the modal
+  // directly on the tab requested, without a page navigation or URL change.
+  // Not filtered through DEEP_LINKABLE_TABS: that allowlist guards against a
+  // stale/mistyped *external* link (the weekly-digest query param below);
+  // every tab passed here instead comes from navSearchPages.ts's own
+  // bCortexSearchFragments, a code-reviewed list kept in sync with
+  // BCortexModal's real tab ids, so there's nothing to validate against.
+  useEffect(() => {
+    return bCortexOpener.subscribe((tab) => {
+      setBcortexInitialTab(tab);
+      setBcortexMounted(true);
+      setOpenBCortexModal(true);
+    });
+  }, []);
 
   const tint = surface === 'dark' ? 'var(--ds-background-100)' : 'var(--ds-gray-600)';
 
@@ -150,7 +174,13 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
     <>
       {aiToolsMounted && <AIToolsModal open={openAIToolsModal} onClose={() => setOpenAIToolsModal(false)} />}
       {bcortexMounted && (
-        <BCortexModal open={openBCortexModal} onClose={handleCloseBCortex} accountId={resolvedAccountId} initialTab={bcortexInitialTab} />
+        <BCortexModal
+          open={openBCortexModal}
+          onClose={handleCloseBCortex}
+          accountId={resolvedAccountId}
+          initialTab={bcortexInitialTab}
+          initialKbId={bcortexKbId}
+        />
       )}
 
       <Box
@@ -161,7 +191,7 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
           gap: 'var(--ds-space-2)',
         }}
       >
-        {!isOSSDeploymentMode() && (
+        {showBCortex && !isOSSDeploymentMode() && (
           <RailButton
             label='b-Cortex'
             testId='nav-bcortex-btn'
@@ -205,6 +235,8 @@ const NubiBrainNav = ({ surface = 'dark', accountId }) => {
 NubiBrainNav.propTypes = {
   surface: PropTypes.oneOf(['dark', 'light']),
   accountId: PropTypes.string,
+  // False on Nubi's sub-nav, which sits beside the main rail's own b-Cortex.
+  showBCortex: PropTypes.bool,
 };
 
 export default NubiBrainNav;

@@ -20,8 +20,60 @@ import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import SLOConfigDialog from '@components/k8s/common/SLOConfigDialog';
 import { sloFingerprint } from '@lib/eventFingerprint';
 import { toast as snackbar } from '@ui/Toast';
-import { hasWriteAccess } from '@lib/auth';
+import { canOnAccount } from '@lib/auth';
 import SafeIcon from '@shared/icons/SafeIcon';
+import {
+  FORECAST_EVENT_KEYS,
+  FORECAST_SLO_TYPES,
+  forecastStatus,
+  forecastSummary,
+  isBreachedForecastSlo,
+  isContainerScopedSloName,
+  isForecastSloName,
+  parseForecast,
+} from '@components/k8s/common/cpuForecast';
+
+// The status cell: FIRING with the firing SLOs' names, or OK.
+const sloStatusCell = (firingNames: string[]) => ({
+  component: (
+    <>
+      <Label text={firingNames.length > 0 ? `FIRING` : 'OK'} />
+      {firingNames.length > 0 ? <Text secondaryText value={`[${firingNames.join(', ')}]`} /> : null}
+    </>
+  ),
+});
+
+// Forecast SLOs write no report rows, so a breach is read from their latest forecast.
+const breachedCpuSloNames = (row: any[]) =>
+  (row[0]?.drilldownQuery?.cpuConfigs ?? []).filter((c: any) => isBreachedForecastSlo(c)).map((c: any) => snakeToTitleCase(String(c.name)));
+
+// What a forecast SLO is called in the list: CPU types by their title, memory by its container.
+const forecastSloTitle = (c: any) => {
+  if (isContainerScopedSloName(c.name)) return c.container ? `Memory (${c.container})` : 'Memory';
+  return FORECAST_SLO_TYPES.find((t) => t.name === String(c.name).toLowerCase())?.title ?? c.name;
+};
+
+// One line per forecast SLO on the workload: its forecast status and summary.
+const CpuForecastCell = ({ configs }: { configs: any[] }) => {
+  if (configs.length === 0) return <Text value='-' />;
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+      {configs.map((c: any) => {
+        const forecast = parseForecast(c.last_forecast);
+        const status = forecastStatus(forecast);
+        return (
+          <Box key={c.name}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
+              <Text value={`${forecastSloTitle(c)} ≤ ${Number(c.threshold)}%`} />
+              <Label text={status.text} tone={status.tone} size='sm' />
+            </Box>
+            <Text secondaryText value={forecastSummary(forecast)} />
+          </Box>
+        );
+      })}
+    </Box>
+  );
+};
 
 interface KubernetesSLOConfigsProps {
   accountId: string;
@@ -57,7 +109,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   }, [allSLOData, selectedNamespace]);
 
   const handleDelete = (workloadName: string, workloadNamespace: string) => {
-    if (!hasWriteAccess(accountId)) {
+    if (!canOnAccount('slo', 'Write', accountId)) {
       snackbar.error('You do not have write access to delete SLO configs');
       return;
     }
@@ -65,7 +117,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   };
 
   const handleEdit = (workloadName: string, workloadNamespace: string, config: any[]) => {
-    if (!hasWriteAccess(accountId, workloadNamespace)) {
+    if (!canOnAccount('slo', 'Write', accountId, workloadNamespace)) {
       snackbar.error('You do not have write access to update SLO configs');
       return;
     }
@@ -104,7 +156,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
     { name: 'Status (30D)', width: '12%' },
     { name: 'Latency', width: '12%' },
     { name: 'Availability', width: '12%' },
-    { name: 'Observation (30D)', width: '30%' },
+    { name: 'Observation (30D)', width: '20%' },
+    { name: 'Forecast', width: '20%' },
     { name: '', width: '8%' },
   ];
 
@@ -142,7 +195,20 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         const workloadFqdn: string[] = [];
         if (filteredData.length > 0) {
           const groupedWorkloads = filteredData.reduce((acc: any, cur: any) => {
-            const { workload_name, workload_namespace, name, threshold, goal, id, enabled, window, created_at, updated_at } = cur;
+            const {
+              workload_name,
+              workload_namespace,
+              name,
+              threshold,
+              goal,
+              id,
+              enabled,
+              window,
+              created_at,
+              updated_at,
+              last_forecast,
+              container,
+            } = cur;
             const key = `${workload_namespace}_${workload_name}`;
 
             if (!acc[key]) {
@@ -156,7 +222,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               };
             }
 
-            acc[key].config.push({ name, threshold, goal, id, enabled });
+            // container: a memory SLO watches one; Edit must reopen it on that container.
+            acc[key].config.push({ name, threshold, goal, id, enabled, last_forecast, container });
 
             return acc;
           }, {});
@@ -168,6 +235,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
             let latency;
             let availabilityConfig = [];
             let latencyConfig = [];
+            const cpuConfigs = (m.config || []).filter((n: any) => isForecastSloName(n.name));
             if (m.config && m.config.length > 0) {
               availabilityConfig = m.config.filter((n: any) => n.name == 'availability');
               if (availabilityConfig && availabilityConfig.length == 1) {
@@ -191,6 +259,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 drilldownQuery: {
                   availabilityConfig: availabilityConfig[0],
                   latencyConfig: latencyConfig[0],
+                  cpuConfigs,
                   workloadName: m.workload_name,
                   workloadNamespace: m.workload_namespace,
                 },
@@ -214,8 +283,11 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 component: <ThreeDotLoader />,
               },
               {
+                component: <CpuForecastCell configs={cpuConfigs} />,
+              },
+              {
                 // Namespace admins may update SLOs in their namespaces; delete stays account-level.
-                component: hasWriteAccess(accountId, m.workload_namespace) ? (
+                component: canOnAccount('slo', 'Write', accountId, m.workload_namespace) ? (
                   <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)' }}>
                     <Button
                       tone='secondary'
@@ -225,7 +297,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                       onClick={() => handleEdit(m.workload_name, m.workload_namespace, m.config)}
                       icon={<SafeIcon src={EditIcon} alt='edit' width={20} height={20} />}
                     />
-                    {hasWriteAccess(accountId) && (
+                    {canOnAccount('slo', 'Write', accountId) && (
                       <Button
                         tone='secondary'
                         composition='icon-only'
@@ -266,7 +338,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
   };
 
   const handleOpenSLODialog = () => {
-    if (!hasWriteAccess(accountId)) {
+    if (!canOnAccount('slo', 'Write', accountId)) {
       snackbar.error('You do not have write access to create SLO configs');
       return;
     }
@@ -312,16 +384,8 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                   }
                 }
 
-                const filterFiringStatusConfig = item.filter((g: any) => g.status == 'FIRING');
-                const firingStatusConfig = filterFiringStatusConfig.map((g: any) => snakeToTitleCase(g.config_name))?.join(', ');
-                element[3] = {
-                  component: (
-                    <>
-                      <Label text={filterFiringStatusConfig.length > 0 ? `FIRING` : 'OK'} />
-                      {firingStatusConfig ? <Text secondaryText value={`[${firingStatusConfig}]`} /> : null}
-                    </>
-                  ),
-                };
+                const firingNames = item.filter((g: any) => g.status == 'FIRING').map((g: any) => snakeToTitleCase(g.config_name));
+                element[3] = sloStatusCell([...firingNames, ...breachedCpuSloNames(element)]);
                 element[6] = {
                   text: <Typography style={{ whiteSpace: 'pre-line' }}>{observation}</Typography>,
                 };
@@ -329,6 +393,9 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                 element[6] = {
                   text: '-',
                 };
+                if (breachedCpuSloNames(element).length > 0) {
+                  element[3] = sloStatusCell(breachedCpuSloNames(element));
+                }
               }
             }
             setTableData([...tableData]);
@@ -337,6 +404,9 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
               element[6] = {
                 text: '-',
               };
+              if (breachedCpuSloNames(element).length > 0) {
+                element[3] = sloStatusCell(breachedCpuSloNames(element));
+              }
             }
             setTableData([...tableData]);
           }
@@ -351,7 +421,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
           actions={
             <>
               <DownloadButton id='k8s-slo-configs-download' onClick={async () => ({ tableId: 'table-k8s-slo-configs' })} />
-              {hasWriteAccess(accountId) && (
+              {canOnAccount('slo', 'Write', accountId) && (
                 <Button onClick={handleOpenSLODialog} id='add-slo-config-btn'>
                   Add SLO
                 </Button>
@@ -406,6 +476,14 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
                   text: 'Availability Traces',
                   value: 2,
                   key: 'slo-availability-traces',
+                },
+                {
+                  componentFn: function (opt: any, drilldownQuery: any) {
+                    return <SLOCpuAlerts drilldownQuery={drilldownQuery} accountId={accountId} />;
+                  },
+                  text: 'Forecast Alerts',
+                  value: 4,
+                  key: 'slo-cpu-alerts',
                 },
                 ...(sharedVariableForFindingIds.length > 0
                   ? [
@@ -463,7 +541,7 @@ const KubernetesSLOConfigs: React.FC<KubernetesSLOConfigsProps> = ({ accountId }
         confirmDisabled={deleting}
       >
         <Typography>
-          {`Delete the availability and latency SLOs for ${deleteTarget?.workloadName} in ${deleteTarget?.workloadNamespace}? Their historical reports will be removed too.`}
+          {`Delete all SLOs on ${deleteTarget?.workloadName} in ${deleteTarget?.workloadNamespace}? Their historical reports will be removed and open CPU forecast alerts closed.`}
         </Typography>
       </Modal>
     </>
@@ -668,6 +746,33 @@ const SLOEvent = ({ drilldownQuery = {} as any, accountId = '', sharedVariableFo
     );
   }
   return <Typography>No Event Available</Typography>;
+};
+
+// The forecast and breach alerts of a workload's CPU SLOs; each row opens the alert.
+const SLOCpuAlerts = ({ drilldownQuery = {} as any, accountId = '' }) => {
+  // Fixed once per mount: the events table resets its paging whenever its query
+  // changes, and a window ending at "now" would change on every re-render.
+  const [range] = useState(() => ({ startTime: getLast30Days(new Date()).getTime(), endTime: new Date().getTime() }));
+  if (!drilldownQuery.cpuConfigs?.length) {
+    return <Typography>No CPU SLO on this workload</Typography>;
+  }
+  return (
+    <KubernetesEventsTable
+      accountId={accountId}
+      enableTrendChart={false}
+      enableFilters={false}
+      heading={''}
+      defaultQuery={{
+        namespace: drilldownQuery.workloadNamespace,
+        workloadName: drilldownQuery.workloadName,
+        startTime: range.startTime,
+        endTime: range.endTime,
+        aggregation_key: FORECAST_EVENT_KEYS,
+        finding_type: '',
+      }}
+      showTimeFilter={false}
+    />
+  );
 };
 
 const SLOTraces = ({ drilldownQuery = {} as any, accountId = '', type = '' }) => {

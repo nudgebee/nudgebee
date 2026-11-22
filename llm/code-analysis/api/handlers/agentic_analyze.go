@@ -960,6 +960,14 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		logger.AnalysisFailure(err, "agent_execution")
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
+	// A synthetic submit_analysis step is not a real tool execution. Fail a
+	// repository run that never used tools before its answer can be accepted as
+	// success; log-only requests can legitimately answer without tools.
+	if (req.GitRepository.URL != "" || req.GitRepository.LocalPath != "") && toolTracker.GetInvocationCount() == 0 {
+		err := fmt.Errorf("model %q executed no repository tools; code analysis could not examine the source", cfg.LLM.Model)
+		logger.AnalysisFailure(err, "agent_execution")
+		return nil, err
+	}
 
 	logger.Log(common.EventAnalysisComplete, "Agent execution completed", map[string]any{
 		"response_length": len(agentResponseStr),

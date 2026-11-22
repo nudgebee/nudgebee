@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/notification"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -25,14 +26,14 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 		return err
 	}
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx, false)
 	if err != nil {
 		ctx.GetLogger().Error("security posture alert: error listing tenants", "error", err)
 		return err
 	}
 
 	for _, t := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id, false)
 		if err != nil {
 			ctx.GetLogger().Error("security posture alert: error listing accounts", "error", err, "tenant", t.Id)
 			continue
@@ -57,8 +58,10 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 		var counts []severityCount
 		err = dbms.Db.Select(&counts, `
 			SELECT severity, COUNT(*) AS cnt
-			FROM recommendation
+			FROM recommendation r
 			WHERE tenant_id = $1
+			  AND `+notification.NotOwnRecommendationSQL+`
+			  AND `+notification.NotOwnImageSQL("$1")+`
 			  AND category = 'Security'
 			  AND status = 'Open'
 			  AND severity IN ('Critical', 'High')
@@ -106,6 +109,8 @@ func SendSecurityPostureAlert(ctx *security.RequestContext) error {
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
+					AND `+notification.NotOwnImageSQL("$1")+`
 					AND r.category = 'Security'
 					AND r.status = 'Open'
 					AND r.severity IN ('Critical', 'High')

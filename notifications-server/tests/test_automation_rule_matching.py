@@ -272,7 +272,7 @@ def _threaded_send(monkeypatch, matched, policy, event_type):
     service.rule_matcher = _ThreadMatcher(matched, policy)
     sent = []
 
-    async def send_threaded_reply(tenant_id, thread, parameters):
+    async def send_threaded_reply(tenant_id, thread, parameters, **_kw):
         sent.append(thread)
         return [{"platform": "slack", "status": "success"}]
 

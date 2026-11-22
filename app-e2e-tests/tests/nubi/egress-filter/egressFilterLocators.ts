@@ -47,10 +47,10 @@ export class EgressFilterLocators extends CommonLocators {
 
     // The Nubi panel entry point and its "AI & Tools" button are not redeclared —
     // tests/nubi/nubiLocators.ts owns them and openEgressFilterTab() drives that
-    // class to reach the modal. Egress Filter is one of AI & Tools' sub-tabs
-    // now (aiToolsConfig.js), and Agents is the sibling
-    // remountEgressFilterTab() switches away to.
-    this.egressFilterTab = page.getByRole("tab", { name: "Egress Filter" });
+    // class to reach the modal. Egress Filter now sits inside AI & Tools' Security
+    // sub-tab (aiToolsConfig.js), whose toggle opens on Egress Filter in the modal,
+    // and Agents is the sibling remountEgressFilterTab() switches away to.
+    this.egressFilterTab = page.getByRole("tab", { name: /^Security/ });
     this.agentsTab = page.getByRole("tab", { name: "Agents" });
 
     // The tab body carries no id, so the AI & Tools dialog's own MUI paper is

@@ -141,13 +141,16 @@ export const summarizeAllocation = (items, preferred) => {
 };
 
 /**
- * CPU usage: the peak against the limit, or that there were no samples to draw.
+ * CPU usage: the peak against the limit, or why there were no samples to draw.
  * @param {{usage?: number[], request?: number[], limit?: number[]}|null} series cores
+ * @param {string} [reason] the server's reason for an empty usage series, when it gave one
  */
-export const summarizeCpu = (series) => {
+export const summarizeCpu = (series, reason) => {
   // No usage entry at all means the query was not answered, which is not the same as no samples.
   if (!series || !Array.isArray(series.usage)) return [];
   const peak = peakOf(series.usage);
+  // Missing data is not an idle pod: a source that could not answer is named as the cause.
+  if (peak === null && reason) return [info(`No CPU data: ${reason}`)];
   if (peak === null) return [info('No CPU samples for this pod in the 10 minutes around the alert')];
   const limit = peakOf(series.limit);
   const request = peakOf(series.request);

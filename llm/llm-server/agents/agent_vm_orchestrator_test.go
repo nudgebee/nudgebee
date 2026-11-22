@@ -6,6 +6,9 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/prompts"
+	"nudgebee/llm/services_server"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestVMAccountRoutesBeforeProvider(t *testing.T) {
@@ -24,4 +27,15 @@ func TestVMAccountRoutesBeforeProvider(t *testing.T) {
 	if _, err := prompts.GetPromptStrict(context.Background(), prompts.PromptVMLean, ""); err != nil {
 		t.Fatalf("VM prompt: %v", err)
 	}
+}
+
+func TestFormatLinkedServices(t *testing.T) {
+	assert.Empty(t, formatLinkedServices(nil))
+
+	got := formatLinkedServices([]services_server.VMServiceLink{
+		{VM: "vm-a", Service: "/docker/api", VMServiceCodeLink: services_server.VMServiceCodeLink{Repo: "https://gitlab.com/org/api", Branch: "release"}},
+		{VM: "vm-a", Service: "/system.slice/web.service", VMServiceCodeLink: services_server.VMServiceCodeLink{Repo: "https://github.com/org/web"}},
+	})
+	assert.Contains(t, got, "- vm-a, /docker/api, https://gitlab.com/org/api, release")
+	assert.Contains(t, got, "- vm-a, /system.slice/web.service, https://github.com/org/web, default branch")
 }

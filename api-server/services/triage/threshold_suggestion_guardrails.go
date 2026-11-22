@@ -382,15 +382,25 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 	}
 
 	// --- Gate 6: Extreme ratio change ---
+	// A move of ten times or more is offered for review. A move of a hundred times or more says the
+	// alert and its metric are not on the same scale (a ratio whose denominator dropped to zero, a
+	// unit mismatch), so the definition is what needs fixing and no number is offered.
 	if alertDef.CurrentThreshold > 0 {
 		ratio := suggestion.SuggestedThreshold / alertDef.CurrentThreshold
-		if ratio > 10 || (ratio < 0.1 && ratio > 0) {
+		switch {
+		case ratio >= definitionScaleRatio || (ratio > 0 && ratio <= 1/definitionScaleRatio):
+			risk.Level = "dangerous"
+			suggestion.Confidence = "low"
+			risk.Warnings = append(risk.Warnings,
+				fmt.Sprintf("The suggested value is %s the current threshold. A change that large means the alert's metric is not on the scale the threshold assumes — fix the alert definition rather than the number.",
+					formatRatio(ratio)))
+		case ratio > 10 || (ratio < 0.1 && ratio > 0):
 			if risk.Level != "dangerous" {
 				risk.Level = "review"
 			}
 			risk.Warnings = append(risk.Warnings,
-				fmt.Sprintf("This is a %.0fx change from the current threshold. Large adjustments like this may indicate the alert definition itself needs rethinking, not just the threshold value.",
-					ratio))
+				fmt.Sprintf("The suggested value is %s the current threshold. Check it against a chart of the metric before applying.",
+					formatRatio(ratio)))
 			// Don't allow > medium confidence for extreme changes
 			if suggestion.Confidence == "high" {
 				suggestion.Confidence = "medium"
@@ -448,6 +458,18 @@ func ValidateSuggestion(suggestion *ThresholdSuggestion, alertDef *AlertDefiniti
 	}
 
 	return risk
+}
+
+// definitionScaleRatio is the change (either way) beyond which a suggested threshold is taken as a
+// sign that the alert definition is wrong, not its number.
+const definitionScaleRatio = 100.0
+
+// formatRatio words how far a suggested value is from the current one: "15x", or "1/40 of".
+func formatRatio(ratio float64) string {
+	if ratio >= 1 {
+		return fmt.Sprintf("%.0fx", ratio)
+	}
+	return fmt.Sprintf("1/%.0f of", 1/ratio)
 }
 
 // isSpreadlessMethod reports whether a threshold was derived by one of the fallbacks

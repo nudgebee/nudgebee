@@ -66,6 +66,10 @@ func (t *ImSendTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		if triggeredBy := taskCtx.GetUserDisplayName(); triggeredBy != "" {
 			metadata["triggered_by"] = triggeredBy
 		}
+		// Step citations in the message link to this event's investigation.
+		if eventID := taskCtx.GetEventID(); eventID != "" {
+			metadata["event_id"] = eventID
+		}
 		request.Parameters = map[string]any{
 			"workflow_metadata": metadata,
 		}

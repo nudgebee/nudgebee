@@ -266,6 +266,9 @@ type QueryLogResponse struct {
 	Results    []LogMessage       `json:"results"`
 	Status     string             `json:"status"` // e.g., Complete, Failed, Cancelled, Running, Scheduled
 	Statistics LogQueryStatistics `json:"statistics"`
+	// Where the collector read the results from, when it resolved that itself.
+	LogGroupName    string `json:"log_group_name,omitempty"`
+	LogStreamPrefix string `json:"log_stream_prefix,omitempty"`
 }
 
 type LogMessage struct {

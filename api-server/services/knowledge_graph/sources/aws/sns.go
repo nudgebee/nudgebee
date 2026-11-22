@@ -7,6 +7,8 @@ import (
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/knowledge_graph/sources"
 	"nudgebee/services/security"
+	"sync"
+	"time"
 )
 
 // snsTopicSchema — concrete schema for SNS topics.
@@ -61,17 +63,18 @@ func (s *AWSSource) createSNSEdges(reqCtx *security.RequestContext, nodes []*cor
 		s.logger.Warn("no SNS topic carries a region, falling back to metadata for all topics",
 			"topic_count", len(nodes))
 	}
-	for _, region := range regions {
-		regionSubscriptions, err := s.fetchSNSSubscriptionsForRegion(reqCtx, req.CloudAccountID, region)
-		if err != nil {
-			s.logger.Warn("failed to fetch SNS subscriptions from AWS, falling back to metadata for that region's topics",
-				"region", region,
-				"error", err)
-			continue
-		}
-		for topicArn, subs := range regionSubscriptions {
-			allSubscriptionsMap[topicArn] = append(allSubscriptionsMap[topicArn], subs...)
-		}
+	fetched, missing := fetchSNSSubscriptionsByRegion(regions, func(region string) (map[string][]interface{}, error) {
+		return s.fetchSNSSubscriptionsForRegion(reqCtx, req.CloudAccountID, region)
+	}, snsRegionConcurrency, snsStepTimeLimit)
+	for topicArn, subs := range fetched {
+		allSubscriptionsMap[topicArn] = append(allSubscriptionsMap[topicArn], subs...)
+	}
+	if len(missing) > 0 {
+		s.logger.Warn("SNS subscriptions missing for some regions; their topics get no subscription links in this build",
+			"account_id", req.CloudAccountID,
+			"regions_missing", len(missing),
+			"regions_total", len(regions),
+			"missing", missing)
 	}
 
 	for _, node := range nodes {
@@ -187,6 +190,61 @@ func (s *AWSSource) createSNSEdges(reqCtx *security.RequestContext, nodes []*cor
 	}
 
 	return edges
+}
+
+const (
+	// snsRegionConcurrency is how many regions' subscriptions are listed at once.
+	// Each region has its own SNS rate limit, so looking regions up side by side
+	// keeps one slow region from holding up the rest without adding to throttling.
+	snsRegionConcurrency = 4
+	// snsStepTimeLimit bounds the SNS step for a whole account: no new region is
+	// started after it. A lookup already running still finishes, within the cloud
+	// command timeout.
+	snsStepTimeLimit = 3 * time.Minute
+)
+
+// fetchSNSSubscriptionsByRegion lists the subscriptions of every region, a few at a
+// time, and merges them by topic ARN. It returns, keyed by region, why each region
+// it could not list is missing: the lookup failed, or the time limit was reached
+// before the region was started.
+func fetchSNSSubscriptionsByRegion(regions []string, fetch func(region string) (map[string][]interface{}, error), concurrency int, timeLimit time.Duration) (map[string][]interface{}, map[string]string) {
+	merged := make(map[string][]interface{})
+	missing := make(map[string]string)
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	deadline := time.Now().Add(timeLimit)
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, concurrency)
+	for _, region := range regions {
+		slots <- struct{}{}
+		if timeLimit > 0 && time.Now().After(deadline) {
+			<-slots
+			mu.Lock()
+			missing[region] = "not started: SNS step time limit reached"
+			mu.Unlock()
+			continue
+		}
+		wg.Add(1)
+		go func(region string) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			subs, err := fetch(region)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				missing[region] = err.Error()
+				return
+			}
+			for topicArn, topicSubs := range subs {
+				merged[topicArn] = append(merged[topicArn], topicSubs...)
+			}
+		}(region)
+	}
+	wg.Wait()
+	return merged, missing
 }
 
 // buildSNSListSubscriptionsCommand returns the CLI command listing every SNS

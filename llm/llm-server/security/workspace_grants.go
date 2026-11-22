@@ -21,6 +21,9 @@ type WorkspaceGrants struct {
 	ScopedEntityIds         map[string][]string        `json:"scoped_entity_ids,omitempty"`
 	CustomPermissions       map[string]bool            `json:"custom_permissions,omitempty"`
 	ScopedCustomPermissions map[string]map[string]bool `json:"scoped_custom_permissions,omitempty"`
+	// GrantScoped carries WithGrantScopedRun: the command belongs to a run
+	// whose principal acts only through its custom-role grants.
+	GrantScoped bool `json:"grant_scoped,omitempty"`
 }
 
 var errWorkspaceGrantsCrossTenant = errors.New("workspace grants: cross-tenant roles are not allowed")

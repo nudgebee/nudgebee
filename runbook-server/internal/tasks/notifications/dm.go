@@ -19,7 +19,7 @@ func (t *DmSendTask) GetName() string {
 
 // GetDescription returns a brief description of the task.
 func (t *DmSendTask) GetDescription() string {
-	return "Send a direct message to a specific user."
+	return "Send a direct message to one Slack user, addressed by their Slack member ID."
 }
 
 // GetDisplayName returns a human-readable name for the task.
@@ -88,7 +88,7 @@ func (t *DmSendTask) InputSchema() *types.Schema {
 			},
 			"user_id": {
 				Type:        "string",
-				Description: "User ID to send message to",
+				Description: "Slack member ID of the recipient, e.g. U012AB3CD — not a display name",
 				Required:    true,
 				Order:       2,
 			},

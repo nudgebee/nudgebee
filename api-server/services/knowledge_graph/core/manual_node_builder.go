@@ -37,10 +37,11 @@ type ManualNodeField struct {
 
 // Identity input keys.
 const (
-	ManualNodeFieldName      = "name"
-	ManualNodeFieldRegion    = "region"
-	ManualNodeFieldNetwork   = "network"
-	ManualNodeFieldNamespace = "namespace"
+	ManualNodeFieldName          = "name"
+	ManualNodeFieldRegion        = "region"
+	ManualNodeFieldNetwork       = "network"
+	ManualNodeFieldNamespace     = "namespace"
+	ManualNodeFieldResourceGroup = "resource_group"
 )
 
 // ManualNodeKind is one type a user may declare in an account of a provider.
@@ -51,6 +52,9 @@ type ManualNodeKind struct {
 	// Properties are the optional, descriptive fields: the type's concrete
 	// schema (SpecificTypeSchema), never part of the key.
 	Properties []ManualNodeProperty `json:"properties"`
+	// FreeProperties marks a tenant's own kind: any key/value may be set,
+	// Properties is empty.
+	FreeProperties bool `json:"free_properties,omitempty"`
 }
 
 // ManualNodeProperty is one optional field a declaration may set, with the
@@ -81,6 +85,8 @@ type ManualNodeInput struct {
 	Network        *ManualNodeNetwork
 	// Namespace is a Kubernetes resource's namespace (part of its key).
 	Namespace string
+	// ResourceGroup is an Azure resource's resource group (part of its key).
+	ResourceGroup string
 	// AccountName is the connected account's display name; for a Kubernetes
 	// account it is the cluster name the collector stamps on its nodes.
 	AccountName string
@@ -299,6 +305,12 @@ func MaterializeManualNode(nodeType NodeType, specificType, uniqueKey string, ba
 	for k, v := range details.Properties {
 		if IsManualReservedProperty(k) {
 			return nil, fmt.Errorf("property %q cannot be set on a declared node", k)
+		}
+		// The role overlay owns these keys. They are refused at write time;
+		// one stored before that rule is dropped here rather than failing the
+		// build, so it cannot pass itself off as a user-set role.
+		if IsNodeRoleBookkeepingProperty(k) {
+			continue
 		}
 		props[k] = v
 	}

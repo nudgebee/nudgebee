@@ -35,6 +35,9 @@
       {% for account in accounts %}
       {% set agent_details = account.agent_details.data.agent[0] %}
       {% set status = agent_details.connection_status %}
+      {#- Karpenter counts only where the cluster runs it (karpenterExpected in report_service.go). -#}
+      {% set karpenter_expected = status.karpenterEnabled or (status.autoScalerType or '') | lower == 'karpenter' %}
+      {% set connection_total = 5 if karpenter_expected else 4 %}
       {% set connected_count = 0 %}
       {% if status.alertManagerConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
       {% if status.grafanaEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
@@ -46,8 +49,8 @@
         <td style="padding:10px 12px; text-align:center;">
           <span style="color:{% if agent_details.status | lower in ['running', 'connected', 'active'] %}#22C55E{% else %}#EF4444{% endif %}; font-size:16px;">&#9679;</span>
         </td>
-        <td style="padding:10px 12px; text-align:center; font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:{% if connected_count == 5 %}#22C55E{% elif connected_count >= 3 %}#F59E0B{% else %}#EF4444{% endif %};">
-          {{ connected_count }}/5
+        <td style="padding:10px 12px; text-align:center; font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:{% if connected_count == connection_total %}#22C55E{% elif connected_count >= connection_total - 2 %}#F59E0B{% else %}#EF4444{% endif %};">
+          {{ connected_count }}/{{ connection_total }}
         </td>
         <td style="padding:10px 12px; text-align:center; font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280;">{{ agent_details.last_connected_at }} UTC</td>
       </tr>
@@ -60,7 +63,8 @@
   {% for account in accounts %}
     {% set agent_details = account.agent_details.data.agent[0] %}
     {% set status = agent_details.connection_status %}
-    {% if agent_details.status | lower not in ['running', 'connected', 'active'] or not status.alertManagerConnection or not status.grafanaEnabled or not status.karpenterEnabled or not status.logsConnection or not status.opencostConnection %}
+    {% set karpenter_down = not status.karpenterEnabled and (status.autoScalerType or '') | lower == 'karpenter' %}
+    {% if agent_details.status | lower not in ['running', 'connected', 'active'] or not status.alertManagerConnection or not status.grafanaEnabled or karpenter_down or not status.logsConnection or not status.opencostConnection %}
       {% if accounts_with_issues.append(account) %}{% endif %}
     {% endif %}
   {% endfor %}
@@ -78,7 +82,7 @@
     {% set disconnected_connections = [] %}
     {% if not status.alertManagerConnection %}{% if disconnected_connections.append('Alert Manager') %}{% endif %}{% endif %}
     {% if not status.grafanaEnabled %}{% if disconnected_connections.append('Grafana') %}{% endif %}{% endif %}
-    {% if not status.karpenterEnabled %}{% if disconnected_connections.append('Karpenter') %}{% endif %}{% endif %}
+    {% if not status.karpenterEnabled and (status.autoScalerType or '') | lower == 'karpenter' %}{% if disconnected_connections.append('Karpenter') %}{% endif %}{% endif %}
     {% if not status.logsConnection %}{% if disconnected_connections.append('Logs') %}{% endif %}{% endif %}
     {% if not status.opencostConnection %}{% if disconnected_connections.append('OpenCost') %}{% endif %}{% endif %}
 

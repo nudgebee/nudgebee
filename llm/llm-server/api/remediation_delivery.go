@@ -45,10 +45,23 @@ type executorFacts struct {
 // assignDelivery sets each action's delivery from the account's executor. It runs whenever a plan is
 // returned, not only when it is generated: an agent reconnects, a permission is granted.
 func assignDelivery(ctx *security.RequestContext, accountId string, plan *RemediationPlan) {
-	if len(plan.Actions) == 0 {
+	if len(plan.Actions) == 0 && plan.OutcomeCheck == nil {
 		return
 	}
 	provider := tools.GetCloudProviderForAccount(accountId)
+	// Checks run without a confirmation, so only strict reads (checkRejection).
+	if plan.OutcomeCheck != nil {
+		plan.OutcomeCheck.Reason = checkRejection(ctx, accountId, provider, plan.OutcomeCheck.Command)
+	}
+	for i := range plan.Actions {
+		plan.Actions[i].VerifyReason = ""
+		if v := strings.TrimSpace(plan.Actions[i].VerifyCommand); v != "" {
+			plan.Actions[i].VerifyReason = checkRejection(ctx, accountId, provider, v)
+		}
+	}
+	if len(plan.Actions) == 0 {
+		return
+	}
 	facts := executorFacts{
 		provider:  provider,
 		connected: isK8sProvider(provider) && relay.AgentConnected(accountId),
@@ -65,6 +78,9 @@ func assignDelivery(ctx *security.RequestContext, accountId string, plan *Remedi
 func deliveryFor(a RemediationAction, f executorFacts) (string, string, bool) {
 	if a.AlertRuleChange != nil {
 		return DeliveryRun, "", false // applied from the card through NudgeBee's own rule update
+	}
+	if a.Automation != nil {
+		return DeliveryRun, "", false // the account's automation, run as the person who approves it
 	}
 	exec := strings.TrimSpace(a.ExecuteCommand)
 	if exec == "" {
@@ -115,7 +131,7 @@ func refusalKey(provider, command string) string {
 func planOperatorStep(plan RemediationPlan, command, action string) bool {
 	command, action = strings.TrimSpace(command), strings.TrimSpace(action)
 	for _, a := range plan.Actions {
-		exec := strings.TrimSpace(a.ExecuteCommand)
+		exec := stepRef(a)
 		if command != "" && exec == command {
 			return true
 		}
@@ -138,29 +154,60 @@ func operatorStepRef(command, action string) string {
 	return operatorChangePrefix + strings.TrimSpace(action)
 }
 
-// recordOperatorStep records that the operator carried out a step outside NudgeBee, as an ordinary
-// successful CommandExecution marked manual, so ordering and attempt history see it.
-func recordOperatorStep(ctx *security.RequestContext, request RemediationExecuteRequest, userId string) {
+// recordOperatorStep records a step the operator ran outside NudgeBee as a successful manual CommandExecution.
+// It is a decision under the step's approval key like Run, so a step is run, declined or marked done, once.
+func recordOperatorStep(ctx *security.RequestContext, request RemediationExecuteRequest, userId string, stored storedPlan) stepAnswer {
+	return recordStepDecision(ctx, request, userId, stored, events.RunStatusSuccess,
+		map[string]any{"manual": true, "slot": RemediationSlotManual}, "Done by the operator outside NudgeBee")
+}
+
+// maxDeclineReason caps a decline reason kept on the record, in characters.
+const maxDeclineReason = 500
+
+// recordDecline records that a person declined a step of the plan. Nothing runs, and the step is decided:
+// it cannot then be run or marked done from any surface until a new plan proposes it again. A step whose
+// last run has an unknown outcome cannot be declined: that run may have taken effect (the claim refuses).
+func recordDecline(ctx *security.RequestContext, request RemediationExecuteRequest, userId string, stored storedPlan) stepAnswer {
+	reason := strings.TrimSpace(request.Reason)
+	if r := []rune(reason); len(r) > maxDeclineReason {
+		reason = string(r[:maxDeclineReason]) // whole characters: a cut multi-byte one is not valid text
+	}
+	message := "Declined"
+	if reason != "" {
+		message += ": " + reason
+	}
+	return recordStepDecision(ctx, request, userId, stored, events.RunStatusDeclined,
+		map[string]any{"slot": RemediationSlotDecline, "reason": reason}, message)
+}
+
+// recordStepDecision records a decision that runs nothing ("I ran this", Decline) on the plan step the
+// request names, bound to the plan version the person saw.
+func recordStepDecision(ctx *security.RequestContext, request RemediationExecuteRequest, userId string, stored storedPlan,
+	status string, data map[string]any, message string) stepAnswer {
 	dbManager, err := common.GetDatabaseManager(common.Metastore)
 	if err != nil {
-		ctx.GetLogger().Warn("remediation: database unavailable, operator step not recorded", "error", err)
-		return
+		return decisionFailure(ctx.GetLogger(), nil, err)
 	}
 	// The request was already bound to the plan, so its command or action name is the plan's own.
-	repo := events.NewEventAnalysisRepository(dbManager)
-	ref := operatorStepRef(request.Command, request.Action)
-	if err := repo.InsertRemediationExecution(ctx, request.EventId, userId, ref, `{"manual":true}`, "Done by the operator outside NudgeBee", true); err != nil {
-		ctx.GetLogger().Warn("remediation: failed to record operator step", "error", err)
+	step := planStep(stored.Plan, RemediationSlotExecute, request.Command, request.Action)
+	_, conflict, err := claimStepDecision(ctx, events.NewEventAnalysisRepository(dbManager), request, userId, stored,
+		step, request.Command, operatorStepRef(request.Command, request.Action), status, message, data)
+	if err != nil || conflict != nil {
+		return decisionFailure(ctx.GetLogger(), conflict, err)
 	}
+	syncAlertThread(ctx, request.AccountId, request.EventId)
+	return stepAnswer{Code: 200, Data: runResult{RemediationExecutionResult: tools.RemediationExecutionResult{Command: strings.TrimSpace(request.Command),
+		ExecutedAt: time.Now().UTC().Format(time.RFC3339), Success: status == events.RunStatusSuccess}, Status: status}}
 }
 
 // attemptRow is one recorded remediation run on the account.
 type attemptRow struct {
-	Command   string    `db:"command"`
-	Status    string    `db:"status"`
-	Error     string    `db:"error"`
-	Manual    bool      `db:"manual"`
-	CreatedAt time.Time `db:"created_at"`
+	Command          string    `db:"command"`
+	Status           string    `db:"status"`
+	Error            string    `db:"error"`
+	Manual           bool      `db:"manual"`
+	ExitCodeReported bool      `db:"exit_code_reported"`
+	CreatedAt        time.Time `db:"created_at"`
 }
 
 // loadExecutorRefusals derives the account's live permission refusals from the last day's attempts
@@ -173,7 +220,8 @@ func loadExecutorRefusals(ctx *security.RequestContext, accountId, provider stri
 	var rows []attemptRow
 	// LOCALTIMESTAMP, not NOW(): created_at is a timestamp without time zone, written in the session's zone.
 	if err := dbms.Db.Select(&rows, `SELECT er.type_reference_id AS command, er.status::text AS status,
-		       COALESCE(er.data->>'error', '') AS error, COALESCE((er.data->>'manual')::boolean, false) AS manual, er.created_at
+		       COALESCE(er.data->>'error', '') AS error, COALESCE((er.data->>'manual')::boolean, false) AS manual,
+		       COALESCE(er.data->>'exit_code_reported', '') = 'true' AS exit_code_reported, er.created_at
 		  FROM event_resolution er JOIN events e ON e.id = er.event_id
 		 WHERE e.cloud_account_id = $1 AND er.type = 'CommandExecution'
 		   AND er.created_at > LOCALTIMESTAMP - $2::interval
@@ -185,14 +233,19 @@ func loadExecutorRefusals(ctx *security.RequestContext, accountId, provider stri
 	return refusalsFromAttempts(rows, provider)
 }
 
-// refusalsFromAttempts: per executor & verb, the newest success or permission refusal decides (rows
-// arrive newest first); manual records and transient failures say nothing about permission.
+// refusalsFromAttempts: per executor & verb, the newest verified success or permission refusal decides
+// (rows arrive newest first); manual records, transient failures and runs with no known outcome
+// (InProgress, Unknown, a success with no exit code) say nothing about permission.
 func refusalsFromAttempts(rows []attemptRow, provider string) map[string]executorRefusal {
 	out := map[string]executorRefusal{}
 	seen := map[string]bool{}
 	for _, r := range rows {
+		if _, ok := automationRefID(r.Command); ok {
+			continue // an automation's run says nothing about what the executor may run
+		}
 		failed := strings.EqualFold(r.Status, "Failed")
-		if r.Manual || (failed && !isPermissionRefusal(r.Error)) {
+		succeeded := verifiedSuccess(r.Status, runFacts{ExitCodeReported: r.ExitCodeReported, Manual: r.Manual})
+		if (!failed && !succeeded) || (failed && !isPermissionRefusal(r.Error)) {
 			// timeout / lost connection -> neither a refusal nor a reason to forget one
 			continue
 		}

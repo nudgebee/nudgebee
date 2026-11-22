@@ -69,8 +69,10 @@ func expectCreateThenFailingScheduleRegistration(mockStore *MockWorkflowStore, m
 	mockStore.On("FindByName", mock.Anything, "test-tenant", "test-account", name).Return(nil, sql.ErrNoRows)
 	mockStore.On("CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.Anything).
 		Return("stored-id", &model.WorkflowVersion{ID: "v1", VersionNumber: 1, Source: model.WorkflowVersionSourceCreate, IsLive: true}, nil)
+	// Create makes v1 live with the submitted definition; schedules are
+	// registered from the live version's triggers.
 	mockStore.On("GetLiveWorkflowVersion", mock.Anything, mock.Anything).
-		Return(&model.WorkflowVersion{ID: "v1", VersionNumber: 1, IsLive: true}, nil)
+		Return(&model.WorkflowVersion{ID: "v1", VersionNumber: 1, IsLive: true, Definition: scheduledWorkflowFixture().Definition}, nil)
 
 	// No pre-existing schedule, and creating the new one fails.
 	mockTemporal.On("Describe", mock.Anything).Return(nil, serviceerror.NewNotFound("schedule not found"))

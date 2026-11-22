@@ -185,6 +185,10 @@ func (t *CallWorkflowTask) Execute(taskCtx types.TaskContext, params map[string]
 	if targetWf == nil {
 		return nil, fmt.Errorf("workflow '%s' not found", workflowName)
 	}
+	// Same rule as the inline path (ResolveChildWorkflow).
+	if targetWf.Binding != nil {
+		return nil, fmt.Errorf("workflow '%s' is bound to an agent and cannot be called by core.call-workflow", workflowName)
+	}
 	targetVersion, err := resolveTargetVersion(taskCtx.GetContext(), taskCtx.GetStore(), targetWf.ID, workflowName, params)
 	if err != nil {
 		return nil, err
@@ -236,6 +240,10 @@ func (t *CallWorkflowTask) Execute(taskCtx types.TaskContext, params map[string]
 		},
 		Memo: memo,
 	}
+
+	// The child acts as the calling run's principal, not as the callee's owner:
+	// calling another automation must not borrow its owner's rights.
+	targetWf.PrincipalUserID = taskCtx.GetUserID()
 
 	// Use the registered workflow type name as a string (importing the workflow
 	// package here would create an import cycle: workflow → tasks → workflow).
@@ -357,6 +365,12 @@ func (t *CallWorkflowTask) ResolveChildWorkflow(taskCtx types.TaskContext, param
 	if wf == nil {
 		return nil, fmt.Errorf("workflow '%s' referenced by core.call-workflow task not found", workflowName)
 	}
+	// A bound automation runs only when its agent starts it, and a bound trigger
+	// only from its trigger rule; another automation calling either would get
+	// round both.
+	if wf.Binding != nil {
+		return nil, fmt.Errorf("workflow '%s' is bound to an agent and cannot be called by core.call-workflow", workflowName)
+	}
 	targetVersion, err := resolveTargetVersion(taskCtx.GetContext(), taskCtx.GetStore(), wf.ID, workflowName, params)
 	if err != nil {
 		return nil, err
@@ -387,6 +401,9 @@ func (t *CallWorkflowTask) ResolveChildWorkflow(taskCtx types.TaskContext, param
 		SetExecutionTags: liveDef.SetExecutionTags,
 		RetryPolicy:      liveDef.RetryPolicy,
 		Timeout:          liveDef.Timeout,
+		// The callee keeps its own tier ceiling; the executor tightens it to the
+		// caller's when that is lower.
+		MaxTier: liveDef.MaxTier,
 	}
 
 	return &types.ResolvedChildWorkflow{

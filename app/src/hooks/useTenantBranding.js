@@ -178,6 +178,20 @@ export const useWatchFeatureEnabled = () => {
 };
 
 /**
+ * Runtime feature flag for PWA activation.
+ * Reads pwaEnabled from /api/public/app_config.
+ */
+export const usePwaFeatureEnabled = () => {
+  const config = useSyncExternalStore(subscribeToBrandingConfig, getBrandingSnapshot, getBrandingServerSnapshot);
+  return !!config?.pwaEnabled;
+};
+
+export const usePwaThemeColor = () => {
+  const config = useSyncExternalStore(subscribeToBrandingConfig, getBrandingSnapshot, getBrandingServerSnapshot);
+  return config?.pwaThemeColor || '#1B2D4A';
+};
+
+/**
  * Non-hook getter for nubi icon URLs.
  * Reads from the eagerly-fetched config cache, falling back to defaults.
  * Safe to call from plain functions (e.g. getIcon) after initial page load.
@@ -303,5 +317,6 @@ export const useTenantBranding = () => {
     loading: brandingConfig.loading,
     theme: brandingConfig.theme || null,
     colorTokens: brandingConfig.colorTokens || null,
+    pwaEnabled: !!brandingConfig.pwaEnabled,
   };
 };

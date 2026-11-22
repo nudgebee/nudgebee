@@ -3,12 +3,10 @@ package common
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	neturl "net/url"
-	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -90,10 +88,6 @@ func (h httpBody) apply(c *httpConfig) {
 	c.Body = h.body
 }
 
-func HttpWithBody(c io.ReadCloser) HttpOption {
-	return httpBody{body: c}
-}
-
 type httpJsonBody struct {
 	body io.ReadCloser
 }
@@ -114,24 +108,6 @@ func HttpWithJsonBody(c any) HttpOption {
 	}
 
 	return httpJsonBody{body: io.NopCloser(bytes.NewReader(data))}
-}
-
-func HttpWithStringBody(c string) HttpOption {
-	return httpBody{body: io.NopCloser(strings.NewReader(c))}
-}
-
-func HttpWithFormUrlEncodedBody(c any) HttpOption {
-	formData := neturl.Values{}
-	if m, ok := c.(map[string]string); ok {
-		for key, value := range m {
-			formData.Set(key, value)
-		}
-	} else {
-		slog.Error("http: invalid type for form data", "type", fmt.Sprintf("%T", c))
-		return httpBody{body: nil}
-	}
-	data := []byte(formData.Encode())
-	return httpBody{body: io.NopCloser(bytes.NewReader(data))}
 }
 
 func httpExecuteRequest(method string, url string, options ...HttpOption) (resp *http.Response, err error) {
@@ -176,20 +152,4 @@ func HttpGet(url string, options ...HttpOption) (resp *http.Response, err error)
 
 func HttpPost(url string, options ...HttpOption) (resp *http.Response, err error) {
 	return httpExecuteRequest("POST", url, options...)
-}
-
-func HttpPut(url string, options ...HttpOption) (resp *http.Response, err error) {
-	return httpExecuteRequest("PUT", url, options...)
-}
-
-func HttpDelete(url string, options ...HttpOption) (resp *http.Response, err error) {
-	return httpExecuteRequest("DELETE", url, options...)
-}
-
-func HttpHead(url string, options ...HttpOption) (resp *http.Response, err error) {
-	return httpExecuteRequest("HEAD", url, options...)
-}
-
-func HttpPatch(url string, options ...HttpOption) (resp *http.Response, err error) {
-	return httpExecuteRequest("PATCH", url, options...)
 }

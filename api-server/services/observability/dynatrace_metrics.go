@@ -89,10 +89,25 @@ func (s *DynatraceMetricSource) FetchMetricsQuery(ctx *security.RequestContext, 
 			continue
 		}
 
-		results.Results = append(results.Results, s.convertToQueryResult(grailRes, queryKey, rawQuery))
+		qr := s.convertToQueryResult(grailRes, queryKey, rawQuery)
+		qr.Note = dynatraceNotificationNote(grailRes.Warnings())
+		results.Results = append(results.Results, qr)
 	}
 
 	return results, nil
+}
+
+// dynatraceNotificationNote passes on the warnings Grail attached to a result,
+// which is how it reports truncation such as a reached record limit (#39201).
+func dynatraceNotificationNote(warnings []string) string {
+	if len(warnings) == 0 {
+		return ""
+	}
+	trimmed := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		trimmed = append(trimmed, strings.TrimRight(strings.TrimSpace(w), "."))
+	}
+	return "Dynatrace reported: " + strings.Join(trimmed, "; ") + ". These results may be partial."
 }
 
 // DQL time-range placeholders used in builder-generated timeseries templates.

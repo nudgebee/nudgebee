@@ -1,5 +1,7 @@
 import { Typography } from '@mui/material';
 import { useRouter } from 'next/router';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
+import { hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
 import ZenDutyAccountModal from '@components/integrations/modal/ZenDutyAccountModal';
 import FreshdeskAccountModal from '@components/integrations/modal/FreshdeskAccountModal';
@@ -23,6 +25,15 @@ import AddSelfHostedAccountModal from './AddSelfHostedAccountModal';
 
 export default function AddAccountForm() {
   const { cloudProvider } = useRouter().query;
+
+  // Matches user-management's own gate on the "Integrations" tab (module:
+  // 'integrations', pages/user-management/index.jsx) -- without this, a
+  // grants-only user the tab hides Integrations from could still reach this
+  // form (and connect/configure any integration) by typing the URL.
+  const canReadIntegrations = !isGrantsOnlyUser() || hasPermission('integrations', 'Read');
+  if (!canReadIntegrations) {
+    return <PermissionDeniedContent message={missingPermissionMessage('integrations:Read')} />;
+  }
 
   return (
     <div style={{ paddingTop: 'var(--ds-space-5)' }}>
@@ -134,8 +145,7 @@ export default function AddAccountForm() {
                 key='ms_teams'
                 provider='ms_teams'
                 displayName='Microsoft Teams'
-                installUrl='/api/integrations/ms-teams/install'
-                headers={['User Name', 'Installed At', 'Team Name', 'Channels', '', '']}
+                headers={['Team', 'Connected by', 'Connected', { name: '', width: '1%' }]}
                 mappingMode='team-multi'
               />
             );
@@ -198,6 +208,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'prometheus'} />;
           case 'chronosphere':
             return <ListIntegrations integrationName={'chronosphere'} />;
+          case 'orion':
+            return <ListIntegrations integrationName={'orion'} />;
           case 'otel':
             return <ListIntegrations integrationName={'otel_clickhouse'} />;
           case 'signoz':
@@ -252,6 +264,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'workflow_webhook'} />;
           case 'event_webhook':
             return <ListIntegrations integrationName={'event_webhook'} />;
+          case 'orion_webhook':
+            return <ListIntegrations integrationName={'orion_webhook'} />;
           case 'vm_agent':
             return <ListIntegrations integrationName={'vm_agent'} />;
           case 'mssql':

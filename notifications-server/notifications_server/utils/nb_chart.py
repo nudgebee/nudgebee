@@ -43,6 +43,32 @@ _CHART_TYPE_MAP = {"bar": "bar", "line": "line", "area": "area", "pie": "pie", "
 # y-axis label as a unit hint rather than dropping it silently.
 _FORMAT_UNIT_LABELS = {"usd": "USD ($)", "percent": "%", "gi": "GiB"}
 
+# Units of metric charts built from query results (#40909). Slack cannot format
+# each point, so the whole chart is scaled to the largest unit its biggest value
+# reaches and the axis names it: (divisor, axis label), largest first.
+_BYTE_STEPS = [(1024**4, "TiB"), (1024**3, "GiB"), (1024**2, "MiB"), (1024, "KiB"), (1, "B")]
+_SCALED_UNITS = {
+    "bytes": _BYTE_STEPS,
+    "bytes_per_second": [(d, f"{u}/s") for d, u in _BYTE_STEPS],
+    "seconds": [(3600, "hours"), (60, "minutes"), (1, "seconds"), (0.001, "ms")],
+}
+# A larger unit is used only once the biggest value reaches this many of it
+# (2 hours, not 1.1), so axes do not read 0.9 / 1.1.
+_SCALE_MIN_MULTIPLE = {"seconds": 2}
+
+
+def _unit_scale(fmt: str, values: List[float]) -> Optional[tuple]:
+    """(divisor, axis label) for a scaled unit format, or None for other formats."""
+    steps = _SCALED_UNITS.get(fmt)
+    if not steps:
+        return None
+    biggest = max((abs(v) for v in values), default=0.0)
+    multiple = _SCALE_MIN_MULTIPLE.get(fmt, 1)
+    for divisor, label in steps:
+        if biggest >= divisor * multiple:
+            return divisor, label
+    return steps[-1]
+
 
 @dataclass
 class NbChartSegment:
@@ -149,6 +175,20 @@ def _render_nb_pie(
     return blocks
 
 
+# A trend keeps its whole time range: points are picked evenly, first and last
+# included, instead of keeping only the earliest ones.
+_TREND_TYPES = ("line", "area")
+
+
+def _point_indices(n: int, slack_type: str) -> List[int]:
+    limit = _SLACK_MAX_DATA_POINTS
+    if n <= limit:
+        return list(range(n))
+    if slack_type not in _TREND_TYPES:
+        return list(range(limit))
+    return [round(k * (n - 1) / (limit - 1)) for k in range(limit)]
+
+
 def _render_nb_series_chart(
     title: str, slack_type: str, raw_labels: List[Any], data: Dict[str, Any], view_url: Optional[str] = None
 ) -> List[BaseBlock]:
@@ -156,7 +196,8 @@ def _render_nb_series_chart(
     if not isinstance(series, list) or not series:
         return []
 
-    labels = [_truncate_label(str(v)) for v in raw_labels[:_SLACK_MAX_DATA_POINTS]]
+    indices = _point_indices(len(raw_labels), slack_type)
+    labels = [_truncate_label(str(raw_labels[i])) for i in indices]
 
     chart_series = []
     for entry in series[:_SLACK_MAX_SERIES]:
@@ -169,7 +210,11 @@ def _render_nb_series_chart(
             chart_series.append(
                 {
                     "name": str(entry.get("key", "")),
-                    "data": [{"label": labels[i], "value": float(v)} for i, v in enumerate(values[: len(labels)])],
+                    "data": [
+                        {"label": labels[k], "value": float(values[i])}
+                        for k, i in enumerate(indices)
+                        if i < len(values)
+                    ],
                 }
             )
         except (TypeError, ValueError):
@@ -179,7 +224,14 @@ def _render_nb_series_chart(
 
     axis_config: Dict[str, Any] = {"categories": labels}
     fmt = str(data.get("format") or "").lower()
-    if fmt and fmt != "number":
+    scale = _unit_scale(fmt, [p["value"] for s in chart_series for p in s["data"]])
+    if scale:
+        divisor, unit_label = scale
+        for s in chart_series:
+            for p in s["data"]:
+                p["value"] = round(p["value"] / divisor, 2)
+        axis_config["y_label"] = unit_label
+    elif fmt and fmt != "number":
         axis_config["y_label"] = _FORMAT_UNIT_LABELS.get(fmt, fmt)
 
     chart = {"type": slack_type, "series": chart_series, "axis_config": axis_config}
@@ -189,7 +241,8 @@ def _render_nb_series_chart(
     if len(series) > _SLACK_MAX_SERIES:
         notes.append(f"{len(chart_series)} of {len(series)} series")
     if len(labels) < len(raw_labels):
-        notes.append(f"{len(labels)} of {len(raw_labels)} data points")
+        spread = " evenly spaced" if slack_type in _TREND_TYPES else ""
+        notes.append(f"{len(labels)}{spread} of {len(raw_labels)} data points")
     blocks.extend(_truncation_note(view_url, *notes))
     return blocks
 

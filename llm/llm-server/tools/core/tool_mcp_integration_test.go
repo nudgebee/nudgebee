@@ -237,8 +237,7 @@ func nbToolNames(tools []NBTool) []string {
 }
 
 // passMCPCacheTime lets d more time pass for the account, as far as the MCP tool
-// cache can tell: it moves the entry's expiry, and the start of every run of
-// failed discoveries, back by d.
+// cache can tell: it moves the entry's expiry back by d.
 func passMCPCacheTime(accountId string, d time.Duration) {
 	c := mcpIntegrationToolCacheInstance
 	c.mutex.Lock()
@@ -246,9 +245,6 @@ func passMCPCacheTime(accountId string, d time.Duration) {
 	item := c.data[accountId]
 	item.expiry = item.expiry.Add(-d)
 	c.data[accountId] = item
-	for id, since := range c.failingSince[accountId] {
-		c.failingSince[accountId][id] = since.Add(-d)
-	}
 }
 
 func mcpCacheExpiresIn(accountId string) time.Duration {
@@ -258,17 +254,6 @@ func mcpCacheExpiresIn(accountId string) time.Duration {
 	return time.Until(c.data[accountId].expiry)
 }
 
-func mcpCacheFailingIntegrations(accountId string) []string {
-	c := mcpIntegrationToolCacheInstance
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	ids := make([]string, 0, len(c.failingSince[accountId]))
-	for id := range c.failingSince[accountId] {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
 // #40766: when tools/list failed for one integration, the account's list (the
 // other integrations' tools plus that integration's placeholder) was cached for
 // the full 30 minutes. A one-minute restart of an MCP server cost the pod that
@@ -276,6 +261,7 @@ func mcpCacheFailingIntegrations(accountId string) []string {
 func TestListMCPIntegrationTools_RetriesFailedDiscoveryAfterAMinute(t *testing.T) {
 	const accountId = "acct-mcp-discovery-retry"
 	t.Cleanup(func() { mcpIntegrationToolCacheInstance.delete(accountId) })
+	health := useMemMCPHealthStore(t)
 
 	// Two enabled integrations; one config query per cache refill.
 	mock := registerMockMetastore(t)
@@ -330,17 +316,19 @@ func TestListMCPIntegrationTools_RetriesFailedDiscoveryAfterAMinute(t *testing.T
 	browserDown = false
 	mu.Unlock()
 	passMCPCacheTime(accountId, 50*time.Second)
+	health.passHealthTime("int-browser", mcpHealthAllScopes, 50*time.Second)
 	assert.Equal(t, []string{"browser_unavailable", "metrics_query"}, nbToolNames(ListMCPIntegrationTools(accountId)))
 	assert.Equal(t, map[string]int{"int-browser": 1, "int-metrics": 1}, discoveryCounts())
 
 	// Once the minute is over the next lookup discovers again and gets the real tools.
 	passMCPCacheTime(accountId, 15*time.Second)
+	health.passHealthTime("int-browser", mcpHealthAllScopes, 15*time.Second)
 	expectRefill()
 	assert.Equal(t, []string{"browser_navigate", "metrics_query"}, nbToolNames(ListMCPIntegrationTools(accountId)))
 	assert.Equal(t, map[string]int{"int-browser": 2, "int-metrics": 2}, discoveryCounts())
 	assert.InDelta(t, defaultCacheTTL.Seconds(), mcpCacheExpiresIn(accountId).Seconds(), 5,
 		"a list with no failed discovery is kept for the full TTL again")
-	assert.Empty(t, mcpCacheFailingIntegrations(accountId))
+	assert.Equal(t, mcpHealthConnected, health.entry("int-browser", mcpHealthAllScopes).Status)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -390,44 +378,25 @@ func TestListMCPIntegrationTools_DoesNotCacheAFailedConfigRead(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-// An integration that stays down must not be discovered every minute for good:
-// the wait before each retry is the time it has already been down, up to the
-// normal 30 minutes.
-func TestMCPIntegrationToolCache_RetryWaitFollowsTimeDown(t *testing.T) {
+// The account's list is kept until the soonest retry among its placeholders,
+// which each carry the wait their integration's stored health calls for.
+func TestMCPIntegrationToolCache_KeepsAListUntilTheSoonestRetry(t *testing.T) {
 	const accountId = "acct-mcp-retry-wait"
 	c := mcpIntegrationToolCacheInstance
 	t.Cleanup(func() { c.delete(accountId) })
 
 	healthy := mcpIntegrationTool{config: mcpIntegrationConfig{IntegrationID: "int-ok"}, toolName: "ok_tool"}
-	aDown := newMCPUnavailableTool(mcpIntegrationConfig{IntegrationID: "int-a", IntegrationName: "a"}, "mcp_unreachable")
-	bDown := newMCPUnavailableTool(mcpIntegrationConfig{IntegrationID: "int-b", IntegrationName: "b"}, "mcp_unreachable")
-	second := time.Second.Seconds()
+	down := func(id string, retry time.Duration) mcpUnavailableTool {
+		p := newMCPUnavailableTool(mcpIntegrationConfig{IntegrationID: id, IntegrationName: id}, "mcp_unreachable")
+		p.retryAfter = retry
+		return p
+	}
 
-	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{healthy, aDown}), "first failure")
-	// Several requests can miss the cache at once, and each stores its own
-	// result. That must not push the first retry out.
-	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{healthy, aDown}), "same failure stored by a second request")
-
-	passMCPCacheTime(accountId, 10*time.Minute)
-	assert.InDelta(t, (10 * time.Minute).Seconds(), c.set(accountId, []NBTool{healthy, aDown}).Seconds(), second, "still down after 10 minutes")
-
-	passMCPCacheTime(accountId, 3*time.Hour)
-	assert.Equal(t, defaultCacheTTL, c.set(accountId, []NBTool{healthy, aDown}), "down for hours: no more often than a healthy list")
-
-	// A second integration fails for the first time. Its short retry applies,
-	// whatever the first one's history.
-	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{healthy, aDown, bDown}), "new failure next to an old one")
-	assert.ElementsMatch(t, []string{"int-a", "int-b"}, mcpCacheFailingIntegrations(accountId))
-
-	// Both recover, then one fails again: the earlier failures are forgotten.
-	assert.Equal(t, defaultCacheTTL, c.set(accountId, []NBTool{healthy}), "all discoveries succeeded")
-	assert.Empty(t, mcpCacheFailingIntegrations(accountId))
-	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{healthy, aDown}), "first failure after a recovery")
-
-	// An integration change invalidates the account: that starts over too.
-	passMCPCacheTime(accountId, 10*time.Minute)
-	c.delete(accountId)
-	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{healthy, aDown}), "first failure after an invalidation")
+	assert.Equal(t, defaultCacheTTL, c.set(accountId, []NBTool{healthy}), "no placeholder")
+	assert.Equal(t, 10*time.Minute, c.set(accountId, []NBTool{healthy, down("a", 10*time.Minute)}))
+	assert.Equal(t, 3*time.Minute, c.set(accountId, []NBTool{healthy, down("a", 10*time.Minute), down("b", 3*time.Minute)}), "soonest wins")
+	assert.Equal(t, time.Minute, c.set(accountId, []NBTool{down("a", 0)}), "no stored health: a minute")
+	assert.Equal(t, defaultCacheTTL, c.set(accountId, []NBTool{down("a", 3*time.Hour)}), "never longer than a healthy list")
 }
 
 func TestMCPDiscoveryRetryAfter(t *testing.T) {
@@ -452,8 +421,38 @@ func TestMCPDiscoveryRetryAfter(t *testing.T) {
 // result (#39635).
 func TestMCPTools_ResultCanChange(t *testing.T) {
 	assert.True(t, ResultCanChange(mcpIntegrationTool{toolName: "qa_browser_snapshot"}))
-	assert.True(t, ResultCanChange(nbCustomMCPTool{}))
 	assert.True(t, ResultCanChange(nbCustomContainerTool{}))
 	assert.False(t, ResultCanChange(nil))
 	assert.False(t, ResultCanChange(newMCPUnavailableTool(mcpIntegrationConfig{}, "x")))
+}
+
+// Discovery keeps each tool's readOnlyHint, true only when the server says
+// so.
+func TestDiscoverMCPTools_KeepsReadOnlyHint(t *testing.T) {
+	relayStub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status_code": 200,
+			"data": `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"get_page","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}},` +
+				`{"name":"click","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false,"destructiveHint":true}},` +
+				`{"name":"no_annotations","inputSchema":{"type":"object"}},` +
+				`{"name":"hint_as_string","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":"true"}},` +
+				`{"name":"annotations_as_string","inputSchema":{"type":"object"},"annotations":"read-only"}]}}`,
+		})
+	}))
+	defer relayStub.Close()
+	orig := config.Config.RelayServerEndpoint
+	config.Config.RelayServerEndpoint = relayStub.URL
+	defer func() { config.Config.RelayServerEndpoint = orig }()
+
+	tools := discoverMCPTools("acct-mcp-hint", mcpIntegrationConfig{IntegrationID: "int-hint", IntegrationName: "browser"})
+	hints := map[string]bool{}
+	for _, tool := range tools {
+		hinter, ok := tool.(MCPReadOnlyHinter)
+		require.True(t, ok, tool.Name())
+		hints[tool.Name()] = hinter.MCPReadOnlyHint()
+	}
+	// Off-spec shapes count as not read-only and keep the rest of the list.
+	assert.Equal(t, map[string]bool{"browser_get_page": true, "browser_click": false, "browser_no_annotations": false,
+		"browser_hint_as_string": false, "browser_annotations_as_string": false}, hints)
 }

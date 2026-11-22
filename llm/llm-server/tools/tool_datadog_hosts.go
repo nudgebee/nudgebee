@@ -25,6 +25,8 @@ func NewDatadogHostsTool(accountId string) toolcore.NBTool {
 }
 
 type DatadogHostsTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	toolcore.ReadOnlyTool
 	accountId string
 }
 

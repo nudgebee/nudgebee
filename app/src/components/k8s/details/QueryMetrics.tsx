@@ -935,18 +935,19 @@ const QueryMetrics: React.FC<QueryMetricsProps> = ({
             <>
               {showExtraOptions && (
                 <>
-                  {(metricsProvider === 'prometheus' ||
-                    metricsProvider === 'chronosphere' ||
-                    metricsProvider === 'datadog' ||
-                    metricsProvider === 'newrelic' ||
-                    metricsProvider === 'dynatrace' ||
-                    metricsProvider === 'solarwinds' ||
-                    metricsProvider === 'victoria-metrics' ||
-                    metricsProvider === 'splunk_observability_platform' ||
-                    metricsProvider === 'cubeapm' ||
-                    metricsProvider === 'signoz' ||
-                    metricsProvider === 'openobserve' ||
-                    metricsProvider === 'ES') && (
+                  {/*
+                   * Submit renders for whatever provider resolved, not for a list of
+                   * providers kept here. The list this replaces had to be appended to
+                   * for every new metrics backend and silently wasn't: OpenObserve
+                   * (#39356) and now Splunk Enterprise (#41386) each shipped with a
+                   * working backend and no Submit button, which leaves an editor that
+                   * cannot be run and no explanation on screen. The providers that can
+                   * serve metrics are decided by getMetricsSource in api-server, which
+                   * is also what fills `available_providers` behind the switcher above —
+                   * so anything offered there is runnable, and an unsupported provider
+                   * now answers with the backend's error instead of hiding the control.
+                   */}
+                  {!!metricsProvider && (
                     <>
                       <Button
                         loading={loading}

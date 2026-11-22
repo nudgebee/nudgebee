@@ -19,6 +19,7 @@ export class OptionsSourceError extends Error {
 type OptionItem = { label: string; value: string; description?: string };
 type FetcherFn = (formValues: Record<string, any>) => Promise<OptionItem[]>;
 type GuardFn = (formValues: Record<string, any>) => boolean;
+const shownTransitionWarnings = new Set<string>();
 
 /**
  * Registry of guard functions keyed by options_source type.
@@ -193,10 +194,12 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
     }
     if (!assigneeField) return [];
     if (Array.isArray(assigneeField.allowedValues) && assigneeField.allowedValues.length > 0) {
-      return assigneeField.allowedValues.map((v: any) => ({
-        label: v.name || v.value || String(v.id),
-        value: v.value || v.id || v.key,
-      }));
+      return assigneeField.allowedValues
+        .filter((v: any) => v && (v.value != null || v.id != null || v.key != null))
+        .map((v: any) => ({
+          label: v.name || v.value || String(v.id ?? v.key),
+          value: v.value ?? v.id ?? v.key,
+        }));
     }
     if (assigneeField.autoCompleteUrl) {
       const res: any = await apiTickets.getTicketFieldValues(integrationId, assigneeField.key, assigneeField.autoCompleteUrl, '');
@@ -207,6 +210,31 @@ const OPTIONS_SOURCE_FETCHERS: Record<string, FetcherFn> = {
       }));
     }
     return [];
+  },
+
+  ticket_statuses: async (formValues) => {
+    const integrationId = formValues.integration_id;
+    if (!integrationId) return [];
+    const projectKey = formValues.project_key || '';
+    const meta: any = await apiTickets.getTicketTransitionMeta(integrationId, projectKey);
+    const transitionMeta = meta?.data?.tickets_get_transition_meta;
+    const rawOptions = transitionMeta?.data;
+    const warning = transitionMeta?.warning;
+    const warningKey = integrationId;
+    if (warning && !shownTransitionWarnings.has(warningKey)) {
+      shownTransitionWarnings.add(warningKey);
+      snackbar.warning(warning);
+    }
+    const options = Array.isArray(rawOptions) ? rawOptions : [];
+    return options
+      .filter((option: any) => option != null && (option.value != null || option.id != null))
+      .map((option: any) => {
+        const selectedValue = option.value ?? option.id;
+        return {
+          label: option.name || String(selectedValue),
+          value: selectedValue,
+        };
+      });
   },
 
   // Kubernetes workload names scoped by account + namespace (optionally kind).

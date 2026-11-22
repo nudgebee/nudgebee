@@ -10,6 +10,10 @@ import (
 // defaultNativeEventRuleSource is used when an emitted event carries no source.
 const defaultNativeEventRuleSource = "nudgebee"
 
+// cloudWatchAlarmSource is the source CloudWatch alarm events and their synced
+// rules are stored under.
+const cloudWatchAlarmSource = "AWS_CloudWatch_Alarm"
+
 // LabelUnstableAggregationKey marks an event whose aggregation_key was derived
 // from a per-delivery or per-incident identifier rather than a stable alert
 // identity — a random Zenduty incident unique_id, say, when label enrichment
@@ -71,12 +75,20 @@ func registerNativeEventTypeRule(ctx *security.RequestContext, evt map[string]an
 		return
 	}
 
+	source, _ := evt["source"].(string)
+	// A CloudWatch alarm's rule is written by the daily alarm sync under this
+	// source and alert name. A placeholder there would take the sync's key, can
+	// blank its definition, and is offered as an editable alarm; the many
+	// short-lived autoscaling alarms would each leave one behind.
+	if source == cloudWatchAlarmSource {
+		return
+	}
+
 	key := tenantID + ":" + accountID + ":" + alert
 	if _, loaded := nativeEventRuleSeen.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
 
-	source, _ := evt["source"].(string)
 	if source == "" {
 		source = defaultNativeEventRuleSource
 	}

@@ -12,6 +12,9 @@ func TestRuleSourcesForEvent(t *testing.T) {
 		RuleSourcesForEvent("pagerduty_webhook"))
 	// EventBridge carries CloudWatch alarm state changes.
 	assert.Equal(t, []string{"AWS_EventBridge", "AWS_CloudWatch_Alarm"}, RuleSourcesForEvent("AWS_EventBridge"))
+	// A pushed alarm stored as an alarm still belongs to a rule written while
+	// it was stored as an EventBridge event.
+	assert.Equal(t, []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}, RuleSourcesForEvent("AWS_CloudWatch_Alarm"))
 	// Sources nothing else is delivered on only look up themselves.
 	assert.Equal(t, []string{"datadog_webhook"}, RuleSourcesForEvent("datadog_webhook"))
 	assert.Equal(t, []string{"kubernetes_api_server"}, RuleSourcesForEvent("kubernetes_api_server"))

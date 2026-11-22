@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, expect, TestInfo } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -70,10 +71,15 @@ export async function navigateToNewNotificationRule(
 
   await loginPage.doFullLogin();
   await locators.adminBtn.waitFor({ state: "visible" });
-  await locators.adminBtn.click();
+  await clickSidenavRail(locators.adminBtn);
 
   await locators.notificationsTab.waitFor({ state: "visible" });
   await locators.notificationsTab.click();
+  // The tab's sub-tab dropdown opens on hover, so move the mouse off it and let its backdrop close before any click.
+  await page.mouse.move(600, 600);
+  await page.keyboard.press("Escape");
+  // No dropdown was open, so there is no backdrop to wait for.
+  await locators.tabMenuBackdrop.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 
   await expect(locators.notificationRuleBtn).toBeVisible();
   await locators.notificationRuleBtn.click();
@@ -124,15 +130,16 @@ export async function configureChannels(
   if (
     channelConfig.msTeamsGroup &&
     channelConfig.msTeamsChannel &&
-    (await locators.msTeamsGroupSelector.isVisible())
+    (await locators.msTeamsChannelSelector.isVisible())
   ) {
-    const groupSelected = await selectFromFilterDropdown(page, locators.msTeamsGroupSelector, channelConfig.msTeamsGroup);
-
-    if (groupSelected) {
-      await locators.msTeamsChannelSelector.waitFor({ state: "visible" });
-      const channelSelected = await selectFromFilterDropdown(page, locators.msTeamsChannelSelector, channelConfig.msTeamsChannel);
-      if (channelSelected) anyConfigured = true;
-    }
+    // One "Team › Channel" picker; the team name is left out when the workspace has one team.
+    const channelSelected =
+      (await selectFromFilterDropdown(
+        page,
+        locators.msTeamsChannelSelector,
+        `${channelConfig.msTeamsGroup} › ${channelConfig.msTeamsChannel}`,
+      )) || (await selectFromFilterDropdown(page, locators.msTeamsChannelSelector, channelConfig.msTeamsChannel));
+    if (channelSelected) anyConfigured = true;
   }
 
   const isDev = process.env.E2E_ENVIRONMENT === "dev";

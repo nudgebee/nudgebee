@@ -18,6 +18,8 @@ type LLM struct {
 	CallbacksHandler callbacks.Handler
 	client           *openaiclient.Client
 	model            string // Track current model for reasoning detection
+
+	mergeSystemMessages bool
 }
 
 const (
@@ -105,6 +107,8 @@ func New(opts ...Option) (*LLM, error) {
 		client:           c,
 		CallbacksHandler: opt.callbackHandler,
 		model:            c.Model, // Store the model for reasoning detection
+
+		mergeSystemMessages: opt.mergeSystemMessages,
 	}, err
 }
 
@@ -115,6 +119,9 @@ func (o *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOptio
 
 // GenerateContent implements the Model interface.
 func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) { //nolint: lll, cyclop, funlen
+	if o.mergeSystemMessages {
+		messages = mergeSystemMessageContents(messages)
+	}
 	if o.CallbacksHandler != nil {
 		o.CallbacksHandler.HandleLLMGenerateContentStart(ctx, messages)
 	}
@@ -123,6 +130,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	for _, opt := range options {
 		opt(&opts)
 	}
+	stripThinkingMetadataOption(&opts)
 
 	// Determine the effective model for this request (don't mutate o.model to avoid races)
 	effectiveModel := opts.Model

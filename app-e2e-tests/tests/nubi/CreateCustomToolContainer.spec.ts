@@ -12,7 +12,7 @@ const TOOL_DESCRIPTION_UPDATED = "Container-- Updated description by automation.
 const CONTAINER_IMAGE = "alpine:latest";
 const CONTAINER_COMMAND = "/bin/sh";
 
-test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] }, async ({ page }) => {
+test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "@functional", "@crud", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const loginPage = new LoginPage(page);
@@ -67,7 +67,6 @@ test("CRUD Custom Tool for Container", { tag: ["@dev", "@test", "@regression", "
   console.log(`[Create] Tool '${dynamicToolName}' created successfully.`);
 
   // ── Read ──────────────────────────────────────────────────────────────────
-  await locators.searchToolInput.click();
   await locators.searchToolInput.fill(dynamicToolName);
   await expect(page.getByText(TOOL_DESCRIPTION)).toBeVisible({ timeout: 20000 });
   console.log(`[Read] Tool '${dynamicToolName}' verified in list.`);

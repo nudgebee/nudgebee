@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../../utils/helpers";
 import { Page, Locator, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { AutomationsLocators } from "./automationsLocators";
@@ -36,7 +37,7 @@ export async function openAutomations(page: Page): Promise<AutomationsLocators> 
     state: "visible",
     timeout: 30000,
   });
-  await locators.automationSidenavBtn.click();
+  await clickSidenavRail(locators.automationSidenavBtn);
   // Anchored: an unanchored /automation also matches the builder at
   // /automation/<id>, so a stray navigation there would satisfy this wait.
   // toHaveURL polls the URL rather than waiting on a load event, so it holds

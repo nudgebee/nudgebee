@@ -3,6 +3,7 @@ package core
 import (
 	"testing"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -16,7 +17,7 @@ func TestConversationSuggestionCallOptions_UseFastThinking(t *testing.T) {
 	for _, opt := range conversationSuggestionCallOptions() {
 		opt(&combined)
 	}
-	assert.Equal(t, ThinkingLevelFastTask, combined.Metadata["ThinkingLevel"])
+	assert.Equal(t, llmruntime.ThinkingLevelFastTask, combined.Metadata["ThinkingLevel"])
 	assert.True(t, combined.JSONMode, "the response is parsed as JSON")
 	assert.InDelta(t, 0.7, combined.Temperature, 1e-9)
 }

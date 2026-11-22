@@ -17,13 +17,26 @@ import (
 	"nudgebee/llm/tools/core"
 )
 
+// Grant keys sent with a change the AI makes through an api-server action.
+// The call skips the app gateway, which is what classifies an action, so
+// api-server's account check (CanAccessAccount) gets its key from here: without
+// one it honours only built-in roles. A change the AI makes needs Execute, and
+// the module is one the calling tool's grant scope (tool_modules.json) already
+// requires at dispatch, so both services ask for the same grant
+// (TestApiServerGrantKeysMatchTheToolsGrantScope).
+const (
+	recommendationsExecuteKey = "recommendations:Execute"
+	cloudExecuteKey           = "cloud:Execute"
+)
+
 // doApiServerActionRequest posts an action request to an api-server /rpc/*
 // endpoint on behalf of the requesting user: X-ACTION-TOKEN authenticates the
 // service hop, and x-tenant-id / x-user-id let api-server rebuild the user's
 // own SecurityContext, so the RPC handler enforces the user's real role.
 // x-user-id uses EffectiveUserIdForRPC — omitting it would silently escalate
-// the call to tenant-admin on the api-server side.
-func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionName string, input map[string]any, errPrefix string) (string, error) {
+// the call to tenant-admin on the api-server side. permission is the action's
+// grant key ("" when it has none), checked against the same user.
+func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionName string, permission string, input map[string]any, errPrefix string) (string, error) {
 	tenant := ""
 	if nbCtx.Ctx != nil {
 		if sc := nbCtx.Ctx.GetSecurityContext(); sc != nil {
@@ -61,7 +74,7 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 	}
 
 	payload := map[string]any{
-		"action": map[string]any{"name": actionName},
+		"action": map[string]any{"name": actionName, "permission": permission},
 		"input":  input,
 	}
 
@@ -104,7 +117,52 @@ func doApiServerActionRequest(nbCtx core.NbToolContext, rpcPath string, actionNa
 		return "", fmt.Errorf("%s: %s unexpected response shape: %s", errPrefix, actionName, string(jsonBody))
 	}
 
+	if !reportedFailureDisabled() {
+		logger := slog.Default()
+		if nbCtx.Ctx != nil {
+			logger = nbCtx.Ctx.GetLogger()
+		}
+		logResponseShape(logger, errPrefix, actionName, jsonBody)
+	}
+
 	return string(jsonBody), nil
+}
+
+// DoApiServerSystemAction posts an internal action to an api-server /rpc/*
+// endpoint as NudgeBee itself, not on behalf of a person: X-ACTION-TOKEN and
+// x-tenant-id only, so api-server runs it with the tenant's system identity.
+// Only for actions api-server keeps service-only (not routed by the app
+// gateway) and refuse a call that names a user. Returns the response body.
+func DoApiServerSystemAction(tenant, rpcPath, actionName string, input map[string]any) (string, error) {
+	if tenant == "" {
+		return "", fmt.Errorf("%s: tenant id is empty", actionName)
+	}
+	resp, err := common.HttpPost(
+		fmt.Sprintf("%s%s", config.Config.ServiceEndpoint, rpcPath),
+		common.HttpWithHeaders(map[string]string{
+			"Content-Type":   "application/json",
+			"Accept":         "application/json",
+			"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+			"x-tenant-id":    tenant,
+		}),
+		common.HttpWithJsonBody(map[string]any{"action": map[string]any{"name": actionName}, "input": input}),
+	)
+	if err != nil {
+		return "", fmt.Errorf("%s: unable to process request: %w", actionName, err)
+	}
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("%s: reading response body: %w", actionName, err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("%s: failed (status %d): %s", actionName, resp.StatusCode, string(body))
+	}
+	return string(body), nil
 }
 
 // perActionConfirmationKey builds the toolcore.ToolConfirmationScope key for

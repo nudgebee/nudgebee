@@ -87,4 +87,13 @@ rules:
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The orchestrator holds a Lease per fixture (llm/agents/common/fixture_lock.py)
+  # so concurrent runs don't tear down each other's fixture namespaces. It
+  # checks these verbs at run start and refuses to run unprotected, so without
+  # them every run that uses cluster fixtures fails at start. It only gets a
+  # Lease by name, creates and replaces it; no list/watch, and no delete: a run
+  # releases a Lease by clearing its holder.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
 {{- end }}

@@ -3,8 +3,8 @@ package agents
 import (
 	"strings"
 
-	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -72,13 +72,22 @@ func trimmedK8sCoreToolNames() []string {
 		// by keyword directly, without an extra delegate_agent+search_tools hop.
 		// Same invariant PR #34819 established across every orchestrator.
 		tools.SearchSkillsToolName,
+		// im_message_send is preloaded rather than reached on-demand: a tool
+		// search_tools surfaces is not declared to the model, so asked to post to a
+		// Slack or Teams channel the planner tried delegate_agent (which refuses it)
+		// or said it couldn't, instead of calling it.
+		tools.ToolIMMessageSend,
 	}
 	if config.Config.RemediationAgentEnabled {
 		names = append(names, RemediationAgentName)
 	}
 	names = append(names, toolcore.ToolExecuteShellCommand)
+	// analyze_metric_series computes trend, baseline and time-to-threshold over a
+	// metric file a metrics or CLI step saved, so an investigation quotes computed
+	// numbers instead of extrapolating them (#41760).
+	names = append(names, tools.ToolAnalyzeMetricSeries)
 	names = appendMemoryToolName(names)
-	if core.IsAgentsFollowupEnabled() {
+	if llmruntime.IsAgentsFollowupEnabled() {
 		names = append(names, FollowupAgentName)
 	}
 	return names
@@ -114,7 +123,12 @@ func getTrimmedK8sSupportedTools(ctx *security.RequestContext, accountId, agentN
 		agentSupportedToolsCacheInstance.set(accountId, agentName, staticTools)
 	}
 
-	mcpTools := toolcore.ListMCPIntegrationTools(accountId)
+	// With MCP tools on demand the prompt names the integrations and
+	// search_tools finds their tools, so none are declared here.
+	var mcpTools []toolcore.NBTool
+	if !config.Config.LlmServerMCPToolsOnDemandEnabled {
+		mcpTools = toolcore.ListMCPIntegrationTools(accountId)
+	}
 	if len(mcpTools) == 0 {
 		// Defensive copy: downstream may append; never hand out the cached slice.
 		out := make([]toolcore.NBTool, len(staticTools))

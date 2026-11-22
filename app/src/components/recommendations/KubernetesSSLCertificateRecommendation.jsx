@@ -1,5 +1,6 @@
 import { Box, Stack, Typography } from '@mui/material';
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/router';
 import recommendationApi, { RECOMMENDATION_STATUS } from '@api1/recommendation';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
@@ -43,6 +44,9 @@ const KubernetesSSLCertificateRecommendation = (props) => {
 
   const kubernetesSSLCertificateUpgradeTable = 'kubernetesSSLCertificateUpgradeTable';
 
+  const router = useRouter();
+  const severityFilter = router.query.severity;
+
   const changePage = (page, limit) => {
     setPage(page - 1);
     if (limit != rowsPerPage) {
@@ -82,6 +86,7 @@ const KubernetesSSLCertificateRecommendation = (props) => {
         category: 'Configuration',
         ruleName: 'certificate_expiry',
         status: recommendationStatus ? [recommendationStatus] : [],
+        severity: severityFilter,
         recommendation: recommendation,
         limit: rowsPerPage,
         offset: page * rowsPerPage,
@@ -156,7 +161,7 @@ const KubernetesSSLCertificateRecommendation = (props) => {
 
   useEffect(() => {
     getKubernetesSSLCertificateRecommendation();
-  }, [props?.kubernetes?.id, page, recommendationStatus, rowsPerPage]);
+  }, [props?.kubernetes?.id, page, recommendationStatus, rowsPerPage, severityFilter]);
 
   useEffect(() => {
     if (!props?.kubernetes?.id) {
@@ -169,11 +174,12 @@ const KubernetesSSLCertificateRecommendation = (props) => {
         category: 'Configuration',
         ruleName: 'certificate_expiry',
         status: recommendationStatus ? [recommendationStatus] : [],
+        severity: severityFilter,
       })
       .then((res) => {
         setKubernetesSSLCertificateUpgradeRecommendationCount(res?.data?.recommendation_aggregate.aggregate.count);
       });
-  }, [props?.kubernetes?.id, recommendationStatus]);
+  }, [props?.kubernetes?.id, recommendationStatus, severityFilter]);
 
   const handleTicketSuccess = () => {
     getKubernetesSSLCertificateRecommendation();

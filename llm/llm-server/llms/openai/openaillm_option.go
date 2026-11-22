@@ -45,6 +45,9 @@ type options struct {
 	// NUDGEBEE: extra chat-template kwargs (vLLM extension), serialized as
 	// chat_template_kwargs on every chat request.
 	chatTemplateKwargs map[string]any
+
+	// NUDGEBEE: join all system messages into one (see mergeSystemMessageContents).
+	mergeSystemMessages bool
 }
 
 // Option is a functional option for the OpenAI client.
@@ -68,6 +71,14 @@ var ResponseFormatJSON = &ResponseFormat{Type: "json_object"} //nolint:gocheckno
 func WithChatTemplateKwargs(kwargs map[string]any) Option {
 	return func(opts *options) {
 		opts.chatTemplateKwargs = kwargs
+	}
+}
+
+// WithMergedSystemMessages joins every system message of a request into one,
+// for servers whose chat template accepts a single system message. NUDGEBEE.
+func WithMergedSystemMessages() Option {
+	return func(opts *options) {
+		opts.mergeSystemMessages = true
 	}
 }
 

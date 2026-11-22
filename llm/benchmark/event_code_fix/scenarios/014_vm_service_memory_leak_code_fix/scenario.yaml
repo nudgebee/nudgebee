@@ -1,0 +1,66 @@
+name: vm_service_memory_leak_code_fix
+type: vm_event
+tags: [vm, oom, memory_leak, service, code_fix]
+
+# The VM counterpart of 001: the nb-benchmark-fixtures memory_leak_oom worker
+# runs as memory-leak-oom.service, its cache never evicts, and the kernel
+# OOM-kills it at MemoryMax=128M. Unlike 012/013 the service is linked to its
+# repository, so the investigation can reach the code-fix stage and the diff it
+# returns is checked against the fixture's tests.
+alert:
+  alertname: ServiceOOMKilled
+  labels:
+    instance_id: ${VM_A_INSTANCE_ID}
+    container_id: /system.slice/memory-leak-oom.service
+    severity: high
+  summary: "memory-leak-oom.service was OOM-killed on ${VM_A_HOST}"
+  log_lines: |
+    The systemd service memory-leak-oom.service on ${VM_A_HOST} was terminated by the OOM killer.
+  fingerprint: bench-vm-service-memory-leak-code-fix-014
+
+# The worker grows ~2.4 MB/s, so it is killed about a minute after each start
+# and restarts 20s later (Restart=always): the incident recurs while the
+# investigation runs. FIXTURE_DIR is a local checkout of
+# nudgebee/nb-benchmark-fixtures at bug_commit (the repo is private, so the
+# host cannot clone it); the host needs python3 and cgroup v2.
+vm:
+  settle_seconds: 180
+  inject:
+    - vm/fault.sh fixture_memory_leak inject ${VM_A_SSH} ${FIXTURE_DIR}/memory_leak_oom
+  restore:
+    - vm/fault.sh fixture_memory_leak restore ${VM_A_SSH}
+  # Written after the event exists and cleared afterwards, as the UI's
+  # "Link repository" does.
+  link_repo:
+    container_id: /system.slice/memory-leak-oom.service
+    repo: https://github.com/nudgebee/nb-benchmark-fixtures
+
+fixture_repo:
+  url: https://github.com/nudgebee/nb-benchmark-fixtures
+  subdir: memory_leak_oom  # this repo hosts one scenario per top-level subdirectory
+  bug_commit: 352b46ab8e3adc79c6675140797006fe729295b3
+  test_command: pytest -q
+  fail_to_pass:
+    - tests/test_cache.py::test_cache_evicts_stale_subscribers
+  pass_to_pass:
+    - tests/test_cache.py::test_cache_returns_active_subscriber
+
+expected_telemetry:
+  signals: [metrics]
+  target_markers:
+    - ${VM_A_INSTANCE}
+    - ${VM_A_HOST}
+  service_markers:
+    - memory-leak-oom
+  forbidden_markers:
+    - ${VM_B_INSTANCE}
+    - ${VM_B_HOST}
+
+expected_diagnosis:
+  - "The response must identify that memory-leak-oom.service was killed by the kernel OOM killer at its own MemoryMax, and that the cause is unbounded growth of an in-memory subscriber cache (no eviction or TTL), not an undersized limit."
+  - "The response must NOT attribute this to host-wide memory exhaustion on ${VM_A_HOST} or blame ${VM_B_HOST}."
+
+expected_fix:
+  file: memory_leak_oom/src/cache.py
+  function: put
+  description: "Cache entries are never evicted; add a TTL or bounded-size eviction policy."

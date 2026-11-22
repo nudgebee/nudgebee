@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"nudgebee/llm/common"
@@ -22,7 +23,10 @@ func init() {
 	})
 }
 
-type ESMetricsQueryTool struct{}
+type ESMetricsQueryTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (m ESMetricsQueryTool) Name() string {
 	return ToolESMetricsQuery
@@ -39,7 +43,7 @@ func (m ESMetricsQueryTool) Description() string {
 	* Input: Provide a JSON object with:
 	  - "index": (required) the Elasticsearch index pattern to query (e.g. "metrics-*", "metricbeat-*")
 	  - "query": (required) the Elasticsearch DSL query body as a JSON object with "query" filters.
-	* Output: Returns metric time-series results (timestamps and values) extracted from matching document hits.
+	* Output: Returns metric time-series results (timestamps and values) built from matching document hits or aggregation buckets.
 
 	Discovery (no "query" needed):
 	  - {"index": "<pattern>", "discover": "datasets"} lists the datasets in the index, one line each with example fields.
@@ -47,7 +51,7 @@ func (m ESMetricsQueryTool) Description() string {
 
 	Important Notes:
 	* Always include a range filter on @timestamp in your query (default: now-6h).
-	* Do NOT use "aggs" or "size: 0" — the backend extracts time-series from document hits, not aggregation results.
+	* For an average, sum, count or top-N across many documents or series (e.g. overall average latency, the pod with the most memory, failed invoices per team), use an aggregation with "size:0": metric aggs ("avg", "sum", "max", "value_count") optionally inside "terms" (with "order" and "size" for top-N) or "date_histogram". For "aggregate_metric_double" fields (APM "transaction.duration.summary"), the average is a "sum" aggregation divided by a "value_count" aggregation, both on that field (Elasticsearch applies them to its stored sum and value_count sub-fields; this is not a document count). Otherwise use filter queries to get time series.
 	* The query is executed via the metrics_query API which handles Elasticsearch communication.`
 }
 
@@ -247,7 +251,7 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		}, nil
 	}
 
-	summarized, refs := inlineESResponse(nbRequestContext, response, "es_metrics_query", "Elasticsearch")
+	summarized, refs, metadata := inlineESResponse(nbRequestContext, response, "es_metrics_query", "Elasticsearch")
 
 	data, err := common.MarshalJson(summarized)
 	if err != nil {
@@ -263,6 +267,7 @@ func (m ESMetricsQueryTool) Call(nbRequestContext core.NbToolContext, input core
 		Type:       core.NBToolResponseTypeJson,
 		Status:     core.NBToolResponseStatusSuccess,
 		References: refs,
+		Metadata:   metadata,
 	}, nil
 }
 
@@ -289,14 +294,55 @@ const maxESInlineBytes = 24 * 1024
 // inlineESResponse is what a metrics tool built on this summarizer returns: the whole
 // result when it fits, otherwise the complete data saved to the workspace and stats
 // rows, most significant first, for as many series as fit in maxESInlineBytes.
-func inlineESResponse(nbRequestContext core.NbToolContext, response core.ObservabilityMetricsQueryResponse, tool, source string) (map[string]any, []core.NBToolResponseReference) {
+//
+// It also returns a chart of each result (#40909) for the response metadata.
+func inlineESResponse(nbRequestContext core.NbToolContext, response core.ObservabilityMetricsQueryResponse, tool, source string) (map[string]any, []core.NBToolResponseReference, *core.NBToolResponseMetadata) {
+	chartNotes, charts := esChartNotes(nbRequestContext, response, tool)
 	if !esOversized(response) {
 		if s := summarizeESMetricsResponse(response, false); esJSONSize(s) <= maxESInlineBytes {
-			return s, nil
+			addChartNotes(s, chartNotes)
+			return s, nil, core.MetricChartMetadata(charts)
 		}
 	}
 	refs := saveESResponseWithNote(nbRequestContext, &response, tool, source)
-	return summarizeESMetricsResponse(response, true), refs
+	s := summarizeESMetricsResponse(response, true)
+	addChartNotes(s, chartNotes)
+	return s, refs, core.MetricChartMetadata(charts)
+}
+
+// esChartNotes builds a chart of each result's full series (#40909) and returns the
+// notes that tell the model its chart_ref, with the charts. A chart that cannot be
+// built is skipped.
+func esChartNotes(nbRequestContext core.NbToolContext, response core.ObservabilityMetricsQueryResponse, tool string) ([]string, map[string]json.RawMessage) {
+	var notes []string
+	charts := map[string]json.RawMessage{}
+	for _, r := range response.Results {
+		series := make([]core.MetricChartSeries, 0, len(r.Payload))
+		for _, p := range r.Payload {
+			series = append(series, core.MetricChartSeries{Labels: p.Metric, Timestamps: p.Timestamps, Values: p.Values})
+		}
+		title := r.QueryKey
+		if title == "" {
+			title = tool
+		}
+		chart, ok := core.BuildMetricChart(title, series)
+		if !ok {
+			continue
+		}
+		ref, err := core.AddMetricChart(charts, chart)
+		if err != nil {
+			nbRequestContext.Ctx.GetLogger().Warn(tool+": unable to build chart", "error", err.Error())
+			continue
+		}
+		notes = append(notes, core.MetricChartNote(ref, chart.Title)+core.MetricChartCoverageNote(chart))
+	}
+	return notes, charts
+}
+
+func addChartNotes(summary map[string]any, notes []string) {
+	if len(notes) > 0 {
+		summary["chart_note"] = strings.Join(notes, "\n")
+	}
 }
 
 func esJSONSize(v any) int {

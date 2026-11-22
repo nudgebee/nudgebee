@@ -6,6 +6,9 @@ import (
 	"strings"
 	"sync"
 
+	"nudgebee/llm/knowledge"
+	llmruntime "nudgebee/llm/llms/runtime"
+
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
@@ -141,12 +144,12 @@ func (a UnifiedSearchAgent) GetKnowledgeMode() core.AgentKnowledgeMode {
 	return core.AgentKnowledgeAutoChunks
 }
 
-func (a UnifiedSearchAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (a UnifiedSearchAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }
 
 func (a UnifiedSearchAgent) GetSummaryToolName() string {
-	return core.ToolLlm
+	return llmruntime.ToolLlm
 }
 
 type SearchAnalysis struct {
@@ -243,7 +246,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 			var content string
 			var successUrl string
 			var searchErr error
-			llm, llmErr := core.GetLlmModel(ctx, a.GetName(), request.AccountId, request.ConversationId)
+			llm, llmErr := llmruntime.GetLlmModel(ctx, a.GetName(), request.AccountId, request.ConversationId)
 			if llmErr != nil {
 				mu.Lock()
 				errors = append(errors, fmt.Errorf("web branch failed: unable to get LLM model: %w", llmErr))
@@ -267,7 +270,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 							Response: llms.ToolCallResponse{Content: core.TruncateHead(resp.Data, 500)},
 						})
 						mu.Unlock()
-						content = core.SummarizeContent(ctx, llm, resp.Data, request.AccountId, a.GetName(), request.ConversationId, request.MessageId, request.UserId)
+						content = llmruntime.SummarizeContent(ctx, llm, resp.Data, request.AccountId, a.GetName(), request.ConversationId, request.MessageId, request.UserId)
 						successUrl = analysis.TargetURL
 					} else {
 						ctx.GetLogger().Warn("unified_search: crawl failed for direct URL", "url", analysis.TargetURL, "error", err)
@@ -325,7 +328,7 @@ func (a UnifiedSearchAgent) Execute(ctx *security.RequestContext, request core.N
 								})
 								mu.Unlock()
 
-								content = core.SummarizeContent(ctx, llm, crawlResp.Data, request.AccountId, a.GetName(), request.ConversationId, request.MessageId, request.UserId)
+								content = llmruntime.SummarizeContent(ctx, llm, crawlResp.Data, request.AccountId, a.GetName(), request.ConversationId, request.MessageId, request.UserId)
 								successUrl = candidateUrl
 								break
 							}
@@ -433,7 +436,7 @@ Search Results:
 		llms.TextParts(llms.ChatMessageTypeHuman, selectionPrompt),
 	}
 
-	resp, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	resp, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil || len(resp.Choices) == 0 {
 		return nil
 	}
@@ -485,7 +488,7 @@ Output JSON format:
 }`
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, prompt)),
 	}
 
 	if request.ConversationContext != "" {
@@ -494,7 +497,7 @@ Output JSON format:
 
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, request.Query))
 
-	resp, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, true)
+	resp, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, true)
 	if err != nil {
 		return SearchAnalysis{}, err
 	}
@@ -520,7 +523,7 @@ func (a UnifiedSearchAgent) searchSkills(ctx *security.RequestContext, request c
 	// We use QueryRAGCollection to target specific module/collection if needed.
 	// Here we use QueryRAG which takes module.
 
-	results := toolcore.QueryRAG(request.UserId, request.AccountId, query, "skills", 3, request.ConversationId, request.MessageId, request.AgentId, true)
+	results := knowledge.QueryRAG(request.UserId, request.AccountId, query, "skills", 3, request.ConversationId, request.MessageId, request.AgentId, true)
 
 	if len(results) == 0 {
 		return "", nil
@@ -549,7 +552,7 @@ func (a UnifiedSearchAgent) synthesizeAnswer(ctx *security.RequestContext, reque
 - Be concise and direct.`
 
 	messages := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, prompt),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(request, prompt)),
 		llms.TextParts(llms.ChatMessageTypeSystem, fmt.Sprintf("Context:\n%s", context)),
 	}
 
@@ -570,7 +573,7 @@ func (a UnifiedSearchAgent) synthesizeAnswer(ctx *security.RequestContext, reque
 
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, request.Query))
 
-	resp, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, true)
+	resp, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messages, true)
 	if err != nil {
 		return "", err
 	}

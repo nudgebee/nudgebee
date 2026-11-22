@@ -137,6 +137,48 @@ func TestShimRangeQuery(t *testing.T) {
 	}
 }
 
+// OpenCost's pod-lifetime queries are instant queries ending in a subquery
+// (`...[1d:5m]`), which Prometheus answers as a matrix. Every sample has to
+// survive: OpenCost reads each pod's start and end from them, and a single
+// vector sample made pods start where they ended (zero or negative minutes).
+func TestShimInstantSubqueryKeepsEverySample(t *testing.T) {
+	resp := `{"results":[{"query_key":"q","query":"x","payload":[
+		{"metric":{"pod":"p1"},"timestamps":[100,400,700],"values":[1,1,1]}
+	]}]}`
+	srv := fakeMetricsServer(t, "tok", resp, nil)
+	defer srv.Close()
+
+	shim := newPrometheusShim(srv.URL, "tok", nil)
+	rec := httptest.NewRecorder()
+	form := url.Values{"query": {"avg(kube_pod_container_status_running{}) by (pod)[1d:5m]"}, "time": {"700"}}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-Scope-OrgID", "acct-1")
+	shim.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Values [][]any `json:"values"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Data.ResultType != "matrix" {
+		t.Fatalf("resultType = %s, want matrix", out.Data.ResultType)
+	}
+	vals := out.Data.Result[0].Values
+	if len(vals) != 3 || vals[0][0].(float64) != 100 || vals[2][0].(float64) != 700 {
+		t.Errorf("values = %v, want samples at 100, 400, 700", vals)
+	}
+}
+
 func TestShimMissingScopeHeader(t *testing.T) {
 	shim := newPrometheusShim("http://unused", "tok", nil)
 	rec := httptest.NewRecorder()

@@ -13,9 +13,14 @@ def _engine() -> Engine:
     return sync_engine
 
 
-def get_user_id_by_email(email: str) -> Optional[str]:
+def get_user_by_email_address(email: str) -> Optional[dict]:
+    """The user's id, username and display name, or None."""
     with Session(_engine()) as session:
-        user = get_user_by_email(session, email)
+        return get_user_by_email(session, email)
+
+
+def get_user_id_by_email(email: str) -> Optional[str]:
+    user = get_user_by_email_address(email)
     if not user:
         return None
     return user.get("id")

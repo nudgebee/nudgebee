@@ -4,7 +4,7 @@ The ReAct3 planner splits its prompt into **system messages** (stable, cacheable
 
 ## Cache Scopes
 
-Defined in `agents/core/llm_cache.go`. Agents declare their scope by implementing the `NBAgentCacheScopeProvider` interface.
+Defined in `llms/runtime/llm_cache.go`. Agents declare their scope by implementing the `NBAgentCacheScopeProvider` interface.
 
 | Scope | TTL | Shared across | Cache key format | Used by |
 |-------|-----|---------------|-----------------|---------|
@@ -23,12 +23,14 @@ Cached pointers stored in shared memory/Redis are trusted for the duration of th
 When a cache miss occurs and `LLM_SERVER_ASYNC_CACHE_CREATION=true` (default), the LLM request generates immediately with full un-cached messages. Cache creation runs asynchronously in a detached background goroutine, ensuring the current request never suffers a 1–5s latency penalty during cache instantiation. Subsequent requests will immediately hit the created cache.
 
 ### 3. Anthropic Multi-Breakpoint Caching
-For the `anthropic` provider, the cache provider places up to 3 `cache_control: {type: "ephemeral"}` breakpoints, in every cache scope (Anthropic's cache is content-addressed):
+For the `anthropic` and `bedrock` providers (Claude on Bedrock takes the same Anthropic body), the cache provider places up to 3 `cache_control: {type: "ephemeral"}` breakpoints, in every cache scope (Anthropic's cache is content-addressed):
 - Breakpoint 1: the system prompt — caches tools + system, shared across runs of the agent.
 - Breakpoint 2: the tail — the last non-assistant message (a tool result or human turn). The next step of the tool loop resends this prompt plus its new turn, so it reads the whole previous prompt from cache.
 - Breakpoint 3: the previous step's tail — the last non-assistant message before the last assistant turn, i.e. where the previous request wrote. Keeps the read working when one step adds more than Anthropic's 20-block lookback (a wide parallel batch).
 
 TTL: the system-prompt marker of Global/Account-scope agents uses Anthropic's 1-hour TTL (`llm_server_anthropic_system_cache_ttl`, default `1h`, rollback `5m`) so the shared system prompt + tools survive gaps between runs; 1-hour writes bill at 2x input (tracked from `usage.cache_creation.ephemeral_1h_input_tokens` and priced into `cost_usd`). Conversation scope and all tool-loop markers keep the 5-minute default, which every read within a run refreshes.
+
+Bedrock: the client drops markers on models without prompt caching (non-Claude, Claude before 3.7, and model IDs that don't name a Claude version such as application-inference-profile ARNs) and sends the 1-hour TTL only on Claude 4.5+ — Bedrock rejects `cache_control` / `ttl` on models that lack them. Live check: `go test -tags e2e -run TestBedrockAnthropicE2E_PromptCaching ./llms/bedrock/` (Claude Haiku 4.5 by default, `BEDROCK_CACHE_TEST_MODEL` to override).
 
 Assistant messages are never marked. This relies on the tool loop being append-only between steps; window-gated observation compression rewrites older tool results and costs one cache miss when it kicks in.
 
@@ -94,8 +96,9 @@ Built in `planner_react_3.go`. Base template: `planner_react_3_base.txt`.
 │ 3. <account_context>{AccountContext}</account_context>      │
 │    (optional, stable account-wide GlobalContext)            │
 ├─────────────────────────────────────────────────────────────┤
-│ 4. <additional_agent_prompt>{additionalPrompt}              │
-│    </additional_agent_prompt> (optional, from DB config)    │
+│ 4. <additional_agent_prompt>{AgentInstructions}             │
+│    </additional_agent_prompt> (optional: skills linked with │
+│    "always load", resolved per agent run)                   │
 ├─────────────────────────────────────────────────────────────┤
 │ 5. Agent prompt (agentPrompt — full agent system prompt,    │
 │    e.g., k8s_debug orchestrator instructions)               │

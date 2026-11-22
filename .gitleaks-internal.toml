@@ -42,6 +42,32 @@ description = "Internal team-prefixed DB names (beehive-{env}-pg) must not appea
 regex = '''(?i)\bbeehive-(dev|test|prod)-pg\b'''
 tags = ["internal-leak", "database"]
 
+# Real AWS account numbers (ours, customers') identify accounts and must not
+# appear in code or fixtures; tests use made-up ones. Caught where an id is
+# recognisable as an account: inside an ARN, or as an `account…` field. A bare
+# id passed positionally is not caught, so review fixtures for those too.
+[[rules]]
+id = "internal-aws-account-id-arn"
+description = "Real AWS account id in an ARN; use a made-up one (111111111111, 123456789012)"
+regex = '''\barn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):'''
+secretGroup = 1
+tags = ["internal-leak", "aws-account"]
+[[rules.allowlists]]
+description = "Made-up account ids: one digit repeated, and the AWS documentation examples"
+regexTarget = "secret"
+regexes = ['''^(0{12}|1{12}|2{12}|3{12}|4{12}|5{12}|6{12}|7{12}|8{12}|9{12}|123456789012|111122223333|444455556666|210987654321|987654321098)$''']
+
+[[rules]]
+id = "internal-aws-account-id-field"
+description = "Real AWS account id in an account field; use a made-up one (111111111111, 123456789012)"
+regex = '''(?i)account[a-z_-]*["']?\s*[:=]\s*["']?(\d{12})\b'''
+secretGroup = 1
+tags = ["internal-leak", "aws-account"]
+[[rules.allowlists]]
+description = "Made-up account ids: one digit repeated, and the AWS documentation examples"
+regexTarget = "secret"
+regexes = ['''^(0{12}|1{12}|2{12}|3{12}|4{12}|5{12}|6{12}|7{12}|8{12}|9{12}|123456789012|111122223333|444455556666|210987654321|987654321098)$''']
+
 [allowlist]
 description = "Files where these internal references are documented (configs, memory) or deferred to a follow-up PR"
 
@@ -77,6 +103,10 @@ paths = [
   # `nudgebee-prod-documents` S3 bucket. Right fix is GitHub Actions
   # vars/secrets; needs ops coordination.
   '''(^|/)\.github/workflows/(nudgebee-build-test|nudgebee-build-test-ci|aws-cf-templates-upload)\.ya?ml$''',
+
+  # Applied migration (V640) seeds Bedrock model ARNs with a real account id;
+  # an applied migration cannot change (atlas.sum checksum).
+  '''(^|/)api-server/migrations/migrations/app/1769100001000_V640_Add_gemini_3_and_llama_4_models_pricing\.(up|down)\.sql$''',
 
   # Standalone Dynatrace OTel collector config (real Dynakube example).
   '''(^|/)dynakube-ksm-otel\.ya?ml$''',

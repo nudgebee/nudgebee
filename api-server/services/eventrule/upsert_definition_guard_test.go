@@ -115,6 +115,15 @@ func TestUpsertEventRuleGuardsDefinitionFieldsOnTheFlag(t *testing.T) {
 		// at all — and a write with one must merge, not replace.
 		"provider_config kept when not sent": lit(`WHEN EXCLUDED.provider_config IS NULL THEN event_rules.provider_config`),
 		"provider_config merged":             lit(`COALESCE(event_rules.provider_config, '{}'::jsonb) || EXCLUDED.provider_config`),
+		// A write that carries no external id must keep the stored one. Without
+		// this, any firing whose payload has no upstream id blanks the column on
+		// a webhook-sourced row and silently un-manages a rule that an edit or
+		// disable could otherwise reach — for every provider, not just SolarWinds.
+		//
+		// Plain COALESCE and not COALESCE(NULLIF(...)) as the definition columns
+		// above use: this parameter is bound through nilIfEmpty, so an empty id
+		// already arrives as NULL and NULLIF could never fire.
+		"external_rule_id kept when not sent": lit(`THEN COALESCE(EXCLUDED.external_rule_id, event_rules.external_rule_id)`),
 	}
 
 	for name, pattern := range patterns {

@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
 
+	"nudgebee/llm/attachments"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/googleai"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -90,6 +93,16 @@ type NBReActPlanner4 struct {
 	notebookAgentID     string
 	notebookUpdateCount int
 	persistedNotebook   string
+	// notebookV2 is set when the run uses the structured update_notebook_v2 plan
+	// (resolveNotebookV2Enabled). plan is recomputed from the turn's steps on
+	// every Plan() call (planFromSteps) and never stored as its own state.
+	// persistedPlanState is the plan JSON last written for the UI.
+	notebookV2         bool
+	plan               []toolcore.PlanStep
+	persistedPlanState string
+	// planReasked records plan requirements already enforced with a re-ask, so
+	// each is sent back at most once (transient; a resume may re-ask once more).
+	planReasked map[string]bool
 	// notebookReplaceKey identifies the full-replacement update_notebook call
 	// already applied to Notebook, so later Plan calls build on it instead of
 	// resetting to it and re-appending the entries that followed.
@@ -149,6 +162,10 @@ type refinementRecord struct {
 	Answer    string
 	Feedback  string
 	StepIndex int
+	// PlanGate marks a redirect from the open-plan finish check rather than the
+	// critiquer: its Feedback is shown verbatim and it does not use up the
+	// critique budget (see critiqueAttempts / planGateRejections).
+	PlanGate bool `json:",omitempty"`
 }
 
 // NewReActAgent4 initializes the ReAct4 planner. It resolves the agent's tool
@@ -157,10 +174,18 @@ type refinementRecord struct {
 // a notebook, so the model can maintain investigation state via a native tool
 // call. See docs/planner_react_4.md.
 func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgent NBAgent, systemMessage string, extraMessages []prompts.MessageFormatter, initialNotebook string) (*NBReActPlanner4, error) {
+	notebookV2 := resolveNotebookV2Enabled(request, nbAgent)
 	tools, agentAdditionalPrompt := resolveReact4Tools(ctx, request, nbAgent, systemMessage)
+	tools = ToolsForPrompt(ctx, request.AccountId, tools)
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	llmTools := withReact4ThoughtSchemas(nbToolsToLlmTools(tools))
-	if isTopLevel && hasMemoryIndex(request.MemoryContext) {
+	if notebookV2 {
+		llmTools = withReact4PlanStepSchemas(llmTools)
+	}
+	// With the pre-step on, the memory index comes and goes per turn; keep the
+	// attribution schemas on for every top-level turn so the tool definitions
+	// (part of the cached prompt prefix) don't flip with it.
+	if isTopLevel && (hasMemoryIndex(request.MemoryContext) || config.Config.MemoryPrestepEnabled) {
 		llmTools = withReact4MemoryAttributionSchemas(llmTools)
 	}
 
@@ -190,9 +215,10 @@ func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		systemMessage:         composeReact4SystemMessage(ctx, request, nbAgent, systemMessage, agentAdditionalPrompt, tools),
 		history:               messageFormatterToString(extraMessages),
 		Notebook:              initialNotebook,
+		notebookV2:            notebookV2,
 		stepCount:             0,
 		enableCritique:        request.EnableCritique,
-		maxRefinementAttempts: 2,
+		maxRefinementAttempts: depthRefinementBudget(ctx, 2),
 	}, nil
 }
 
@@ -202,14 +228,19 @@ func NewReActAgent4(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 // filtering — so a ReAct4 agent runs with the identical tool surface as its
 // ReAct3 counterpart. It additionally injects the update_notebook control tool
 // (after FilterTools, so capability filtering never drops it). Returns the tool
-// list and the account-configured additional agent prompt (surfaced separately
-// so the caller can place it in the system message). See docs/planner_react_4.md.
+// list and the agent's always-on instructions (request.AgentInstructions,
+// surfaced separately so the caller can place it in the system message). See
+// docs/planner_react_4.md.
 func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nbAgent NBAgent, systemMessage string) ([]toolcore.NBTool, string) {
 	// Defensive copy: GetSupportedTools may return a slice backed by a shared
 	// array (e.g. custom_agent's per-instance tool cache). The append operations
 	// below would otherwise mutate that shared backing array. reActCreatePrompt3
 	// copies for the same reason.
-	supported := nbAgent.GetSupportedTools(ctx)
+	// Request-aware, as ReAct3 and the dispatch-time auth check resolve it: an
+	// agent's mode can narrow its tools (remediation's strict check drops its cloud
+	// CLI), and offering the unnarrowed set had the model call tools dispatch then
+	// rejected (aws_execute in remediation's planning turn).
+	supported := SupportedToolsForRequest(ctx, nbAgent, request)
 	tools := make([]toolcore.NBTool, len(supported))
 	copy(tools, supported)
 
@@ -222,8 +253,9 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 		tools = append(clientTools, tools...)
 	}
 
-	// Account-configured additional prompt + tools.
-	agentAdditionalPrompt, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, nbAgent.GetName())
+	// Account-configured tools. The always-on text is resolved once per agent
+	// run by the executor into request.AgentInstructions (#40899).
+	_, configuredTools, _ := AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, nbAgent.GetName())
 	for _, ct := range configuredTools {
 		if t, ok := toolcore.GetNBTool(request.AccountId, ct); ok {
 			tools = append(tools, t)
@@ -239,15 +271,20 @@ func resolveReact4Tools(ctx *security.RequestContext, request NBAgentRequest, nb
 
 	// Capability-based filtering (parity with reActCreatePrompt3's final FilterTools).
 	tools = FilterTools(tools, request.Capabilities)
+	tools = strictCheckTools(ctx, nbAgent, request, tools)
 
 	// The update_notebook control tool is added AFTER FilterTools so capability
 	// filtering never removes it. In ReAct3 the notebook was an inline XML tag;
 	// in ReAct4 it is a native tool call.
 	if ResolveAgentNotebookEnabled(nbAgent) {
-		tools = ensureNotebookTool(ctx, request.AccountId, tools)
+		notebookTool := toolcore.NotebookToolName
+		if resolveNotebookV2Enabled(request, nbAgent) {
+			notebookTool = toolcore.NotebookV2ToolName
+		}
+		tools = ensureNotebookTool(ctx, request.AccountId, tools, notebookTool)
 	}
 
-	return tools, agentAdditionalPrompt
+	return tools, request.AgentInstructions
 }
 
 // composeReact4SystemMessage assembles the ReAct4 system prefix: the react_4
@@ -278,16 +315,16 @@ func composeReact4SystemMessage(ctx *security.RequestContext, request NBAgentReq
 // ensureNotebookTool appends the registered update_notebook tool to tools when
 // no notebook-family tool is already present. Instantiated via the tool registry
 // because agents/core cannot import the tools package (import cycle).
-func ensureNotebookTool(ctx *security.RequestContext, accountId string, tools []toolcore.NBTool) []toolcore.NBTool {
+func ensureNotebookTool(ctx *security.RequestContext, accountId string, tools []toolcore.NBTool, toolName string) []toolcore.NBTool {
 	for _, t := range tools {
 		if isNotebookToolName(t.Name()) {
 			return tools
 		}
 	}
-	if nb, ok := toolcore.GetNBTool(accountId, toolcore.NotebookToolName); ok {
+	if nb, ok := toolcore.GetNBTool(accountId, toolName); ok {
 		return append(tools, nb)
 	}
-	ctx.GetLogger().Warn("react4: update_notebook tool not registered; notebook tool call will be unavailable")
+	ctx.GetLogger().Warn("react4: notebook tool not registered; notebook tool call will be unavailable", "tool", toolName)
 	return tools
 }
 
@@ -307,13 +344,13 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 	orchestratorMode, executorMode := resolveOrchestratorRoleModes(request)
-	promptVariant := promptVariantFromCtx(ctx)
-	if promptVariant == promptVariantLean {
+	promptVariant := llmruntime.PromptVariantFromCtx(ctx)
+	if promptVariant == llmruntime.PromptVariantLean {
 		notebookEnabled = false
 		hypothesisModeEnabled = false
 		orchestratorMode = false
 	}
-	isInvestigation := promptVariant != promptVariantLean
+	isInvestigation := promptVariant != llmruntime.PromptVariantLean
 
 	// Fragment lookups use an empty account ID (include-only), matching react_3.
 	// Custom agents deliberately skip built-in-only fragments rather than paying
@@ -337,7 +374,7 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 
 	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
 	vars := []string{
-		"notebook_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
+		"notebook_enabled", "notebook_v2_enabled", "hypothesis_mode_enabled", "is_top_level", "orchestrator_mode", "executor_mode",
 		"delegate_agent_enabled", "is_investigation", "grounding_enabled",
 		"context_management_rules", "time_handling_rules", "data_protection_rules",
 		"code_analysis_rules", "security_rules", "memory_consumption_rules", "async_completion_rules",
@@ -346,6 +383,7 @@ func renderReact4Base(ctx *security.RequestContext, request NBAgentRequest, agen
 	out, err := tmpl.Format(map[string]any{
 		"grounding_enabled":       resolveOrchestratorGroundingEnabled(request, agent),
 		"notebook_enabled":        notebookEnabled,
+		"notebook_v2_enabled":     notebookEnabled && resolveNotebookV2Enabled(request, agent),
 		"hypothesis_mode_enabled": hypothesisModeEnabled,
 		"is_investigation":        isInvestigation,
 		// Gates the DELEGATION section. react_4 shipped with the delegate_agent
@@ -485,10 +523,16 @@ func (o *NBReActPlanner4) Plan(
 	// Resume safety: stepCount is not marshaled, so a resumed conversation starts
 	// a fresh planner with stepCount == 0. Re-seed it from the prior step count so
 	// new DisplayIDs (E<n>) and synthesized tool-call IDs continue past the
-	// pre-suspension steps instead of colliding with them. Mid-turn this is a
-	// no-op: len(intermediateSteps) already equals the running count.
-	o.stepCount = len(intermediateSteps)
-	o.refreshNotebookFromSteps(intermediateSteps)
+	// pre-suspension steps instead of colliding with them. The highest
+	// DisplayID wins over the step count: a failed step replaced in place by its
+	// successful retry carries a newer number without growing the list, and
+	// re-using that number would show the model two results with the same E<n>.
+	o.stepCount = nextStepCountSeed(intermediateSteps)
+	if o.notebookV2 {
+		o.refreshPlanFromSteps(intermediateSteps)
+	} else {
+		o.refreshNotebookFromSteps(intermediateSteps)
+	}
 	firstPlanCallOfTurn := o.beginPlanCall()
 
 	clarificationContinuationPending := needsClarificationContinuation(intermediateSteps)
@@ -497,9 +541,14 @@ func (o *NBReActPlanner4) Plan(
 		plannerInput = clarificationContinuationInput(o.request.QueryConfig.OriginalUserQuery, input)
 	}
 	messages := o.buildMessages(plannerInput, intermediateSteps)
-	messages = AppendImagesToLastHumanMessage(messages, o.request.Images)
+	messages = attachments.AppendImagesToLastHumanMessage(messages, o.request.Images)
 	if note, ok := finalIterationsNote(ctx); ok {
 		messages = appendNoteToLastMessage(messages, note)
+	}
+	if o.notebookV2 {
+		if note := planNote(o.plan, intermediateSteps, o.planSignals(ctx)); note != "" {
+			messages = appendNoteToLastMessage(messages, note)
+		}
 	}
 	clarificationContinuationRetried := false
 	textToolCallRetried := false
@@ -512,8 +561,8 @@ func (o *NBReActPlanner4) Plan(
 		thinkingLevel := ""
 		if o.orchestratorDeepThinking(firstPlanCallOfTurn) {
 			agentName := o.agentName()
-			provider := GetLLMProvider(o.ctx, o.request.AccountId, agentName, true, o.request.ConversationId)
-			model := GetLLMModelName(o.ctx, o.request.AccountId, provider, agentName, true, o.request.ConversationId)
+			provider := llmruntime.GetLLMProvider(o.ctx, o.request.AccountId, agentName, true, o.request.ConversationId)
+			model := llmruntime.GetLLMModelName(o.ctx, o.request.AccountId, provider, agentName, true, o.request.ConversationId)
 			thinkingLevel = resolveOrchestratorThinkingLevel(model)
 		}
 		// Agent-level policy remains the final authority, matching ReAct3.
@@ -521,7 +570,7 @@ func (o *NBReActPlanner4) Plan(
 			thinkingLevel = level
 		}
 		if thinkingLevel != "" {
-			opts = append(opts, WithThinkingLevel(thinkingLevel))
+			opts = append(opts, llmruntime.WithThinkingLevel(thinkingLevel))
 		}
 		if len(o.llmTools) > 0 {
 			opts = append(opts, llms.WithTools(o.llmTools))
@@ -533,7 +582,7 @@ func (o *NBReActPlanner4) Plan(
 			opts = append(opts, sigOpt)
 		}
 		agentCtx := o.resolveAgentContext()
-		result, err := GenerateAndTrackLLMContent(
+		result, err := llmruntime.GenerateAndTrackLLMContent(
 			agentCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId,
 			o.request.MessageId, o.request.AgentId, false, messages, true,
 			opts...,
@@ -547,6 +596,7 @@ func (o *NBReActPlanner4) Plan(
 			return nil, nil, fmt.Errorf("react4: empty completion (no choices): %w", ErrParseFailure)
 		}
 
+		stepCountBeforeParse := o.stepCount
 		actions, finish, perr := o.parseCompletion(result.Choices[0])
 		if perr == nil && finish == nil && o.agentName() == "elastic_search_metrics" {
 			o.useFirstExplicitMetricsQuery(actions, intermediateSteps)
@@ -568,6 +618,21 @@ func (o *NBReActPlanner4) Plan(
 			o.ctx.GetLogger().Warn("react4: model wrote a tool call as text again after the re-prompt; giving up",
 				"agent", o.agentName(), "text", leaked)
 		}
+		// A plan requirement the response ignored (#41443): the calls are
+		// dropped and the model asked once to record the plan alongside them.
+		// The note is appended to the tail, so the cached prefix holds.
+		if perr == nil && finish == nil && o.notebookV2 {
+			if key, req := planRequirement(o.plan, intermediateSteps, o.planSignals(ctx)); req != "" && !o.planReasked[key] && !actionsUpdatePlan(actions) {
+				if o.planReasked == nil {
+					o.planReasked = map[string]bool{}
+				}
+				o.planReasked[key] = true
+				o.stepCount = stepCountBeforeParse
+				messages = appendNoteToLastMessage(messages, "Required before these calls: "+req)
+				o.ctx.GetLogger().Info("react4: plan requirement re-asked", "agent", o.agentName(), "requirement", key)
+				continue
+			}
+		}
 		// Tool calls to dispatch, or a hard parse error: hand straight back to
 		// the executor. Only a final answer (finish != nil) is critiqued.
 		if perr != nil || finish == nil {
@@ -581,9 +646,37 @@ func (o *NBReActPlanner4) Plan(
 			continue
 		}
 
-		if !o.shouldCritique() || len(o.refinementData) >= o.maxRefinementAttempts {
-			if o.shouldCritique() && o.maxRefinementAttempts > 0 && len(o.refinementData) >= o.maxRefinementAttempts {
+		// Open-plan finish check (#41443): deterministic, no model call, and ahead
+		// of the critique so the critiquer never has to spot an untested
+		// hypothesis. Recorded like a critique redirect so it survives a tool call
+		// and a resume; after maxPlanGateRejections the answer is accepted with
+		// the open steps named.
+		if o.notebookV2 {
+			if feedback := planGateFeedback(o.plan); feedback != "" {
+				if o.planGateRejections() < maxPlanGateRejections {
+					o.refinementData = append(o.refinementData, refinementRecord{
+						Answer: finish.Data, Feedback: feedback, StepIndex: len(intermediateSteps), PlanGate: true,
+					})
+					o.ctx.GetLogger().Info("react4: plan gate sent the answer back",
+						"agent", o.agentName(), "open_steps", len(openPlanSteps(o.plan)), "plan_steps", len(o.plan),
+						"rejection", o.planGateRejections())
+					messages = append(messages, o.redirectMessages(o.refinementData[len(o.refinementData)-1])...)
+					continue
+				}
+				finish.Data += unresolvedPlanLine(o.plan)
+				o.ctx.GetLogger().Info("react4: plan gate budget used; answering with open steps",
+					"agent", o.agentName(), "open_steps", len(openPlanSteps(o.plan)), "plan_steps", len(o.plan))
+			}
+		}
+
+		if !o.shouldCritique() || o.critiqueAttempts() >= o.maxRefinementAttempts {
+			if o.shouldCritique() && o.maxRefinementAttempts > 0 && o.critiqueAttempts() >= o.maxRefinementAttempts {
 				captureClaimBudgetStop(o.ctx, o.request, "react4", o.agentName(), plannerInput, finish.Data, o.Notebook, intermediateSteps)
+			}
+			// Quick depth: count the skipped critique instead of dropping the run
+			// from the critique numbers.
+			if o.shouldCritique() && o.maxRefinementAttempts == 0 {
+				MetricsCritiqueDecision(o.agentName(), "skipped_depth", 0)
 			}
 			// Log the gate inputs on the skip path, exactly as react_3 does
 			// ("reactagent3: skipping critique"). Without this the accept and
@@ -595,7 +688,7 @@ func (o *NBReActPlanner4) Plan(
 				"enableCritique", o.enableCritique,
 				"isTopLevel", o.isTopLevel(),
 				"isInvestigation", IsInvestigationRequestTask(o.request.Query),
-				"refinementsUsed", len(o.refinementData),
+				"refinementsUsed", o.critiqueAttempts(),
 				"maxRefinements", o.maxRefinementAttempts,
 				"agent", o.agentName())
 			// Answer accepted (or budget exhausted): drop the turn's refinement
@@ -617,7 +710,7 @@ func (o *NBReActPlanner4) Plan(
 		decision, feedback := o.runCritique(plannerInput, o.flattenTranscript(intermediateSteps), finish.Data, intermediateSteps, conv)
 		if !strings.EqualFold(decision, "refine") || strings.TrimSpace(feedback) == "" {
 			o.ctx.GetLogger().Info("react4: critique accepted answer",
-				"decision", decision, "attempts", len(o.refinementData), "agent", o.agentName())
+				"decision", decision, "attempts", o.critiqueAttempts(), "agent", o.agentName())
 			o.refinementData = nil
 			return nil, finish, nil
 		}
@@ -633,7 +726,7 @@ func (o *NBReActPlanner4) Plan(
 			Feedback:  feedback,
 			StepIndex: len(intermediateSteps),
 		})
-		o.ctx.GetLogger().Info("react4: critique requested refinement", "attempt", len(o.refinementData))
+		o.ctx.GetLogger().Info("react4: critique requested refinement", "attempt", o.critiqueAttempts())
 		if err := saveCritiqueCard(o.request, feedback); err != nil {
 			o.ctx.GetLogger().Error("react4: failed to save critique card", "error", err)
 		}
@@ -647,16 +740,16 @@ func (o *NBReActPlanner4) Plan(
 // the prompt), the scope is downgraded to Conversation so they cannot share an
 // Account-scope cache across sessions.
 func (o *NBReActPlanner4) resolveAgentContext() *security.RequestContext {
-	cacheScope := CacheScopeConversation
+	cacheScope := llmruntime.CacheScopeConversation
 	if cacheProvider, ok := o.nbAgent.(NBAgentCacheScopeProvider); ok {
 		cacheScope = cacheProvider.GetCacheScope()
 	}
-	if len(o.request.ClientTools) > 0 && cacheScope != CacheScopeConversation {
+	if len(o.request.ClientTools) > 0 && cacheScope != llmruntime.CacheScopeConversation {
 		if o.ctx != nil && o.ctx.GetLogger() != nil {
 			o.ctx.GetLogger().Debug("react4: downgrading cache scope to conversation due to client tools",
 				"agent", o.nbAgent.GetName(), "from", cacheScope)
 		}
-		cacheScope = CacheScopeConversation
+		cacheScope = llmruntime.CacheScopeConversation
 	}
 	baseCtx := context.Background()
 	if o.ctx != nil && o.ctx.GetContext() != nil {
@@ -665,16 +758,16 @@ func (o *NBReActPlanner4) resolveAgentContext() *security.RequestContext {
 	if o.ctx == nil {
 		return security.NewRequestContext(
 			context.WithValue(
-				context.WithValue(baseCtx, ContextKeyCacheScope, cacheScope),
-				ContextKeyCapabilities, o.request.Capabilities,
+				context.WithValue(baseCtx, llmruntime.ContextKeyCacheScope, cacheScope),
+				llmruntime.ContextKeyCapabilities, o.request.Capabilities,
 			),
 			nil, nil, nil, nil,
 		)
 	}
 	return security.NewRequestContext(
 		context.WithValue(
-			context.WithValue(baseCtx, ContextKeyCacheScope, cacheScope),
-			ContextKeyCapabilities, o.request.Capabilities,
+			context.WithValue(baseCtx, llmruntime.ContextKeyCacheScope, cacheScope),
+			llmruntime.ContextKeyCapabilities, o.request.Capabilities,
 		),
 		o.ctx.GetSecurityContext(),
 		o.ctx.GetLogger(),
@@ -732,6 +825,34 @@ func (o *NBReActPlanner4) refinementMessages(answer, feedback string) []llms.Mes
 		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextContent{Text: answer}}},
 		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: react4RefinementMessage(feedback)}}},
 	}
+}
+
+// redirectMessages renders one recorded redirect: plan-gate feedback verbatim,
+// critique feedback through react4RefinementMessage.
+func (o *NBReActPlanner4) redirectMessages(rd refinementRecord) []llms.MessageContent {
+	if !rd.PlanGate {
+		return o.refinementMessages(rd.Answer, rd.Feedback)
+	}
+	return []llms.MessageContent{
+		{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{llms.TextContent{Text: rd.Answer}}},
+		{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: rd.Feedback}}},
+	}
+}
+
+// critiqueAttempts counts critique redirects this turn; planGateRejections
+// counts open-plan redirects. They have separate budgets.
+func (o *NBReActPlanner4) critiqueAttempts() int {
+	n := 0
+	for _, rd := range o.refinementData {
+		if !rd.PlanGate {
+			n++
+		}
+	}
+	return n
+}
+
+func (o *NBReActPlanner4) planGateRejections() int {
+	return len(o.refinementData) - o.critiqueAttempts()
 }
 
 // containsActionGrammar reports a react_3 XML or <function=name> call written as text, not prose naming the tags.
@@ -1194,29 +1315,6 @@ func stripXMLBlocks(text, tag string) string {
 	}
 }
 
-// extractXMLFinalAnswer unwraps a react_3-style <final_answer> block, mirroring
-// NBReActPlanner3.processFinalAnswer: <content> becomes the answer and <thought>
-// becomes the Log (never rendered as the answer). Returns nil when the text is
-// not XML-wrapped, so a normal plain-text react_4 answer passes through as-is.
-func extractXMLFinalAnswer(output string) *NBAgentPlannerFinishAction {
-	if !strings.Contains(output, "<final_answer>") {
-		return nil
-	}
-	content := common.XmlExtractTagContent(output, "content")
-	thought := common.XmlExtractTagContent(output, "thought")
-	if content == "" {
-		content = common.XmlExtractTagContent(output, "final_answer")
-		if content == "" {
-			return nil
-		}
-	}
-	return &NBAgentPlannerFinishAction{
-		Data:       content,
-		Log:        thought,
-		IsTerminal: true,
-	}
-}
-
 func react4RefinementMessage(feedback string) string {
 	return "Your previous answer was reviewed and needs improvement before it can be returned to the user. " +
 		"Feedback:\n" + feedback + "\n\n" +
@@ -1305,15 +1403,16 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		// <thought> -> Log), so users never saw the wrapper. Taking choice.Content
 		// raw leaked the tags AND the internal monologue into the answer, which
 		// surfaced in the UI as replies opening with "The user is asking for…".
-		// Parsing it here restores react_3's behavior; plain-text answers (the
-		// expected react_4 shape) fall through untouched.
-		if finish := extractXMLFinalAnswer(choice.Content); finish != nil {
-			return nil, finish, nil
+		// The same leak happens without the wrapper (a bare leading <thought>
+		// block) and with an unclosed one, so splitFinalAnswer handles all three;
+		// plain-text answers (the expected react_4 shape) pass through untouched.
+		answer, notes := splitFinalAnswer(choice.Content)
+		if notes == "" {
+			notes = choice.Content
 		}
-
 		return nil, &NBAgentPlannerFinishAction{
-			Data:       choice.Content,
-			Log:        choice.Content,
+			Data:       answer,
+			Log:        notes,
 			IsTerminal: true,
 		}, nil
 	}
@@ -1355,6 +1454,7 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		nativeArgs := tc.FunctionCall.Arguments
 		args, actionThought := extractReact4Thought(nativeArgs)
 		args, memoryRefs := extractReact4MemoryAttribution(args)
+		args, planStep := extractReact4PlanStep(args)
 		// Keep the model's original arguments for replay and stable synthesized IDs,
 		// but execute with the same expanded time macros as ReAct3.
 		executionArgs := resolveToolInputMacros(args)
@@ -1411,6 +1511,7 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 			TurnID:           turnID,
 			ThoughtSignature: signature,
 			MemoryRefs:       memoryRefs,
+			PlanStep:         planStep,
 		})
 	}
 
@@ -1419,6 +1520,9 @@ func (o *NBReActPlanner4) parseCompletion(choice *llms.ContentChoice) ([]NBAgent
 		// parse sentinel so the executor treats it as a retryable failed step
 		// rather than a hard abort (react_3 parity).
 		return nil, nil, fmt.Errorf("react4: completion had tool calls but no function payloads: %w", ErrParseFailure)
+	}
+	if o.notebookV2 {
+		attributePlanSteps(o.plan, actions)
 	}
 	return actions, nil, nil
 }
@@ -1463,7 +1567,7 @@ func (o *NBReActPlanner4) buildMessages(input string, steps []NBAgentPlannerTool
 	flushRedirects := func(upTo int) {
 		for refIdx < len(o.refinementData) && o.refinementData[refIdx].StepIndex <= upTo {
 			rd := o.refinementData[refIdx]
-			messages = append(messages, o.refinementMessages(rd.Answer, rd.Feedback)...)
+			messages = append(messages, o.redirectMessages(rd)...)
 			refIdx++
 		}
 	}
@@ -1512,6 +1616,8 @@ const react4HumanPromptTemplate = `The current date and time is {{.today}}.
 {{.memory_context_block}}
 {{end}}{{if .channel_context_block}}
 {{.channel_context_block}}
+{{end}}{{if .user_style_block}}
+{{.user_style_block}}
 {{end}}{{end}}{{if .notebook}}
 <notebook>
 {{.notebook}}
@@ -1525,7 +1631,7 @@ func newReact4HumanPromptTemplate() prompts.PromptTemplate {
 	vars := []string{
 		"today", "kb_prestep_content", "rag_examples", "skill_lists_menu", "global_preferences_block",
 		"user_context_block", "execution_targets_block", "is_top_level", "orchestrator_mode", "conversation_context", "history",
-		"evidence_index", "memory_context_block", "channel_context_block", "notebook", "input",
+		"evidence_index", "memory_context_block", "channel_context_block", "user_style_block", "notebook", "input",
 	}
 	return prompts.NewPromptTemplate(react4HumanPromptTemplate, vars)
 }
@@ -1539,10 +1645,11 @@ func (o *NBReActPlanner4) humanText(input string) string {
 	}
 
 	isTopLevel := o.isTopLevel()
-	var memoryContextBlock, channelContextBlock string
+	var memoryContextBlock, channelContextBlock, userStyleBlock string
 	if isTopLevel {
 		memoryContextBlock = strings.TrimSpace(renderMemoryContextBlock(react4MemoryContext(o.request.MemoryContext)))
 		channelContextBlock = strings.TrimSpace(renderChannelContextBlock(o.request.ChannelContext))
+		userStyleBlock = strings.TrimSpace(renderUserStyleBlock(o.request.UserStyle))
 	}
 
 	out, err := tmpl.Format(map[string]any{
@@ -1560,6 +1667,7 @@ func (o *NBReActPlanner4) humanText(input string) string {
 		"evidence_index":           strings.TrimSpace(o.evidenceIndex),
 		"memory_context_block":     memoryContextBlock,
 		"channel_context_block":    channelContextBlock,
+		"user_style_block":         userStyleBlock,
 		"notebook":                 strings.TrimSpace(o.turnStartNotebookText()),
 		"input":                    input,
 	})
@@ -1713,7 +1821,7 @@ func (o *NBReActPlanner4) renderTurn(steps []NBAgentPlannerToolActionStep, group
 			Parts: []llms.ContentPart{llms.ToolCallResponse{
 				ToolCallID: step.Action.ToolID,
 				Name:       step.Action.Tool,
-				Content:    o.renderObservation(step, idx, totalSteps, compressionActive, maxObs),
+				Content:    withDisplayIDPrefix(step.Action.DisplayID, o.renderObservation(step, idx, totalSteps, compressionActive, maxObs)),
 			}},
 		})
 	}
@@ -1750,10 +1858,14 @@ func isStepRecent(stepIndex, totalSteps int, compressionActive bool) bool {
 // hard-capped (UTF-8-safe) to the per-observation ceiling; older steps (only
 // when compression is active) are summarized/truncated via SummarizeObservation,
 // which caches the result on the step. SubAgentEvidence is appended uncompressed
-// so the distilled manifest always survives, mirroring react_3.
+// so the distilled manifest always survives, mirroring react_3. The names of the
+// workspace files the step saved are appended last (savedFilesNote).
 func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, stepIndex, totalSteps int, compressionActive bool, maxObs int) string {
 	// A successful notebook update's content is already in the replayed call's
 	// arguments; echoing it again would double its cost in context.
+	if step.Action.Tool == toolcore.NotebookV2ToolName && step.Status == ToolStatusSuccess {
+		return planUpdatedReplay
+	}
 	if isNotebookToolName(step.Action.Tool) && step.Status == ToolStatusSuccess {
 		if _, appendEntry := extractNotebookUpdate(step.Action.ToolInput); appendEntry {
 			return notebookAppendedReplay
@@ -1772,16 +1884,25 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 	if note := truncationNote(step.Metadata); note != "" {
 		obs += "\n[" + note + "]"
 	}
+	// Render-only, as on ReAct3 (scratchpad.go): the same tool keeps coming back
+	// with nothing new, so say so before the planner tries another variation. A
+	// turn-cache hit carries the count of the call it repeats, so it gets none.
+	if step.NoProgressRepeatCount > 0 && !step.IsDuplicateCacheHit {
+		obs = noProgressNotice(step.Action.Tool, step.NoProgressRepeatCount) + obs
+	}
 	if ev := strings.TrimSpace(step.SubAgentEvidence); ev != "" {
 		obs = obs + "\n\n" + ev
 	}
-	return withSavedOutputNote(obs, step.Metadata)
+	obs = withSavedOutputNote(obs, step.Metadata)
+	return obs + savedFilesNote(step, obs, o.tools)
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).
 const (
 	notebookReplacedReplay = "Notebook updated. The content of this call is now the full notebook."
 	notebookAppendedReplay = "Notebook entry appended."
+	// The current plan is shown in the per-call note (planNote), not here.
+	planUpdatedReplay = "Plan updated."
 )
 
 // refreshNotebookFromSteps applies every successful update_notebook step since
@@ -1835,10 +1956,52 @@ func (o *NBReActPlanner4) refreshNotebookFromSteps(steps []NBAgentPlannerToolAct
 	}
 }
 
+// refreshPlanFromSteps is refreshNotebookFromSteps for update_notebook_v2: it
+// rebuilds the plan from the turn's steps, renders it into Notebook for the
+// string consumers, and persists both the markdown and the plan JSON (the UI
+// reads the latter). With no plan step yet this turn, Notebook keeps the
+// carried previous turn's notebook, exactly as v1 does.
+func (o *NBReActPlanner4) refreshPlanFromSteps(steps []NBAgentPlannerToolActionStep) {
+	o.plan = planFromSteps(steps)
+	if len(o.plan) == 0 {
+		return
+	}
+	last := 0
+	for i := range steps {
+		if steps[i].Action.Tool == toolcore.NotebookV2ToolName {
+			last = i
+		}
+	}
+	notebook := renderPlanMarkdown(o.plan)
+	if notebook != o.Notebook {
+		o.Notebook = notebook
+		o.notebookUpdateCount++
+	}
+	if notebook != o.persistedNotebook {
+		if !o.persistNotebook(notebook, last, planStats(o.plan)) {
+			return
+		}
+		o.persistedNotebook = notebook
+	}
+	// Written separately so a failed state write is retried on the next call
+	// without rewriting the unchanged notebook text.
+	state := planStateJSON(o.plan)
+	if state == o.persistedPlanState || o.notebookAgentID == "" {
+		return
+	}
+	if err := updateConversationNotebookState(GetConversationDao(), o.notebookAgentID, state); err != nil {
+		if o.ctx != nil {
+			o.ctx.GetLogger().Error("react4: failed to save plan state", "error", err, "notebook_agent_id", o.notebookAgentID)
+		}
+		return
+	}
+	o.persistedPlanState = state
+}
+
 // successfulNotebookUpdate returns the content and mode of a successful
 // update_notebook step; ok is false for any other step.
 func successfulNotebookUpdate(step *NBAgentPlannerToolActionStep) (content string, appendEntry, ok bool) {
-	if !isNotebookToolName(step.Action.Tool) || step.Status != ToolStatusSuccess {
+	if !isNotebookToolName(step.Action.Tool) || step.Action.Tool == toolcore.NotebookV2ToolName || step.Status != ToolStatusSuccess {
 		return "", false, false
 	}
 	content, appendEntry = extractNotebookUpdate(step.Action.ToolInput)
@@ -1941,14 +2104,6 @@ func (o *NBReActPlanner4) persistNotebook(content string, turnIdx int, stats not
 	return true
 }
 
-// extractNotebookContent pulls the notebook body from a native tool-call
-// arguments payload, which is a JSON string like {"content":"..."}. Falls back
-// to the raw string when it is not JSON with a content field.
-func extractNotebookContent(args string) string {
-	content, _ := extractNotebookUpdate(args)
-	return content
-}
-
 func extractNotebookUpdate(args string) (content string, appendEntry bool) {
 	args = strings.TrimSpace(args)
 	if args == "" {
@@ -2018,17 +2173,43 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 	return b.String()
 }
 
+// startAnswerCritique starts the answer critiquer so it runs alongside the claim
+// audit. Tests that script model replies in call order swap in a synchronous call.
+var startAnswerCritique = func(critique func()) { go critique() }
+
 // runCritique asks the critiquer whether the final answer is acceptable,
 // returning (decision, feedback); an empty decision means accept. It mirrors
 // NBReActPlanner3.runCritique but omits ReAct3's react_answer analytics row
-// (saveCritique); the claim_shadow row written by runClaimCritiqueShadow is the
+// (saveCritique); the claim_shadow row written by runClaimCritique is the
 // record. The "Critique Feedback" card is written by Plan when it acts on a
 // refine.
 func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
-	defer func() {
-		resultDecision, resultFeedback = runClaimCritiqueShadow(o.ctx, o.request, "react4", o.nbAgent.GetName(), resultDecision, resultFeedback, input, finalAnswer, o.Notebook, intermediateSteps,
-			len(o.refinementData)+1 >= o.maxRefinementAttempts, conv)
-	}()
+	// The claim audit never reads the critiquer's verdict, only combines with it,
+	// so the critiquer runs while the audit does instead of before it.
+	var decision, feedback string
+	done := make(chan struct{})
+	// Never return while the critiquer still runs, even if the audit panics.
+	defer func() { <-done }()
+	startAnswerCritique(func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				// Same fail-safe as a failed critique call: accept the answer.
+				o.ctx.GetLogger().Error("react4: critique panicked, accepting answer", "panic", r, "stack", string(debug.Stack()))
+				decision, feedback = "", ""
+			}
+		}()
+		decision, feedback = o.answerCritique(input, scratchpad, finalAnswer, intermediateSteps, conv)
+	})
+	return runClaimCritique(o.ctx, o.request, "react4", o.nbAgent.GetName(), func() (string, string) {
+		<-done
+		return decision, feedback
+	}, input, finalAnswer, o.Notebook, intermediateSteps, o.critiqueAttempts()+1 >= o.maxRefinementAttempts, conv)
+}
+
+// answerCritique runs the answer critiquer. Empty decision means the critique
+// failed and the answer is accepted.
+func (o *NBReActPlanner4) answerCritique(input, scratchpad, finalAnswer string, intermediateSteps []NBAgentPlannerToolActionStep, conv *critiqueConversation) (resultDecision, resultFeedback string) {
 	logger := o.ctx.GetLogger()
 
 	questionType := "query"
@@ -2076,12 +2257,12 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 	// Critique is reasoning-heavy; tag the context so it resolves the
 	// Reasoning-tier model regardless of the host agent's category.
 	critiqueCtx := security.NewRequestContext(
-		context.WithValue(o.ctx.GetContext(), ContextKeyModelTier, ModelTierReasoning),
+		context.WithValue(o.ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 		o.ctx.GetSecurityContext(), o.ctx.GetLogger(), o.ctx.GetTracer(), o.ctx.GetMeter(),
 	)
 
 	critiqueMessages := []llms.MessageContent{{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}}}
-	critiqueResult, critiqueErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
+	critiqueResult, critiqueErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, critiqueMessages, true, llms.WithTemperature(0.0))
 	if critiqueErr != nil {
 		logger.Error("react4: critique llm call failed, accepting answer", "error", critiqueErr)
 		return "", ""
@@ -2099,7 +2280,7 @@ func (o *NBReActPlanner4) runCritique(input, scratchpad, finalAnswer string, int
 				{Role: llms.ChatMessageTypeSystem, Parts: []llms.ContentPart{llms.TextContent{Text: instruction}}},
 				{Role: llms.ChatMessageTypeHuman, Parts: []llms.ContentPart{llms.TextContent{Text: critiquePromptStr}}},
 			}
-			retryCritique, retryErr := GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
+			retryCritique, retryErr := llmruntime.GenerateAndTrackLLMContent(critiqueCtx, o.request.UserId, o.request.AccountId, o.request.ConversationId, o.request.MessageId, o.request.AgentId, false, retryMessages, true, llms.WithTemperature(0.0))
 			if retryErr != nil {
 				continue
 			}
@@ -2156,4 +2337,36 @@ func (o *NBReActPlanner4) continuationCritique(conv *critiqueConversation, tmpl 
 		return "", "", false
 	}
 	return decision, common.XmlExtractTagContent(content, "feedback"), true
+}
+
+// planSignals gathers what the plan note and requirement need from the planner.
+func (o *NBReActPlanner4) planSignals(ctx context.Context) planSignals {
+	sig := planSignals{investigation: isInvestigationRun(o.request), roundsLeft: -1, redirectStep: -1}
+	if left, ok := ctx.Value(llmruntime.ContextKeyIterationsLeft).(int); ok {
+		sig.roundsLeft = left
+	}
+	agentTools := map[string]bool{}
+	for _, t := range o.tools {
+		if t != nil && t.GetType() == toolcore.NBToolTypeAgent {
+			agentTools[t.Name()] = true
+		}
+	}
+	sig.isSubAgent = func(tool string) bool { return agentTools[tool] || tool == "delegate_agent" }
+	for i := len(o.refinementData) - 1; i >= 0; i-- {
+		if !o.refinementData[i].PlanGate {
+			sig.redirectStep = o.refinementData[i].StepIndex
+			break
+		}
+	}
+	sig.finalReviewDone = o.critiqueAttempts() > 0 && o.critiqueAttempts() >= o.maxRefinementAttempts
+	return sig
+}
+
+func actionsUpdatePlan(actions []NBAgentPlannerToolAction) bool {
+	for _, a := range actions {
+		if a.Tool == toolcore.NotebookV2ToolName {
+			return true
+		}
+	}
+	return false
 }

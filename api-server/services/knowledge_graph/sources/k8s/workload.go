@@ -63,6 +63,19 @@ var (
 	replicaSetSchema  = core.SpecificTypeSchema{SpecificType: "KubernetesReplicaSet", NodeType: core.NodeTypeWorkload, Properties: k8sWorkloadProperties}
 )
 
+// rolloutSchema — an Argo Rollout (argoproj.io/v1alpha1) is a Deployment-shaped
+// controller, and the collector reports its rows through the same path with the
+// same meta shape, so it shares k8sWorkloadProperties with the apps/v1 Kinds
+// above rather than declaring a near-copy; it is not apps/v1 itself, which is
+// why it is declared separately.
+//
+// Sharing that shape means sharing its inert fields too: the collector sends no
+// "spec" object, so extractControllerFields populates neither replicas nor
+// strategy_type here — exactly as for a Deployment. Argo's strategy is
+// {canary:{...}} / {blueGreen:{...}} with no "type" key, so strategy_type would
+// need an extractor of its own even if a spec did arrive.
+var rolloutSchema = core.SpecificTypeSchema{SpecificType: "KubernetesRollout", NodeType: core.NodeTypeWorkload, Properties: k8sWorkloadProperties}
+
 // k8sBatchWorkloadProperties is the shared shape for the batch Kinds (Job /
 // CronJob). They flow through createNodeFromWorkload too, so they carry the
 // common workload fields minus the apps/v1-only replicas/strategy fields.
@@ -131,6 +144,7 @@ func init() {
 	core.RegisterSpecificTypeSchema(statefulSetSchema)
 	core.RegisterSpecificTypeSchema(daemonSetSchema)
 	core.RegisterSpecificTypeSchema(replicaSetSchema)
+	core.RegisterSpecificTypeSchema(rolloutSchema)
 	core.RegisterSpecificTypeSchema(jobSchema)
 	core.RegisterSpecificTypeSchema(cronJobSchema)
 	core.RegisterSpecificTypeSchema(podSchema)
@@ -248,6 +262,37 @@ func (s *K8sSource) extractWorkloadLabels(workload *K8sWorkloadRow) map[string]i
 	return workloadLabels
 }
 
+// templateLabelsKey is the meta.config key the agent fills with a workload's pod
+// template labels (k8s-agent runner/pkg/discovery/converters.go, serviceDict).
+// Older agents don't send it.
+const templateLabelsKey = "template_labels"
+
+// extractTemplateLabels returns meta.config.template_labels and whether the
+// agent sent the key at all. A present but empty map (a workloadRef Rollout,
+// whose template lives on another object) is returned as present.
+func (s *K8sSource) extractTemplateLabels(workload *K8sWorkloadRow) (map[string]interface{}, bool) {
+	if len(workload.Meta) == 0 {
+		return nil, false
+	}
+	// Only the one key is decoded; the rest of config (containers, volumes, …)
+	// stays raw.
+	var meta struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(workload.Meta, &meta); err != nil {
+		return nil, false
+	}
+	raw, ok := meta.Config[templateLabelsKey]
+	if !ok {
+		return nil, false
+	}
+	var labels map[string]interface{}
+	if err := json.Unmarshal(raw, &labels); err != nil || labels == nil {
+		return nil, false
+	}
+	return labels, true
+}
+
 // labelsMatch checks if all selector labels match the workload labels
 func (s *K8sSource) labelsMatch(selector map[string]interface{}, labels map[string]interface{}) bool {
 	if len(selector) == 0 {
@@ -345,18 +390,7 @@ func (s *K8sSource) convertWorkloadsToGraph(workloads []K8sWorkloadRow, k8sNodeM
 				}
 
 				if !edgeExists {
-					edge := core.NewEdge(
-						namespaceNode.ID,
-						clusterNode.ID,
-						core.RelationshipRunsOn,
-						map[string]interface{}{
-							"connection_type": "cluster",
-						},
-						req.TenantID,
-						req.CloudAccountID,
-						"k8s",
-					)
-					edges = append(edges, edge)
+					edges = append(edges, namespaceClusterEdge(namespaceNode, clusterNode, req))
 				}
 			}
 		}
@@ -587,7 +621,7 @@ func (s *K8sSource) createNodeFromWorkload(workload *K8sWorkloadRow, frameworks 
 // churn constantly — the change detector ignores their number and the account
 // build refreshes them — and their node records where they were scheduled.
 func init() {
-	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"} {
+	for _, kind := range []string{"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Rollout"} {
 		registerWorkloadKind(workloadKind{
 			Kind:      kind,
 			NodeType:  core.NodeTypeWorkload,

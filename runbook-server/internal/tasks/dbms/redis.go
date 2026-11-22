@@ -2,7 +2,6 @@ package dbms
 
 import (
 	"errors"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
@@ -54,14 +53,7 @@ func (t *RedisCliTask) Execute(taskCtx types.TaskContext, params map[string]any)
 	}
 
 	if respStr, ok := resp.(string); ok {
-		redisResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &redisResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-		if redisResp["stderr"] != nil && redisResp["stderr"] != "" {
-			return nil, errors.New(redisResp["stderr"].(string))
-		}
-		return map[string]any{"data": redisResp["stdout"]}, nil
+		return relay.InterpretCommandResponse("redis-cli", respStr)
 	}
 
 	return nil, errors.New("unable to process request")

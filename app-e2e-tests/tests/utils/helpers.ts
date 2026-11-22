@@ -158,8 +158,21 @@ export async function registerWelcomeTourAutoDismiss(page: Page): Promise<void> 
 // Cluster shown in the global dropdown, or "" if none resolves. Polls because the
 // accounts list loads async. Pass `expected` after a fresh selection: the input keeps
 // the previous label briefly, so the first non-empty read would be a false mismatch.
-export async function readGlobalClusterValue(page: Page, timeout = 30000, expected?: string): Promise<string> {
-  const clusterInput = page.locator("#auto-complete-global-cluster");
+// Rail buttons open a hover flyout that stays over the page while the cursor rests on the rail, so the cursor is moved away.
+export async function clickSidenavRail(rail: Locator): Promise<void> {
+  const page = rail.page();
+  await rail.click();
+  await page.mouse.move(0, 0);
+  // A flyout that never opened is not a failure, so the hidden-wait is best-effort.
+  await page
+    .locator('[id^="sidenav-"]')
+    .first()
+    .waitFor({ state: "hidden", timeout: 5000 })
+    .catch(() => {});
+}
+
+export async function readGlobalClusterValue(page: Page, timeout = 30000, expected?: string, scope?: Locator): Promise<string> {
+  const clusterInput = (scope ?? page).locator("#auto-complete-global-cluster");
   const visible = await clusterInput
     .waitFor({ state: "visible", timeout })
     .then(() => true)

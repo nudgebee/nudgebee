@@ -180,11 +180,12 @@ export const useTicketDynamicFields = ({
   }, [isTicketCreateTask, integrationId, configsRaw]);
 
   // Per-tool fixed issue-type labels for platforms that only ship one template.
-  // Jira is the exception — its issue types come from the metadata response.
+  // Jira and Freshdesk are the exceptions — their issue types (issue type /
+  // Ticket Form) come from the metadata response.
   const fixedIssueTypeForTool = (tool: string): { label: string; value: string }[] => {
     if (tool === 'github') return [{ label: 'Issue', value: 'Issue' }];
     if (tool === 'gitlab') return [{ label: 'Issue', value: 'issue' }];
-    if (tool === 'servicenow' || tool === 'pagerduty' || tool === 'zenduty' || tool === 'freshdesk') {
+    if (tool === 'servicenow' || tool === 'pagerduty' || tool === 'zenduty') {
       return [{ label: 'Incident', value: 'incident' }];
     }
     return [];
@@ -205,20 +206,21 @@ export const useTicketDynamicFields = ({
       return;
     }
 
-    // All supported tools (jira, github, gitlab, pagerduty, zenduty, servicenow)
-    // return {data: [Template, ...]} from /tickets/create-meta. Jira ships one
-    // template per issue type; the others ship a single template carrying the
-    // platform's assignee / service / urgency lists. The name-matching fallback in
-    // the field-resolution effect below handles single-template tools whose template
-    // name (e.g. "PagerDuty Incident") doesn't match the frontend's ticket_type
-    // value (e.g. "incident").
+    // All supported tools (jira, github, gitlab, pagerduty, zenduty, servicenow,
+    // freshdesk) return {data: [Template, ...]} from /tickets/create-meta. Jira
+    // ships one template per issue type and Freshdesk one per Ticket Form; the
+    // others ship a single template carrying the platform's assignee / service /
+    // urgency lists. The name-matching fallback in the field-resolution effect
+    // below handles single-template tools whose template name (e.g. "PagerDuty
+    // Incident") doesn't match the frontend's ticket_type value (e.g. "incident").
+    const isMultiTemplateTool = ticketTool === 'jira' || ticketTool === 'freshdesk';
     setTicketIssueTypesLoading(true);
     apiTickets
       .getTicketMeta(integrationId, projectKey)
       .then((res: any) => {
         const metadata = res?.data?.tickets_get_create_meta?.data || [];
         setTicketMetadata(metadata);
-        if (ticketTool === 'jira') {
+        if (isMultiTemplateTool) {
           setTicketIssueTypes(metadata.length > 0 ? metadata.map((m: any) => ({ label: m.name, value: m.name })) : []);
         } else {
           setTicketIssueTypes(fixedIssueTypeForTool(ticketTool));
@@ -226,7 +228,7 @@ export const useTicketDynamicFields = ({
       })
       .catch(() => {
         setTicketMetadata([]);
-        setTicketIssueTypes(ticketTool === 'jira' ? [] : fixedIssueTypeForTool(ticketTool));
+        setTicketIssueTypes(isMultiTemplateTool ? [] : fixedIssueTypeForTool(ticketTool));
       })
       .finally(() => {
         setTicketIssueTypesLoading(false);

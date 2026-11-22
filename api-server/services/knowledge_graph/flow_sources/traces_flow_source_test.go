@@ -40,9 +40,9 @@ func TestTracesFlowSource_CreateNodeForServiceApplication_SkipsNode(t *testing.T
 		},
 	}
 
-	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"})
+	node := source.createNodeForServiceApplication(app, "tenant-1", core.K8sAccount{CloudAccountID: "account1"}, testCreationContext(true))
 	if node != nil {
-		t.Errorf("createNodeForServiceApplication() = %+v, want nil (k8s-authoritative type)", node)
+		t.Errorf("createNodeForServiceApplication(, nil) = %+v, want nil (k8s-authoritative type)", node)
 	}
 }
 
@@ -616,7 +616,7 @@ func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
 	})
 
 	// Caller in namespace "redis" -> resolves to the StatefulSet, not an ExternalService.
-	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "redis", resolver)
+	got := source.tryMatchExternalService("redis-master-0", "ExternalService", "", "acct1", "redis", resolver)
 	if got == nil {
 		t.Fatalf("expected redis-master-0 to resolve to the redis-master StatefulSet, got nil (would create an ExternalService)")
 		return
@@ -627,7 +627,184 @@ func TestTracesFlowSource_ResolvesBarePodNameToWorkload(t *testing.T) {
 
 	// Caller in a namespace with no such pod: no pod match, and no DNS/name match
 	// either -> nil, so the caller falls back to an ExternalService (status quo).
-	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "acct1", "payments", resolver); miss != nil {
+	if miss := source.tryMatchExternalService("redis-master-0", "ExternalService", "", "acct1", "payments", resolver); miss != nil {
 		t.Errorf("bare pod name unknown in caller ns must NOT match, got %q", miss.UniqueKey)
+	}
+}
+
+// kgTestSpan builds a span for service in namespace; peer, when set, names the
+// callee only by net.peer.name, the way the Tempo converter delivers a client span.
+func kgTestSpan(spanID, parentSpanID, service, namespace, peer string) traces.TraceSpan {
+	s := traces.TraceSpan{
+		TraceID:           "t1",
+		SpanID:            spanID,
+		ParentSpanID:      parentSpanID,
+		SpanName:          service + " handler",
+		WorkloadName:      service,
+		WorkloadNamespace: namespace,
+		DurationNs:        1_000_000,
+		Timestamp:         "2026-09-30T10:00:00Z",
+		SpanAttributes:    map[string]string{"service.name": service},
+	}
+	if peer != "" {
+		s.SpanName = "POST"
+		s.DestinationName = peer
+		s.SpanAttributes["net.peer.name"] = peer
+	}
+	return s
+}
+
+// barePeerNamespaceEnvEnabled mirrors the traces package's flag, which the
+// merge tests need on to get a synthesized namespaced callee.
+const barePeerNamespaceEnvEnabled = "TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED"
+
+func kgTestServiceMap(t *testing.T, spans ...traces.TraceSpan) *traces.ServiceMap {
+	t.Helper()
+	builder := traces.NewTraceServiceMapBuilder()
+	builder.AddSpans(spans)
+	sm, err := builder.BuildServiceMap()
+	if err != nil {
+		t.Fatalf("BuildServiceMap() error = %v", err)
+	}
+	return sm
+}
+
+func kgTestApp(sm *traces.ServiceMap, namespace, name string) *traces.ServiceApplication {
+	for i := range sm.Applications {
+		if sm.Applications[i].Id.Namespace == namespace && sm.Applications[i].Id.Name == name {
+			return &sm.Applications[i]
+		}
+	}
+	return nil
+}
+
+// The KG builds one workload-filtered map per service and merges them in
+// goroutine-completion order. payments' map holds ledger only as a copy
+// synthesized from payments' client span; ledger's own map holds the copy built
+// from ledger's spans. Whichever arrives first, the merged ledger must keep the
+// observed copy's classification, while links from both copies still merge.
+func TestTracesFlowSource_MergeServiceMaps_ObservedMetadataWins(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	paymentsClient := kgTestSpan("s2", "s1", "payments", "demo", "ledger")
+	ledgerServer := kgTestSpan("s3", "s2", "ledger", "demo", "")
+	ledgerServer.SpanAttributes["telemetry.sdk.language"] = "go"
+
+	build := func() (synthesizedMap, observedMap *traces.ServiceMap) {
+		synthesizedMap = kgTestServiceMap(t, kgTestSpan("s1", "", "payments", "demo", ""), paymentsClient)
+		observedMap = kgTestServiceMap(t, paymentsClient, ledgerServer)
+		// Make every first-wins field of the observed copy distinguishable.
+		observed := kgTestApp(observedMap, "demo", "ledger")
+		if observed == nil {
+			t.Fatalf("ledger's own map has no demo/ledger application")
+		}
+		observed.UncertainMatch = &traces.UncertainMatch{ReasonCode: "outbound_span_kind"}
+		observed.Category = traces.ServiceCategory{Category: "observed-category"}
+		observed.Indicators = []string{"observed-indicator"}
+		return synthesizedMap, observedMap
+	}
+
+	for _, order := range []string{"synthesized first", "observed first"} {
+		t.Run(order, func(t *testing.T) {
+			synthesizedMap, observedMap := build()
+			maps := []*traces.ServiceMap{synthesizedMap, observedMap}
+			if order == "observed first" {
+				maps = []*traces.ServiceMap{observedMap, synthesizedMap}
+			}
+
+			source := NewTracesFlowSource(slog.Default())
+			ledger := kgTestApp(source.mergeServiceMaps(maps), "demo", "ledger")
+			if ledger == nil {
+				t.Fatalf("merged map has no demo/ledger application")
+			}
+
+			if len(ledger.Type) != 1 || ledger.Type[0] != "golang" {
+				t.Errorf("Type = %v, want [golang]", ledger.Type)
+			}
+			if _, ok := ledger.TypeEvidence["golang"]; !ok {
+				t.Errorf("TypeEvidence = %v, want the golang evidence", ledger.TypeEvidence)
+			}
+			if ledger.CreationEvidence == nil || ledger.CreationEvidence.MatchedKey != "service_name" {
+				t.Errorf("CreationEvidence = %+v, want ledger's own span (matched_key service_name)", ledger.CreationEvidence)
+			}
+			if ledger.UncertainMatch == nil || ledger.UncertainMatch.ReasonCode != "outbound_span_kind" {
+				t.Errorf("UncertainMatch = %+v, want the observed copy's", ledger.UncertainMatch)
+			}
+			if ledger.Category.Category != "observed-category" {
+				t.Errorf("Category = %q, want the observed copy's", ledger.Category.Category)
+			}
+			if len(ledger.Indicators) != 1 || ledger.Indicators[0] != "observed-indicator" {
+				t.Errorf("Indicators = %v, want the observed copy's", ledger.Indicators)
+			}
+
+			backToPayments := false
+			for _, d := range ledger.Downstreams {
+				if d.Id == (traces.ServiceApplicationId{Name: "payments", Kind: "Service", Namespace: "demo"}) {
+					backToPayments = true
+				}
+			}
+			if !backToPayments {
+				t.Errorf("Downstreams = %v, want the link back to demo/payments", ledger.Downstreams)
+			}
+		})
+	}
+}
+
+// Two synthesized copies carry no classification of their own: the first one
+// merged keeps its metadata, as before.
+func TestTracesFlowSource_MergeServiceMaps_BothSynthesizedFirstWins(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "true")
+	first := kgTestServiceMap(t, kgTestSpan("s1", "", "payments", "demo", "ledger"))
+	second := kgTestServiceMap(t, kgTestSpan("s2", "", "refunds", "demo", "ledger"))
+	firstLedger := kgTestApp(first, "demo", "ledger")
+	if firstLedger == nil || kgTestApp(second, "demo", "ledger") == nil {
+		t.Fatalf("each map must hold a synthesized demo/ledger")
+	}
+	firstLedger.Indicators = []string{"first"}
+
+	source := NewTracesFlowSource(slog.Default())
+	ledger := kgTestApp(source.mergeServiceMaps([]*traces.ServiceMap{first, second}), "demo", "ledger")
+	if ledger == nil {
+		t.Fatalf("merged map has no demo/ledger application")
+	}
+	if ledger.CreationEvidence == nil || ledger.CreationEvidence.SpanID != "s1" {
+		t.Errorf("CreationEvidence = %+v, want the first copy's (span s1)", ledger.CreationEvidence)
+	}
+	if len(ledger.Indicators) != 1 || ledger.Indicators[0] != "first" {
+		t.Errorf("Indicators = %v, want the first copy's", ledger.Indicators)
+	}
+}
+
+// With TRACES_SERVICE_MAP_BARE_PEER_NAMESPACE_ENABLED off, payments' map holds
+// ledger only as :ExternalService:ledger, which never shares a merge key with
+// ledger's observed demo/Service copy, so the ungated observed-over-synthesized
+// preference in mergeApplicationData cannot change a merged application.
+func TestTracesFlowSource_MergeServiceMaps_FlagOffMergesAsBefore(t *testing.T) {
+	t.Setenv(barePeerNamespaceEnvEnabled, "false")
+	paymentsClient := kgTestSpan("s2", "s1", "payments", "demo", "ledger")
+	paymentsMap := kgTestServiceMap(t, kgTestSpan("s1", "", "payments", "demo", ""), paymentsClient)
+	ledgerMap := kgTestServiceMap(t, paymentsClient, kgTestSpan("s3", "s2", "ledger", "demo", ""))
+
+	for i := range paymentsMap.Applications {
+		app := &paymentsMap.Applications[i]
+		if traces.IsSynthesizedApplication(app) && (app.Id.Namespace != "" || app.Id.Kind != "ExternalService") {
+			t.Fatalf("flag off synthesized %s/%s/%s; only namespace-less ExternalService applications may be", app.Id.Namespace, app.Id.Kind, app.Id.Name)
+		}
+	}
+	if kgTestApp(paymentsMap, "", "ledger") == nil || kgTestApp(paymentsMap, "demo", "ledger") != nil {
+		t.Fatalf("payments' map must hold ledger only as a namespace-less ExternalService")
+	}
+
+	source := NewTracesFlowSource(slog.Default())
+	merged := source.mergeServiceMaps([]*traces.ServiceMap{paymentsMap, ledgerMap})
+	ledger := kgTestApp(merged, "demo", "ledger")
+	if ledger == nil || ledger.CreationEvidence == nil || ledger.CreationEvidence.MatchedKey != "service_name" {
+		t.Fatalf("merged demo/ledger = %+v, want ledger's own observed copy", ledger)
+	}
+	external := kgTestApp(merged, "", "ledger")
+	if external == nil || external.Id.Kind != "ExternalService" {
+		t.Fatalf("merged map lost the :ExternalService:ledger application")
+	}
+	if !traces.IsSynthesizedApplication(external) {
+		t.Errorf(":ExternalService:ledger took observed metadata; CreationEvidence = %+v", external.CreationEvidence)
 	}
 }

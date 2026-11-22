@@ -31,6 +31,7 @@ func TestOptimizationFlagDisabled(t *testing.T) {
 
 	// Create request with empty JSON body
 	req, _ := http.NewRequest("POST", "/autopilot/recommendation", bytes.NewBufferString("{}"))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	// Serve request
@@ -61,6 +62,7 @@ func TestOptimizationFlagEnabled(t *testing.T) {
 
 	// Create request with empty JSON body
 	req, _ := http.NewRequest("POST", "/autopilot/recommendation", bytes.NewBufferString("{}"))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	// Serve request

@@ -3,12 +3,12 @@ package agents
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -50,7 +50,7 @@ func init() {
 
 	toolDescription := `Fetches logs for a resource and returns raw log content. Translates a natural-language log question into the right backend query (Loki/Signoz/ES JSON, Datadog facet syntax, or kubectl flags) and runs it. Saves output to a workspace file so it can be downloaded or grepped via shell_execute. The caller is responsible for the strategy — fetch_logs runs whatever query the question implies; it does not add implicit error filters or widen windows on its own. For investigations, ask for a broad chronological window so the trigger (config reload, deploy, antecedent context) surfaces before the symptom storm.`
 	toolInput := "Provide a natural-language log question (e.g. 'errors in <service> last 1h', 'why is <service> slow', 'logs for pod <workload>-<6-10 hex>-<5 alnum> in namespace <ns>')."
-	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"bundle_signal\": \"<category-tagged crash-bundle sweep against file_ref, computed server-side when the query wording asked for error content (error/fail/crash/timeout/oom/…); empty when it didn't fire>\", \"fallback_note\": \"<present only when the configured backend's query matched zero rows and the agent retried via kubectl — explains that this answer came from kubectl instead of the configured provider, so a zero-row backend result isn't mistaken for 'no logs exist'; absent otherwise>\"}"
+	toolOutput := "JSON envelope: {\"query\": \"<rendered backend query>\", \"logs\": \"<raw lines or preview>\", \"file_ref\": \"<workspace file path or empty>\", \"provider\": \"<loki|es|datadog|kubectl>\", \"fallback_note\": \"<present only when the configured backend's query matched zero rows and the agent retried via kubectl — explains that this answer came from kubectl instead of the configured provider, so a zero-row backend result isn't mistaken for 'no logs exist'; absent otherwise>\"}"
 
 	core.RegisterNBAgentFactoryAsTool(FetchLogsAgentName, func(accountId string) (core.NBAgent, error) {
 		return newFetchLogsAgent(accountId), nil
@@ -134,11 +134,7 @@ func (a *FetchLogsAgent) generateKubeCtlLogQueryAndExecute(ctx *security.Request
 		workspaceAccount = a.accountId
 	}
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, "kubectl", logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-	if err != nil {
-		return core.NBAgentResponse{}, err
-	}
-	resp := makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs))
+	resp := makeFetchResponse(a.GetName(), cmd, logs, flattened, fileRef, mergeRefs(toolRefs, fileRefs))
 	return withKubectlDisclosure(resp, kubectlDisclosureNote(intent, podCount, usedPod)), nil
 }
 
@@ -178,15 +174,84 @@ func stripKubectlPodBanner(raw string) (cleaned string, podCount int, usedPod st
 	return string(body), n, usedPod
 }
 
+// kubectlDefaultTailLines is the --tail a kubectl fallback read applies when
+// the extracted intent names none.
+const kubectlDefaultTailLines = 100
+
+// effectiveKubectlTail is the line cap the read will actually run with.
+func effectiveKubectlTail(intent kubectlLogQuery) int {
+	if intent.Tail <= 0 {
+		return kubectlDefaultTailLines
+	}
+	return intent.Tail
+}
+
+// kubectlDisclosureNote summarizes what a kubectl read did NOT cover — the
+// line cap, the absence of a time bound, unread pods, an applied filter — so
+// the caller never has to infer coverage from silence.
+//
+// Unlike the backend log read, this is never empty: kubectl always caps by
+// line, and a cap the caller cannot see is the whole of issue #40196. A read
+// of "the pod's logs" that returns the last 100 lines of one pod, whenever
+// they were written, reads as the pod's logs unless it says otherwise.
 func kubectlDisclosureNote(intent kubectlLogQuery, podCount int, usedPod string) string {
 	var parts []string
 	if podCount > 1 {
 		parts = append(parts, fmt.Sprintf("read pod %s only — %d other pod(s) of this workload were not read", usedPod, podCount-1))
 	}
-	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {
-		parts = append(parts, fmt.Sprintf("filtered to lines matching /%s/ and capped at 200 matching lines", pat))
+
+	tail := effectiveKubectlTail(intent)
+	// --since/--since-time is the only bound kubectl honours on the past;
+	// buildKubectlLogCommand adds one only when the intent carried a window.
+	if _, windowed := kubectlReadWindow(intent); windowed != "" {
+		parts = append(parts, fmt.Sprintf(
+			"read the last %d lines written since %s — if the pod logged more than %d lines in that window, the earlier ones were not read",
+			tail, windowed, tail,
+		))
+	} else {
+		parts = append(parts, fmt.Sprintf(
+			"read the last %d lines only, with no time bound — these are the newest %d lines whenever they were written, so they may all sit outside the window you are asking about, and anything older was not read",
+			tail, tail,
+		))
 	}
+
+	if pat := strings.TrimSpace(intent.FilterPattern); pat != "" {
+		parts = append(parts, fmt.Sprintf(
+			"then filtered to lines matching /%s/ and capped at 200 matching lines — non-matching lines are gone, so this says nothing about what else the pod logged",
+			pat,
+		))
+	}
+
+	parts = append(parts, "state this narrowing in your answer rather than describing the lines as the pod's logs")
 	return strings.Join(parts, "; ")
+}
+
+// kubectlReadWindow resolves the start bound of a kubectl log read once, for
+// both the command that runs and the note that describes it: flag is what
+// buildKubectlLogCommand appends, phrase is the same bound in words. Both
+// empty when the read gets no time bound at all.
+//
+// One function because they must agree. Two copies of this logic disagreed on
+// an intent carrying an unparseable StartTime next to a usable TimeRange: the
+// command applied no window and the note claimed one.
+//
+// An absolute anchor wins over a relative one, and keeps winning when it does
+// not parse — an intent that named a precise instant we cannot read is not
+// silently downgraded to a vaguer window. Mirrored here rather than corrected,
+// because changing it changes which lines get fetched.
+func kubectlReadWindow(intent kubectlLogQuery) (flag, phrase string) {
+	if st := strings.TrimSpace(intent.StartTime); st != "" {
+		if _, err := time.Parse(time.RFC3339, st); err != nil {
+			return "", ""
+		}
+		return "--since-time=" + st, st
+	}
+	if tr := strings.TrimSpace(intent.TimeRange); tr != "" {
+		if d, ok := parseRelativeWindow(tr); ok {
+			return "--since=" + d.String(), d.String() + " ago"
+		}
+	}
+	return "", ""
 }
 
 // logReadCoverageNote says that a backend log read stopped at its line limit
@@ -246,6 +311,24 @@ func logReadCoverageNote(logs string) string {
 	return b.String()
 }
 
+// logsCompleteMarker closes the inline logs when every fetched line is shown
+// and file_ref holds nothing more. Shared with withKubectlDisclosure, which
+// must take it back off: a kubectl read is capped at the source, so "complete"
+// would contradict the disclosure appended in its place.
+const logsCompleteMarker = "\n\n[... complete — all fetched lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+
+// withKubectlDisclosure records what a kubectl fallback read did not cover —
+// fewer pods than the workload has, a grep filter, the line cap, the absent
+// time bound — on a makeFetchResponse envelope, best-effort (issues #36237,
+// #40196). No-op when note is empty or the body isn't the expected envelope.
+//
+// The note goes on two channels, as a backend read's coverage does: the
+// kubectl_disclosure field for anything parsing the envelope, and a bracketed
+// marker at the end of `logs`, which is what the model demonstrably reads.
+// The "complete" marker comes off in exchange — it is about inline text
+// versus file_ref, but next to a capped read it reads as "this is the whole
+// log". logs_complete itself is left alone: file_ref really does hold
+// nothing more, and flipping it would buy a pointless shell_execute.
 func withKubectlDisclosure(resp core.NBAgentResponse, note string) core.NBAgentResponse {
 	if note == "" || len(resp.Response) == 0 {
 		return resp
@@ -255,6 +338,9 @@ func withKubectlDisclosure(resp core.NBAgentResponse, note string) core.NBAgentR
 		return resp
 	}
 	envelope["kubectl_disclosure"] = note
+	if logs, ok := envelope["logs"].(string); ok {
+		envelope["logs"] = strings.TrimSuffix(logs, logsCompleteMarker) + "\n\n[... " + note + " ...]"
+	}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return resp
@@ -404,11 +490,7 @@ func (a *FetchLogsAgent) generateDatadogLogQueryAndExecute(ctx *security.Request
 		workspaceAccount = a.accountId
 	}
 	fileRef, flattened, fileRefs := saveLogsToWorkspace(ctx, workspaceAccount, request.ConversationId, "datadog", logs)
-	bundleSignal, err := runAutoDiagnosticBundle(ctx, workspaceAccount, request, fileRef)
-	if err != nil {
-		return core.NBAgentResponse{}, err
-	}
-	return makeFetchResponse(a.GetName(), ddQuery, logs, flattened, fileRef, bundleSignal, mergeRefs(toolRefs, fileRefs)), nil
+	return makeFetchResponse(a.GetName(), ddQuery, logs, flattened, fileRef, mergeRefs(toolRefs, fileRefs)), nil
 }
 
 // logLabelsCacheNS caches discovered backend labels (and, for ES, the account's
@@ -721,190 +803,13 @@ func mergeRefs(toolRefs, fileRefs []toolcore.NBToolResponseReference) []toolcore
 // file_ref duplicated the payload and dominated prompt size.
 const logInlinePreviewBytes = 4096
 
-// logMode is the deterministic intent bucket the Go classifier emits. The
-// logs agent's prompt then has a single authoritative MODE flag instead of
-// asking the LLM to classify routine vs investigation vs enumeration on the
-// fly. The LLM frequently treats a parent's paraphrased "Get logs for X" as
-// routine even when OriginalQuery is "Were there issues" — the classifier in
-// Go fixes this deterministically.
-type logMode int
-
-const (
-	logModeRoutine logMode = iota
-	logModeInvestigation
-	logModeEnumeration
-)
-
-func logModeName(m logMode) string {
-	switch m {
-	case logModeInvestigation:
-		return "INVESTIGATION"
-	case logModeEnumeration:
-		return "ENUMERATION"
-	default:
-		return "ROUTINE"
-	}
-}
-
-// Classifier patterns. Investigation has two tiers so precedence against
-// enumeration can differ by strength of signal:
-//
-//   - Enumeration:        "show / list / summarise / enumerate" verb
-//     co-occurring with an error/symptom noun within
-//     ~30 chars, plus "what kinds of errors" and
-//     "distinct errors" idioms. The noun list includes
-//     symptom words (failing/broken/crash*), not just
-//     "error"-family nouns, so "list the pods that are
-//     failing" matches here rather than falling through
-//     to the weak investigation tier below.
-//   - strongInvestigationRE: causal verbs/phrases (why / root cause /
-//     diagnose / troubleshoot / debug / investigate,
-//     plus inflections; "what caused/happened/went
-//     wrong/broke", "were there"). These checked BEFORE
-//     enumeration — a query naming both a causal ask and
-//     a listing verb ("show me the errors and explain why
-//     it broke") is an investigation that happens to
-//     mention "show", not an enumeration.
-//   - weakSymptomRE:        bare "broken" / "failing" / "crash*" with no
-//     causal verb and no enumeration match — checked
-//     AFTER enumeration, so a plain listing request
-//     ("list failing pods") isn't misrouted into the
-//     heavier investigation workflow just because it
-//     names a symptom instead of the word "error".
-var (
-	strongInvestigationRE = regexp.MustCompile(`(?i)\bwhy\b|\broot\s+cause\b|\bdiagnos\w*\b|\btroubleshoot\w*\b|\bdebug\w*\b|\binvestigat\w*\b|\bwhat\s+(caused|happened|went\s+wrong|broke|broken)\b|\bwere\s+there\b`)
-	enumerationVerbsRE    = regexp.MustCompile(`(?i)\b(show|list|summari[sz]e|categori[sz]e|enumerate)\b.{0,30}\b(errors?|fail\w*|exceptions?|issues?|broken|crash\w*)\b|what\s+(kinds?\s+of\s+)?errors|\bdistinct\s+errors?\b`)
-	weakSymptomRE         = regexp.MustCompile(`(?i)\bbroken\b|\bfail\w*\b|\bcrash\w*\b`)
-)
-
-// classifyLogMode buckets the user's intent. The verbatim user question
-// (OriginalQuery) wins over per-step paraphrases from a parent planner —
-// "Get logs for X" emitted by a parent does not erase the user's "why is X
-// broken" intent. When OriginalQuery is empty we fall back to Query.
-func classifyLogMode(query, originalQuery string) logMode {
-	q := strings.TrimSpace(originalQuery)
-	if q == "" {
-		q = strings.TrimSpace(query)
-	}
-	if strongInvestigationRE.MatchString(q) {
-		return logModeInvestigation
-	}
-	if enumerationVerbsRE.MatchString(q) {
-		return logModeEnumeration
-	}
-	if weakSymptomRE.MatchString(q) {
-		return logModeInvestigation
-	}
-	return logModeRoutine
-}
-
-// autoBundleQueryRE keeps the routine-mode fallback: fire the bundle even
-// on a "get logs" request when the wording explicitly names error content
-// ("get error logs", "show me warnings"). A plain "tail 100 lines" query
-// still gets no bundle overhead. Investigation and enumeration modes are
-// handled by classifyLogMode below (which treats "were there issues",
-// "why", "diagnose", "broken", etc. as investigation intent) — the logs
-// prompt actively instructs the LLM to STRIP error keywords from the
-// fetch_logs question ("errors/exceptions/failures force a body filter
-// that excludes surrounding context"), so keying only off literal
-// keywords would let the bundle miss the exact queries it was built for.
-var autoBundleQueryRE = regexp.MustCompile(`(?i)\b(error|errors|fail|failed|failure|failures|exception|exceptions|crash|crashed|crashes|warn|warning|warnings|timeout|timed\s*out|panic|refused|oom|oomkilled|fatal|traceback)\b`)
-
-// runAutoDiagnosticBundle post-processes a successful fetch_logs call to
-// pre-compute the diagnostic-bundle category signal. Deterministic bypass of
-// the LLM's "should I call the bundle now?" decision — when the operator
-// enabled the bundle flag AND the user's intent is an error investigation
-// or enumeration AND fetch_logs saved a non-empty file, we run the crash
-// bundle server-side and return its output for makeFetchResponse to include
-// in the fetch envelope. Best-effort for TOOL errors (returns empty string,
-// nil error — the fetch response still ships normally); context cancellation
-// and timeout errors ARE propagated so the outer request can abort.
-//
-// Gate uses classifyLogMode over OriginalQuery/Query — the same classifier
-// the LogAgent uses to pick INVESTIGATION vs ENUMERATION vs ROUTINE mode.
-// For investigation/enumeration the bundle always fires (that's the entire
-// point of the mode). For routine the narrow autoBundleQueryRE still gates
-// so a plain "tail last 100 lines" gets no bundle overhead.
-//
-// Runs synchronously — the bundle IS the primary reason a follow-on
-// shell_execute grep pass would exist, so paying its ~1-2s cost here saves
-// a full LLM planner turn (~5-8s) in the parent's ReAct loop.
-func runAutoDiagnosticBundle(ctx *security.RequestContext, accountId string, request core.NBAgentRequest, fileRef string) (string, error) {
-	// Best-effort post-processing helper: nil ctx (e.g. from a code path that
-	// invokes fetch_logs without a full RequestContext) must fail silently
-	// instead of panicking on ctx.GetLogger() below or on the bundleTool.Call
-	// context expansion.
-	if ctx == nil {
-		return "", nil
-	}
-	if !config.Config.LogsStandardGrepEnabled {
-		return "", nil
-	}
-	if fileRef == "" {
-		return "", nil
-	}
-	q := strings.TrimSpace(request.OriginalQuery)
-	if q == "" {
-		q = strings.TrimSpace(request.Query)
-	}
-	// Investigation / enumeration intent always gets the bundle. Routine
-	// intent only gets it when the wording explicitly names error content.
-	mode := classifyLogMode(request.Query, request.OriginalQuery)
-	if mode == logModeRoutine && !autoBundleQueryRE.MatchString(q) {
-		return "", nil
-	}
-
-	bundleTool, ok := toolcore.GetNBTool(accountId, tools.ToolStandardDiagnosticGrep)
-	if !ok {
-		return "", nil
-	}
-	toolCtx := toolcore.NewNbToolContext(ctx, bundleTool, accountId,
-		request.UserId, request.ConversationId, request.MessageId, request.AgentId,
-		q, nil, request.QueryContext, request.QueryConfig, "")
-	resp, err := core.CallTool(toolCtx, bundleTool, toolcore.NBToolCallRequest{
-		Arguments: map[string]any{
-			"bundle":   "crash",
-			"log_file": fileRef,
-		},
-	})
-	if err != nil {
-		// Context cancellation / deadline MUST propagate so the outer
-		// request bails instead of continuing after the user (or a
-		// deadline) has already terminated the call. Check ctx.Err()
-		// FIRST — if the underlying tool masked the cancellation with a
-		// generic error, errors.Is on the wrapped err would miss it.
-		// Fall back to explicit sentinel matching in case ctx.Err() is
-		// somehow still nil (a shell that observed cancellation and
-		// returned a sentinel-wrapped error before our ctx observed it).
-		// Only tool-side failures are swallowed as best-effort.
-		if c := ctx.GetContext(); c != nil {
-			if cerr := c.Err(); cerr != nil {
-				return "", cerr
-			}
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return "", err
-		}
-		ctx.GetLogger().Debug("fetch_logs: auto-bundle skipped on tool error",
-			"file_ref", fileRef, "error", err)
-		return "", nil
-	}
-	return resp.Data, nil
-}
-
 // makeFetchResponse returns {query, logs, file_ref, provider, logs_complete,
-// logs_format, logs_format_hint, bundle_signal} so the
-// parent's scratchpad shows which query produced the data, where the raw
-// logs were saved, and — when the query wording indicates an error-content
-// investigation and the bundle flag is on — a pre-computed category-level
-// grep sweep from standard_diagnostic_grep. bundle_signal is empty when the
-// auto-bundle didn't fire (non-error query, flag off, empty file, or bundle
-// tool error) and the caller should ignore the field. See
-// runAutoDiagnosticBundle for the gating logic.
-func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
+// logs_format, logs_format_hint} so the parent's scratchpad shows which query
+// produced the data and where the raw logs were saved.
+func makeFetchResponse(agentName, query, logs, flattened, fileRef string, refs []toolcore.NBToolResponseReference) core.NBAgentResponse {
 	// Preview the SAME representation that was written to file_ref, not the raw
 	// backend payload. saveLogsToWorkspace writes flattenLogsToTabSeparated(logs) —
-	// "<timestamp>\t<message>" per line — while this used to inline the raw
+	// "<timestamp>\t<source>\t<message>" per line — while this used to inline the raw
 	// Loki/ES envelope. Showing one format and handing over a file in another
 	// makes it impossible to write a working grep from the preview alone, so the
 	// model had to spend a turn on `head -n 20 <file_ref>` first to discover the
@@ -940,7 +845,7 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 		// leaving it to be inferred from a flag.
 		// "Fetched", not "matching": this knows the inline text is the whole
 		// saved file, not that the backend returned every line that matched.
-		inlineLogs += "\n\n[... complete — all fetched lines are shown above; file_ref holds nothing further, so no shell_execute is needed ...]"
+		inlineLogs += logsCompleteMarker
 	}
 	if coverageNote != "" {
 		// A read that stopped at its limit is never marked complete, however
@@ -948,11 +853,10 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 		inlineLogs += "\n\n[... " + coverageNote + " ...]"
 	}
 	envelope := map[string]any{
-		"query":         query,
-		"logs":          inlineLogs,
-		"file_ref":      fileRef,
-		"provider":      providerFromLogs(logs),
-		"bundle_signal": bundleSignal,
+		"query":    query,
+		"logs":     inlineLogs,
+		"file_ref": fileRef,
+		"provider": providerFromLogs(logs),
 		// The saved artifact is deliberately not always a JSON document. Expose
 		// the already-known layout so consumers do not waste turns trying
 		// json.load(file_ref), inspecting its head, then rewriting the parser.
@@ -1005,7 +909,7 @@ func makeFetchResponse(agentName, query, logs, flattened, fileRef, bundleSignal 
 //
 // File layout: when the input is a Loki/Signoz/ES JSON envelope of shape
 // `{"logs":[{...},{...}]}`, the saved file is rewritten as JSONL — one log
-// entry per line in `<timestamp>\t<message>` form. This is what makes
+// entry per line in `<timestamp>\t<source>\t<message>` form. This is what makes
 // `grep "<pattern>" file | head -20` work as the LogAgent prompt expects:
 // each entry occupies its own line, head means N entries (not bytes), and
 // matches localise to a single record. Without this, the saved file is one
@@ -1025,7 +929,7 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	if label == "" {
 		label = "kubectl"
 	}
-	body := flattenLogsToTabSeparated(logs)
+	body, sharedSource := flattenLogsSharingSource(logs)
 	filename := fmt.Sprintf("logs_%s_%d.txt", label, time.Now().UnixNano())
 	wm := workspace.NewWorkspaceManager()
 	saveStart := time.Now()
@@ -1033,20 +937,24 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 	saveDuration := time.Since(saveStart)
 	if err != nil {
 		ctx.GetLogger().Warn("fetch_logs: failed to save logs to workspace", "error", err, "file", filename, "duration", saveDuration.String())
-		return "", body, nil
+		// No file means no description to name the shared source in, so the
+		// inline logs keep the full source on every line.
+		return "", flattenLogsToTabSeparated(logs), nil
 	}
 	format := logsLayout(logs, body)
 	ctx.GetLogger().Info("fetch_logs: logs saved", "file", filename, "bytes", len(body), "raw_bytes", len(logs), "format", format, "duration", saveDuration.String())
 	// The description carries the file's shape, so whoever later sees only the
 	// reference (another agent, a later message, the evidence index) can filter
-	// it without first reading it. The flattened layout keeps only timestamp and
-	// message, so stream labels such as pod are not in the file.
+	// it without first reading it. It is also the one place the shared source is
+	// named, so it must stay with the file.
+	shape := DescribeLogLines(body, format == logsLayoutSourced)
+	shape.SharedSource = sharedSource
 	return filename, body, []toolcore.NBToolResponseReference{
 		{
 			Text:        filename,
 			Url:         filename,
 			Type:        "file",
-			Description: fmt.Sprintf("Raw log data from %s: %s", label, DescribeLogLines(body).Describe(format == "timestamp_tab_message")),
+			Description: fmt.Sprintf("Raw log data from %s: %s", label, shape.Describe()),
 		},
 	}
 }
@@ -1056,9 +964,13 @@ func saveLogsToWorkspace(ctx *security.RequestContext, accountId, conversationId
 var logLineBreakEscaper = strings.NewReplacer("\r\n", `\n`, "\n", `\n`, "\r", `\r`)
 
 // flattenLogsToTabSeparated converts a Loki/Signoz/ES JSON envelope to one entry per
-// line. Each output line is `<outer_timestamp>\t<message>` where <message> is
-// the application's emitted line (often itself JSON of the form
-// `{"timestamp":"...","level":"ERROR",...}`). grep then matches per-entry
+// line. Each output line is `<outer_timestamp>\t<source>\t<message>`:
+// <source> names where the line came from (logSource: `pod=…,ns=…,container=…`,
+// or `-` when the record carries none of those labels), and <message> is the
+// application's emitted line (often itself JSON of the form
+// `{"timestamp":"...","level":"ERROR",...}`). Without <source> a question such
+// as "which pods logged errors" could only be answered from pod names that
+// happen to appear inside messages. grep then matches per-entry
 // and `head -N` means N entries. Line breaks inside a message (stack traces,
 // `\r` progress output) are written as the literal escapes `\n` / `\r`, so a
 // record never spans two lines and line counts stay record counts.
@@ -1068,9 +980,24 @@ var logLineBreakEscaper = strings.NewReplacer("\r\n", `\n`, "\n", `\n`, "\r", `\
 //     found" placeholder, Datadog alternate shapes)
 //   - the envelope has zero entries
 func flattenLogsToTabSeparated(raw string) string {
+	body, _ := flattenLogs(raw, false)
+	return body
+}
+
+// flattenLogsSharingSource is flattenLogsToTabSeparated, except that source
+// parts every line has with the same value — ns=shop when the query named
+// namespace shop — are left out of the lines and returned once as shared
+// ("ns=shop"). Repeating them on every line says nothing. Use it only where
+// shared reaches whoever reads the file, as saveLogsToWorkspace does through
+// the file's description.
+func flattenLogsSharingSource(raw string) (body, shared string) {
+	return flattenLogs(raw, true)
+}
+
+func flattenLogs(raw string, shareSource bool) (string, string) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return raw
+		return raw, ""
 	}
 	// Fast path: the expected envelope is `{"logs":[...]}`, so anything not
 	// starting with `{` cannot be it — skip unmarshalling a potentially
@@ -1079,31 +1006,143 @@ func flattenLogsToTabSeparated(raw string) string {
 	// does start with `{` and still parses (into zero entries) before falling
 	// through below. Suggested in review by gemini-code-assist on PR #36182.
 	if !strings.HasPrefix(trimmed, "{") {
-		return raw
+		return raw, ""
 	}
 	var doc struct {
 		Logs []struct {
-			Timestamp string `json:"timestamp"`
-			Message   string `json:"message"`
+			Timestamp string         `json:"timestamp"`
+			Message   string         `json:"message"`
+			Labels    map[string]any `json:"labels"`
 		} `json:"logs"`
 	}
 	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
-		return raw
+		return raw, ""
 	}
 	if len(doc.Logs) == 0 {
-		return raw
+		return raw, ""
+	}
+	sources := make([][]string, len(doc.Logs))
+	for i, e := range doc.Logs {
+		sources[i] = logSourceParts(e.Labels)
+	}
+	var sharedParts []string
+	if shareSource {
+		sharedParts = sharedLogSourceParts(sources)
+	}
+	shared := make(map[string]bool, len(sharedParts))
+	for _, p := range sharedParts {
+		shared[p] = true
 	}
 	var b strings.Builder
 	b.Grow(len(raw))
-	for _, e := range doc.Logs {
+	for i, e := range doc.Logs {
 		ts := strings.TrimSpace(e.Timestamp)
 		msg := logLineBreakEscaper.Replace(strings.TrimSpace(e.Message))
 		b.WriteString(ts)
 		b.WriteByte('\t')
+		b.WriteString(logSource(sources[i], shared))
+		b.WriteByte('\t')
 		b.WriteString(msg)
 		b.WriteByte('\n')
 	}
-	return b.String()
+	return b.String(), strings.Join(sharedParts, ",")
+}
+
+// logSourceKeys lists, per part of <source>, the label names providers use for
+// it, most specific first. services-server normalises most providers to
+// pod/namespace/container; the rest are the provider-native spellings. "host"
+// is used only when no pod label exists: hostname/host name a pod on some
+// providers but the node on others (node-level syslog in SolarWinds, Splunk,
+// CubeAPM), so it is never reported as pod=.
+var logSourceKeys = []struct {
+	name string
+	keys []string
+}{
+	{"pod", []string{"pod", "k8s.pod.name", "pod_name"}},
+	{"host", []string{"hostname", "host", "host.name"}},
+	{"ns", []string{"namespace", "k8s.namespace.name", "namespace_name"}},
+	{"container", []string{"container", "k8s.container.name", "container_name", "program"}},
+}
+
+// logSourceSanitizer keeps a label value inside its column: no tab, line break
+// or the "," / "=" that separate the parts.
+var logSourceSanitizer = strings.NewReplacer("\t", " ", "\n", " ", "\r", " ", ",", " ", "=", " ")
+
+// logSourceParts returns a record's origin as `pod=…`, `ns=…`, `container=…`
+// parts (host=… in place of pod= when the record names no pod), leaving out the
+// parts it has no label for.
+func logSourceParts(labels map[string]any) []string {
+	var parts []string
+	hasPod := false
+	for _, part := range logSourceKeys {
+		if part.name == "host" && hasPod {
+			continue
+		}
+		for _, key := range part.keys {
+			s := logSourceLabelValue(labels[key])
+			if s == "" {
+				continue
+			}
+			parts = append(parts, part.name+"="+s)
+			hasPod = hasPod || part.name == "pod"
+			break
+		}
+	}
+	return parts
+}
+
+// logSource renders the <source> column: the parts not in shared, joined by
+// ",". It is `-` when the record has no parts at all, and empty when every part
+// it has is shared.
+func logSource(parts []string, shared map[string]bool) string {
+	if len(parts) == 0 {
+		return "-"
+	}
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if !shared[p] {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ",")
+}
+
+// sharedLogSourceParts returns the parts every record has with the same value,
+// in the order the first record lists them. A single record shares nothing:
+// leaving its source out would save nothing.
+func sharedLogSourceParts(records [][]string) []string {
+	if len(records) < 2 {
+		return nil
+	}
+	counts := map[string]int{}
+	for _, parts := range records {
+		for _, p := range parts {
+			counts[p]++
+		}
+	}
+	var shared []string
+	for _, p := range records[0] {
+		if counts[p] == len(records) {
+			shared = append(shared, p)
+		}
+	}
+	return shared
+}
+
+// logSourceLabelValue renders a scalar label value; nested values are not a name.
+func logSourceLabelValue(v any) string {
+	var s string
+	switch t := v.(type) {
+	case string:
+		s = t
+	case float64:
+		s = strconv.FormatFloat(t, 'f', -1, 64)
+	case bool, int, int64:
+		s = fmt.Sprint(t)
+	default:
+		return ""
+	}
+	return strings.TrimSpace(logSourceSanitizer.Replace(s))
 }
 
 // logsLayout reports which save path was taken — for the structured log line
@@ -1113,19 +1152,24 @@ func logsLayout(raw, body string) string {
 	if raw == body {
 		return "passthrough"
 	}
-	return "timestamp_tab_message"
+	return logsLayoutSourced
 }
 
+// logsLayoutSourced names the flattenLogsToTabSeparated layout. Compare against
+// this constant, not a literal, so renaming the layout cannot silently turn a
+// comparison false.
+const logsLayoutSourced = "timestamp_tab_source_tab_message"
+
 func logsFormatHint(format string) string {
-	if format == "timestamp_tab_message" {
-		return "One record per line: <timestamp><TAB><message>. Parse line-by-line and split once on TAB; never JSON-decode the whole file. JSON-decode only the message field when it begins with an object or array."
+	if format == logsLayoutSourced {
+		return "One record per line: <timestamp><TAB><source><TAB><message>. <source> is where the line came from, `pod=<pod>,ns=<namespace>,container=<container>` with absent parts left out, or `-` when unknown — use it for per-pod, per-namespace or per-container questions (host=<node> appears instead of pod= when the line names no pod; a host is not a pod). Parts that are the same on every line are left out of <source> and named once in logs_shape (\"every line is from …\"); an empty <source> means the line has nothing beyond them. Match message text against the message column only, never the whole line, so a pod named like an error does not match. Parse line-by-line and split on the first two TABs only (the message may contain tabs); never JSON-decode the whole file. JSON-decode only the message field when it begins with an object or array."
 	}
 	return "The file is the same line-oriented passthrough representation shown in the logs preview. Filter it directly with grep/awk; only apply structured parsing when the preview demonstrates that format."
 }
 
 func errorResponse(agentName string, err error) core.NBAgentResponse {
 	text := err.Error()
-	if msg, ok := core.LLMFailureMessage(err); ok {
+	if msg, ok := llmruntime.LLMFailureMessage(err); ok {
 		text = msg
 	}
 	return core.NBAgentResponse{
@@ -1364,14 +1408,14 @@ a specific symptom is already known — when it is set, tail SHOULD be 10000 so 
 	messages := buildLogIntentMessages(systemPrompt, request)
 
 	liteCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierRetrieval),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	res, err := core.GenerateAndTrackLLMContent(liteCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(liteCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		ctx.GetLogger().Error("fetch_logs: kubectl intent LLM call failed", "error", err, "query", request.Query)
 		return kubectlLogQuery{}, fmt.Errorf("intent LLM: %w", err)
@@ -1431,7 +1475,7 @@ Answer: host:my-web-server "connection refused"
 `
 	messages := buildLogIntentMessages(systemPrompt, request)
 
-	res, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
+	res, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, false, messages, true)
 	if err != nil {
 		return "", err
 	}
@@ -1498,19 +1542,14 @@ func buildKubectlLogCommand(intent kubectlLogQuery) string {
 	if intent.IsPrevious {
 		args = append(args, "--previous")
 	}
-	tail := intent.Tail
-	if tail <= 0 {
-		tail = 100
-	}
-	args = append(args, fmt.Sprintf("--tail=%d", tail))
-	if st := strings.TrimSpace(intent.StartTime); st != "" {
-		if _, err := time.Parse(time.RFC3339, st); err == nil {
-			args = append(args, fmt.Sprintf("--since-time=%s", st))
-		}
-	} else if tr := strings.TrimSpace(intent.TimeRange); tr != "" {
-		if d, ok := parseRelativeWindow(tr); ok {
-			args = append(args, fmt.Sprintf("--since=%s", d))
-		}
+	args = append(args, fmt.Sprintf("--tail=%d", effectiveKubectlTail(intent)))
+
+	// A requested window must bound the read, not just --tail (which returns
+	// the last N lines wherever they land in time — a bounded past incident
+	// that stopped logging becomes invisible under --tail alone; see
+	// tool_kubectl.go's own --tail-vs---since guidance).
+	if flag, _ := kubectlReadWindow(intent); flag != "" {
+		args = append(args, flag)
 	}
 
 	cmd := strings.Join(args, " ")
@@ -1599,8 +1638,8 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Get error logs for app 'web-api'.",
-				Answer:      `{"where": {"app":{"_eq":"web-api"}, "_body":{"_ilike":"%error%"}}}`,
-				Explanation: "Available Labels - app, _body. PRIORTIZE `app` over `k8s_deployment_name` if both are present",
+				Answer:      `{"where": {"app":{"_eq":"web-api"}, "message":{"_ilike":"%error%"}}}`,
+				Explanation: "Available Labels - app, message. PRIORTIZE `app` over `k8s_deployment_name` if both are present",
 			},
 			{
 				Question:    "Find logs for app 'web-api' in namespace 'prod'.",
@@ -1614,7 +1653,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Get logs for the api-server pod containing 'timeout'.",
-				Answer:      `{"where": {"app":{"_eq":"api-server"}, "_body":{"_ilike":"%timeout%"}}}`,
+				Answer:      `{"where": {"app":{"_eq":"api-server"}, "message":{"_ilike":"%timeout%"}}}`,
 				Explanation: "Use `app` to identify a service/pod by name — pod names have random suffixes (e.g. api-server-7f8b9c-x2k). Only use `pod` with `_like` for prefix patterns.",
 			},
 			{
@@ -1634,7 +1673,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			},
 			{
 				Question:    "Show me errors from the checkout-api service in the last 15 minutes.",
-				Answer:      `{"where": {"app":{"_eq":"checkout-api"}, "_body":{"_ilike":"%error%"}}, "range": "15m"}`,
+				Answer:      `{"where": {"app":{"_eq":"checkout-api"}, "message":{"_ilike":"%error%"}}, "range": "15m"}`,
 				Explanation: "English phrasing 'the X service' / 'X service' means workload=X. In Loki this is the `app` label (or `job` / `container` if `app` is not in Fields). Never emit `service_name`, `service.name`, or `kubernetes.labels.app` unless they appear in the injected Fields list.",
 			},
 			{
@@ -1650,7 +1689,7 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 			{
 				Question:    "Get all logs for checkout-api last 1h, limit 2000.",
 				Answer:      `{"where": {"app":{"_eq":"checkout-api"}}, "limit": 2000, "range": "1h"}`,
-				Explanation: "Broad investigation fetch — NO `_body` filter, NO `direction` (Loki defaults to backward = newest first, which surfaces the most recent error window in the response). For 24h-of-history fixtures and long-lived services, forward+limit would truncate before reaching the error window. The orchestrator can issue a narrow forward second-pass around a specific error timestamp once it's identified.",
+				Explanation: "Broad investigation fetch — NO `message` filter, NO `direction` (Loki defaults to backward = newest first, which surfaces the most recent error window in the response). For 24h-of-history fixtures and long-lived services, forward+limit would truncate before reaching the error window. The orchestrator can issue a narrow forward second-pass around a specific error timestamp once it's identified.",
 			},
 			{
 				Question:    "After finding the first error at 2026-05-06T14:30:15Z, get the 5 minutes of context just before it.",
@@ -1718,6 +1757,12 @@ func providerSpecificQueryExamples(provider string) []core.NBAgentPromptExample 
 // in time order, and a pod grouping that found no pod.
 type LogFileShape struct {
 	Lines int
+	// Sourced says each line is "<timestamp><TAB><source><TAB><message>"
+	// (flattenLogsToTabSeparated), not "<timestamp><TAB><message>".
+	Sourced bool
+	// SharedSource holds the source parts every line has, left out of the lines
+	// (flattenLogsSharingSource), e.g. "ns=shop".
+	SharedSource string
 	// Timestamped counts lines that start with "<RFC 3339 timestamp><TAB>".
 	Timestamped  int
 	First, Last  string
@@ -1740,9 +1785,11 @@ const (
 
 var logLevelKeys = []string{"level", "severity", "lvl", "log.level", "levelname"}
 
-// DescribeLogLines measures a line-per-record log body.
-func DescribeLogLines(body string) LogFileShape {
-	var s LogFileShape
+// DescribeLogLines measures a line-per-record log body. sourced says the body is
+// flattenLogsToTabSeparated output, whose lines carry a <source> column between
+// timestamp and message.
+func DescribeLogLines(body string, sourced bool) LogFileShape {
+	s := LogFileShape{Sourced: sourced}
 	keyCounts := map[string]int{}
 	asc, desc := 0, 0
 	// Compared as times: RFC 3339 strings with different fractional-second
@@ -1755,9 +1802,15 @@ func DescribeLogLines(body string) LogFileShape {
 		}
 		s.Lines++
 		msg := line
+		ts, rest, cut := strings.Cut(line, "\t")
+		if cut && sourced {
+			// <source> sits between timestamp and message; skip it.
+			_, rest, _ = strings.Cut(rest, "\t")
+			msg = rest
+		}
 		// The length and dash check skips time.Parse for lines that cannot start
 		// with a timestamp; RFC3339 parsing accepts fractional seconds.
-		if ts, rest, ok := strings.Cut(line, "\t"); ok && len(ts) >= 20 && ts[4] == '-' {
+		if cut && len(ts) >= 20 && ts[4] == '-' {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				s.Timestamped++
 				msg = rest
@@ -1856,16 +1909,18 @@ func DescribeLogLines(body string) LogFileShape {
 	return s
 }
 
-// Describe renders the shape as one paragraph. withoutLabels says the file holds
-// only timestamp and message, so pod, container and other stream labels are not
-// in it.
-func (s LogFileShape) Describe(withoutLabels bool) string {
+// Describe renders the shape as one paragraph.
+func (s LogFileShape) Describe() string {
 	if s.Lines == 0 {
 		return "empty"
 	}
 	var parts []string
 	if s.Timestamped == s.Lines {
-		parts = append(parts, fmt.Sprintf("%d lines, each <RFC 3339 timestamp><TAB><message>", s.Lines))
+		layout := "<RFC 3339 timestamp><TAB><message>"
+		if s.Sourced {
+			layout = "<RFC 3339 timestamp><TAB><source><TAB><message>"
+		}
+		parts = append(parts, fmt.Sprintf("%d lines, each %s", s.Lines, layout))
 	} else {
 		parts = append(parts, fmt.Sprintf("%d lines (%d start with <RFC 3339 timestamp><TAB>)", s.Lines, s.Timestamped))
 	}
@@ -1906,8 +1961,11 @@ func (s LogFileShape) Describe(withoutLabels bool) string {
 	if s.TextMessages > 0 {
 		parts = append(parts, fmt.Sprintf("%d plain-text messages", s.TextMessages))
 	}
-	if withoutLabels {
-		parts = append(parts, "no pod, container or other stream label is on the line")
+	if s.Sourced {
+		parts = append(parts, "<source> is pod=<pod>,ns=<namespace>,container=<container> with absent parts left out (host=<node> when the line names no pod), or - when unknown")
+		if s.SharedSource != "" {
+			parts = append(parts, fmt.Sprintf("every line is from %s, so that is left out of <source>; an empty <source> means the line is from %s and nothing more", s.SharedSource, s.SharedSource))
+		}
 	}
 	return strings.Join(parts, "; ") + "."
 }

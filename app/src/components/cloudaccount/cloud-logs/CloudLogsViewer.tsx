@@ -275,6 +275,7 @@ const CloudLogsViewer: React.FC<CloudLogsViewerProps> = ({ accountId, provider }
       const msg = err?.response?.data?.errors?.[0]?.message || err?.message || 'Failed to fetch logs';
       setError(msg);
       setData([]);
+      setExecutedQuery(requestPayload.query || '');
     } finally {
       setLoading(false);
     }

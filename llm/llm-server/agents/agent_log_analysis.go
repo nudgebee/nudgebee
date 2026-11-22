@@ -12,6 +12,7 @@ import (
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
@@ -126,7 +127,7 @@ func (l LogAnalysisAgent) extractK8sInfo(ctx *security.RequestContext, accountId
 	}
 
 	// Generate completion with temperature 0 for more deterministic results
-	completion, err := core.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, userId, accountId, conversationId, messageId, agentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract k8s info from log data: %w", err)
 	}
@@ -235,16 +236,16 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 		return core.NBAgentResponse{}, err
 	}
 	systemPrompt := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemMessage),
+		llms.TextParts(llms.ChatMessageTypeSystem, core.WithAgentInstructions(query, systemMessage)),
 	}
 	summaryMsg := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, PROMPT_CHAIN_LOKI_SUMMARY_USER_MSG),
 	}
-	provider := core.GetLLMProvider(ctx, query.AccountId, l.GetName(), false, query.ConversationId)
-	model := core.GetLLMModelName(ctx, query.AccountId, provider, l.GetName(), false, query.ConversationId)
-	maxTokens := core.GetLlmMaxTokenLength(model)
-	logTokenCount := core.GetLLMNumTokensFromMessages(ctx, systemPrompt, provider, model)
-	promptTokenCount := core.GetLLMNumTokensFromMessages(ctx, summaryMsg, provider, model)
+	provider := llmruntime.GetLLMProvider(ctx, query.AccountId, l.GetName(), false, query.ConversationId)
+	model := llmruntime.GetLLMModelName(ctx, query.AccountId, provider, l.GetName(), false, query.ConversationId)
+	maxTokens := llmruntime.GetLlmMaxTokenLength(model)
+	logTokenCount := llmruntime.GetLLMNumTokensFromMessages(ctx, systemPrompt, provider, model)
+	promptTokenCount := llmruntime.GetLLMNumTokensFromMessages(ctx, summaryMsg, provider, model)
 	maxTokens = maxTokens - promptTokenCount
 
 	// Relevant knowledge is prepended to the final messageContent below, so its tokens
@@ -259,7 +260,7 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 		skillsMsg := []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeHuman, knowledgeContext),
 		}
-		skillsTokens := core.GetLLMNumTokensFromMessages(ctx, skillsMsg, provider, model)
+		skillsTokens := llmruntime.GetLLMNumTokensFromMessages(ctx, skillsMsg, provider, model)
 		maxTokens = maxTokens - skillsTokens
 		logger.Debug("loganalysis: budgeted skills context", "skills_tokens", skillsTokens, "remaining_max_tokens", maxTokens)
 	}
@@ -279,7 +280,7 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	logFileDetailMessage := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, fileExtractorPrompt),
 	}
-	res, err := core.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, logFileDetailMessage, true, llms.WithTemperature(0.0))
+	res, err := llmruntime.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, logFileDetailMessage, true, llms.WithTemperature(0.0))
 	if err != nil {
 		ctx.GetLogger().Error("loganalysis: file extraction LLM call failed, continuing without file details", "error", err)
 	}
@@ -420,13 +421,16 @@ func (l LogAnalysisAgent) Execute(ctx *security.RequestContext, query core.NBAge
 	messageHistory := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, messageContent),
 	}
-	token := core.GetLLMNumTokensFromMessages(ctx, messageHistory, provider, model)
+	if block := core.AgentInstructionsBlock(query); block != "" {
+		messageHistory = append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, block)}, messageHistory...)
+	}
+	token := llmruntime.GetLLMNumTokensFromMessages(ctx, messageHistory, provider, model)
 	if token > maxTokens {
 		return core.NBAgentResponse{}, errors.New("loganalysis: the log data is too large to analyze. Please provide a smaller log data")
 	}
 
 	ctx.GetLogger().Debug("Generating log summary")
-	completion, err := core.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, messageHistory, true, llms.WithTemperature(0.0))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, query.UserId, query.AccountId, query.ConversationId, query.MessageId, query.AgentId, false, messageHistory, true, llms.WithTemperature(0.0))
 	if err != nil {
 		ctx.GetLogger().Error("loganalysis: unable to generate log summary", "error", err)
 		return core.NBAgentResponse{}, err
@@ -668,7 +672,7 @@ func (l LogAnalysisAgent) truncateToMaxTokens(context *security.RequestContext, 
 			end = len(ctx.lines)
 		}
 
-		batchTokens := core.GetLLMNumTokensFromStringMessages(context, ctx.lines[i:end], ctx.provider, ctx.model)
+		batchTokens := llmruntime.GetLLMNumTokensFromStringMessages(context, ctx.lines[i:end], ctx.provider, ctx.model)
 
 		if totalTokens+batchTokens <= ctx.maxTokens {
 			totalTokens += batchTokens
@@ -678,7 +682,7 @@ func (l LogAnalysisAgent) truncateToMaxTokens(context *security.RequestContext, 
 
 		// This batch exceeds the limit — process lines individually
 		for j := i; j < end; j++ {
-			lineTokens := core.GetLLMNumTokensFromStringMessages(context, []string{ctx.lines[j]}, ctx.provider, ctx.model)
+			lineTokens := llmruntime.GetLLMNumTokensFromStringMessages(context, []string{ctx.lines[j]}, ctx.provider, ctx.model)
 			if totalTokens+lineTokens > ctx.maxTokens {
 				ctx.truncateIndex = j
 				context.GetLogger().Debug("Truncated log data", "lines_kept", j, "total_lines", len(ctx.lines), "tokens_used", totalTokens)
@@ -701,6 +705,6 @@ type TruncateContext struct {
 	truncateIndex int
 }
 
-func (l LogAnalysisAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierSummary
+func (l LogAnalysisAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierSummary
 }

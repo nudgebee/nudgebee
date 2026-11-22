@@ -59,34 +59,8 @@ export class NubiLocators {
   readonly toolStatusDisabledOption: Locator;
   readonly toolDisabledSuccessMessage: Locator;
 
-  // Functions tab locators (LLM Functions)
+  // b-Cortex Knowledge group tab
   readonly knowledgeGroupTab: Locator;
-  readonly functionsTab: Locator;
-  readonly createFunctionBtn: Locator;
-  readonly searchFunctionInput: Locator;
-  readonly functionNameInput: Locator;
-  readonly functionStatusSelect: Locator;
-  readonly functionStatusDraftOption: Locator;
-  readonly functionStatusActiveOption: Locator;
-  readonly functionCancelBtn: Locator;
-  readonly viewAgentListBtn: Locator;
-  readonly agentListModalTitle: Locator;
-  readonly agentListSearchInput: Locator;
-  readonly rewritePromptBtn: Locator;
-  readonly rewritePromptEmptyError: Locator;
-  readonly variableDefaultsHeading: Locator;
-  readonly functionDescriptionInput: Locator;
-  readonly functionPromptInput: Locator;
-  readonly saveFunctionBtn: Locator;
-  readonly updateFunctionBtn: Locator;
-  readonly functionMoreActionsBtn: Locator;
-  readonly editFunctionMenuItem: Locator;
-  readonly deleteFunctionMenuItem: Locator;
-  readonly confirmDeleteFunctionBtn: Locator;
-  readonly functionCreatedMessage: Locator;
-  readonly functionCreationFailureMessage: Locator;
-  readonly functionUpdatedMessage: Locator;
-  readonly functionDeletedMessage: Locator;
 
   // Agent CRUD action locators
   readonly agentMoreActionsBtn: Locator;
@@ -107,16 +81,19 @@ export class NubiLocators {
 
   constructor(page: Page) {
     this.page = page;
+    // Main-rail Nubi item renders on every page; the header "Ask nubi" button is absent on /ask-nudgebee, the landing page.
     this.askNudgebeeBtn = page
-      .getByRole("button", { name: "Ask nubi" })
-      .or(page.locator('img[alt="Ask nubi"]'));
+      .locator("#nubi-sidenavbutton")
+      .or(page.locator("#global-search-trigger-ask-ai"))
+      .or(page.getByRole("button", { name: "Ask nubi" }))
+      .first();
     this.newChatBtn = page.locator('img[src*="plus-icon"]');
     // The same chat renders with two different placeholders: the long one on the
     // full /ask-nudgebee page, and "Ask a question..." when Nubi is opened as the
     // floating panel (KubernetesLLMResponseGeneratorV2 keys it off `popup`).
     // Match either, so a caller does not have to know which mode it landed in.
     this.chatTextbox = page
-      .getByPlaceholder("Ask me about troubleshooting, error logs, resource usage, or optimizations.")
+      .getByPlaceholder("Ask about troubleshooting, logs or optimizations")
       .or(page.getByPlaceholder("Ask a question..."))
       .first();
     this.submitBtn = page.locator('#set-config-btn')
@@ -138,9 +115,11 @@ export class NubiLocators {
     this.agenRole = page.getByRole('textbox', { name: 'You are a [role], responsible' })
     this.agentInstructionsInput = page.getByRole('textbox', { name: 'Key responsibilities: 1. [' })
     this.selectAgentOrTool = page.getByRole("button", { name: "Select Tool/Agent" });
-    this.listOfAgentsOrTools = page.getByText('anomaly_execute - system')
-    
-    this.agentToolUsage = page.getByRole('textbox', { name: 'Tool: [Tool Name] Purpose: [' })
+    // First tool the picker offers on this env, not a named one that may not exist everywhere.
+    this.listOfAgentsOrTools = page.locator('.MuiPopover-root [role="option"]:visible').first()
+
+    // By placeholder: the role/name lookup misses it while the picker popover leaves the dialog aria-hidden.
+    this.agentToolUsage = page.getByPlaceholder(/^Tool: \[Tool Name\]/)
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators
@@ -169,48 +148,9 @@ export class NubiLocators {
     this.toolStatusDisabledOption = page.getByText('Disabled', { exact: true });
     this.toolDisabledSuccessMessage = page.getByText('Tool updated successfully');
 
-
-    // Functions tab locators (LLM Functions) - b-Cortex > Knowledge > My Functions,
-    // the only Functions mount since Admin > AI & Tools dropped its Functions tab.
-    // exact:true on the group tab: "Knowledge" is also the prefix of the sibling
-    // "Knowledge Graph" group tab. NOT exact on My Functions: its icon is a plain
-    // require()d .svg, which Tabs.jsx renders as <SafeIcon alt={text}>, so the
-    // image alt joins the tab's accessible name. The fallback is the id Tabs
-    // stamps from the option's value (`tab-${value}`), which BCortexModal sets
-    // to the sub-tab id, so it does not shift when a flag drops a sibling.
+    // exact:true: "Knowledge" is also the prefix of the sibling "Knowledge
+    // Graph" group tab.
     this.knowledgeGroupTab = page.getByRole('tab', { name: 'Knowledge', exact: true });
-    this.functionsTab = page.getByRole('tab', { name: 'My Functions' }).or(page.locator('#tab-my-functions')).first();
-    this.createFunctionBtn = page.locator('#create-function');
-    this.searchFunctionInput = page.getByPlaceholder('Search Function');
-    this.functionNameInput = page.getByPlaceholder('e.g., get_user_data, process_payment');
-    this.functionStatusSelect = page.getByRole('button', { name: 'Status', exact: true }).or(page.locator('#function-status')).first();
-    this.functionStatusDraftOption = page.getByText('Draft', { exact: true });
-    this.functionStatusActiveOption = page.getByText('Active', { exact: true });
-    this.functionCancelBtn = page.getByRole('button', { name: 'Cancel' });
-    this.viewAgentListBtn = page.getByRole('button', { name: 'View Agent List' });
-    this.agentListModalTitle = page.getByText('Available Agents');
-    this.agentListSearchInput = page.getByPlaceholder('Search agents...');
-    this.rewritePromptBtn = page.getByRole('button', { name: 'Rewrite Prompt' });
-    this.rewritePromptEmptyError = page.getByText('Please enter a prompt to validate');
-    this.variableDefaultsHeading = page.getByText('Variable Default Values');
-    this.functionDescriptionInput = page.getByPlaceholder('What is this function supposed to do?');
-    this.functionPromptInput = page.getByPlaceholder('Write your prompt here...');
-    this.saveFunctionBtn = page.getByRole('button', { name: 'Save Function' });
-    this.updateFunctionBtn = page.getByRole('button', { name: 'Update Function' });
-    this.functionMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
-    this.editFunctionMenuItem = page
-      .locator('[role="menuitem"]#edit:visible')
-      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Edit Function' }))
-      .first();
-    this.deleteFunctionMenuItem = page
-      .locator('[role="menuitem"]#delete:visible')
-      .or(page.locator('[role="menuitem"]:visible', { hasText: 'Delete Function' }))
-      .first();
-    this.confirmDeleteFunctionBtn = page.getByRole('button', { name: 'Delete', exact: true });
-    this.functionCreatedMessage = page.getByText('Function created successfully');
-    this.functionCreationFailureMessage = page.getByText('A function with this name already exists');
-    this.functionUpdatedMessage = page.getByText('Function updated successfully');
-    this.functionDeletedMessage = page.getByText(/deleted successfully/);
 
     // Agent CRUD action locators
     this.agentMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
@@ -295,8 +235,7 @@ export class NubiLocators {
   }
 
   // The same picker, for a caller that needs one named account rather than whichever real one
-  // comes first. The Nubi chat reads its own account from the global cluster selection, so a
-  // function authored under any other account is simply absent from its /call list.
+  // comes first.
   async selectAdminAccount(accountName?: string, timeout = 30000): Promise<void> {
     const trigger = this.page.locator("#account-select");
     await trigger.click();
@@ -321,10 +260,7 @@ export class NubiLocators {
     const groupCount = await groupHeaders.count();
     // Exact match, not hasText substring: AccountSelect lists sibling accounts that share a
     // name prefix (e.g. "k8s-dev" and "k8s-dev-oss"), and a substring match picks whichever
-    // sorts first regardless of which one the caller asked for. That silently created a
-    // function under the wrong account in the "Usage in Nubi" tests — CHAT_ACCOUNT ("k8s-dev")
-    // resolved to a different accountId than the one the /call suggestions were read from,
-    // so the created function could never appear there no matter how long the test waited.
+    // sorts first regardless of which one the caller asked for.
     const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const realAccountOption = accountName
       ? listbox.locator('[role="option"]').filter({ hasText: new RegExp(`^${escapeRegExp(accountName)}$`) }).first()
@@ -369,8 +305,7 @@ export class NubiLocators {
 
   // Opens one of the two rail modals and waits until the tab it must land on is
   // on screen. Both modals build their tab strip behind an async round trip
-  // (AIToolsModal: useBCortexEnabled; BCortexModal: useBCortexEnabled and
-  // hasFeatureAccess('LLM_FUNCTION')), and a rail click landing while the panel is still
+  // (AIToolsModal: useBCortexEnabled; BCortexModal: useBCortexEnabled), and a rail click landing while the panel is still
   // animating in opens nothing at all - so the click and the wait are retried
   // as a pair rather than the click being fired once.
   //
@@ -405,25 +340,8 @@ export class NubiLocators {
     await this.openRailModal(this.aiToolsDialog, this.aiToolsBtn, tab, timeout);
   }
 
-  // One entry in the chat's /call suggestion popup. TextAreaV2 renders that popup
-  // as a bare MUI Popper of unlabelled Boxes - no testid, role or id anywhere
-  // inside it - so the function's own name is the only handle it offers.
-  // No .or(): every wider match would resolve against the chat transcript behind
-  // the popup rather than the suggestion itself.
-  callSuggestion(functionName: string): Locator {
-    return this.page.getByText(functionName, { exact: true }).first();
-  }
-
-  functionRowsMatching(text: string): Locator {
-    return this.page.getByRole("row").filter({ hasText: text });
-  }
-
-  functionRowMoreActionsBtn(row: Locator): Locator {
-    return row.getByRole("button", { name: "More actions" });
-  }
-
-  // b-Cortex, which took Soul, Privacy, Preferences, Feedback, My Usage and
-  // My Functions out of Settings (docs/ia-consolidation-plan.md, PR 4).
+  // b-Cortex, which took Soul, Privacy, Preferences, Feedback and My Usage
+  // out of Settings (docs/ia-consolidation-plan.md, PR 4).
   async openBCortex(tab: Locator, timeout = 60000): Promise<void> {
     await this.openRailModal(this.bcortexDialog, this.bcortexBtn, tab, timeout);
   }

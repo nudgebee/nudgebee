@@ -10,7 +10,9 @@ import (
 
 // QueryProxyDatasources queries all proxy integration configs for an account,
 // decrypts credentials, and returns them ready to push to the proxy agent.
-// This mirrors the API server's queryProxyDatasources logic.
+// This mirrors the API server's queryProxyDatasources logic, and must list the same
+// integration types: the sync it feeds replaces the agent's whole datasource list, so a
+// type this query does not know is removed from the agent on every reconnect.
 func (p *pgStore) QueryProxyDatasources(ctx context.Context, accountID string) ([]ProxyDatasource, error) {
 	rows, err := p.db.QueryxContext(ctx, `
 		SELECT i.id::text, i.type::text, i.name::text
@@ -21,7 +23,7 @@ func (p *pgStore) QueryProxyDatasources(ctx context.Context, accountID string) (
 		AND (
 			i.type IN ('http_proxy', 'mcp_proxy', 'mongodb_proxy', 'kafka_proxy')
 			OR (
-				i.type IN ('postgresql', 'mysql', 'clickhouse', 'mssql', 'oracle', 'redis', 'ssh', 'mcp')
+				i.type IN ('postgresql', 'mysql', 'clickhouse', 'mssql', 'oracle', 'redis', 'ssh', 'mcp', 'rabbitmq', 'prometheus', 'loki', 'signoz')
 				AND EXISTS (
 					SELECT 1 FROM integration_config_values icv
 					WHERE icv.integration_id = i.id
@@ -126,12 +128,27 @@ func (p *pgStore) QueryProxyDatasources(ctx context.Context, accountID string) (
 				configMap["db_type"] = strings.ToLower(integrationType)
 			case "redis":
 				proxyType = "redis-proxy"
+			case "rabbitmq":
+				proxyType = "rabbitmq-proxy"
+			case "prometheus", "loki", "signoz":
+				// Ride the agent's generic http proxy; the datasource type stays the
+				// integration type so the agent applies its Prometheus health check.
+				proxyType = "http-proxy"
 			}
 		case "db-proxy":
 			// Ensure db_type is set for db-proxy
 			if _, ok := configMap["db_type"]; !ok {
 				configMap["db_type"] = strings.ToLower(integrationType)
 			}
+		}
+
+		switch strings.ToLower(integrationType) {
+		case "prometheus":
+			normalizePrometheusProxyDatasource(configMap, credentials)
+		case "loki":
+			normalizeLokiProxyDatasource(configMap, credentials)
+		case "signoz":
+			normalizeSignozProxyDatasource(configMap)
 		}
 
 		datasources = append(datasources, ProxyDatasource{

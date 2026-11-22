@@ -1,6 +1,6 @@
 import { troubleshootIconBlack, OptimizeIconBlack, SLOInspectionBlackIcon, CloudIconBlackOutline, AutomateBlue, EmailIconBlack } from '@assets';
 
-export type RuleTypeKey = 'troubleshoot' | 'slo' | 'cloud' | 'optimize' | 'automation' | 'weekly_digest' | 'daily_recap';
+export type RuleTypeKey = 'troubleshoot' | 'slo' | 'cloud' | 'optimize' | 'automation' | 'weekly_digest' | 'daily_recap' | 'llm_budget';
 
 export interface RuleEvent {
   id: string;
@@ -155,6 +155,22 @@ export const RULE_TYPES: RuleType[] = [
     alone: true,
     icon: EmailIconBlack,
     includes: ['The daily highlights email to your users. There is one daily email rule.'],
+  },
+  {
+    key: 'llm_budget',
+    label: 'AI Gateway budget alerts',
+    noun: 'AI Gateway budget alerts',
+    one: 'AI Gateway budget alert',
+    accounts: false,
+    workloads: false,
+    alerts: false,
+    inAllTypes: false,
+    alone: true,
+    icon: OptimizeIconBlack,
+    includes: [
+      'A message when an AI Gateway quota with a warn level passes it, and again when it reaches its limit, once each per window.',
+      'Sent to a channel only when a rule for this type exists. The key owner is always emailed directly.',
+    ],
   },
 ];
 

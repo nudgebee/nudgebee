@@ -1,15 +1,18 @@
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import GatewayUsage from '@components/llm/gateway-usage/GatewayUsage';
 
-// The sub-tab of the AI Gateway screen is encoded in the URL hash as
-// `#ai-gateway/<sub-tab>` so a shared link lands on the exact sub-tab and it
-// survives reload. These tests lock in that read (deep-link → tab) and write
-// (tab change → hash) contract.
+// The AI Gateway page's tabs are grouped into sections, and the open tab is
+// encoded in the URL hash as `#<section>` (its default tab) or
+// `#<section>/<tab>`, so a shared link lands on the exact tab and survives
+// reload. These tests lock in that read (deep-link → tab) and write (tab change
+// → hash) contract, including push vs replace when a drill-in crosses sections.
 
-// `router.replace` returns a promise — it must be mocked as one, because the
-// component chains `.catch()` onto it to absorb Next's `cancelled` rejection.
+// `router.replace`/`push` return promises — they must be mocked as such, because
+// the component chains `.catch()` onto them to absorb Next's `cancelled` rejection.
 const replaceMock = jest.fn(() => Promise.resolve(true));
-let currentAsPath = '/optimise#ai-gateway';
+const pushMock = jest.fn(() => Promise.resolve(true));
+let currentAsPath = '/ai-gateway#monitor';
+let mockCanViewUsers = true;
 
 // Next rejects an in-flight navigation that a newer one supersedes with this
 // error shape (next/dist/client/index.js — `error.cancelled = true`).
@@ -27,14 +30,17 @@ async function flush() {
 
 jest.mock('next/router', () => ({
   useRouter: jest.fn(() => ({
-    pathname: '/optimise',
+    pathname: '/ai-gateway',
     query: {},
     get asPath() {
       return currentAsPath;
     },
     replace: replaceMock,
+    push: pushMock,
   })),
 }));
+
+jest.mock('@lib/auth', () => ({ canViewGatewayUserAccess: () => mockCanViewUsers }));
 
 // The data fetch is irrelevant to routing — stub it out.
 jest.mock('@components/llm/gateway-usage/useGatewayData', () => ({
@@ -69,7 +75,11 @@ jest.mock('@components/llm/gateway-usage/views/UsersView', () => ({
     </button>
   ),
 }));
+jest.mock('@components/llm/gateway-usage/views/KeysView', () => ({ __esModule: true, default: () => <div>keys</div> }));
 jest.mock('@components/llm/gateway-usage/views/RequestsView', () => ({ __esModule: true, default: () => <div>requests</div> }));
+jest.mock('@components/llm/gateway-usage/views/SessionsView', () => ({ __esModule: true, default: () => <div>sessions</div> }));
+jest.mock('@components/llm/gateway-usage/views/ToolsView', () => ({ __esModule: true, default: () => <div>tools</div> }));
+jest.mock('@components/llm/gateway-usage/views/GovernanceView', () => ({ __esModule: true, default: () => <div>governance</div> }));
 
 // The filter bar pulls in heavy pickers; stub to keep the render focused on tabs.
 jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({ __esModule: true, default: () => <div>date-picker</div> }));
@@ -77,105 +87,146 @@ jest.mock('@ui/ToggleGroup', () => ({ ToggleGroup: () => <div>granularity</div> 
 
 function setHash(hash: string) {
   window.location.hash = hash;
-  currentAsPath = `/optimise${hash}`;
+  currentAsPath = `/ai-gateway${hash}`;
 }
 
-describe('GatewayUsage sub-tab URL routing', () => {
+describe('GatewayUsage tab URL routing', () => {
   beforeEach(() => {
     replaceMock.mockClear();
     replaceMock.mockReturnValue(Promise.resolve(true));
-    setHash('#ai-gateway');
+    pushMock.mockClear();
+    mockCanViewUsers = true;
+    setHash('#monitor');
   });
 
-  it('opens on the sub-tab named in the hash (deep link)', () => {
-    setHash('#ai-gateway/users');
-    render(<GatewayUsage />);
-    expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'users');
-    expect(screen.getByTestId('drill-user')).toBeInTheDocument();
-  });
-
-  it('falls back to overview when the hash has no sub-tab', () => {
-    setHash('#ai-gateway');
-    render(<GatewayUsage />);
-    expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'overview');
-  });
-
-  it('ignores an unknown sub-tab and falls back to overview', () => {
-    setHash('#ai-gateway/bogus');
-    render(<GatewayUsage />);
-    expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'overview');
-  });
-
-  // Mount must never navigate: `tab` is seeded from the hash, so the two already
-  // agree. This is what keeps a deep link from being overwritten, and it removes
-  // the mount-time navigation that Next could cancel mid-flight.
-  it.each([['#ai-gateway'], ['#ai-gateway/models'], ['#ai-gateway/bogus'], ['#summary']])('does not navigate on mount for %s', (hash) => {
+  it.each([
+    ['#monitor/users', 'users'],
+    ['#monitor', 'overview'],
+    ['#monitor/bogus', 'overview'],
+    ['#activity', 'requests'],
+    ['#activity/tools', 'tools'],
+  ])('opens %s on %s', (hash, tab) => {
     setHash(hash);
     render(<GatewayUsage />);
-    expect(replaceMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', tab);
   });
 
-  it('writes the hash when the user clicks a sub-tab', () => {
-    setHash('#ai-gateway/overview');
+  it('shows only the open section’s tabs', () => {
+    setHash('#activity');
     render(<GatewayUsage />);
-    replaceMock.mockClear();
-    // The tab list is keyed by string TabId, so the Models tab is `tab-models`.
+    expect(screen.getByTestId('tab-sessions')).toBeInTheDocument();
+    expect(screen.queryByTestId('tab-models')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['#governance', 'governance'],
+    ['#connect', 'connect'],
+  ])('shows no tab strip for the one-tab section %s', (hash, view) => {
+    setHash(hash);
+    render(<GatewayUsage />);
+    expect(screen.queryByTestId('tabs')).not.toBeInTheDocument();
+    expect(screen.getByText(view)).toBeInTheDocument();
+  });
+
+  it('hides the Users tab, and its deep link, from a non-admin', () => {
+    mockCanViewUsers = false;
+    setHash('#monitor/users');
+    render(<GatewayUsage />);
+    expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'overview');
+    expect(screen.queryByTestId('tab-users')).not.toBeInTheDocument();
+  });
+
+  // Mount must not navigate while the hash already selects the tab: that's what
+  // keeps a deep link from being overwritten.
+  it.each([['#monitor'], ['#monitor/overview'], ['#monitor/models'], ['#activity/sessions'], ['#governance']])(
+    'does not navigate on mount for %s',
+    (hash) => {
+      setHash(hash);
+      render(<GatewayUsage />);
+      expect(replaceMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    }
+  );
+
+  // No hash leaves the page's top tab strip on its first section (Connect) while
+  // Overview shows; a tab named under the wrong section highlights the wrong one.
+  it.each([
+    ['', '#monitor'],
+    ['#monitor/requests', '#activity'],
+  ])('rewrites %s to the tab’s own hash %s on mount', (hash, canonical) => {
+    setHash(hash);
+    render(<GatewayUsage />);
+    expect(replaceMock).toHaveBeenCalledWith(expect.objectContaining({ hash: canonical }), undefined, { shallow: true });
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('replaces the hash when the user clicks a tab in the same section', () => {
+    render(<GatewayUsage />);
     act(() => {
       fireEvent.click(screen.getByTestId('tab-models'));
     });
-    expect(replaceMock).toHaveBeenCalledWith(expect.objectContaining({ hash: '#ai-gateway/models' }), undefined, { shallow: true });
+    expect(replaceMock).toHaveBeenCalledWith(expect.objectContaining({ hash: '#monitor/models' }), undefined, { shallow: true });
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
-  it('writes the hash on the Users → Requests drill-in', () => {
-    setHash('#ai-gateway/users');
+  // Crossing sections is a push, so browser Back returns to the Users list
+  // instead of leaving the page.
+  it('pushes the hash on the Users → Requests drill-in', () => {
+    setHash('#monitor/users');
     render(<GatewayUsage />);
-    replaceMock.mockClear();
     act(() => {
       fireEvent.click(screen.getByTestId('drill-user'));
     });
-    expect(replaceMock).toHaveBeenCalledWith(expect.objectContaining({ hash: '#ai-gateway/requests' }), undefined, { shallow: true });
+    expect(pushMock).toHaveBeenCalledWith(expect.objectContaining({ hash: '#activity' }), undefined, { shallow: true });
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   // The hash is the source of truth: when it changes underneath us (browser
-  // back/forward, or the top-level tab's own link) the screen must follow it.
+  // back/forward, the sidenav, the page's top tab strip) the screen must follow.
   describe('URL → tab', () => {
-    it('follows the hash to another sub-tab (browser back/forward)', () => {
-      setHash('#ai-gateway/users');
+    it('follows the hash to another tab (browser back/forward)', () => {
+      setHash('#monitor/users');
       const { rerender } = render(<GatewayUsage />);
       act(() => {
-        setHash('#ai-gateway/models');
+        setHash('#monitor/models');
         rerender(<GatewayUsage />);
       });
       expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'models');
     });
 
-    // Regression: the AI Gateway top-level tab links to a bare `#ai-gateway`
-    // (AnchorComponent's getTabUrl), so clicking it while on Requests used to leave
-    // the screen on Requests with a URL that no longer named it — sharing that link
-    // then landed the recipient on Overview.
-    it('resets to overview when the hash drops to a bare #ai-gateway', () => {
-      setHash('#ai-gateway/requests');
+    it('resets to the section default when the hash drops to a bare section', () => {
+      setHash('#activity/tools');
       const { rerender } = render(<GatewayUsage />);
-      expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'requests');
       act(() => {
-        setHash('#ai-gateway');
+        setHash('#activity');
         rerender(<GatewayUsage />);
       });
-      expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'overview');
+      expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'requests');
     });
 
-    // While navigating to another top-level tab this component can still render a
-    // tick before it unmounts; it must not claim a hash that isn't its own.
-    it('ignores a hash belonging to another top-level tab', () => {
-      setHash('#ai-gateway/requests');
+    // A sidenav or top-strip click already put the hash in the URL; writing it
+    // again (or pushing a second history entry) would be wrong.
+    it('does not write back a hash it was moved to', () => {
+      setHash('#monitor/models');
       const { rerender } = render(<GatewayUsage />);
-      replaceMock.mockClear();
       act(() => {
-        setHash('#summary');
+        setHash('#activity');
         rerender(<GatewayUsage />);
       });
       expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'requests');
       expect(replaceMock).not.toHaveBeenCalled();
+      expect(pushMock).not.toHaveBeenCalled();
+    });
+
+    // Next leaves router.asPath alone for a native hash change (the guided tour
+    // sets location.hash), so hashchange alone must move the tab.
+    it('follows a native hashchange that Next does not report', () => {
+      render(<GatewayUsage />);
+      act(() => {
+        window.location.hash = '#activity/sessions';
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      expect(screen.getByTestId('tabs')).toHaveAttribute('data-value', 'sessions');
     });
   });
 
@@ -196,10 +247,9 @@ describe('GatewayUsage sub-tab URL routing', () => {
 
     it('absorbs a cancelled rejection without an unhandled rejection', async () => {
       replaceMock.mockReturnValueOnce(Promise.reject(cancelledError()));
-      setHash('#ai-gateway/overview');
       render(<GatewayUsage />);
       act(() => {
-        fireEvent.click(screen.getByTestId('tab-requests'));
+        fireEvent.click(screen.getByTestId('tab-keys'));
       });
       await flush();
       expect(replaceMock).toHaveBeenCalled();
@@ -208,10 +258,9 @@ describe('GatewayUsage sub-tab URL routing', () => {
 
     it('keeps the tab usable after a cancelled hash write', async () => {
       replaceMock.mockReturnValueOnce(Promise.reject(cancelledError()));
-      setHash('#ai-gateway/overview');
       render(<GatewayUsage />);
       act(() => {
-        fireEvent.click(screen.getByTestId('tab-requests'));
+        fireEvent.click(screen.getByTestId('tab-keys'));
       });
       await flush();
       // The component must still respond to tab changes after absorbing the reject.

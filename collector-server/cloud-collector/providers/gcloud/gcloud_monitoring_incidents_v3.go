@@ -91,9 +91,11 @@ func getGCPIncidentsV3(ctx providers.CloudProviderContext, account *providers.Ac
 	var filters []string
 	if query.StartDate != nil {
 		startTimeStr := query.StartDate.Format(time.RFC3339)
-		// Fetch incidents that opened since the last run OR are still open.
+		// Fetch incidents that opened or closed since the last run OR are still
+		// open. An incident that opened before the last run and closed since is
+		// how a stored open firing learns when it ended.
 		// No upper bound needed — we want everything from StartDate to now.
-		filters = append(filters, fmt.Sprintf("open_time>=\"%s\" OR state=\"OPEN\"", startTimeStr))
+		filters = append(filters, fmt.Sprintf("open_time>=\"%s\" OR close_time>=\"%s\" OR state=\"OPEN\"", startTimeStr, startTimeStr))
 	} else {
 		// No StartDate (initial load) — fetch open incidents only.
 		// This avoids fetching the entire incident history on first run.
@@ -105,6 +107,10 @@ func getGCPIncidentsV3(ctx providers.CloudProviderContext, account *providers.Ac
 	if err != nil {
 		return providers.ListEventResponse{}, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
+
+	// Taken before the listing: an incident that opens during it may be missing
+	// from it without having closed.
+	listedAt := time.Now().UTC()
 
 	// Fetch all alerts with pagination
 	var allAlerts []*Alert
@@ -179,6 +185,8 @@ func getGCPIncidentsV3(ctx providers.CloudProviderContext, account *providers.Ac
 	return providers.ListEventResponse{
 		Items:   events,
 		Summary: []providers.EventSummary{},
+		// Every page was read, so the project's open incidents are listed completely.
+		Ongoing: openIncidentSnapshot(projectID, listedAt, allAlerts, events),
 	}, nil
 }
 
@@ -223,6 +231,13 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		eventStatus = providers.EventStatusResolved
 	default:
 		eventStatus = providers.EventStatusFiring
+	}
+	// A resolve ends the stored firing at the resolve's date, so a closed
+	// incident is dated by when it closed.
+	if eventStatus == providers.EventStatusResolved {
+		if closedAt := parseRFC3339Time(alert.CloseTime); closedAt != nil {
+			eventTime = closedAt
+		}
 	}
 
 	// Extract resource information

@@ -11,9 +11,10 @@ import {
 } from "./homeHelper";
 import { HomeLocators, K8S_QUICK_LINKS, TROUBLESHOOT, OPTIMIZE, SECURITY, FALLBACK_SUBTITLE, SECTION_FOOTER, SECTION_FOOTER_PATH } from "./homeLocators";
 
-// Home — the landing surface every sign-in arrives on (app/src/pages/home/index.jsx, which
-// `/` redirects to). It is a read-only dashboard: three collapsible insight sections down
-// the left, and Automations / Follow-ups / Quick Links down the right. It offers no create,
+// Home (app/src/pages/home/index.jsx) — no longer where `/` redirects (that's
+// /ask-nudgebee now), but still a real page reachable from the sidebar. It is a
+// read-only dashboard: three collapsible insight sections down the left, and
+// Automations / Follow-ups / Quick Links down the right. It offers no create,
 // edit or delete path, so nothing here writes to the shared dev environment.
 //
 // The one piece of state a test does change is a section's collapsed flag, which

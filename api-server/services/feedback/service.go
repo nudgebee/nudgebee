@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 )
 
@@ -53,8 +52,13 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	// so it's gated on Read access (the same level required to view the
 	// conversation) rather than Create — otherwise read-only roles could see
 	// the conversation but not react to it.
-	if !context.GetSecurityContext().HasAccountAccess(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(feedbackRequest.CloudAccountId, security.SecurityAccessTypeRead) {
 		return data, fmt.Errorf("unauthorized")
+	}
+
+	cloudAccountID := feedbackRequest.CloudAccountId
+	if cloudAccountID == "" {
+		return data, fmt.Errorf("cloud_account_id cannot be empty")
 	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
@@ -66,17 +70,16 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	userId := context.GetSecurityContext().GetUserId()
 
 	// Feedback is singular per (response, user): a user's thumbs-up/down on a
-	// given response (session_id) for a module replaces any prior feedback
-	// rather than appending. The table started out append-only (plain INSERT),
-	// which let a single response accumulate conflicting rows (e.g. a Yes and a
-	// No). The conversation widget reads only the latest row while the admin
-	// feedback tab lists all of them, so the two surfaces disagreed and the
-	// icon could show the opposite of the recorded feedback (issue #32906).
-	// Deleting prior rows for the key before inserting also collapses any
-	// pre-existing duplicates the moment the user re-submits.
-	deleteQuery := `DELETE FROM llm_conversation_feedback
-		WHERE session_id = $1 AND module = $2 AND user_id = $3 AND cloud_account_id = $4 AND tenant_id = $5`
-	insertQuery := `INSERT INTO llm_conversation_feedback (session_id,
+	// given response replaces any prior feedback rather than appending. The
+	// table started out append-only (plain INSERT), which let a single
+	// response accumulate conflicting rows (e.g. a Yes and a No), so the chat
+	// widget (latest row) and the admin feedback tab (all rows) could disagree
+	// on which vote was current (issue #32906). The unique constraint added in
+	// V767 on (session_id, conversation_id, user_id, cloud_account_id) makes
+	// this upsert atomic and race-proof — an earlier DELETE-then-INSERT here
+	// raced with that same constraint and could throw unique_violation on a
+	// genuine concurrent double-submit instead of replacing the row.
+	upsertQuery := `INSERT INTO llm_conversation_feedback (session_id,
 		module,
 		question,
 		llm_response,
@@ -87,20 +90,20 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 		tenant_id,
 		cloud_account_id,
 		user_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (session_id, conversation_id, user_id, cloud_account_id)
+		DO UPDATE SET module = EXCLUDED.module,
+			question = EXCLUDED.question,
+			llm_response = EXCLUDED.llm_response,
+			user_corrected_response = EXCLUDED.user_corrected_response,
+			useful = EXCLUDED.useful,
+			additional_notes = EXCLUDED.additional_notes,
+			tenant_id = EXCLUDED.tenant_id,
+			updated_at = now()`
 
-	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
-		if _, err := tx.Exec(deleteQuery, feedbackRequest.SessionId, feedbackRequest.Module, userId,
-			feedbackRequest.CloudAccountId, tenantId); err != nil {
-			return nil, err
-		}
-		if _, err := tx.Exec(insertQuery, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
-			feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
-			feedbackRequest.ConversationId, tenantId, feedbackRequest.CloudAccountId, userId); err != nil {
-			return nil, err
-		}
-		return nil, nil
-	})
+	_, err = dbms.ExecContext(context.GetContext(), upsertQuery, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
+		feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
+		feedbackRequest.ConversationId, tenantId, feedbackRequest.CloudAccountId, userId)
 	if err != nil {
 		return data, err
 	}
@@ -123,7 +126,7 @@ func ListOwnConversationFeedback(context *security.RequestContext, req ListOwnCo
 	if req.CloudAccountId == "" {
 		return rows, fmt.Errorf("cloud_account_id cannot be empty")
 	}
-	if !context.GetSecurityContext().HasAccountAccess(req.CloudAccountId, security.SecurityAccessTypeRead) {
+	if !context.GetSecurityContext().CanAccessAccount(req.CloudAccountId, security.SecurityAccessTypeRead) {
 		return rows, fmt.Errorf("unauthorized")
 	}
 	if len(req.SessionId) == 0 {

@@ -239,3 +239,44 @@ func TestGrailStr_EmptyStringValue(t *testing.T) {
 	record := map[string]any{"span.id": ""}
 	assert.Equal(t, "", grailStr(record, "span.id"))
 }
+
+// Grail reports truncation as notifications in result.metadata.grail; they reach
+// the QueryResult Note, INFO ones excepted (#39201).
+func TestExecuteDQLQuery_NotificationsBecomeNote(t *testing.T) {
+	body := `{
+		"state": "SUCCEEDED",
+		"result": {
+			"records": [{"val":[1.0]}],
+			"metadata": {
+				"grail": {
+					"notifications": [
+						{"severity": "WARNING", "notificationType": "LIMIT_ADDED", "message": "The result has been limited to 1000 records."},
+						{"severity": "INFO", "message": "Scanned 3 GB."},
+						{"notificationType": "SCAN_LIMIT_REACHED"},
+						{}
+					]
+				},
+				"metrics": {"val": {"timestamps": ["2024-01-01T00:00:00Z"]}}
+			}
+		}
+	}`
+	srv := newGrailMockServer(t, http.StatusOK, body, nil)
+	defer srv.Close()
+
+	result, err := executeDQLQuery(srv.URL, "test-token", "timeseries val = avg(x)")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"The result has been limited to 1000 records.", "SCAN_LIMIT_REACHED"}, result.Warnings())
+	assert.Equal(t,
+		"Dynatrace reported: The result has been limited to 1000 records; SCAN_LIMIT_REACHED. These results may be partial.",
+		dynatraceNotificationNote(result.Warnings()))
+}
+
+func TestExecuteDQLQuery_NoNotificationsNoNote(t *testing.T) {
+	srv := newGrailMockServer(t, http.StatusOK, `{"state":"SUCCEEDED","result":{"records":[],"metadata":{"grail":{}}}}`, nil)
+	defer srv.Close()
+
+	result, err := executeDQLQuery(srv.URL, "test-token", "fetch logs")
+	require.NoError(t, err)
+	assert.Empty(t, result.Warnings())
+	assert.Empty(t, dynatraceNotificationNote(result.Warnings()))
+}

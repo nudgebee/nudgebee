@@ -632,6 +632,20 @@ func TestService_getApplicableSourcesForAccount(t *testing.T) {
 			wantIntegration:  []string{},
 		},
 		{
+			name:             "SelfHosted VM account with no filter",
+			cloudProvider:    "SelfHosted",
+			requestedSources: []string{},
+			wantAccount:      []string{"selfhosted"},
+			wantIntegration:  []string{},
+		},
+		{
+			name:             "SelfHosted VM account with a filter that leaves it out",
+			cloudProvider:    "SelfHosted",
+			requestedSources: []string{"aws"},
+			wantAccount:      []string{},
+			wantIntegration:  []string{},
+		},
+		{
 			name:             "Unknown provider defaults to empty",
 			cloudProvider:    "UnknownProvider",
 			requestedSources: []string{},
@@ -666,6 +680,15 @@ func TestService_getApplicableSourcesForAccount(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A self-hosted build is a static-source build: it must bump the sync version,
+// or markInactiveNodes never retires a host whose scans stopped.
+func TestService_shouldIncrementSyncVersion_SelfHosted(t *testing.T) {
+	service := NewService(newTestRequestContext(), nil, nil)
+	if !service.shouldIncrementSyncVersion([]string{"selfhosted"}, nil) {
+		t.Error("shouldIncrementSyncVersion([selfhosted]) = false, want true")
 	}
 }
 

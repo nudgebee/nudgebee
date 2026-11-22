@@ -132,6 +132,111 @@ func TestParsePopeye_RejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+// Shape written by the v0.11 fork the scanner image is built from: the section
+// list is "sanitizers", each section is named by "sanitizer", no report_time.
+const popeyeSanitizersFixture = `{
+  "popeye": {
+    "score": 76,
+    "grade": "C",
+    "sanitizers": [
+      {
+        "sanitizer": "cluster",
+        "gvr": "cluster",
+        "tally": {"ok": 1, "info": 0, "warning": 0, "error": 0, "score": 100},
+        "issues": {
+          "Version": [
+            {"group": "__root__", "gvr": "cluster", "level": 0, "message": "[POP-406] K8s version OK"}
+          ]
+        }
+      },
+      {
+        "sanitizer": "deployments",
+        "gvr": "apps/v1/deployments",
+        "tally": {"ok": 0, "info": 0, "warning": 0, "error": 1, "score": 0},
+        "issues": {
+          "default/my-app": [
+            {"group": "__root__", "gvr": "apps/v1/deployments", "level": 2, "message": "[POP-106] No resources defined"},
+            {"group": "__root__", "gvr": "apps/v1/deployments", "level": 3, "message": "[POP-100] No probes defined"}
+          ]
+        }
+      },
+      {
+        "sanitizer": "clusterroles",
+        "gvr": "rbac.authorization.k8s.io/v1/clusterroles",
+        "tally": {"ok": 0, "info": 1, "warning": 0, "error": 0, "score": 0},
+        "issues": {
+          "stale-cluster-role": [
+            {"group": "__root__", "gvr": "rbac.authorization.k8s.io/v1/clusterroles", "level": 1, "message": "[POP-400] Used? Unable to locate resource reference"}
+          ]
+        }
+      }
+    ]
+  }
+}`
+
+func TestParsePopeye_SanitizersSchema(t *testing.T) {
+	recs, err := ParsePopeye(popeyeSanitizersFixture, ScanAccount{AccountID: "acc-1", TenantID: "tenant-1"})
+	if err != nil {
+		t.Fatalf("ParsePopeye: %v", err)
+	}
+	// The cluster section has only level=0 issues, so it yields no row.
+	if len(recs) != 2 {
+		t.Fatalf("recs = %d; want 2: %+v", len(recs), recs)
+	}
+	byID := make(map[string]Recommendation, len(recs))
+	for _, r := range recs {
+		byID[r.AccountObjectID] = r
+	}
+
+	myApp, ok := byID["default/Deployment/my-app"]
+	if !ok {
+		t.Fatalf("missing my-app row; have: %+v", recs)
+	}
+	if myApp.RuleName != "deployments_misconfigurations" {
+		t.Errorf("my-app.RuleName = %q; want deployments_misconfigurations", myApp.RuleName)
+	}
+	if myApp.Severity != "Critical" {
+		t.Errorf("my-app.Severity = %q; want Critical (max level 3)", myApp.Severity)
+	}
+	var insights []map[string]any
+	if err := json.Unmarshal([]byte(myApp.Recommendation), &insights); err != nil {
+		t.Fatalf("recommendation not valid JSON: %v", err)
+	}
+	if len(insights) != 2 || insights[0]["kind"] != "Deployment" {
+		t.Errorf("my-app insights = %+v; want 2 with kind Deployment", insights)
+	}
+
+	cr, ok := byID["/ClusterRole/stale-cluster-role"]
+	if !ok {
+		t.Fatalf("missing stale-cluster-role row; have: %+v", recs)
+	}
+	if cr.RuleName != "clusterroles_misconfigurations" || cr.Severity != "Info" {
+		t.Errorf("clusterrole = (%q, %q); want (clusterroles_misconfigurations, Info)", cr.RuleName, cr.Severity)
+	}
+}
+
+// A clean cluster still lists its sections, with no issues; that is an empty
+// result, not an unrecognised schema.
+func TestParsePopeye_CleanClusterIsNotAnError(t *testing.T) {
+	for _, stdout := range []string{
+		`{"popeye":{"score":100,"grade":"A","sanitizers":[{"sanitizer":"cluster","gvr":"cluster","tally":{"ok":1,"info":0,"warning":0,"error":0,"score":100}}]}}`,
+		`{"popeye":{"score":100,"grade":"A","sanitizers":[]}}`,
+	} {
+		recs, err := ParsePopeye(stdout, ScanAccount{AccountID: "a", TenantID: "t"})
+		if err != nil || len(recs) != 0 {
+			t.Errorf("ParsePopeye(%s) = (%d recs, %v); want (0 recs, nil)", stdout, len(recs), err)
+		}
+	}
+}
+
+func TestParsePopeye_RejectsUnknownSchema(t *testing.T) {
+	for _, stdout := range []string{`{}`, `{"popeye":{"score":76,"grade":"C"}}`} {
+		if recs, err := ParsePopeye(stdout, ScanAccount{AccountID: "a", TenantID: "t"}); err == nil {
+			t.Errorf("ParsePopeye(%s) = %d recs, nil error; want an error", stdout, len(recs))
+		}
+	}
+}
+
 func TestParsePopeye_DropsZeroLevelOnlyResources(t *testing.T) {
 	stdout := `{"popeye":{"score":100,"sections":[{"linter":"pods","gvr":"v1/pods","issues":{"x/y":[{"group":"_","gvr":"v1/pods","level":0,"message":"all good"}]}}]}}`
 	recs, err := ParsePopeye(stdout, ScanAccount{AccountID: "a", TenantID: "t"})

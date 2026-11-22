@@ -1,4 +1,5 @@
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
+import { EmptyState } from '@ui/EmptyState';
 import { useEffect, useState } from 'react';
 import { plusMinus5TimeRangePrometheusOfDate } from 'src/utils/common';
 import PropTypes from 'prop-types';
@@ -38,11 +39,14 @@ export const getDataFromProemtheus = async (event) => {
       // `series` names what `data` only orders: with no usage samples, data[0] is the request.
       // `usage` is left undefined when the usage query was not answered at all.
       const numbers = (payload) => (payload[0]?.values || []).map((val) => parseFloat(val));
-      const usageAnswered = result.some((data) => data.query_key === 'cpu_usage_pod');
+      const usageResult = result.find((data) => data.query_key === 'cpu_usage_pod');
       return {
         labels: cpuUsageLabels,
         data: seriesData,
-        series: { usage: usageAnswered ? numbers(cpuUsageData) : undefined, request: numbers(cpuRequestData), limit: numbers(cpuLimitData) },
+        series: { usage: usageResult ? numbers(cpuUsageData) : undefined, request: numbers(cpuRequestData), limit: numbers(cpuLimitData) },
+        // The server's own reason for an empty usage series: no metrics source, one that cannot
+        // answer this query, or a query that failed. Absent when the source simply had no samples.
+        reason: cpuUsageData.length === 0 ? usageResult?.note || usageResult?.error || undefined : undefined,
       };
     }
   } catch (e) {
@@ -80,8 +84,14 @@ function PrometheusCPUUsageCardComponent(props) {
     };
   }, [props.event.cloud_account_id, props.event.subject_namespace, props.event.subject_name, props.event.starts_at]);
 
+  // An empty chart reads as "the pod used no CPU". When the server said why it has no usage
+  // samples, say that instead.
+  if (cpuUsageData.reason) {
+    return <EmptyState size='inline' title='No CPU data for this alert' description={cpuUsageData.reason} />;
+  }
+
   return (
-    <LineChart
+    <Chart.Line
       labels={cpuUsageData.labels}
       dataset={[
         {

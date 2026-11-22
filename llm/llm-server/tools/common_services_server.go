@@ -20,8 +20,20 @@ import (
 // lokiMaxLogLimit is the per-query cap Loki enforces (HTTP 400 above this).
 // Sourced from the production error string `loki: limit exceeds maximum of 5000`
 // (services-server wrapped) — pin here so the clamp does not lag the upstream
-// reality. If Loki raises its cap, bump this constant.
+// reality. If Loki raises its cap, bump this constant. Nudgebee's ClickHouse
+// logs (otel_clickhouse) keep the same cap (logql2ch.MaxLimit).
 const lokiMaxLogLimit = 5000
+
+// IsLogQLProvider reports whether a log provider is queried in LogQL: Loki, and
+// the agent's ClickHouse (otel_clickhouse), whose LogQL services-server
+// translates. Provider name is normalised (trimmed + lowercased).
+func IsLogQLProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "loki", "otel_clickhouse":
+		return true
+	}
+	return false
+}
 
 // clampLogLimitForProvider returns the (possibly capped) limit + a flag that
 // indicates whether a clamp actually happened. Returns (limit, false) for
@@ -29,11 +41,8 @@ const lokiMaxLogLimit = 5000
 // Provider name is normalised (trimmed + lowercased) so accidental whitespace
 // in integration config doesn't bypass the clamp.
 func clampLogLimitForProvider(provider string, limit int) (int, bool) {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "loki":
-		if limit > lokiMaxLogLimit {
-			return lokiMaxLogLimit, true
-		}
+	if IsLogQLProvider(provider) && limit > lokiMaxLogLimit {
+		return lokiMaxLogLimit, true
 	}
 	return limit, false
 }
@@ -438,16 +447,24 @@ func effectiveTraceLimit(configLimit int, configHasLimit bool, builderLimit int)
 // tool kept fewer than the backend returned, or the backend returned exactly the query's limit
 // (so the window may hold more). The note is what the agent repeats instead of reading a sample
 // as the whole window.
+//
+// A backend that stopped short of the query's limit returned every matching trace, so Received is
+// the exact count for the window even though only max are shown; Total carries it.
 func capTraceResponse(resp core.ObservabilityTraceResponse, max int) core.ObservabilityTraceResponse {
 	received := len(resp.Traces)
 	limit := resp.Metadata.Limit
 	switch {
 	case max > 0 && received > max:
 		resp.Traces = resp.Traces[:max]
-		resp.Coverage = &core.ObservabilityTraceCoverage{
-			Limit: max, Received: received, Returned: max,
-			Note: fmt.Sprintf("sample: the backend returned %d traces and only the first %d are shown%s; the window may hold more — report counts and rates as from this sample, not the whole window, or narrow the query (service, operation, status, shorter window)", received, max, traceWindowPhrase(resp.Metadata)),
+		coverage := &core.ObservabilityTraceCoverage{Limit: max, Received: received, Returned: max}
+		if limit > 0 && received < limit {
+			total := received
+			coverage.Total = &total
+			coverage.Note = fmt.Sprintf("partial: the backend returned all %d matching traces%s and only the first %d are shown — %d is the exact count for this window, report it as exact; the traces below are the first %d of them", received, traceWindowPhrase(resp.Metadata), max, received, max)
+		} else {
+			coverage.Note = fmt.Sprintf("sample: the backend returned %d traces and only the first %d are shown%s; the window may hold more — report counts and rates as from this sample, not the whole window, or narrow the query (service, operation, status, shorter window)", received, max, traceWindowPhrase(resp.Metadata))
 		}
+		resp.Coverage = coverage
 	case limit > 0 && received >= limit:
 		resp.Coverage = &core.ObservabilityTraceCoverage{
 			Limit: limit, Received: received, Returned: received,
@@ -976,7 +993,7 @@ func HasDatadogIntegration(accountId string) bool {
 	}
 
 	// Check if account has Datadog integration configured
-	// Based on pattern from tools/tool_docs.go:204 and agents/core/llm_common.go:1443
+	// Based on pattern from tools/tool_docs.go:204 and llms/runtime/llm_common.go:1443
 	query := `
 		SELECT COUNT(*)
 		FROM integrations i

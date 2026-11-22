@@ -59,6 +59,12 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 			return nil, nil
 		}
 
+		if scannerName == "popeye_scan" {
+			if err := linkPopeyeResources(tx, account, recs); err != nil {
+				return nil, err
+			}
+		}
+
 		vulnIDs, err := models.UpsertVulnerabilities(tx, collectVulnerabilityRows(recs))
 		if err != nil {
 			return nil, fmt.Errorf("upsert vulnerabilities: %w", err)

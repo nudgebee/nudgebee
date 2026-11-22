@@ -39,6 +39,7 @@ var messageFieldCases = []struct {
 	{"dynatrace", "user", "content", "Dynatrace calls the log line `content`"},
 	{"openobserve", "user", "body", ""},
 	{"cubeapm", "user", "_msg", ""},
+	{"otel_clickhouse", "agent", "log", "Loki's spelling: logql2ch reads `log` as the line"},
 	{"splunk_enterprise", "user", "body", ""},
 
 	// Correctly unmapped — the backend's own column is `message`.

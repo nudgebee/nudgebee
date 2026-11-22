@@ -176,7 +176,7 @@ func TestIntegration_ModeFlipTakesEffectOnNewWrapper(t *testing.T) {
 
 func TestIntegration_ConcurrentCallsAreRaceFree(t *testing.T) {
 	// The wrapper must be safe to call from many goroutines simultaneously —
-	// the cache in agents/core/llm_config.go shares a single wrapped instance
+	// the cache in llms/runtime/llm_config.go shares a single wrapped instance
 	// across the planner's parallel-execution worker pool.
 	inner := &fakeModel{respText: "ok"}
 	wrapped := WrapModel(inner, "openai", "gpt-4o", true, ModeEnforce)

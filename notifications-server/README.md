@@ -9,7 +9,7 @@ Part of the [Nudgebee](https://github.com/nudgebee/nudgebee) monorepo. See the r
 ### Prerequisites
 
 - Python 3.11+
-- [Poetry](https://python-poetry.org/docs/#installation)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Running Postgres (`postgres:16`) and RabbitMQ (`rabbitmq:3-management`)
 
 Bring up the infra containers from the repo root:
@@ -22,7 +22,7 @@ docker compose up -d postgres rabbitmq
 
 ```bash
 cd notifications-server
-poetry install
+uv sync
 ```
 
 ### 2. Configure environment
@@ -53,7 +53,7 @@ Add credentials only for the channels you intend to test (Slack, Teams, Google C
 ### 3. Run the server
 
 ```bash
-poetry run uvicorn notifications_server.server:app --host 0.0.0.0 --port 8080 --reload
+uv run uvicorn notifications_server.server:app --host 0.0.0.0 --port 8080 --reload
 ```
 
 Listens on <http://localhost:8080>. Health check: <http://localhost:8080/health>.
@@ -61,18 +61,18 @@ Listens on <http://localhost:8080>. Health check: <http://localhost:8080/health>
 ### 4. Run tests
 
 ```bash
-poetry run pytest
+uv run pytest
 ```
 
 ### 5. Lint
 
 ```bash
-poetry run black --check .
-poetry run flake8 .
-poetry run mypy notifications_server
+uv run black --check .
+uv run flake8 .
+uv run mypy notifications_server
 ```
 
-Auto-fix formatting: `poetry run black .`
+Auto-fix formatting: `uv run black .`
 
 ## Architecture
 
@@ -118,8 +118,8 @@ Auto-fix formatting: `poetry run black .`
 | POST | `/api/threads/messages` | Fetch messages from a thread |
 | POST | `/api/notifications/test` | Send a test notification (RPC action) |
 | POST | `/api/rules/save` | Create/update a notification routing rule (RPC action) |
-| GET | `/api/integrations/install/ms-teams` | Begin MS Teams OAuth install |
-| POST | `/api/integrations/callback/ms-teams` | Complete MS Teams OAuth install |
+| POST | `/api/integrations/link/ms-teams` | Redeem a Teams connect link: bind the team to the workspace |
+| POST | `/api/integrations/ms-teams/disconnect` | Release every Teams team of the workspace (RPC action) |
 | GET | `/api/integrations/install/google` | Begin Google Chat OAuth install |
 | POST | `/api/integrations/callback/google` | Complete Google Chat OAuth install |
 | GET | `/slack/install` | Begin Slack OAuth install |
@@ -185,16 +185,20 @@ Configure the Slack App's redirect URL to `${BASE_URL}/api/integrations/slack/ca
 
 | Variable | Required for |
 |---|---|
-| `MS_TEAMS_CLIENT_ID` | The bot's Entra app id: Connect sign-in and the bot identity |
+| `MS_TEAMS_CLIENT_ID` | The bot's Entra app id |
 | `MS_TEAMS_CLIENT_SECRET` | The bot's Entra app secret |
 | `MS_TEAMS_BOT_TENANT_ID` | Home tenant of a SingleTenant Azure Bot; the Bot Connector token is issued there. Leave empty for a MultiTenant bot |
-| `MS_TEAMS_ACTION_SIGNING_KEY` | Signs the data on Teams card buttons (Suppress, Ask Nubi, workflow approvals, answer feedback). Leave empty to send Teams cards without action buttons |
+| `MS_TEAMS_ACTION_SIGNING_KEY` | Signs the data on Teams card buttons (Suppress, Ask Nubi, workflow approvals, answer feedback) and the bot's Connect link. Leave empty to send Teams cards without action buttons; teams can't be connected without it |
 | `MS_TEAMS_THINKING_STEPS_ENABLED` | `true`: a chat question gets a "Thinking…" message that shows Nubi's steps and becomes the answer. `false`: a plain "working on it" reply |
 | `MS_TEAMS_ANSWER_CARDS_ENABLED` | `true`: chat answers are cards, with tables and feedback buttons. `false`: plain text answers |
 | `MS_TEAMS_AUTHORITY` | `https://login.microsoftonline.com/common` |
 | `MS_TEAMS_BOT_ENDPOINT` | Bot Framework endpoint |
 
-Teams goes through the bot only; no Microsoft Graph permission is used. Connect asks only for `User.Read`, to learn which Microsoft tenant is connecting. Use a multi-tenant Entra app registration with a SingleTenant Azure Bot, enable its Microsoft Teams channel (and accept the channel's terms), point the messaging endpoint at `${BASE_URL}/api/webhooks/msteams/events`, and add the NudgeBee Teams app to the teams that should get alerts. The bot posts to a team's standard channels only; private and shared channels aren't listed.
+Teams goes through the bot only; no Microsoft Graph permission is used and there is no Microsoft sign-in. Use a multi-tenant Entra app registration with a SingleTenant Azure Bot, enable its Microsoft Teams channel (and accept the channel's terms), point the messaging endpoint at `${BASE_URL}/api/webhooks/msteams/events`, and add the NudgeBee Teams app to the teams that should get alerts. The bot posts to a team's standard channels only; private and shared channels aren't listed.
+
+**Connecting a team.** Each Teams team belongs to one workspace; a workspace can have many teams, and one Microsoft tenant can serve several workspaces. While a team isn't connected and `MS_TEAMS_ACTION_SIGNING_KEY` is set, the bot's welcome card in it carries a **Connect Microsoft Teams** button for the person who added the bot, and an @mention of the bot gets a button for the person who mentioned it (one per person per team every 5 minutes). Each opens `${BASE_URL}/integrations/ms-teams/connect` and works for 7 days, only for that person: it carries an HMAC of their Teams sign-in name (UPN) under the signing key, never the name or email itself. They confirm it there, signed in to NudgeBee with that same email as a workspace admin (tenant admin, super admin, or the messaging-platforms write permission), which binds the team to that workspace. Guests, people from another Microsoft tenant, personal Microsoft accounts, public mailbox domains and `*.onmicrosoft.com` accounts get no link; the bot logs why (`no_upn`, `guest`, `role`, `cross_tenant`, `consumer_tenant`, `public_domain`, `onmicrosoft`, `lookup_failed`, `key_unset`, …), never who. A team connected to another workspace can't be taken (`team_linked_elsewhere`), and a workspace's teams all come from one Microsoft tenant (`other_microsoft_tenant`). Removing the app from a team, or deleting or archiving the team, releases it; adding the app back needs a new link, even for the same workspace. Disconnect on the Integrations page releases every team of the workspace. The app calls `POST /api/integrations/link/ms-teams` to redeem a link.
+
+**Moving a team to another workspace.** Remove the app from the team in Teams (or disconnect the workspace that has it), add it back, and open the new link signed in to the rightful workspace. The previous workspace's channel mappings for that team are deleted; its rules that sent there fail with "app isn't added to this team" in delivery history until they are pointed elsewhere. To see who has a team: `SELECT tenant_id, status FROM integrations WHERE type = 'ms_teams_team' AND name = '<team Entra group id>'` (`enabled` = connected).
 
 ### Google Chat
 
@@ -227,6 +231,7 @@ Configure the Google Cloud project's OAuth redirect to `${BASE_URL}/api/integrat
 | `AUTO_PILOT_URL` | `http://auto-pilot-server:9988` | Skip scheduled optimize executions |
 | `LLM_SERVER_URL` | `http://llm-server:8000` | LLM completions |
 | `WORKFLOW_SERVER_URL` | `http://workflow-server:8000` | Workflow approvals |
+| `WORKFLOW_SERVER_TOKEN` | — | `X-ACTION-TOKEN` for deciding Auto Optimize approvals from Slack / Teams buttons (shared `nudgebee` secret) |
 
 ## Branding
 
@@ -304,7 +309,7 @@ Update the provider-side app configuration to match:
 | Provider     | Redirect / event URL to register with the provider                          |
 |--------------|------------------------------------------------------------------------------|
 | Slack        | OAuth redirect: `${BASE_URL}/api/integrations/slack/callback` <br> Event subscription: `${BASE_URL}/api/webhooks/slack/events` |
-| MS Teams     | OAuth redirect: `${BASE_URL}/api/integrations/ms-teams/callback` <br> Bot messaging endpoint: `${BASE_URL}/api/webhooks/msteams/events` |
+| MS Teams     | Bot messaging endpoint: `${BASE_URL}/api/webhooks/msteams/events` |
 | Google Chat  | OAuth redirect: `${BASE_URL}/api/integrations/google/callback` <br> Chat app event URL: `${BASE_URL}/api/webhooks/google-chat/events` |
 
 The Next.js frontend handles the user-facing callback paths and proxies to notifications-server's internal Bolt / OAuth handlers — see the [root CLAUDE.md](../CLAUDE.md) on the `/api/integrations/<provider>/*` surface.
@@ -327,5 +332,5 @@ The Next.js frontend handles the user-facing callback paths and proxies to notif
 
 This service follows the monorepo conventions documented in the root [CONTRIBUTING.md](../CONTRIBUTING.md). In short:
 
-- Run `poetry run black .`, `poetry run flake8 .`, `poetry run mypy notifications_server`, and `poetry run pytest` before pushing.
+- Run `uv run black .`, `uv run flake8 .`, `uv run mypy notifications_server`, and `uv run pytest` before pushing.
 - Open PRs against `main`; CI deploys to test and prod via subsequent automated PRs.

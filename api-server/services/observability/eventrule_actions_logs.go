@@ -838,154 +838,35 @@ type signozLogsParams struct {
 	LabelExtractors []LabelExtractor      `json:"label_extractors,omitempty"`
 }
 
-func (a *signozLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
-	securityCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+// signozDefaultLogProvider resolves the account's default log provider; a seam
+// so CanAutoExecute can be tested without a database.
+var signozDefaultLogProvider = GetDefaultProvider
 
-	provider, err := GetDefaultProvider(securityCtx, ctx.GetAccountId(), "logs", "", "")
+// CanAutoExecute runs this action only for an event that carries the alert's own
+// SigNoz log query (relatedLogsParams, forwarded with SigNoz alerts), which only
+// this action can run. Every other SigNoz log lookup — pod, workload, service,
+// trace — is the generic logs action's: it maps the canonical labels onto SigNoz's
+// attributes and covers every workload kind, so running this action as well only
+// repeated (or failed) the same lookup.
+func (a *signozLogsAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
+	if ctx.GetEvent().Labels["relatedLogsParams"] == "" {
+		return false
+	}
+	securityCtx := security.NewRequestContextForTenantAdmin(ctx.GetTenantId(), ctx.GetLogger(), nil, nil)
+	provider, err := signozDefaultLogProvider(securityCtx, ctx.GetAccountId(), "logs", "", "")
 	if err != nil {
 		securityCtx.GetLogger().Error("signozLogsEnricherAction: unable to get default log provider", "error", err)
 		return false
 	}
-	if provider.Provider != "signoz" {
-		return false
-	}
-
-	if ctx.GetEvent().Labels == nil {
-		return false
-	}
-
-	if ctx.GetEvent().Labels["pod"] != "" && getEventNamespace(ctx.GetEvent()) != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["trace_id"] != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["relatedLogsParams"] != "" {
-		return true
-	}
-
-	if ctx.GetEvent().Labels["service_name"] != "" || ctx.GetEvent().Labels["service"] != "" {
-		return true
-	}
-
-	// Fallback: query by workload name + namespace
-	if ctx.GetEvent().SubjectName != "" && getEventNamespace(ctx.GetEvent()) != "" {
-		return true
-	}
-
-	return false
+	return provider.Provider == "signoz"
 }
 
 func (a *signozLogsAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
-	params := map[string]any{}
-	namespace := getEventNamespace(ctx.GetEvent())
-	if ctx.GetEvent().Labels["pod"] != "" && namespace != "" {
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": ctx.GetEvent().Labels["pod"],
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.pod.name",
-						},
-					},
-					{
-						"value": namespace,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.namespace.name",
-						},
-					},
-				},
-			},
-			"title": "Pod Logs For - " + ctx.GetEvent().Labels["pod"],
-		}
-	} else if ctx.GetEvent().Labels["trace_id"] != "" {
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": ctx.GetEvent().Labels["trace_id"],
-						"op":    "=",
-						"key": map[string]any{
-							"key": "trace_id",
-						},
-					},
-				},
-			},
-			"title": "Trace Logs For - " + ctx.GetEvent().Labels["trace_id"],
-		}
-	} else if ctx.GetEvent().Labels["relatedLogsParams"] != "" {
-		parsedQuery, err := a.parseRelatedLogsParams(ctx.GetEvent().Labels["relatedLogsParams"])
-		if err != nil {
-			return nil, err
-		}
-		params["title"] = "Related Logs"
-		params["raw_query"] = parsedQuery
-	} else if ctx.GetEvent().Labels["service_name"] != "" || ctx.GetEvent().Labels["service"] != "" {
-		service_name := ctx.GetEvent().Labels["service_name"]
-		if service_name == "" {
-			service_name = ctx.GetEvent().Labels["service"]
-		}
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					{
-						"value": service_name,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "service.name",
-						},
-					},
-				},
-			},
-			"title": "Service Logs For - " + ctx.GetEvent().Labels["service_name"],
-		}
-	} else if ctx.GetEvent().SubjectName != "" && namespace != "" {
-		workloadName := getEventWorkload(ctx.GetEvent())
-		nameItem := map[string]any{
-			"value": workloadName,
-			"op":    "contains",
-			"key": map[string]any{
-				"key": "k8s.deployment.name",
-			},
-		}
-		title := "Workload Logs For - " + workloadName
-		// A pod event reads that pod's logs, not its owner's: see eventPodSubject.
-		if pod := eventPodSubject(ctx.GetEvent()); pod != "" {
-			nameItem = map[string]any{
-				"value": pod,
-				"op":    "=",
-				"key": map[string]any{
-					"key": "k8s.pod.name",
-				},
-			}
-			title = "Pod Logs For - " + pod
-		}
-		params = map[string]any{
-			"query": map[string]any{
-				"op": "AND",
-				"items": []map[string]any{
-					nameItem,
-					{
-						"value": namespace,
-						"op":    "=",
-						"key": map[string]any{
-							"key": "k8s.namespace.name",
-						},
-					},
-				},
-			},
-			"title": title,
-		}
+	parsedQuery, err := a.parseRelatedLogsParams(ctx.GetEvent().Labels["relatedLogsParams"])
+	if err != nil {
+		return nil, err
 	}
-	return a.Execute(ctx, params)
+	return a.Execute(ctx, map[string]any{"title": "Related Logs", "raw_query": parsedQuery})
 }
 
 // parseRelatedLogsParams extracts and transforms related logs parameters
@@ -1444,8 +1325,13 @@ func signozFilterItemsToWhereClause(q any) (query.QueryWhereClause, error) {
 	var items []any
 	switch v := q.(type) {
 	case map[string]any:
-		if raw, ok := v["items"].([]any); ok {
+		switch raw := v["items"].(type) {
+		case []any:
 			items = raw
+		case []map[string]any:
+			for _, it := range raw {
+				items = append(items, it)
+			}
 		}
 	case []any:
 		items = v

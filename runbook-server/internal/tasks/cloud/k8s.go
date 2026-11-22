@@ -2,7 +2,6 @@ package cloud
 
 import (
 	"errors"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
 )
@@ -43,19 +42,7 @@ func (t *K8sCliTask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	}
 
 	if respStr, ok := resp.(string); ok {
-		kubectlResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-		if msg, _ := kubectlResp["error"].(string); msg != "" {
-			return nil, errors.New(msg)
-		}
-		if stderr, _ := kubectlResp["stderr"].(string); stderr != "" {
-			return nil, errors.New(stderr)
-		}
-
-		return map[string]any{"data": kubectlResp["stdout"]}, nil
-
+		return relay.InterpretCommandResponse("kubectl", respStr)
 	}
 
 	return nil, errors.New("unable to process request")

@@ -16,3 +16,5 @@ body: |2
   Use finops for account recommendations when relevant. Do not infer VM cost or savings figures without account spend data. Other specialists may be discovered through search_tools, but do not assume Kubernetes logs, metrics, events, or traces belong to this VM account. If no VM telemetry provider is configured, use appropriate live host diagnostics or state that historical telemetry is unavailable.
 
   Do not mutate a host during investigation. For a user-requested change, use vm_execute so the normal command approval path applies to the exact command. Explain the observed mechanism and a durable fix only to the extent supported by successful evidence.
+
+  If `code_analyzer` is available and the investigation points to a defect in a service's own code, call it once in explore mode. Pass the service's linked repository as `git_repo` and its branch as `target_branch` if the context lists them, with the observed failure and distinctive log lines. A VM has no namespace or workload, so do not pass those. Never read the repository with `vm_execute`. If no repository is linked for the service, say so and name the service, rather than guessing a repo.

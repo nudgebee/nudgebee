@@ -171,7 +171,8 @@ type CrossSourceEnricherInterface interface {
 }
 
 const (
-	accountMappingsCacheTTL    = 1 * time.Hour
+	// Account renames show up within this window on every replica (#40807).
+	accountMappingsCacheTTL    = 5 * time.Minute
 	msgAccountMappingsFallback = "failed to get account mappings, proceeding without name conversion"
 )
 
@@ -640,13 +641,14 @@ func (s *Service) shouldIncrementSyncVersion(sources []string, flowSources []str
 
 	// Define static sources that should increment version
 	staticSources := map[string]bool{
-		"aws":       true,
-		"k8s":       true,
-		"azure":     true,
-		"gcp":       true,
-		"github":    true,
-		"gitlab":    true,
-		"pagerduty": true,
+		"aws":        true,
+		"k8s":        true,
+		"azure":      true,
+		"gcp":        true,
+		"github":     true,
+		"gitlab":     true,
+		"pagerduty":  true,
+		"selfhosted": true,
 	}
 
 	// Check if any static source is present in sources list
@@ -670,6 +672,9 @@ func (s *Service) getApplicableSourcesForAccount(cloudProvider string, requested
 		"AWS":   {"aws"},   // AWS accounts can use AWS sources
 		"Azure": {"azure"}, // Azure accounts can use Azure sources
 		"GCP":   {"gcp"},   // GCP accounts can use GCP sources
+		// Self-hosted VM accounts (account_type 'vm') read the hosts their
+		// forager scanned; see sources/selfhosted.
+		"SelfHosted": {"selfhosted"},
 	}
 
 	applicableSources, exists := sourceMapping[cloudProvider]
@@ -830,6 +835,10 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 		GeneratedAt: time.Now(),
 	}
 
+	// What each source added to unifiedGraph, so a build stopped by the size fuse
+	// can say which account and source to look at (see build_size_guard.go).
+	var contributions []sourceContribution
+
 	// ========================================================================
 	// PHASE 1: Build account-specific graphs (AWS, K8s)
 	// ========================================================================
@@ -931,6 +940,15 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"nodes", len(graph.Nodes),
 				"edges", len(graph.Edges),
 				"duration", time.Since(startTime).Seconds())
+
+			contributions = append(contributions, sourceContribution{
+				AccountID: account.Id, AccountName: account.AccountName, Source: sourceName,
+				Nodes: len(graph.Nodes), Edges: len(graph.Edges),
+			})
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 1 source "+sourceName,
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 
 		accountMetadata.NodeCount = accountNodeCount
@@ -1050,6 +1068,15 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"nodes", len(graph.Nodes),
 				"edges", len(graph.Edges),
 				"duration", time.Since(startTime).Seconds())
+
+			contributions = append(contributions, sourceContribution{
+				AccountID: instance.ID, AccountName: instance.Name, Source: sourceName,
+				Nodes: len(graph.Nodes), Edges: len(graph.Edges),
+			})
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 1b source "+sourceName,
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -1074,6 +1101,14 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 			"scope_account_ids", req.AccountIDs,
 			"context_nodes", len(contextNodes),
 			"total_nodes", len(unifiedGraph.Nodes))
+
+		contributions = append(contributions, sourceContribution{
+			Source: "context nodes from other accounts", Nodes: len(contextNodes),
+		})
+		if err := s.enforceBuildSize(ctx, req.TenantID, "phase 2.0 context load",
+			len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+			return nil, err
+		}
 	}
 
 	// ========================================================================
@@ -1107,6 +1142,7 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				continue
 			}
 
+			newNodeCount := len(enrichedNodes) - len(unifiedGraph.Nodes)
 			newEdgeCount := len(enrichedEdges) - len(unifiedGraph.Edges)
 			unifiedGraph.Nodes = enrichedNodes
 			unifiedGraph.Edges = enrichedEdges
@@ -1116,8 +1152,22 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 				"enricher", enricher.GetName(),
 				"new_edges", newEdgeCount,
 				"duration", time.Since(startTime).Seconds())
+
+			if newNodeCount > 0 || newEdgeCount > 0 {
+				contributions = append(contributions, sourceContribution{
+					Source: "enricher " + enricher.GetName(), Nodes: newNodeCount, Edges: newEdgeCount,
+				})
+			}
+			// Phase 2.5 is not checked directly: buildFlowRelationships hands the whole
+			// node set back inside its result, so a length taken right after it counts
+			// most nodes twice. The next check is after the final dedup, before save.
+			if err := s.enforceBuildSize(ctx, req.TenantID, "phase 2.1 enricher "+enricher.GetName(),
+				len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+				return nil, err
+			}
 		}
 	}
+	nodesBeforeFlow, edgesBeforeFlow := len(unifiedGraph.Nodes), len(unifiedGraph.Edges)
 
 	// ========================================================================
 	// PHASE 2.5: Build flow relationships from flow sources
@@ -1252,7 +1302,14 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 	unifiedGraph.Nodes, unifiedGraph.Edges, _ = ResolveGCPManagedServiceCalls(
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
-	// Phase 3.7: Drop CALLS edges that point back along a routing edge. Last of
+	// Phase 3.7: Drop AWS regional control-plane ExternalService leaves (e.g.
+	// elasticache.sa-east-1.amazonaws.com) whose only caller is Nudgebee's own
+	// cloud-collector-server. Runs after 3.5/3.6 so it only sees the ES nodes
+	// that survived real-resource matching (#40703).
+	unifiedGraph.Nodes, unifiedGraph.Edges, _ = DropCollectorOnlyAWSEndpoints(
+		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
+	)
+	// Phase 3.8: Drop CALLS edges that point back along a routing edge. Last of
 	// the rewriting passes on purpose — both 3.5 and 3.6 repoint CALLS edges, so
 	// running earlier would miss the ones they create. Once a load balancer's own
 	// addresses resolve onto the balancer, the backend's reply traffic becomes
@@ -1263,6 +1320,21 @@ func (s *Service) BuildGraphs(ctx *security.RequestContext, req *BuildRequest) (
 		unifiedGraph.Nodes, unifiedGraph.Edges, s.logger,
 	)
 	unifiedGraph.Edges = DeduplicateEdgesWithPriority(unifiedGraph.Edges)
+
+	// Last fuse check, before the two largest allocations of the build: the
+	// KnowledgeGraph copy below and the save. Counts are exact again here — the
+	// Phase 2.5 double-count is gone after dedup — and this is the only check that
+	// sees what flow sources and the cross-account rules added, which is where an
+	// edge fan-out from a bad rule would show up.
+	if addedNodes, addedEdges := len(unifiedGraph.Nodes)-nodesBeforeFlow, len(unifiedGraph.Edges)-edgesBeforeFlow; addedNodes > 0 || addedEdges > 0 {
+		contributions = append(contributions, sourceContribution{
+			Source: "flow sources and cross-account rules", Nodes: max(addedNodes, 0), Edges: max(addedEdges, 0),
+		})
+	}
+	if err := s.enforceBuildSize(ctx, req.TenantID, "before save",
+		len(unifiedGraph.Nodes), len(unifiedGraph.Edges), contributions); err != nil {
+		return nil, err
+	}
 
 	// Calculate metadata for unified graph
 	unifiedGraph.Metadata = s.calculateMetadata(unifiedGraph)
@@ -1823,12 +1895,8 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 		deduplicatedNodes = append(deduplicatedNodes, node)
 	}
 
-	// Prepare data for bulk insert
-	cols := nodeUpsertCols
-	values := make([][]any, len(deduplicatedNodes))
-
 	now := time.Now().UTC()
-	for i, node := range deduplicatedNodes {
+	for _, node := range deduplicatedNodes {
 		// Generate ID if not present. Must go through NodeIDFor: this used to
 		// hash its own "key:account:tenant" variant, which no NodeIDFor caller
 		// could ever reproduce, so an id-less node got an id that looked
@@ -1846,7 +1914,24 @@ func (s *Service) SaveNodes(nodes []*DbNode, syncVersion int64) error {
 			node.CreatedAt = node.CreatedAt.UTC()
 		}
 		node.UpdatedAt = now
+	}
 
+	// User-set node roles (kg_node_roles) are layered on here because this is
+	// the one write every path goes through: account builds, resource patches
+	// and manual-node writes. A node arrives with whatever its source built, so
+	// without this a rebuild would drop the role a user set. Read before the
+	// transaction: under read committed, reading inside it would not keep a role
+	// set meanwhile from being overwritten, and would only hold the connection
+	// open through the encoding below.
+	if err := ApplyStoredUserRoles(s.dbManager.Db, deduplicatedNodes); err != nil {
+		return fmt.Errorf("failed to apply node roles: %w", err)
+	}
+
+	// Prepare data for bulk insert
+	cols := nodeUpsertCols
+	values := make([][]any, len(deduplicatedNodes))
+
+	for i, node := range deduplicatedNodes {
 		// Convert properties, labels, query_attributes to JSON
 		// (skip encoding for nil/empty maps to reduce allocations)
 		propertiesJSON, err := marshalMapOrEmpty(node.Properties)
@@ -2015,40 +2100,82 @@ func (s *Service) markInactiveNodes(
 	`
 	args := []interface{}{tenantID, syncVersion}
 
+	// The flow-sourced infra rows this build is allowed to retire: a row of an
+	// infra-authoritative type stamped by a flow source that ran to completion.
+	// Both branches below need it, because a flow source can synthesise one of
+	// these rows whether or not the caller named its static sources.
+	//
+	// Gated on the k8s static source having run. Every infra-authoritative type
+	// a flow source can synthesise is K8s-shaped (see ebpfKindMap and the
+	// traces kind map — both key their unique keys on cloud_provider "k8s"), so
+	// k8s_source is the oracle that decides whether such a row is stale.
+	// Without this guard a build narrowed to, say, `sources = ["gcp"]` — which
+	// buildRequestForFilter can produce by intersecting a claim with a filter —
+	// would tombstone every flow-sourced Workload while the source that proves
+	// those workloads exist never ran.
+	sweepableFlowInfra := ""
+	if len(successfulFlowSources) > 0 && (len(sources) == 0 || slices.Contains(sources, "k8s")) {
+		infraTypes := make([]string, 0, len(InfraAuthoritativeNodeTypes))
+		for nt := range InfraAuthoritativeNodeTypes {
+			infraTypes = append(infraTypes, string(nt))
+		}
+		successSources := append([]string(nil), successfulFlowSources...)
+		// Stable ordering for deterministic query plans and test assertions.
+		sort.Strings(infraTypes)
+		sort.Strings(successSources)
+
+		infraIdx := len(args) + 1
+		successIdx := len(args) + 2
+		// flow_authoritative rows are exempt: a flow source created them
+		// because the account has no K8s inventory, so nothing can tell a
+		// deleted workload from a merely quiet one. #41003 measured what
+		// sweeping them would cost — 78 of 87 legitimate kind=Service nodes
+		// on dev were stale beyond 7 days, because the agent only reports
+		// what carried traffic in the window.
+		sweepableFlowInfra = fmt.Sprintf(`
+			node_type = ANY($%d::text[])
+			AND (properties->>'source') = ANY($%d::text[])
+			AND (properties->>'`+FlowAuthoritativeProperty+`') IS DISTINCT FROM 'true'`, infraIdx, successIdx)
+		args = append(args, pq.Array(infraTypes), pq.Array(successSources))
+	}
+
 	if len(sources) > 0 {
-		query += fmt.Sprintf(" AND (properties->>'source') = ANY($%d::text[])", len(args)+1)
+		// A caller-named source list scopes the sweep to those producers. Flow
+		// sources are never in it (the list names static sources), so before
+		// #41619 this branch could not retire a flow-sourced row at all — an
+		// eBPF-created Workload for a deleted workload survived every build
+		// forever on any tenant whose filter names its sources.
+		sourcesIdx := len(args) + 1
+		if sweepableFlowInfra != "" {
+			query += fmt.Sprintf(`
+		AND (
+			(properties->>'source') = ANY($%d::text[])
+			OR (%s
+			)
+		)`, sourcesIdx, sweepableFlowInfra)
+		} else {
+			query += fmt.Sprintf(" AND (properties->>'source') = ANY($%d::text[])", sourcesIdx)
+		}
 		args = append(args, pq.Array(sources))
 	} else if len(s.flowSources) > 0 {
 		flowSourceNames := make([]string, 0, len(s.flowSources))
 		for name := range s.flowSources {
 			flowSourceNames = append(flowSourceNames, name)
 		}
-		infraTypes := make([]string, 0, len(InfraAuthoritativeNodeTypes))
-		for nt := range InfraAuthoritativeNodeTypes {
-			infraTypes = append(infraTypes, string(nt))
-		}
-		// Stable ordering for deterministic query plans and test assertions.
 		sort.Strings(flowSourceNames)
-		sort.Strings(infraTypes)
-		successSources := append([]string(nil), successfulFlowSources...)
-		sort.Strings(successSources)
 
 		flowIdx := len(args) + 1
-		infraIdx := len(args) + 2
-		successIdx := len(args) + 3
-		query += fmt.Sprintf(`
+		if sweepableFlowInfra != "" {
+			query += fmt.Sprintf(`
 		AND (
 			(properties->>'source') != ALL($%d::text[])
-			OR (
-				node_type = ANY($%d::text[])
-				AND (properties->>'source') = ANY($%d::text[])
+			OR (%s
 			)
-		)`, flowIdx, infraIdx, successIdx)
-		args = append(args,
-			pq.Array(flowSourceNames),
-			pq.Array(infraTypes),
-			pq.Array(successSources),
-		)
+		)`, flowIdx, sweepableFlowInfra)
+		} else {
+			query += fmt.Sprintf(" AND (properties->>'source') != ALL($%d::text[])", flowIdx)
+		}
+		args = append(args, pq.Array(flowSourceNames))
 	}
 
 	if len(accountIDs) > 0 {
@@ -2169,7 +2296,10 @@ func behavioralEdgeTypesSlice() []string {
 // type NOT in the behavioural allowlist) that weren't re-stamped with the current
 // sync version. Mirrors markInactiveNodes — runs after each successful sync that
 // incremented sync_version. Behavioural edges are excluded; they go through the
-// time-based MarkStaleEdgesInactive sweep instead.
+// time-based MarkStaleEdgesInactive sweep instead. Manual edges are excluded
+// too, like manual nodes in markInactiveNodes: the manual flow source retires
+// its own edges from the declarations' state, and a build in which it failed
+// must not retire every declared RUNS_ON / CONNECTED_TO link.
 func (s *Service) markInactiveInfraEdges(tenantID string, syncVersion int64) (int64, error) {
 	query := `
 		UPDATE knowledge_graph_edge
@@ -2179,10 +2309,11 @@ func (s *Service) markInactiveInfraEdges(tenantID string, syncVersion int64) (in
 		  AND level = 'Tenant'
 		  AND is_active = true
 		  AND relationship_type != ALL($3::text[])
+		  AND COALESCE(source, '') <> $4
 	`
 	behavioralTypes := behavioralEdgeTypesSlice()
 
-	result, err := s.dbManager.Exec(query, tenantID, syncVersion, pq.Array(behavioralTypes))
+	result, err := s.dbManager.Exec(query, tenantID, syncVersion, pq.Array(behavioralTypes), ManualNodeSource)
 	if err != nil {
 		return 0, fmt.Errorf("failed to mark inactive infra edges: %w", err)
 	}
@@ -2268,6 +2399,52 @@ func (s *Service) MarkStaleExternalServiceNodesInactive() (int64, error) {
 		return 0, fmt.Errorf(errRowsAffected, err)
 	}
 	s.logger.Info("kg: marked stale external service nodes inactive",
+		"rows", rowsAffected,
+		"stale_days", staleDays)
+	return rowsAffected, nil
+}
+
+// MarkStaleVMServiceNodesInactive flips is_active=false on Service nodes the
+// VM service-map flow source created (source = VMServiceMapSourceName) whose
+// updated_at is older than KGEdgeStaleAfterDays.
+//
+// Unlike K8s workloads (which k8s_source pre-creates and markInactiveNodes
+// tombstones on its own sync), a VM systemd unit or container has no other,
+// authoritative source to merge with — this flow source's node for it is the
+// only record of it existing, so nothing else ever retires it. A decommissioned
+// VM or a removed unit simply stops being emitted by the forager and would
+// accumulate here forever without this sweep.
+//
+// Scoped to source = VMServiceMapSourceName (not every NodeTypeService node)
+// deliberately: a node this flow source *matched* rather than created keeps
+// whichever source created it (createOrGetServiceNode never calls this flow
+// source's matcher for Service nodes — see its doc comment — so in practice
+// every NodeTypeService node this flow source touches is its own), and other
+// flow sources' orphan Service nodes (e.g. ebpf's) are a separate, pre-existing
+// gap this does not fix.
+func (s *Service) MarkStaleVMServiceNodesInactive() (int64, error) {
+	staleDays := config.Config.KGEdgeStaleAfterDays
+	if staleDays <= 0 {
+		staleDays = 7
+	}
+	query := `
+		UPDATE knowledge_graph_node
+		SET is_active = false
+		WHERE is_active = true
+		  AND level = 'Tenant'
+		  AND node_type = $2
+		  AND source = $3
+		  AND updated_at < NOW() - ($1 * interval '1 day')
+	`
+	result, err := s.dbManager.Exec(query, staleDays, string(NodeTypeService), VMServiceMapSourceName)
+	if err != nil {
+		return 0, fmt.Errorf("failed to mark stale VM service nodes inactive: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf(errRowsAffected, err)
+	}
+	s.logger.Info("kg: marked stale VM service nodes inactive",
 		"rows", rowsAffected,
 		"stale_days", staleDays)
 	return rowsAffected, nil
@@ -2492,7 +2669,8 @@ func (s *Service) GetCompleteGraphFromDatabase(reqCtx *security.RequestContext, 
 }
 
 // GetCompleteGraphFromDatabaseWithFilters retrieves the knowledge graph with optional filters
-// Filters are applied with AND logic: account_id AND node_type AND labels AND label_keys
+// Filters are applied with AND logic: account_id AND type AND labels AND label_keys, where type
+// is node_type OR specific_type (see nodeTypeFilterSQL)
 func (s *Service) GetCompleteGraphFromDatabaseWithFilters(reqCtx *security.RequestContext, tenantID string, filters *GraphFilters) (KnowledgeGraph, error) {
 	if tenantID == "" {
 		return KnowledgeGraph{}, fmt.Errorf("tenant_id is required")
@@ -2723,7 +2901,8 @@ func (s *Service) GetEdgesByTenant(tenantID string) ([]*DbEdge, error) {
 }
 
 // GetNodesByTenantWithFilters retrieves nodes for a tenant with optional filtering
-// Filters are applied with AND logic for account_id, node_type, labels, and label_keys
+// Filters are applied with AND logic for account_id, type, labels, and label_keys; the type
+// filter itself ORs node_types with specific_types (see nodeTypeFilterSQL)
 func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFilters) ([]*DbNode, error) {
 	if s.dbManager == nil {
 		return nil, fmt.Errorf("database manager not initialized")
@@ -2749,22 +2928,9 @@ func (s *Service) GetNodesByTenantWithFilters(tenantID string, filters *GraphFil
 		query += fmt.Sprintf(" AND cloud_account_id IN (%s)", strings.Join(placeholders, ","))
 	}
 
-	// For node_type filtering, we need to filter by unique_key pattern since node_type is derived
-	// Format of unique_key: "source:NodeType:name:environment"
-	if len(filters.NodeTypes) > 0 {
-		typeConditions := make([]string, len(filters.NodeTypes))
-		for i, nodeType := range filters.NodeTypes {
-			typeConditions[i] = fmt.Sprintf("node_type = $%d", argCounter)
-			args = append(args, string(nodeType))
-			argCounter++
-		}
-		query += fmt.Sprintf(" AND (%s)", strings.Join(typeConditions, " OR "))
-	}
-
-	// Filter by concrete specific_type (e.g. EC2Instance) — parallel to node_type.
-	if len(filters.SpecificTypes) > 0 {
-		query += fmt.Sprintf(" AND specific_type = ANY($%d::text[])", argCounter)
-		args = append(args, pq.Array(filters.SpecificTypes))
+	if typeSQL, typeArgs, _ := nodeTypeFilterSQL(filters.NodeTypes, filters.SpecificTypes, argCounter); typeSQL != "" {
+		query += " AND " + typeSQL
+		args = append(args, typeArgs...)
 	}
 
 	query += " ORDER BY created_at DESC"
@@ -2896,18 +3062,8 @@ func (s *Service) matchesFilters(node *DbNode, filters *GraphFilters) bool {
 		}
 	}
 
-	// Check specific_type filter (concrete cloud/native type, OR logic).
-	if len(filters.SpecificTypes) > 0 {
-		matched := false
-		for _, st := range filters.SpecificTypes {
-			if node.SpecificType == st {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return false
-		}
+	if !matchesTypeFilter(node, filters.NodeTypes, filters.SpecificTypes) {
+		return false
 	}
 
 	// Check normalized ontology_attributes filters.
@@ -3470,6 +3626,10 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 	// tenant-scoped, neighbour type filter). Also returns the edges the BFS walked
 	// and each node's minimum BFS depth, used by the spanning-tree edge filter when
 	// subgraph is false.
+	// A seed's SAME_AS twins (self-hosted VM ↔ cloud instance) are the same
+	// machine: start from all of them, or a walk from a VM node would stop at its
+	// twin and never reach what runs on the machine.
+	realSeeds = s.withSameAsTwins(tenantID, realSeeds)
 	discoveredNodeIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(realSeeds, traverseOptions{
 		Direction:        TraverseDirectionBoth,
 		Levels:           levels,
@@ -3617,6 +3777,13 @@ type traverseOptions struct {
 	IncludeNodeTypes  []NodeType
 	ExcludeNodeTypes  []NodeType
 	TenantID          string
+	// ExpandSameAsTwins walks on past a host's SAME_AS twin. By default a
+	// ComputeInstance reached from another ComputeInstance over SAME_AS (a
+	// self-hosted VM and its cloud instance, sources/selfhosted) is shown but
+	// not expanded: the twin is the same machine, so its own neighbourhood is
+	// not one hop further away, and expanding it would double every host's
+	// fan-out. Only sameAsClosure, which collects the twins themselves, sets it.
+	ExpandSameAsTwins bool
 }
 
 // discoverBFS is the single traversal engine behind every persisted-graph walk:
@@ -3657,8 +3824,12 @@ func (s *Service) discoverBFS(seeds []string, opts traverseOptions) (discoveredI
 	// Expand one level at a time (levels <= 3), each a single indexed edge query
 	// over the whole current frontier. A node already in nodeMinDepth is never
 	// re-expanded — that is what removes the recursive CTE's path explosion.
+	// viaUndirected holds the nodes first reached over an undirected edge
+	// (CONNECTED_TO): their own undirected edges are not followed, so two
+	// servers on one switch do not reach each other through it.
+	viaUndirected := map[string]bool{}
 	for depth := 0; depth < opts.Levels && len(frontier) > 0; depth++ {
-		frontier, err = s.expandFrontier(frontier, depth, opts, nodeMinDepth, edgeIDSet)
+		frontier, err = s.expandFrontier(frontier, depth, opts, nodeMinDepth, edgeIDSet, viaUndirected)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -3726,25 +3897,56 @@ func (s *Service) fetchTraversalSeeds(ids []string, tenantID string) ([]string, 
 // seeds are not. The walked edge is recorded even when the far endpoint was already
 // visited (cross/back edges), matching the previous CTE's walked-edge set;
 // filterLayeredEdges prunes it to consecutive layers downstream.
-func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}) ([]string, error) {
+func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOptions, nodeMinDepth map[string]int, edgeIDSet map[string]struct{}, viaUndirected map[string]bool) ([]string, error) {
 	// Direction-specific incidence predicate + projection of the far endpoint.
-	// $1 is always the frontier array.
-	var incidence, otherEnd string
+	// $1 is always the frontier array. A directional walk also follows an
+	// undirected edge (CONNECTED_TO) from its other end; $2 lists those types.
+	var incidence, otherEnd, nearEnd string
+	args := []interface{}{pq.Array(frontier)}
+	argIdx := 2
 	switch opts.Direction {
 	case TraverseDirectionDownstream:
-		incidence = "e.source_node_id = ANY($1::uuid[])"
-		otherEnd = "e.destination_node_id"
+		incidence = "(e.source_node_id = ANY($1::uuid[]) OR (e.relationship_type = ANY($2::text[]) AND e.destination_node_id = ANY($1::uuid[])))"
+		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		nearEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
+		args = append(args, pq.Array(undirectedRelationshipTypes))
+		argIdx++
 	case TraverseDirectionUpstream:
-		incidence = "e.destination_node_id = ANY($1::uuid[])"
-		otherEnd = "e.source_node_id"
+		incidence = "(e.destination_node_id = ANY($1::uuid[]) OR (e.relationship_type = ANY($2::text[]) AND e.source_node_id = ANY($1::uuid[])))"
+		otherEnd = "CASE WHEN e.destination_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
+		nearEnd = "CASE WHEN e.destination_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		args = append(args, pq.Array(undirectedRelationshipTypes))
+		argIdx++
 	default: // TraverseDirectionBoth
 		incidence = "(e.source_node_id = ANY($1::uuid[]) OR e.destination_node_id = ANY($1::uuid[]))"
 		otherEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.destination_node_id ELSE e.source_node_id END"
+		nearEnd = "CASE WHEN e.source_node_id = ANY($1::uuid[]) THEN e.source_node_id ELSE e.destination_node_id END"
 	}
 
-	args := []interface{}{pq.Array(frontier)}
-	argIdx := 2
+	// twin_leaf marks a far endpoint reached over a host-twin SAME_AS: both ends
+	// are ComputeInstance. Identity SAME_AS (GitHubUser -> NudgebeeUser) joins
+	// user nodes, so it never matches and keeps expanding.
+	twinLeaf := "false"
+	if !opts.ExpandSameAsTwins {
+		twinLeaf = fmt.Sprintf(`(e.relationship_type = '%s' AND n.node_type = '%s'
+			AND EXISTS (SELECT 1 FROM knowledge_graph_node nn WHERE nn.id = %s AND nn.node_type = '%s'))`,
+			RelationshipSameAs, NodeTypeComputeInstance, nearEnd, NodeTypeComputeInstance)
+	}
+
 	var clauses []string
+	// One hop of an undirected link: a frontier node reached over one does not
+	// follow another, in either stored direction.
+	var blocked []string
+	for _, id := range frontier {
+		if viaUndirected[id] {
+			blocked = append(blocked, id)
+		}
+	}
+	if len(blocked) > 0 {
+		clauses = append(clauses, fmt.Sprintf("NOT (e.relationship_type = ANY($%d::text[]) AND (%s) = ANY($%d::uuid[]))", argIdx, nearEnd, argIdx+1))
+		args = append(args, pq.Array(undirectedRelationshipTypes), pq.Array(blocked))
+		argIdx += 2
+	}
 	if opts.TenantID != "" {
 		clauses = append(clauses, fmt.Sprintf("e.tenant_id = $%d AND n.tenant_id = $%d", argIdx, argIdx))
 		args = append(args, opts.TenantID)
@@ -3772,12 +3974,12 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 	}
 
 	query := fmt.Sprintf(`
-		SELECT e.id::text, (%s)::text AS other_id
+		SELECT e.id::text, (%s)::text AS other_id, %s AS twin_leaf, e.relationship_type
 		FROM knowledge_graph_edge e
 		JOIN knowledge_graph_node n ON n.id = %s
 		WHERE %s
 		  AND e.level = 'Tenant' AND e.is_active = true
-		  AND n.level = 'Tenant' AND n.is_active = true%s`, otherEnd, otherEnd, incidence, extra)
+		  AND n.level = 'Tenant' AND n.is_active = true%s`, otherEnd, twinLeaf, otherEnd, incidence, extra)
 
 	rows, err := s.dbManager.Query(query, args...)
 	if err != nil {
@@ -3789,20 +3991,48 @@ func (s *Service) expandFrontier(frontier []string, depth int, opts traverseOpti
 		}
 	}()
 
-	var next []string
+	type frontierRow struct {
+		edgeID, otherID string
+		twinLeaf        bool
+		undirected      bool
+	}
+	var buffered []frontierRow
 	for rows.Next() {
-		var edgeID, otherID string
-		if scanErr := rows.Scan(&edgeID, &otherID); scanErr != nil {
+		var r frontierRow
+		var relationship string
+		if scanErr := rows.Scan(&r.edgeID, &r.otherID, &r.twinLeaf, &relationship); scanErr != nil {
 			return nil, fmt.Errorf("failed to scan frontier row at depth %d: %w", depth, scanErr)
 		}
-		edgeIDSet[edgeID] = struct{}{}
-		if _, seen := nodeMinDepth[otherID]; !seen {
-			nodeMinDepth[otherID] = depth + 1
-			next = append(next, otherID)
-		}
+		r.undirected = IsUndirectedRelationship(RelationshipType(relationship))
+		buffered = append(buffered, r)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating frontier rows at depth %d: %w", depth, err)
+	}
+
+	// Passes so row order cannot decide how a node is expanded: a node
+	// reachable at this level over a real edge is registered by it first —
+	// before an undirected edge (which would stop it following undirected
+	// edges) and before a twin SAME_AS (which would stop it expanding at all).
+	// Twins are registered (and their edge recorded) but never queued.
+	var next []string
+	passes := []struct{ twinLeaf, undirected bool }{{false, false}, {false, true}, {true, false}, {true, true}}
+	for _, pass := range passes {
+		for _, r := range buffered {
+			if r.twinLeaf != pass.twinLeaf || r.undirected != pass.undirected {
+				continue
+			}
+			edgeIDSet[r.edgeID] = struct{}{}
+			if _, seen := nodeMinDepth[r.otherID]; !seen {
+				nodeMinDepth[r.otherID] = depth + 1
+				if r.undirected {
+					viaUndirected[r.otherID] = true
+				}
+				if !pass.twinLeaf {
+					next = append(next, r.otherID)
+				}
+			}
+		}
 	}
 	return next, nil
 }
@@ -3966,7 +4196,8 @@ func (s *Service) fetchEdgeByID(tenantID, edgeID string) (*DbEdge, error) {
 	}
 	query := `
 		SELECT id, created_at, updated_at, relationship_type, properties,
-			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level
+			   cloud_account_id, tenant_id, source_node_id, destination_node_id, level,
+			   COALESCE(source, '')
 		FROM knowledge_graph_edge
 		WHERE id = $1 AND tenant_id = $2::uuid AND level = 'Tenant' AND is_active = true
 	`
@@ -3989,6 +4220,7 @@ func (s *Service) fetchEdgeByID(tenantID, edgeID string) (*DbEdge, error) {
 			&relationshipType, &propertiesJSON,
 			&edge.CloudAccountID, &edge.TenantID,
 			&edge.SourceNodeID, &edge.DestinationNodeID, &edge.Level,
+			&edge.Source,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan edge: %w", err)
@@ -4050,6 +4282,21 @@ func (s *Service) GetNodeByID(nodeID string) (*KgNode, error) {
 
 // GetEdgeByID retrieves a single KgEdge by its ID
 func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
+	return s.GetEdgeByIDWithEndpoints(edgeID, "", "")
+}
+
+// GetEdgeByIDWithEndpoints retrieves a single KgEdge by its ID, falling back to
+// the pod synthesizer when the ID names an edge that is built at read time
+// rather than stored (#41504).
+//
+// Why the endpoints: a synth edge's ID is GenerateEdgeID(src, dst, rel) — a
+// uuid5 — so unlike a synth Pod's ID (which *is* its k8s_pods.cloud_resource_id,
+// hence GetNodeByID's fallback needs nothing extra) it carries no way back to
+// the pod it was built from. The endpoint IDs the caller already holds supply
+// that. They are hints only: the edge returned is one the synthesizer itself
+// produced with this ID, so endpoints that don't belong together yield the same
+// nil as before rather than a fabricated edge.
+func (s *Service) GetEdgeByIDWithEndpoints(edgeID, sourceNodeID, destNodeID string) (*KgEdge, error) {
 	if s.ctx == nil || s.ctx.GetSecurityContext() == nil {
 		return nil, nil
 	}
@@ -4058,10 +4305,53 @@ func (s *Service) GetEdgeByID(edgeID string) (*KgEdge, error) {
 		return nil, err
 	}
 	if dbEdge == nil {
-		return nil, nil
+		return s.synthEdgeByID(edgeID, sourceNodeID, destNodeID)
 	}
 	kgEdge := ConvertDbEdgeToKgEdge(dbEdge)
+	// Edge Details shows this as the edge's origin; an edge rewritten by a resource
+	// patch carries it only here, not in properties.contributing_sources (#40706).
+	kgEdge.Source = dbEdge.Source
 	return &kgEdge, nil
+}
+
+// synthEdgeByID resolves an edge the pod synthesizer builds at read time:
+// Workload→Pod MANAGES and Pod→Node RUNS_ON. Scoped to the caller's tenant for
+// the same reason GetNodeByID's fallback is — a globally unique UUID doesn't
+// imply authorisation.
+func (s *Service) synthEdgeByID(edgeID, sourceNodeID, destNodeID string) (*KgEdge, error) {
+	if s.podSynth == nil || s.ctx == nil || edgeID == "" {
+		return nil, nil
+	}
+	secCtx := s.ctx.GetSecurityContext()
+	if secCtx == nil {
+		return nil, nil
+	}
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return nil, nil
+	}
+	// A synth edge has the Pod at exactly one end — the destination for MANAGES,
+	// the source for RUNS_ON — so both are tried and the non-pod end resolves to
+	// nothing. NeighborsForPod returns both of a pod's edges, so matching on ID
+	// is enough to pick the one asked for.
+	for _, podID := range []string{destNodeID, sourceNodeID} {
+		if podID == "" {
+			continue
+		}
+		_, _, edges, err := s.podSynth.NeighborsForPod(tenantID, podID)
+		if err != nil {
+			return nil, err
+		}
+		for _, edge := range edges {
+			if edge.ID != edgeID {
+				continue
+			}
+			kgEdge := ConvertDbEdgeToKgEdge(edge)
+			kgEdge.Source = edge.Source
+			return &kgEdge, nil
+		}
+	}
+	return nil, nil
 }
 
 // FilterOptions represents available filter options for the UI
@@ -4091,6 +4381,21 @@ type FilterOptions struct {
 	NodeBucketIdx       []int    `json:"node_bucket_idx"`        // index into FilterBuckets (each node's own bucket; for Option-B scoping)
 	SpecificTypeDict    []string `json:"specific_type_dict"`     // dictionary for NodeSpecificTypeIdx
 	ClusterDict         []string `json:"cluster_dict"`           // dictionary for NodeClusterIdx
+
+	// Sparse human label for nodes whose unique key is a stable identifier rather
+	// than a readable name — UserAccount nodes, keyed on the login / external user
+	// id (see sources.BaseSource.GenerateUniqueKey). Without it the Node dropdown,
+	// whose label is the key's name segment, would show "mangglesh1653", or a
+	// PagerDuty id like "PA1B2C3", with no human name anywhere on the row.
+	//
+	// Sparse (index + value) rather than a full per-node column, and deliberately
+	// not dictionary-encoded: display names are high-cardinality, so a dict would
+	// not compress them, and only identity nodes carry one — the payload cost is
+	// per user node, not per node. DisplayNameNodeIdx indexes into the per-node
+	// columns above and DisplayNames is aligned to it; indices rather than unique
+	// keys, so the column survives the account-name rewrite applied to NodeKeys.
+	DisplayNameNodeIdx []int    `json:"display_name_node_idx"`
+	DisplayNames       []string `json:"display_names"`
 
 	// Option B — label/attribute key -> covered filterBuckets, for offline dropdown scoping.
 	// FilterBuckets entries are [account_idx, node_type_idx, specific_type_idx] (indices into
@@ -4176,6 +4481,40 @@ func removeStringValue(in []string, target string) []string {
 	return out
 }
 
+// nodeTypeFilterSQL builds the node-type predicate shared by every filtered node query.
+// node_types and specific_types come from one multi-select in the UI: a fully-selected
+// group is sent as its node_type, a partly-selected one as its specific_types. They are
+// alternatives, so a node matches when it is in EITHER list. ANDing them returned nothing
+// for any full group picked alongside a leaf of another group (#41502).
+// Returns the parenthesised clause (no leading AND), its args, and the next placeholder index.
+func nodeTypeFilterSQL(nodeTypes []NodeType, specificTypes []string, argCounter int) (string, []interface{}, int) {
+	var conds []string
+	var args []interface{}
+	for _, nt := range nodeTypes {
+		conds = append(conds, fmt.Sprintf("node_type = $%d", argCounter))
+		args = append(args, string(nt))
+		argCounter++
+	}
+	if len(specificTypes) > 0 {
+		conds = append(conds, fmt.Sprintf("specific_type = ANY($%d::text[])", argCounter))
+		args = append(args, pq.Array(specificTypes))
+		argCounter++
+	}
+	if len(conds) == 0 {
+		return "", nil, argCounter
+	}
+	return "(" + strings.Join(conds, " OR ") + ")", args, argCounter
+}
+
+// matchesTypeFilter is the in-memory twin of nodeTypeFilterSQL: true when no type filter is
+// set, or the node's node_type or specific_type is in its list.
+func matchesTypeFilter(node *DbNode, nodeTypes []NodeType, specificTypes []string) bool {
+	if len(nodeTypes) == 0 && len(specificTypes) == 0 {
+		return true
+	}
+	return slices.Contains(nodeTypes, node.NodeType) || slices.Contains(specificTypes, node.SpecificType)
+}
+
 // buildNodeFilterSQL builds SQL WHERE additions and args for graph filters.
 // startArgCounter is the next $N placeholder index; the caller already has (startArgCounter-1) args.
 // Returns ("", nil, nil) when no filters are active.
@@ -4201,20 +4540,10 @@ func buildNodeFilterSQL(filters *GraphFilters, nodeIDs []string, startArgCounter
 			sqlParts = append(sqlParts, fmt.Sprintf("cloud_account_id IN (%s)", strings.Join(placeholders, ",")))
 		}
 
-		if len(filters.NodeTypes) > 0 {
-			conds := make([]string, len(filters.NodeTypes))
-			for i, nt := range filters.NodeTypes {
-				conds[i] = fmt.Sprintf("node_type = $%d", argCounter)
-				args = append(args, string(nt))
-				argCounter++
-			}
-			sqlParts = append(sqlParts, fmt.Sprintf("(%s)", strings.Join(conds, " OR ")))
-		}
-
-		if len(filters.SpecificTypes) > 0 {
-			sqlParts = append(sqlParts, fmt.Sprintf("specific_type = ANY($%d::text[])", argCounter))
-			args = append(args, pq.Array(filters.SpecificTypes))
-			argCounter++
+		if typeSQL, typeArgs, next := nodeTypeFilterSQL(filters.NodeTypes, filters.SpecificTypes, argCounter); typeSQL != "" {
+			sqlParts = append(sqlParts, typeSQL)
+			args = append(args, typeArgs...)
+			argCounter = next
 		}
 
 		for key, value := range filters.Labels {
@@ -4360,6 +4689,7 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		nodeIDMap               = make(map[string]string)
 		nodeClusterMap          = make(map[string]string)
 		nodeSpecificTypeMap     = make(map[string]string)
+		nodeDisplayNameMap      = make(map[string]string)
 		nodeAccountMap          = make(map[string]string)
 		accountMappings         map[string]string
 		lastSyncTime            *time.Time
@@ -4500,7 +4830,12 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		// cloud_account_id (raw UUID) is keyed by node id, not unique_key, so the client can
 		// scope by account offline without the applyAccountNames key rewrite (the key's account
 		// segment becomes the account NAME below, which no longer matches the account-id filter).
-		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id FROM knowledge_graph_node
+		// The display name is read only for UserAccount nodes — the one node type
+		// whose key is a login rather than a readable name (see FilterOptions.
+		// DisplayNames). Conditioned on node_type, the same predicate the key rule
+		// in sources.BaseSource.GenerateUniqueKey uses, so the two cannot drift.
+		q := `SELECT unique_key, id, query_attributes->>'cluster' AS cluster, specific_type, cloud_account_id,
+			CASE WHEN node_type = 'UserAccount' THEN properties->>'name' END AS display_name FROM knowledge_graph_node
 			WHERE tenant_id = $1 AND level = 'Tenant' AND unique_key IS NOT NULL AND is_active = true
 			AND (NOT jsonb_exists(properties, 'inferred') OR properties->>'inferred' = 'false')` + filterSQL
 		rows, err := s.dbManager.Query(q, append([]interface{}{tenantID}, filterArgs...)...)
@@ -4514,13 +4849,19 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		}()
 		for rows.Next() {
 			var uniqueKey, nodeID string
-			var cluster, specificType, cloudAccountID sql.NullString
-			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID); err != nil {
+			var cluster, specificType, cloudAccountID, displayName sql.NullString
+			if err := rows.Scan(&uniqueKey, &nodeID, &cluster, &specificType, &cloudAccountID, &displayName); err != nil {
 				return fmt.Errorf("failed to scan node ID map row: %w", err)
 			}
 			nodeIDMap[uniqueKey] = nodeID
 			if cluster.Valid && cluster.String != "" {
 				nodeClusterMap[uniqueKey] = cluster.String
+			}
+			// Only when it adds something: a display name equal to the key's name
+			// segment (an identity whose login is its name, or a NudgebeeUser whose
+			// display name is blank) would be a duplicate string on the wire.
+			if displayName.Valid && displayName.String != "" && displayName.String != GetName(uniqueKey) {
+				nodeDisplayNameMap[uniqueKey] = displayName.String
 			}
 			if specificType.Valid && specificType.String != "" {
 				nodeSpecificTypeMap[uniqueKey] = specificType.String
@@ -4693,8 +5034,14 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 	nodeSpecificTypeIdx := make([]int, 0, len(sortedKeys))
 	nodeClusterIdx := make([]int, 0, len(sortedKeys))
 	nodeBucketIdx := make([]int, 0, len(sortedKeys))
+	displayNameNodeIdx := make([]int, 0, len(nodeDisplayNameMap))
+	displayNames := make([]string, 0, len(nodeDisplayNameMap))
 	for _, uk := range sortedKeys {
 		id := nodeIDMap[uk]
+		if dn, ok := nodeDisplayNameMap[uk]; ok {
+			displayNameNodeIdx = append(displayNameNodeIdx, len(nodeKeys))
+			displayNames = append(displayNames, dn)
+		}
 		nodeKeys = append(nodeKeys, uk)
 		nodeIDsCol = append(nodeIDsCol, id)
 		aIdx := -1
@@ -4774,6 +5121,7 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		"node_count", len(nodeKeys),
 		"specific_type_dict_count", len(specificTypeDict),
 		"cluster_dict_count", len(clusterDict),
+		"display_names_count", len(displayNames),
 		"filter_buckets_count", len(filterBuckets),
 		"last_sync_time", lastSyncTime)
 
@@ -4790,6 +5138,8 @@ func (s *Service) computeFilterOptions(tenantID string, filters *GraphFilters, n
 		NodeBucketIdx:       nodeBucketIdx,
 		SpecificTypeDict:    specificTypeDict,
 		ClusterDict:         clusterDict,
+		DisplayNameNodeIdx:  displayNameNodeIdx,
+		DisplayNames:        displayNames,
 		FilterBuckets:       filterBuckets,
 		LabelKeyBuckets:     labelKeyBuckets,
 		AttributeKeyBuckets: attributeKeyBuckets,
@@ -4831,7 +5181,11 @@ func (s *Service) refreshFilterOptionsCache(tenantID string) {
 // and are recomputed on the first unfiltered read.
 // v4: renamed the coverage fields (filter_buckets / node_bucket_idx / label_key_buckets /
 // attribute_key_buckets); v3 rows carry the old JSON keys, so bump to invalidate them.
-const filterOptionsCacheSchemaVersion = 4
+// v5: added the sparse display-name column (display_name_node_idx / display_names) that
+// the Node dropdown needs now that UserAccount keys hold the login, not the display name
+// (#41505). A v4 row decodes with the column empty, which would silently leave identity
+// rows showing a bare login for as long as the cache lived — so it must invalidate.
+const filterOptionsCacheSchemaVersion = 5
 
 // filterOptionsCacheEnvelope wraps the cached payload with its schema version.
 type filterOptionsCacheEnvelope struct {
@@ -5047,6 +5401,17 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		args = append(args, pq.Array(params.SpecificTypes))
 		argIdx++
 	}
+	if len(params.Roles) > 0 {
+		// A role is either carried (a tagged workload or VM) or implied by the
+		// type (an RDS Database), so "find all databases" is one query.
+		typeStrings := make([]string, 0)
+		for _, nt := range NodeTypesForRoles(params.Roles) {
+			typeStrings = append(typeStrings, string(nt))
+		}
+		whereClause += fmt.Sprintf(" AND (query_attributes->>'role' = ANY($%d::text[]) OR node_type = ANY($%d::text[]))", argIdx, argIdx+1)
+		args = append(args, pq.Array(params.Roles), pq.Array(typeStrings))
+		argIdx += 2
+	}
 	if params.Source != "" {
 		whereClause += fmt.Sprintf(" AND source = $%d", argIdx)
 		args = append(args, params.Source)
@@ -5140,11 +5505,10 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 	graphResultCount := len(results)
 
 	// Synth Pod search. Pods are not in knowledge_graph_node, so the
-	// SQL above never returns them. When the caller's node-type filter
-	// permits Pods (empty or contains Pod), and they didn't restrict
-	// source to a non-k8s value, ask the synthesizer to query
-	// public.k8s_pods directly and merge results, respecting Limit.
-	if s.podSynth != nil && includesPod(params.NodeTypes) && (params.Source == "" || params.Source == "k8s") {
+	// SQL above never returns them. When the caller's filters permit Pods
+	// (podSearchApplies), ask the synthesizer to query public.k8s_pods
+	// directly and merge results, respecting Limit.
+	if s.podSynth != nil && podSearchApplies(params) {
 		remaining := limit - len(results)
 		if remaining > 0 {
 			podResults, podErr := s.podSynth.SearchPods(tenantID, params, remaining)
@@ -5250,7 +5614,9 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 	// Discover nodes via directional BFS. NodeTypes (include) is intentionally not
 	// passed to the walk — it is applied as a post-traversal filter below so the BFS
 	// can still reach targets through intermediate types.
-	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(seedNodeIDs, traverseOptions{
+	// Walk from each seed's SAME_AS twins as well (see GetMultipleNodeNeighbors);
+	// the response still reports the seeds the caller asked for.
+	discoveredIDs, traversedEdgeIDs, nodeMinDepth, err := s.discoverBFS(s.withSameAsTwins(tenantID, seedNodeIDs), traverseOptions{
 		Direction:         params.Direction,
 		Levels:            params.MaxDepth,
 		RelationshipTypes: params.RelationshipTypes,
@@ -5444,7 +5810,11 @@ func filterLayeredEdges(edges []*DbEdge, nodeMinDepth map[string]int, direction 
 		if !sok || !dok {
 			continue
 		}
-		if keep(sd, dd) {
+		// Twins seeded together sit at depth 0; the SAME_AS link between them is
+		// the one same-layer edge worth drawing. An undirected edge was walked
+		// from whichever end the BFS reached first.
+		if keep(sd, dd) || (sd == 0 && dd == 0 && e.RelationshipType == RelationshipSameAs) ||
+			(IsUndirectedRelationship(e.RelationshipType) && keep(dd, sd)) {
 			filtered = append(filtered, e)
 		}
 	}

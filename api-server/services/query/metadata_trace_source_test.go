@@ -1,6 +1,7 @@
 package query
 
 import (
+	"strings"
 	"testing"
 
 	"nudgebee/services/account"
@@ -46,4 +47,27 @@ func TestTracesGroupingsFallbackQueryDerivesDestinationZone(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, def, DestinationZoneExpr+" AS destination_workload_zone")
+}
+
+// OTel SDKs on semconv >= 1.21 send url.full and no http.url, so a resource read from http.url
+// alone was empty on their client spans. http.url stays first: node-agent puts the templated path
+// there, and reading its raw url.full would split every eBPF trace group per ID.
+func TestTraceResourceExprReadsURLFullAfterHTTPURL(t *testing.T) {
+	httpURL := strings.Index(TraceResourceExpr, "SpanAttributes['http.url']")
+	urlFull := strings.Index(TraceResourceExpr, "cutQueryStringAndFragment(SpanAttributes['url.full'])")
+
+	require.GreaterOrEqual(t, httpURL, 0)
+	require.GreaterOrEqual(t, urlFull, 0, "url.full must be read with its query string cut")
+	assert.Less(t, httpURL, urlFull, "http.url must win over url.full")
+}
+
+// Both non-materialized trace queries must derive resource the same way the agent's
+// materialized column does.
+func TestTracesFallbackQueriesReadTraceResourceExpr(t *testing.T) {
+	for _, table := range []string{"traces_v2", "traces_groupings_v2"} {
+		def, _, err := table_metadata[table].DefGenerator(security.NewRequestContextForSuperAdmin(nil, nil, nil), "no-such-account", QueryRequest{})
+
+		require.NoError(t, err, table)
+		assert.Contains(t, def, TraceResourceExpr+" AS resource", table)
+	}
 }

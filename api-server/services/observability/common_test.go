@@ -48,3 +48,49 @@ func TestConvertWhereClauseWithMapping_PreservesNot(t *testing.T) {
 		assert.Nil(t, got.Not)
 	})
 }
+
+// A single-select UI filter sends `_in` a bare scalar. Every logs and traces request
+// passes through convertWhereClauseWithMApping, so normalising it here is what keeps
+// each provider from having to grow its own scalar arm (#41493, #41419).
+func TestConvertWhereClauseWithMapping_WrapsScalarInOperand(t *testing.T) {
+	mapping := map[string]string{"workload_name": "service.name"}
+
+	got := convertWhereClauseWithMApping(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"workload_name": {query.In: "qa-payment-s3"}},
+		And: []query.QueryWhereClause{{
+			Binary: query.BinaryWhereClause{"workload_name": {query.NotIn: "qa-ledger"}},
+		}},
+		Not: &query.QueryWhereClause{
+			Binary: query.BinaryWhereClause{"workload_name": {query.In: 7}},
+		},
+	}, mapping)
+
+	assert.Equal(t, []any{"qa-payment-s3"}, got.Binary["service.name"][query.In])
+	assert.Equal(t, []any{"qa-ledger"}, got.And[0].Binary["service.name"][query.NotIn])
+	// Non-string scalars travel the same way; each builder renders the element.
+	assert.Equal(t, []any{7}, got.Not.Binary["service.name"][query.In])
+}
+
+// What the normalisation must NOT touch: a nil operand (its "no values" refusal belongs to
+// the builder) and every other operator. A []any list is returned as-is; a []string list is
+// retyped so the operand of an _in is always a []any past this point.
+func TestConvertWhereClauseWithMapping_LeavesOtherOperandsAlone(t *testing.T) {
+	got := convertWhereClauseWithMApping(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"a": {query.In: []any{"x", "y"}},
+			"b": {query.In: []string{"x"}},
+			"c": {query.In: nil},
+			"d": {query.Eq: "x"},
+			"e": {query.Like: "%x%"},
+			"f": {query.Gte: 300},
+		},
+	}, map[string]string{})
+
+	assert.Equal(t, []any{"x", "y"}, got.Binary["a"][query.In])
+	// Retyped, not passed through: swInValues asserts []any alone and drops anything else.
+	assert.Equal(t, []any{"x"}, got.Binary["b"][query.In])
+	assert.Nil(t, got.Binary["c"][query.In])
+	assert.Equal(t, "x", got.Binary["d"][query.Eq])
+	assert.Equal(t, "%x%", got.Binary["e"][query.Like])
+	assert.Equal(t, 300, got.Binary["f"][query.Gte])
+}

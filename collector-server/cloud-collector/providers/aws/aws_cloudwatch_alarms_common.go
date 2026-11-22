@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,7 +117,7 @@ var cloudwatchNamespaceServiceMap = map[string]CloudwatchNamespace{
 	},
 	"AWS/ELB": {
 		Name:                  "AWS/ELB",
-		ResourceDimensionName: "LoadBalancer",
+		ResourceDimensionName: "LoadBalancerName",
 		ServiceName:           ServiceNameELB,
 		ResourceType:          "loadbalancer",
 	},
@@ -338,20 +339,43 @@ type AlarmsFilter struct {
 // them grouped by ResourceId. Each key is a resource identifier (e.g. EC2 InstanceId,
 // RDS DBInstanceIdentifier, S3 BucketName) and the value is the slice of alarm Raw maps
 // for that resource. This avoids repeated DescribeAlarms + STS AssumeRole calls per resource.
-func fetchAlarmsByResource(ctx providers.CloudProviderContext, account providers.Account, region string) map[string][]any {
+//
+// On error it returns no map. Callers then leave Meta["AlarmDetails"] unset, so the
+// region's resources read as unknown (ErrAlarmDetailsUnknown) rather than as having
+// no alarms, which would recommend every alarm for every one of them.
+func fetchAlarmsByResource(ctx providers.CloudProviderContext, account providers.Account, region string) (map[string][]any, error) {
 	alarms, err := getAwsCloudwatchAlarms(ctx, account, AlarmsFilter{
 		Region: region,
 	})
 	if err != nil {
-		ctx.GetLogger().Warn("failed to fetch alarms for region, alarm recommendations may be incomplete",
+		ctx.GetLogger().Warn("failed to fetch alarms for region, its alarm recommendations are not evaluated until the next sync",
 			"error", err, "region", region)
-		return make(map[string][]any)
+		return nil, err
 	}
 	byResource := make(map[string][]any)
 	for _, a := range alarms.Items {
 		byResource[a.ResourceId] = append(byResource[a.ResourceId], a.Raw)
 	}
-	return byResource
+	return byResource, nil
+}
+
+// regionAlarmAttacher returns a func that sets meta["AlarmDetails"] to the region's
+// alarms for one resource. The region's alarms are listed on first use, so a region
+// with none of the service's resources costs no DescribeAlarms call; if the listing
+// fails the key is left unset.
+func regionAlarmAttacher(ctx providers.CloudProviderContext, account providers.Account, region string) func(meta map[string]any, resourceId string) {
+	var byResource map[string][]any
+	var err error
+	fetched := false
+	return func(meta map[string]any, resourceId string) {
+		if !fetched {
+			byResource, err = fetchAlarmsByResource(ctx, account, region)
+			fetched = true
+		}
+		if err == nil && meta != nil {
+			meta["AlarmDetails"] = byResource[resourceId]
+		}
+	}
 }
 
 func getAwsCloudwatchAlarms(ctx providers.CloudProviderContext, account providers.Account, filter AlarmsFilter) (providers.ListEventResponse, error) {
@@ -493,16 +517,17 @@ func metricAlarmEvent(ctx providers.CloudProviderContext, alarm types.MetricAlar
 	// Use the shared enrichment function for namespace mapping,
 	// dimension matching, label building, and metric filter resolution.
 	enrichment := EnrichCloudWatchAlarm(ctx.GetContext(), CloudWatchAlarmInfo{
-		AlarmName:       alarmName,
-		MetricName:      metricName,
-		MetricNamespace: metricNamespace,
-		Statistic:       statistic,
-		Threshold:       threshold,
-		Region:          region,
-		AccountNumber:   account.AccountNumber,
-		AlarmArn:        aws.ToString(alarm.AlarmArn),
-		StateValue:      string(alarm.StateValue),
-		Dimensions:      dims,
+		AlarmName:        alarmName,
+		MetricName:       metricName,
+		MetricNamespace:  metricNamespace,
+		Statistic:        statistic,
+		Threshold:        threshold,
+		MetricExpression: alarmHasExpression(alarm),
+		Region:           region,
+		AccountNumber:    account.AccountNumber,
+		AlarmArn:         aws.ToString(alarm.AlarmArn),
+		StateValue:       string(alarm.StateValue),
+		Dimensions:       dims,
 	}, cfg != nil, cfg, mfCache)
 
 	stateReason := aws.ToString(alarm.StateReason)
@@ -539,7 +564,13 @@ func alarmMetric(alarm types.MetricAlarm) (name, namespace, statistic string, di
 		return out
 	}
 	if alarm.Namespace != nil {
-		return aws.ToString(alarm.MetricName), aws.ToString(alarm.Namespace), string(alarm.Statistic), toDims(alarm.Dimensions)
+		// A percentile alarm has no Statistic, only an ExtendedStatistic ("p99"), which is
+		// what the push path reads from the same alarm's metricStat.
+		statistic := string(alarm.Statistic)
+		if statistic == "" {
+			statistic = aws.ToString(alarm.ExtendedStatistic)
+		}
+		return aws.ToString(alarm.MetricName), aws.ToString(alarm.Namespace), statistic, toDims(alarm.Dimensions)
 	}
 	for _, query := range alarm.Metrics {
 		if query.MetricStat == nil || query.MetricStat.Metric == nil {
@@ -549,6 +580,19 @@ func alarmMetric(alarm types.MetricAlarm) (name, namespace, statistic string, di
 		return aws.ToString(metric.MetricName), aws.ToString(metric.Namespace), aws.ToString(query.MetricStat.Stat), toDims(metric.Dimensions)
 	}
 	return "", "", "", []AlarmDimension{}
+}
+
+// alarmHasExpression reports an alarm on a metric-math expression or an anomaly
+// band. An alarm can also name a single metric through Metrics with no
+// expression; the push path reads that as single-metric, so the poll path must
+// too, or the two would label one alarm differently.
+func alarmHasExpression(alarm types.MetricAlarm) bool {
+	for _, query := range alarm.Metrics {
+		if query.Expression != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // buildAlarmRawMap extracts only the operationally relevant fields from a CloudWatch
@@ -604,21 +648,50 @@ func buildAlarmRawMap(alarm types.MetricAlarm) map[string]any {
 	}
 
 	if len(alarm.Dimensions) > 0 {
-		dims := make([]map[string]string, 0, len(alarm.Dimensions))
-		for _, d := range alarm.Dimensions {
-			dim := map[string]string{}
-			if d.Name != nil {
-				dim["name"] = *d.Name
+		raw["dimensions"] = rawAlarmDimensions(alarm.Dimensions)
+	}
+
+	// A metric math alarm has no metric of its own, only the ones its expression
+	// is built from. They are kept so an alarm-missing check can see which metrics
+	// the alarm watches (see alarmWatchesMetric).
+	if len(alarm.Metrics) > 0 {
+		metrics := make([]map[string]any, 0, len(alarm.Metrics))
+		for _, q := range alarm.Metrics {
+			query := map[string]any{"id": aws.ToString(q.Id)}
+			if q.Expression != nil {
+				query["expression"] = *q.Expression
 			}
-			if d.Value != nil {
-				dim["value"] = *d.Value
+			if q.MetricStat != nil && q.MetricStat.Metric != nil {
+				query["metricStat"] = map[string]any{
+					"metric": map[string]any{
+						"namespace":  aws.ToString(q.MetricStat.Metric.Namespace),
+						"metricName": aws.ToString(q.MetricStat.Metric.MetricName),
+						"dimensions": rawAlarmDimensions(q.MetricStat.Metric.Dimensions),
+					},
+					"stat": aws.ToString(q.MetricStat.Stat),
+				}
 			}
-			dims = append(dims, dim)
+			metrics = append(metrics, query)
 		}
-		raw["dimensions"] = dims
+		raw["metrics"] = metrics
 	}
 
 	return raw
+}
+
+func rawAlarmDimensions(dimensions []types.Dimension) []map[string]string {
+	dims := make([]map[string]string, 0, len(dimensions))
+	for _, d := range dimensions {
+		dim := map[string]string{}
+		if d.Name != nil {
+			dim["name"] = *d.Name
+		}
+		if d.Value != nil {
+			dim["value"] = *d.Value
+		}
+		dims = append(dims, dim)
+	}
+	return dims
 }
 
 // CloudWatchAlarmInfo holds the metric-level details of a CloudWatch alarm
@@ -629,10 +702,13 @@ type CloudWatchAlarmInfo struct {
 	MetricNamespace string
 	Statistic       string
 	Threshold       string
-	Region          string
-	AccountNumber   string
-	AlarmArn        string
-	StateValue      string
+	// MetricExpression is true when the alarm is on a metric-math expression or
+	// an anomaly band, so MetricName/Statistic name only one input of it.
+	MetricExpression bool
+	Region           string
+	AccountNumber    string
+	AlarmArn         string
+	StateValue       string
 	// StateChangedAt is when the alarm entered StateValue, read from a pushed
 	// event. Zero when the event carries no readable time.
 	StateChangedAt time.Time
@@ -785,6 +861,7 @@ func EnrichCloudWatchAlarm(ctx context.Context, info CloudWatchAlarmInfo, resolv
 	result.Labels["aws_event_metric_namespace"] = info.MetricNamespace
 	result.Labels["aws_event_metric_statistic"] = info.Statistic
 	result.Labels["aws_event_threshold"] = info.Threshold
+	result.Labels["aws_event_metric_expression"] = strconv.FormatBool(info.MetricExpression)
 	result.Labels["aws_event_instance"] = instance
 	result.Labels["aws_event_instance_type"] = instanceType
 	result.Labels["aws_service_name"] = namespace.ServiceName
@@ -1183,6 +1260,7 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 	stateChangedAt, _ := parseAlarmStateTime(stateTimestamp)
 
 	var metricName, metricNamespace, statistic, threshold string
+	var isExpression bool
 	var dims []AlarmDimension
 
 	config, _ := detail["configuration"].(map[string]any)
@@ -1191,6 +1269,11 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 			threshold = fmt.Sprintf("%v", t)
 		}
 		metrics, _ := config["metrics"].([]any)
+		for _, metricRaw := range metrics {
+			if metric, _ := metricRaw.(map[string]any); metric != nil && metric["expression"] != nil {
+				isExpression = true
+			}
+		}
 		for _, metricRaw := range metrics {
 			metric, _ := metricRaw.(map[string]any)
 			if metric == nil {
@@ -1208,27 +1291,41 @@ func extractCloudWatchAlarmInfoFromEB(ebEvent EventBridgeEvent) (CloudWatchAlarm
 			metricName, _ = innerMetric["name"].(string)
 			metricNamespace, _ = innerMetric["namespace"].(string)
 			rawDims, _ := innerMetric["dimensions"].(map[string]any)
-			for k, v := range rawDims {
-				if vStr, ok := v.(string); ok {
-					dims = append(dims, AlarmDimension{Name: k, Value: vStr})
+			// The event can name one dimension twice in different letter case
+			// ("LoadBalancer" and "loadBalancer"). CloudWatch dimension names are
+			// case-sensitive and a metric query with both matches nothing, so the
+			// name is kept once; sorted, the capitalised spelling AWS uses comes first.
+			names := make([]string, 0, len(rawDims))
+			for k := range rawDims {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			seen := make(map[string]bool, len(names))
+			for _, k := range names {
+				vStr, ok := rawDims[k].(string)
+				if !ok || seen[strings.ToLower(k)] {
+					continue
 				}
+				seen[strings.ToLower(k)] = true
+				dims = append(dims, AlarmDimension{Name: k, Value: vStr})
 			}
 			break // use first metric with metricStat
 		}
 	}
 
 	return CloudWatchAlarmInfo{
-		AlarmName:       alarmName,
-		MetricName:      metricName,
-		MetricNamespace: metricNamespace,
-		Statistic:       statistic,
-		Threshold:       threshold,
-		Region:          ebEvent.Region,
-		AccountNumber:   ebEvent.Account,
-		AlarmArn:        alarmArn,
-		StateValue:      stateValue,
-		StateChangedAt:  stateChangedAt,
-		Dimensions:      dims,
+		AlarmName:        alarmName,
+		MetricName:       metricName,
+		MetricNamespace:  metricNamespace,
+		Statistic:        statistic,
+		Threshold:        threshold,
+		MetricExpression: isExpression,
+		Region:           ebEvent.Region,
+		AccountNumber:    ebEvent.Account,
+		AlarmArn:         alarmArn,
+		StateValue:       stateValue,
+		StateChangedAt:   stateChangedAt,
+		Dimensions:       dims,
 	}, true
 }
 

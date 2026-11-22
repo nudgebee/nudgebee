@@ -3,6 +3,7 @@ package optimizer
 import (
 	"context"
 	"nudgebee/runbook/internal/model"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -28,4 +29,14 @@ type OptimizerRepository interface {
 	GetActiveResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error)
 	GetAutoOptimizeTasksByIDs(ctx context.Context, ids []uuid.UUID) ([]model.AutoOptimizeTask, error)
 	GetResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error)
+
+	ParkAutoOptimizeRun(ctx context.Context, tasks []model.AutoOptimizeTask, a model.AutoOptimizeApproval) error
+	GetAutoOptimizeApproval(ctx context.Context, id, tenantID, accountID uuid.UUID) (*model.AutoOptimizeApproval, error)
+	GetPendingAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeApproval, error)
+	DecideAutoOptimizeApproval(ctx context.Context, id uuid.UUID, from, to model.AutoOptimizeApprovalStatus, reviewerID *uuid.UUID, comments *string, unexpiredAt *time.Time) (bool, error)
+	ExpireAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID, now time.Time) ([]model.AutoOptimizeApproval, error)
+	CancelPendingAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeApproval, error)
+	MoveAutoOptimizeTasks(ctx context.Context, ids []uuid.UUID, from, to model.AutopilotTaskStatus, reason *string) ([]uuid.UUID, error)
+	GetRecommendationSnapshots(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]model.RecommendationSnapshot, error)
+	SetAutoOptimizeExecutionStatus(ctx context.Context, id uuid.UUID, status model.AutopilotExecutionStatus) error
 }

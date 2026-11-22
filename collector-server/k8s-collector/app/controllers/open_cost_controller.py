@@ -5,6 +5,7 @@ from typing import Optional, Union
 
 from controllers.base import BaseController
 from handlers.spend_handler import process_spend
+from metrics import otel_metrics
 from utils.datetime_utils import utc_from_epoch_seconds
 
 WINDOW_SIZE = 30  # in minutes
@@ -96,5 +97,8 @@ class OpenCostController(BaseController):
         self.end_date = end_date
         self.account = account_id
         self.tenant = tenant
-        process_spend(self.data, self.tenant, self.account)
+        # Spend posted here is processed inline, not via the spend queue, so it is
+        # instrumented here; the last-synced write below is not handler work.
+        with otel_metrics.track_handler("spend", tenant, account_id, "opencost"):
+            process_spend(self.data, self.tenant, self.account)
         self.update_agent_last_synced_in_db(account_id=account_id, new_date=utc_from_epoch_seconds(self.end_date))

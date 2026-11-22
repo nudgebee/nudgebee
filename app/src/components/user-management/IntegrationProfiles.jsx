@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -59,16 +59,22 @@ const detailRow = (label, value) => (
 // (editable) mode a tenant admin can map an as-yet-unmatched account or unmap an
 // existing one; with `readOnly` it is a display-only list (no map/unmap controls,
 // and the unmapped-accounts fetch is skipped) — used in the users-list expandable row.
-export default function IntegrationProfiles({ userId, onNotify, readOnly = false, hideHeading = false }) {
+const IntegrationProfiles = forwardRef(function IntegrationProfiles({ userId, onNotify, readOnly = false, hideHeading = false }, ref) {
   const [accounts, setAccounts] = useState([]);
   const [unmapped, setUnmapped] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedType, setSelectedType] = useState('');
   const [selectedInstance, setSelectedInstance] = useState('');
   const [selectedToMap, setSelectedToMap] = useState('');
-  const [busy, setBusy] = useState(false);
   // Which mapped card is expanded to show its mapping details (one at a time).
   const [expandedId, setExpandedId] = useState(null);
+  // Staged edits — nothing is written to the backend until the parent modal's Save
+  // runs applyPendingChanges(). pendingUnmap holds ids of persisted mappings marked
+  // for deletion; pendingMap holds unmapped profiles chosen to be created. Both are
+  // discarded on unmount (Cancel / closing the dialog), so a mis-click is reversible
+  // until Save — which is what the dialog's Cancel/Save buttons promise.
+  const [pendingUnmap, setPendingUnmap] = useState(() => new Set());
+  const [pendingMap, setPendingMap] = useState([]);
   // readOnly forces display-only regardless of write access; gating every write
   // affordance (and the unmapped fetch) on canEdit keeps the two modes in sync.
   const canEdit = canManage('users', 'Write') && !readOnly;
@@ -89,43 +95,60 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
     load();
   }, [load]);
 
-  const handleMap = async () => {
+  // Stage a map: remember the chosen profile and clear the picker. Written on Save.
+  const handleMap = () => {
     if (!selectedToMap) return;
-    setBusy(true);
-    try {
-      const res = await apiUserManagement.createAccountMapping({ mappingId: selectedToMap, userId });
-      if (res?.id) {
-        onNotify?.({ message: 'Integration account mapped', severity: 'success' });
-        setSelectedToMap('');
-        setSelectedInstance('');
-        setSelectedType('');
-        await load();
-      } else {
-        onNotify?.({ message: 'Failed to map account', severity: 'error' });
-      }
-    } catch (err) {
-      onNotify?.({ message: err?.message || 'Failed to map account', severity: 'error' });
-    } finally {
-      setBusy(false);
-    }
+    const profile = unmapped.find((a) => a.id === selectedToMap);
+    if (!profile) return;
+    setPendingMap((prev) => (prev.some((p) => p.id === profile.id) ? prev : [...prev, profile]));
+    setSelectedToMap('');
+    setSelectedInstance('');
+    setSelectedType('');
   };
 
-  const handleUnmap = async (mappingId) => {
-    setBusy(true);
-    try {
-      const res = await apiUserManagement.deleteAccountMapping({ mappingId });
-      if (res?.id) {
-        onNotify?.({ message: 'Mapping removed', severity: 'success' });
-        await load();
-      } else {
-        onNotify?.({ message: 'Failed to remove mapping', severity: 'error' });
-      }
-    } catch (err) {
-      onNotify?.({ message: err?.message || 'Failed to remove mapping', severity: 'error' });
-    } finally {
-      setBusy(false);
-    }
+  // Stage / un-stage removal of a persisted mapping — toggles the card's Undo state.
+  const toggleUnmap = (mappingId) => {
+    setPendingUnmap((prev) => {
+      const next = new Set(prev);
+      if (next.has(mappingId)) next.delete(mappingId);
+      else next.add(mappingId);
+      return next;
+    });
   };
+
+  // Drop a staged (not-yet-saved) map before it is written.
+  const handleRemovePending = (mappingId) => {
+    setPendingMap((prev) => prev.filter((p) => p.id !== mappingId));
+  };
+
+  // Flush staged edits — called by the parent modal on Save changes. Deletes the
+  // unmaps, creates the maps, then reloads the real list. Returns false (and toasts)
+  // if any op failed so the modal can hold its success path; true when there was
+  // nothing to do or everything succeeded.
+  useImperativeHandle(ref, () => ({
+    applyPendingChanges: async () => {
+      if (pendingUnmap.size === 0 && pendingMap.length === 0) return true;
+      const unmapIds = Array.from(pendingUnmap);
+      const mapProfiles = pendingMap;
+      const results = await Promise.allSettled([
+        ...unmapIds.map((mappingId) => apiUserManagement.deleteAccountMapping({ mappingId })),
+        ...mapProfiles.map((p) => apiUserManagement.createAccountMapping({ mappingId: p.id, userId })),
+      ]);
+      const succeeded = (r) => r.status === 'fulfilled' && r.value?.id;
+      // Keep only the ops that failed staged, so Save can retry them without the user
+      // re-selecting — and without re-issuing the ones that already went through.
+      const failedUnmaps = unmapIds.filter((_, i) => !succeeded(results[i]));
+      const failedMaps = mapProfiles.filter((_, i) => !succeeded(results[unmapIds.length + i]));
+      setPendingUnmap(new Set(failedUnmaps));
+      setPendingMap(failedMaps);
+      await load();
+      if (failedUnmaps.length > 0 || failedMaps.length > 0) {
+        onNotify?.({ message: 'Some integration profile changes could not be saved', severity: 'error' });
+        return false;
+      }
+      return true;
+    },
+  }));
 
   // Tenant-scoped integrations (messaging/ticketing) have no account_id — show them
   // under an "All accounts" group rather than a blank header.
@@ -144,7 +167,11 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
   // instance never hides a sibling instance of the same type the user isn't mapped in.
   const instanceKey = (a) => `${a.integration_type}|${a.account_id || ''}|${a.integration_id || ''}`;
   const mappedKeys = new Set(accounts.map(instanceKey));
-  const mappableUnmapped = unmapped.filter((a) => !mappedKeys.has(instanceKey(a)));
+  // A staged map also hides its instance/profile from the picker, so you can't queue
+  // the same mapping twice before saving.
+  const stagedKeys = new Set(pendingMap.map(instanceKey));
+  const pendingMapIds = new Set(pendingMap.map((p) => p.id));
+  const mappableUnmapped = unmapped.filter((a) => !mappedKeys.has(instanceKey(a)) && !stagedKeys.has(instanceKey(a)) && !pendingMapIds.has(a.id));
 
   // Cascading filters keep the picker uncluttered: choose integration type, then
   // integration instance, then the specific profile. Each step is scoped to the prior choice.
@@ -219,7 +246,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
 
       {loading ? (
         <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>Loading…</Box>
-      ) : accounts.length === 0 ? (
+      ) : accounts.length === 0 && pendingMap.length === 0 ? (
         <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>
           No linked integration accounts yet. The Identity Sync maps accounts to users by email automatically.
         </Box>
@@ -254,6 +281,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
               >
                 {group.items.map((a) => {
                   const expanded = expandedId === a.id;
+                  const staged = pendingUnmap.has(a.id);
                   return (
                     <Box
                       key={a.id}
@@ -263,7 +291,8 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
                         flexDirection: 'column',
                         border: `1px solid ${expanded ? ds.gray[400] : ds.background[300]}`,
                         borderRadius: 'var(--ds-radius-md)',
-                        transition: 'border-color 0.15s, box-shadow 0.15s',
+                        opacity: staged ? 0.55 : 1,
+                        transition: 'border-color 0.15s, box-shadow 0.15s, opacity 0.15s',
                         '&:hover': { borderColor: ds.gray[400], boxShadow: `0px 1px 3px 0px ${ds.gray.alpha[300]}` },
                       }}
                     >
@@ -304,6 +333,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
                             sx={{
                               font: "600 13px/1.3 'Roboto'",
                               color: ds.gray[700],
+                              textDecoration: staged ? 'line-through' : 'none',
                               overflow: 'hidden',
                               textOverflow: 'ellipsis',
                               whiteSpace: 'nowrap',
@@ -337,21 +367,26 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
                           })()}
                         </Box>
 
-                        <Chip variant='status' size='xs' dot tone={a.mapped_via === 'manual' ? 'info' : 'success'}>
-                          {a.mapped_via === 'manual' ? 'Manual' : 'Auto'}
-                        </Chip>
+                        {staged ? (
+                          <Chip variant='status' size='xs' dot tone='critical'>
+                            Unsaved
+                          </Chip>
+                        ) : (
+                          <Chip variant='status' size='xs' dot tone={a.mapped_via === 'manual' ? 'info' : 'success'}>
+                            {a.mapped_via === 'manual' ? 'Manual' : 'Auto'}
+                          </Chip>
+                        )}
                         {canEdit && (
                           <Button
                             id={`integration-account-unmap-${a.id}`}
                             tone='secondary'
                             size='sm'
-                            disabled={busy}
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleUnmap(a.id);
+                              toggleUnmap(a.id);
                             }}
                           >
-                            Unmap
+                            {staged ? 'Undo' : 'Unmap'}
                           </Button>
                         )}
                         <KeyboardArrowDownIcon
@@ -394,6 +429,97 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
               </Box>
             </Box>
           ))}
+
+          {/* Staged maps — shown as dashed "Pending" cards until Save writes them. */}
+          {pendingMap.length > 0 && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+              <Box
+                sx={{
+                  font: "600 11px/1.2 'Roboto'",
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                  color: ds.gray[400],
+                }}
+              >
+                To be added on save
+              </Box>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: readOnly ? 'repeat(auto-fill, minmax(280px, 1fr))' : '1fr',
+                  gap: 'var(--ds-space-2)',
+                  alignItems: 'start',
+                  '& > *': { minWidth: 0 },
+                }}
+              >
+                {pendingMap.map((a) => (
+                  <Box
+                    key={`pending-${a.id}`}
+                    data-testid={`integration-account-pending-${a.integration_type}`}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 'var(--ds-space-3)',
+                      padding: 'var(--ds-space-2) var(--ds-space-3)',
+                      border: `1px dashed ${ds.gray[400]}`,
+                      borderRadius: 'var(--ds-radius-md)',
+                    }}
+                  >
+                    <Box
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        flexShrink: 0,
+                        borderRadius: 'var(--ds-radius-pill)',
+                        border: `1px solid ${ds.background[300]}`,
+                        background: ds.background[100],
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        '& img, & svg': { width: 20, height: 20, objectFit: 'contain' },
+                      }}
+                    >
+                      {providerLogo(a.integration_type) && (
+                        <SafeIcon src={providerLogo(a.integration_type)} alt={providerLabel(a.integration_type)} width={20} height={20} />
+                      )}
+                    </Box>
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Box
+                        sx={{
+                          font: "600 13px/1.3 'Roboto'",
+                          color: ds.gray[700],
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {a.display_name || a.username || a.external_user_id}
+                      </Box>
+                      <Box
+                        sx={{
+                          font: "400 11px/1.3 'Roboto'",
+                          color: ds.gray[400],
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {[providerLabel(a.integration_type), a.email || a.username].filter(Boolean).join(' · ')}
+                      </Box>
+                    </Box>
+                    <Chip variant='status' size='xs' dot tone='warning'>
+                      Unsaved
+                    </Chip>
+                    {canEdit && (
+                      <Button id={`integration-account-remove-pending-${a.id}`} tone='secondary' size='sm' onClick={() => handleRemovePending(a.id)}>
+                        Remove
+                      </Button>
+                    )}
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+          )}
         </Box>
       )}
 
@@ -466,7 +592,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
                     minWidth='100%'
                   />
                 </Box>
-                <Button id='user-modal-map-account-button' size='md' disabled={!selectedToMap || busy} loading={busy} onClick={handleMap}>
+                <Button id='user-modal-map-account-button' size='md' disabled={!selectedToMap} onClick={handleMap}>
                   Map
                 </Button>
               </Box>
@@ -476,7 +602,7 @@ export default function IntegrationProfiles({ userId, onNotify, readOnly = false
       )}
     </Box>
   );
-}
+});
 
 IntegrationProfiles.propTypes = {
   userId: PropTypes.string,
@@ -484,3 +610,5 @@ IntegrationProfiles.propTypes = {
   readOnly: PropTypes.bool,
   hideHeading: PropTypes.bool,
 };
+
+export default IntegrationProfiles;

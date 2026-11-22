@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"fmt"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"regexp"
@@ -33,6 +34,9 @@ var (
 	reStrikethrough = regexp.MustCompile(`~~(.*?)~~`)
 )
 
+// citationLabelCleaner drops the characters that would break a Slack link label.
+var citationLabelCleaner = strings.NewReplacer("<", "", ">", "", "|", "")
+
 // isSlackRequest checks if the request originated from Slack by checking if the session ID
 // matches a common Slack ID pattern (e.g., starting with C, U, or W).
 func isSlackRequest(request NBAgentRequest) bool {
@@ -42,7 +46,10 @@ func isSlackRequest(request NBAgentRequest) bool {
 	return slackIDRegex.MatchString(request.SessionId)
 }
 
-func convertMarkdownToSlackMarkdown(response string) string {
+// convertMarkdownToSlackMarkdown converts an answer to Slack mrkdwn. A step
+// citation links to that step on citationPageURL (the app page showing the
+// answer); without one it is reduced to its label.
+func convertMarkdownToSlackMarkdown(response string, citationPageURL string) string {
 	// Map to store code blocks and their placeholders
 	codeBlocks := make(map[string]string)
 	i := 0
@@ -58,6 +65,26 @@ func convertMarkdownToSlackMarkdown(response string) string {
 	response = reInlineCode.ReplaceAllStringFunc(response, func(match string) string {
 		placeholder := fmt.Sprintf("||CODE_BLOCK_%d||", i)
 		codeBlocks[placeholder] = match
+		i++
+		return placeholder
+	})
+
+	// A step citation's #task-<id> target only resolves inside the app; Slack
+	// would show <#task-<id>|Tool - E3> as raw text. Link it to the step on the
+	// app page instead, or keep just the label. The result is held out like
+	// code so the passes below leave it alone.
+	response = anyStepLink.ReplaceAllStringFunc(response, func(link string) string {
+		m := anyStepLink.FindStringSubmatch(link)
+		label := strings.TrimSpace(citationLabelCleaner.Replace(m[1]))
+		if label == "" {
+			return ""
+		}
+		cited := "[" + label + "]"
+		if citationPageURL != "" && rowIDTarget.MatchString(m[2]) {
+			cited = "<" + citationPageURL + "#task-" + m[2] + "|" + label + ">"
+		}
+		placeholder := fmt.Sprintf("||CODE_BLOCK_%d||", i)
+		codeBlocks[placeholder] = cited
 		i++
 		return placeholder
 	})
@@ -103,7 +130,13 @@ func buildStepReferenceParts(response NBAgentResponse, plannerType AgentPlannerT
 			toolName = t.Call.FunctionCall.Name
 		}
 		if buildGuide {
-			stepID := fmt.Sprintf("E%d", i+1)
+			// The planner's own id, which the answer already cites. Counting by
+			// position drifts from it whenever a step was dropped, replaced or
+			// reused from the cache, and the guide then relabels citations.
+			stepID := t.DisplayID
+			if stepID == "" {
+				stepID = fmt.Sprintf("E%d", i+1)
+			}
 			if toolName != "" {
 				refGuideLines = append(refGuideLines, fmt.Sprintf("- %s = %s", stepID, toolName))
 			}
@@ -173,7 +206,7 @@ func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, r
 	messageContent = append(messageContent,
 		llms.TextParts(llms.ChatMessageTypeHuman, userPrompt),
 	)
-	completion, err := GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.ParentAgentId, true, messageContent, false, WithThinkingLevel(ThinkingLevelFastTask))
+	completion, err := llmruntime.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.ParentAgentId, true, messageContent, false, llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		ctx.GetLogger().Error("request: unable to generate content", "error", err)
 		return response

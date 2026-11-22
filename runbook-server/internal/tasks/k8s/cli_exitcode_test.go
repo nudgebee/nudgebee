@@ -36,9 +36,13 @@ func TestInterpretKubectlResponse(t *testing.T) {
 			errSub:    "exited 1",
 		},
 		{
-			name:      "exit 0 but stderr 'error:' still errors (fallback heuristic retained)",
-			resp:      `{"stdout":"","stderr":"error: something bad","exit_code":0}`,
-			expectErr: true,
+			name: "exit 0 trusts the exit code over stderr text",
+			resp: `{"stdout":"","stderr":"error: something bad","exit_code":0}`,
+		},
+		{
+			name: "exit 0 drain whose evicted pod name contains 'fail' succeeds",
+			resp: `{"stdout":"node/n1 drained\n","stderr":"evicting pod default/failover-1\n","exit_code":0}`,
+			data: "drained",
 		},
 		{
 			name:      "non-zero exit with empty output falls back to a generic message",
@@ -55,6 +59,12 @@ func TestInterpretKubectlResponse(t *testing.T) {
 			name:      "no exit_code present, falls back to stderr heuristic (error)",
 			resp:      `{"stdout":"","stderr":"failed to connect to cluster"}`,
 			expectErr: true,
+		},
+		{
+			name:      "no exit_code present, 'Error from server' still errors (pod delete's old rule)",
+			resp:      `{"stdout":"","stderr":"Error from server (NotFound): pods \"web-1\" not found"}`,
+			expectErr: true,
+			errSub:    "NotFound",
 		},
 		{
 			name: "no exit_code present, clean stderr, succeeds",
@@ -77,29 +87,5 @@ func TestInterpretKubectlResponse(t *testing.T) {
 			assert.NotNil(t, out)
 			assert.Contains(t, out["data"].(string), tc.data)
 		})
-	}
-}
-
-func TestKubectlExitCode(t *testing.T) {
-	for _, c := range []struct {
-		in   any
-		want int
-		ok   bool
-	}{
-		{float64(0), 0, true},
-		{float64(1), 1, true},
-		{float32(4), 4, true},
-		{float64(-1), -1, true}, // process never started
-		{2, 2, true},
-		{int32(5), 5, true},
-		{int64(3), 3, true},
-		{nil, 0, false},
-		{"1", 0, false}, // strings are not exit codes
-	} {
-		got, ok := kubectlExitCode(c.in)
-		assert.Equal(t, c.ok, ok)
-		if ok {
-			assert.Equal(t, c.want, got)
-		}
 	}
 }

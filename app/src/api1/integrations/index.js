@@ -222,7 +222,7 @@ const apiIntegrations = {
           integrations_cloud_accounts
           updated_by_display_name
           created_by_display_name
-          integration_config_values
+          integration_config_values__HEALTH__
         }
       }
       integrations_aggregate(where: __WHERE__) {
@@ -258,7 +258,12 @@ const apiIntegrations = {
       query['cloud_account_id'] = { _eq: data.cloudAccountId };
     }
     try {
-      let response = await queryGraphQL(LIST_INTEGRATION.replaceAll('__WHERE__', gqlStringify(query)), 'ListIntegrations', {
+      // health (MCP verdicts, #40994) only for the callers that show it.
+      const listQuery = LIST_INTEGRATION.replaceAll('__WHERE__', gqlStringify(query)).replace(
+        '__HEALTH__',
+        data.withHealth ? '\n          health' : ''
+      );
+      let response = await queryGraphQL(listQuery, 'ListIntegrations', {
         limit: data.limit || 10,
         offset: data.offset || 0,
       });
@@ -553,6 +558,30 @@ const apiIntegrations = {
     }
   },
 
+  // Check now (#40994): llm-server runs MCP discovery through the relay and
+  // returns the stored health. Errors come back as { error } for the caller.
+  checkMCPIntegrationHealth: async function (integrationId) {
+    const CHECK_MCP_HEALTH = `
+    mutation CheckMCPIntegrationHealth($data: IntegrationMCPHealthCheckRequest!) {
+      integrations_execute_mcp_health_check(request: $data) {
+        integration_id
+        health
+      }
+    }
+    `;
+    try {
+      const response = await queryGraphQL(CHECK_MCP_HEALTH, 'CheckMCPIntegrationHealth', { data: { integration_id: integrationId } });
+      const gqlErrors = response?.data?.errors;
+      if (Array.isArray(gqlErrors) && gqlErrors.length > 0) {
+        return { error: gqlErrors[0]?.message || 'Check failed' };
+      }
+      return response?.data?.data?.integrations_execute_mcp_health_check || { error: 'Check failed' };
+    } catch (err) {
+      console.log('failed to check MCP integration health-', err);
+      return { error: 'Check failed' };
+    }
+  },
+
   testIntegrationConnection: async function (integrationId) {
     const TEST_INTEGRATION_CONNECTION = `
     mutation TestIntegrationConnection($data: IntegrationTestConnectionRequest!) {
@@ -591,6 +620,21 @@ const apiIntegrations = {
       console.log('failed to disable integrations-', err);
       return err;
     }
+  },
+
+  // Which of an MCP integration's tools ask for approval (#40399): the
+  // server's tool names, comma separated. Saves only this setting.
+  updateMcpWriteTools: async function (integrationId, writeTools) {
+    const UPDATE_MCP_WRITE_TOOLS = `
+    mutation UpdateMcpWriteTools($data: UpdateMCPWriteToolsRequest!) {
+      integrations_update_mcp_write_tools(request: $data) {
+        status
+      }
+    }
+    `;
+    return queryGraphQL(UPDATE_MCP_WRITE_TOOLS, 'UpdateMcpWriteTools', {
+      data: { integration_id: integrationId, write_tools: writeTools },
+    });
   },
 
   getWebhookIntegrationByWorkflowId: async function (workflowId) {

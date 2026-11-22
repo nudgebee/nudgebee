@@ -49,7 +49,8 @@ const ManualDeclarationsTab = ({ open }) => {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], py: ds.space[4] }}>
       <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>
         Declare service-to-service dependencies (CALLS / PUBLISHES_TO / SUBSCRIBES_TO) so the Knowledge Graph can correlate alerts even without
-        distributed traces, and declare the resources no collector has discovered so those dependencies have something to point at. Import one JSON
+        distributed traces, and declare the resources no collector has discovered so those dependencies have something to point at — including kinds
+        of your own, like a network switch, linked by CONNECTED_TO / DEPENDS_ON / RUNS_ON / HOSTED_ON / ROUTES_TO / BELONGS_TO. Import one JSON
         document to declare nodes and dependencies together.
       </Typography>
 
@@ -110,6 +111,7 @@ const ManualDeclarationsTab = ({ open }) => {
       <EditManualDependencyDialog
         open={depDialogOpen}
         row={null}
+        schema={schema}
         onClose={() => setDepDialogOpen(false)}
         onSaved={() => {
           setDepDialogOpen(false);

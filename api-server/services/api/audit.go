@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"nudgebee/services/agentconnect"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
+	"nudgebee/services/config"
 	"nudgebee/services/recommendation"
 	"nudgebee/services/security"
 	"nudgebee/services/spend"
@@ -68,12 +70,7 @@ func handleAuditApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 			// event only on the NOT_CONNECTED->CONNECTED transition, and
 			// TriggerInitialScans is idempotent, so reconnects don't re-run it.
 			if a.EventType == audit.EventTypeK8sRelayAgentConnected && a.AccountId != "" {
-				triggerInitialScansAsync(c, a.AccountId, a.TenantId, tracer, meter, logger)
-				// Same first-connect edge: kick a one-off server-side OpenCost sync so a
-				// freshly onboarded / re-onboarded K8s cluster stamps opencostServerSide
-				// immediately instead of showing "disconnected" until the next 6-hourly
-				// cron. Guarded + idempotent, so reconnects of a stamped cluster no-op.
-				triggerServerSideOpenCostAsync(c, a.AccountId, a.TenantId, tracer, meter, logger)
+				onAgentConnected(c, a.AccountId, a.TenantId, tracer, meter, logger)
 			}
 		}
 		if len(errs) > 0 {
@@ -88,11 +85,53 @@ func handleAuditApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, l
 	})
 }
 
+// agentConnectPublishTimeout bounds the wait for the broker's confirm, which
+// would otherwise run to MqPublish's own timeout on every retry. It does not cut
+// short the sleeps between retries, so a broker that is down still takes a few
+// seconds longer than this before the work falls back to this pod.
+const agentConnectPublishTimeout = 15 * time.Second
+
+// onAgentConnected hands an agent's first-connect work — the initial scans and a
+// one-off server-side OpenCost sync, so a freshly onboarded cluster stamps
+// opencostServerSide instead of showing "disconnected" until the 6-hourly cron —
+// to the worker deployment through the agent_connect queue. If the publish fails,
+// or the queue is switched off, the work runs on this pod as it did before the
+// queue existed, rather than being dropped.
+//
+// The publish runs off the request path, so a slow or unreachable broker never
+// holds up the /v1/audit response, and on a context detached from the request,
+// so relay hanging up can't fail a publish the broker has already taken.
+func onAgentConnected(c *gin.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+	ctx := context.WithoutCancel(c.Request.Context())
+	if !config.Config.FeatureAgentConnectQueueEnabled {
+		triggerInitialScansAsync(ctx, accountId, tenantId, tracer, meter, logger)
+		triggerServerSideOpenCostAsync(ctx, accountId, tenantId, tracer, meter, logger)
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("audit: panic queueing first-connect work", "panic", r, "account_id", accountId)
+			}
+		}()
+		publishCtx, cancel := context.WithTimeout(ctx, agentConnectPublishTimeout)
+		err := agentconnect.Publish(publishCtx, accountId, tenantId)
+		cancel()
+		if err == nil {
+			return
+		}
+		logger.Warn("audit: could not queue first-connect work, running it on this pod",
+			"error", err, "account_id", accountId, "tenant_id", tenantId)
+		triggerInitialScansAsync(ctx, accountId, tenantId, tracer, meter, logger)
+		triggerServerSideOpenCostAsync(ctx, accountId, tenantId, tracer, meter, logger)
+	}()
+}
+
 // triggerInitialScansAsync fires the first-connect recommendation scans for an
 // account in a detached goroutine so the /v1/audit ingest response stays fast
 // and is unaffected if scan dispatch errors. Work is bounded by an absolute
 // timeout and recovers from panics.
-func triggerInitialScansAsync(c *gin.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+func triggerInitialScansAsync(ctx context.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	secCtx := security.NewSecurityContextForTenantAdmin(tenantId)
 	if secCtx == nil {
 		logger.Error("audit: nil tenant-admin context for initial scans", "account_id", accountId, "tenant_id", tenantId)
@@ -100,7 +139,7 @@ func triggerInitialScansAsync(c *gin.Context, accountId, tenantId string, tracer
 	}
 	// Detach from the request context (cancelled when the handler returns) but
 	// bound the work so a hung run can't leak the goroutine.
-	detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 15*time.Minute)
+	detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
 	go func() {
 		defer cancel()
 		defer func() {
@@ -120,12 +159,11 @@ func triggerInitialScansAsync(c *gin.Context, accountId, tenantId string, tracer
 // which guards on the opencostServerSide marker being unset (so reconnects of an
 // already-stamped cluster no-op) and runs the sync on its own detached,
 // timeout-bounded context — keeping the /v1/audit ingest response fast.
-func triggerServerSideOpenCostAsync(c *gin.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+func triggerServerSideOpenCostAsync(ctx context.Context, accountId, tenantId string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	secCtx := security.NewSecurityContextForTenantAdmin(tenantId)
 	if secCtx == nil {
 		logger.Error("audit: nil tenant-admin context for server-side opencost", "account_id", accountId, "tenant_id", tenantId)
 		return
 	}
-	ctx := security.NewRequestContext(c.Request.Context(), secCtx, logger, tracer, meter)
-	spend.TriggerServerSideOnConnect(ctx, accountId, tenantId)
+	spend.TriggerServerSideOnConnect(security.NewRequestContext(ctx, secCtx, logger, tracer, meter), accountId, tenantId)
 }

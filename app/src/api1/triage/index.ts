@@ -331,6 +331,25 @@ mutation EventGetTriageRules(
 }
 `;
 
+export const EVENT_LIST_TRIAGE_SOURCES = `
+mutation EventListTriageSources($provider: String, $cloud_account_id: String) {
+  event_list_triage_sources(provider: $provider, cloud_account_id: $cloud_account_id) {
+    sources {
+      label
+      value
+      provider
+    }
+  }
+}
+`;
+
+// One Source option for the Create/Edit Triage Rule form (from event_list_triage_sources).
+export interface TriageSource {
+  label: string;
+  value: string;
+  provider?: string;
+}
+
 export const EVENT_DELETE_TRIAGE_RULE = `
 mutation EventDeleteTriageRule(
   $cloud_account_id: String!
@@ -371,11 +390,13 @@ mutation EventUpdateNBStatus(
   $event_id: String!
   $nb_status: String!
   $snoozed_until: String
+  $reason_text: String
 ) {
   event_update_nb_status(
     event_id: $event_id
     nb_status: $nb_status
     snoozed_until: $snoozed_until
+    reason_text: $reason_text
   ) {
     success
     prev_status
@@ -442,6 +463,7 @@ mutation EventGetTriageRuleEvents(
       starts_at
       classified_at
       classification
+      fingerprint
     }
     total
     limit
@@ -749,6 +771,8 @@ export interface UpdateNBStatusInput {
   event_id: string;
   nb_status: 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'ACTION_REQUIRED' | 'SNOOZED' | 'SUPPRESSED' | 'DROPPED' | 'DUPLICATE' | 'RESOLVED';
   snoozed_until?: string;
+  /** Optional free-text note explaining why the status was changed; shown on the event timeline. */
+  reason_text?: string;
 }
 
 export interface TriageRule {
@@ -1030,6 +1054,20 @@ const apiTriage = {
     }
   },
 
+  // List the Source options for the Create/Edit Triage Rule form, from the account's own sources.
+  async listTriageSources(provider?: string, cloudAccountId?: string): Promise<TriageSource[]> {
+    try {
+      const response = await queryGraphQL(EVENT_LIST_TRIAGE_SOURCES, 'EventListTriageSources', {
+        provider: provider || undefined,
+        cloud_account_id: cloudAccountId || undefined,
+      });
+      return response?.data?.data?.event_list_triage_sources?.sources ?? [];
+    } catch (error) {
+      console.error('Failed to list triage sources:', error);
+      return [];
+    }
+  },
+
   /**
    * Create a new triage rule
    */
@@ -1195,6 +1233,7 @@ const apiTriage = {
         event_id: data.event_id,
         nb_status: data.nb_status,
         snoozed_until: data.snoozed_until,
+        reason_text: data.reason_text,
       });
       return response?.data?.data?.event_update_nb_status;
     } catch (error) {
@@ -1329,7 +1368,12 @@ const apiTriage = {
       git_branch: data.git_branch,
       reference_link: data.reference_link,
     });
-    return response?.data?.data?.event_apply_threshold_suggestion ?? null;
+    const result = response?.data?.data?.event_apply_threshold_suggestion;
+    if (result) {
+      return result;
+    }
+    const message = response?.data?.errors?.[0]?.message;
+    return message ? { status: 'failed', error: message } : null;
   },
 
   /**
@@ -1343,7 +1387,12 @@ const apiTriage = {
       alert_rule_key: data.alert_rule_key,
       cloud_account_id: data.cloud_account_id,
     });
-    return response?.data?.data?.event_revert_threshold_suggestion ?? null;
+    const result = response?.data?.data?.event_revert_threshold_suggestion;
+    if (result) {
+      return result;
+    }
+    const message = response?.data?.errors?.[0]?.message;
+    return message ? { status: 'failed', error: message } : null;
   },
 };
 

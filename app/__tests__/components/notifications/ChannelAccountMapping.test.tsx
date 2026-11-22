@@ -27,6 +27,7 @@ jest.mock('@api1/account', () => ({
   default: {
     getNotificationChannelList: jest.fn(),
     getMessagingPlatform: jest.fn(),
+    getMessagingInstallations: jest.fn(),
   },
 }));
 
@@ -188,6 +189,7 @@ describe('ChannelAccountMapping (integration)', () => {
     apiDashboard.getCloudAccounts.mockResolvedValue(sampleAccounts);
     apiAccount.getNotificationChannelList.mockResolvedValue({ data: { data: sampleSlackChannels } });
     apiAccount.getMessagingPlatform.mockResolvedValue({ data: [{ id: 'mp-1', team_id: 'workspace-1' }] });
+    apiAccount.getMessagingInstallations.mockResolvedValue({ data: [{ id: 'mp-1', team_id: 'workspace-1' }] });
     apiNotifications.listChannelAccountMappings.mockResolvedValue({ data: sampleMappings });
     apiNotifications.insertChannelAccountMapping.mockResolvedValue({});
     apiNotifications.updateChannelAccountMapping.mockResolvedValue({});
@@ -212,8 +214,8 @@ describe('ChannelAccountMapping (integration)', () => {
     await waitFor(() => {
       expect(apiDashboard.getCloudAccounts).toHaveBeenCalled();
       expect(apiAccount.getNotificationChannelList).toHaveBeenCalledWith('slack');
-      expect(apiAccount.getMessagingPlatform).toHaveBeenCalledWith('slack');
-      expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalledWith('slack');
+      expect(apiAccount.getMessagingInstallations).toHaveBeenCalledWith('slack');
+      expect(apiNotifications.listChannelAccountMappings).toHaveBeenCalledWith('slack', false);
     });
   });
 
@@ -271,15 +273,40 @@ describe('ChannelAccountMapping (integration)', () => {
     expect(screen.queryByTestId('dropdown-Team')).not.toBeInTheDocument();
   });
 
-  it('opens Add Mapping modal with Team dropdown for ms_teams', async () => {
+  it('offers one Channel picker for ms_teams, naming the team only when there are several', async () => {
     apiAccount.getNotificationChannelList.mockResolvedValue({ data: { data: sampleTeams } });
     render(<ChannelAccountMapping provider='ms_teams' displayName='MS Teams' isConfigured={true} />);
     await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('add-mapping-btn'));
 
-    expect(screen.getByTestId('dropdown-Team')).toBeInTheDocument();
-    expect(screen.getByTestId('dropdown-Channel')).toBeDisabled();
+    expect(screen.queryByTestId('dropdown-Team')).not.toBeInTheDocument();
+    const options = Array.from(screen.getByTestId('dropdown-Channel').querySelectorAll('option')).map((o) => o.textContent);
+    expect(options).toEqual(['--', 'eng-alerts', 'eng-general']);
+  });
+
+  it('saves the team and the channel picked from the one ms_teams picker', async () => {
+    const twoTeams = [...sampleTeams, { id: 'team-2', name: 'Ops', channels: [{ id: 'tch-3', name: 'ops-alerts' }] }];
+    apiAccount.getNotificationChannelList.mockResolvedValue({ data: { data: twoTeams } });
+    render(<ChannelAccountMapping provider='ms_teams' displayName='MS Teams' isConfigured={true} />);
+    await waitFor(() => expect(screen.getByTestId('add-mapping-btn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('add-mapping-btn'));
+    const options = Array.from(screen.getByTestId('dropdown-Channel').querySelectorAll('option')).map((o) => o.textContent);
+    expect(options).toEqual(['--', 'eng-alerts', 'eng-general', 'ops-alerts']);
+
+    fireEvent.change(screen.getByTestId('dropdown-Cloud Account'), { target: { value: 'acc-1' } });
+    fireEvent.change(screen.getByTestId('dropdown-Channel'), { target: { value: 'team-2/tch-3' } });
+    fireEvent.click(screen.getByTestId('save-btn'));
+
+    await waitFor(() =>
+      expect(apiNotifications.insertChannelAccountMapping).toHaveBeenCalledWith({
+        ac_id: 'acc-1',
+        platform: 'ms_teams',
+        team_id: 'team-2',
+        channel_id: 'tch-3',
+      })
+    );
   });
 
   it('Save button disabled when account+channel empty', async () => {

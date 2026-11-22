@@ -6,6 +6,7 @@ import (
 	"nudgebee/services/query"
 	"nudgebee/services/security"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -4507,6 +4508,23 @@ func TestValidateAPMScope(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+// Generated workload FACET queries ask for every facet, not New Relic's default 10,
+// and the time range is appended after LIMIT (#39201).
+func TestBuildNewRelicWorkloadQueries_FacetLimitMax(t *testing.T) {
+	for kind, facet := range map[string]string{
+		"pod": "podName", "deployment": "deploymentName", "statefulset": "podName", "daemonset": "daemonsetName",
+	} {
+		t.Run(kind, func(t *testing.T) {
+			queries := buildNewRelicWorkloadQueries(RequestMetadata{Namespace: "ns", Name: "app", Kind: kind}, []string{"cpu_usage"})
+			assert.True(t, strings.HasSuffix(queries["cpu_usage"], "FACET "+facet+" LIMIT 100"), queries["cpu_usage"])
+
+			nrql, err := (&NewRelicMetricSource{}).buildNRQLMetricQuery(queries["cpu_usage"], 1000, 2000, 60, false, nil, nil)
+			assert.NoError(t, err)
+			assert.True(t, strings.HasSuffix(nrql, "FACET "+facet+" LIMIT 100 SINCE 1000 UNTIL 2000 TIMESERIES 60 seconds"), nrql)
 		})
 	}
 }

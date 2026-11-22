@@ -27,7 +27,6 @@ const LISTING_HEADER = [
 const DRILL_DOWN_LISTING_HEADER = ['Name', 'Old Value', 'New Value'];
 
 import DateTime from '@shared/format/Datetime';
-import { titleCase } from '@lib/formatter';
 import PropTypes from 'prop-types';
 import { Card } from '@ui/Card';
 import Banner from '@ui/Banner';
@@ -35,10 +34,10 @@ import { Stat } from '@ui/Stat';
 import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import Memory from '@shared/format/Memory';
+import { parseRecommendationMeta } from '@components/autopilot/taskChanges';
 import { Link } from '@ui/Link';
 import CustomTabs from '@shared/CustomTabs';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasPermission, hasGrantOnAccount, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import AutoPilotApprovalStatusListingModal from '@components/autopilot/AutoPilotApprovalStatusListingModal';
@@ -52,6 +51,7 @@ import apiAccount from '@api1/account';
 import apiRecommendations from '@api1/recommendation';
 import { useData } from '@context/DataContext';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { ds } from 'src/utils/colors';
 
 const PRTicketLink = ({ prResolution, ticketLink }) => {
@@ -111,6 +111,7 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
     { label: 'Failed', value: 'Failed' },
     { label: 'Skipped', value: 'Skipped' },
     { label: 'Dryrun', value: 'Dryrun' },
+    { label: 'Waiting for approval', value: 'Pending_Approval' },
   ];
 
   const [data, setData] = useState([]);
@@ -182,7 +183,7 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
 
           return [
             { component: <DateTime value={item?.scheduled_time} />, drilldownQuery: item },
-            { text: <Label margin='auto' text={item?.status} /> },
+            { text: <Label margin='auto' text={item?.status === 'Pending_Approval' ? 'Waiting for approval' : item?.status} /> },
             {
               component: (
                 <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
@@ -263,66 +264,6 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
   const onStatusFilterChange = (e, _p) => {
     setCurrentPage(0);
     setSelectedStatus(e?.target?.value);
-  };
-
-  // Backend stores CPU as raw cores (e.g. 0.5, 0.09); display as millicores to match the "500m" style used in task messages.
-  const formatCpuValue = (value) => {
-    if (value === null || value === undefined || value === '-' || (typeof value === 'string' && value.trim() === '')) return '-';
-    const num = Number(value);
-    if (isNaN(num)) return value; // already unit-formatted (e.g. "500m"), leave as-is
-    return `${Math.round(num * 1000)}m`;
-  };
-
-  const getCPUMemoryConfigs = (data) => {
-    return data.map((item) => {
-      const isCpu = typeof item.property_name === 'string' && item.property_name.toLowerCase().includes('cpu');
-      const currentValue = item.current_value ?? '-';
-      const newValue = item.new_value ?? '-';
-      return [
-        { text: titleCase(item.property_name) || '-' },
-        { text: isCpu ? formatCpuValue(currentValue) : currentValue },
-        { text: isCpu ? formatCpuValue(newValue) : newValue },
-      ];
-    });
-  };
-
-  const parseRecommendationMeta = (meta) => {
-    if (meta?.changes && meta?.changes?.length > 0) {
-      return getCPUMemoryConfigs(meta.changes);
-    }
-
-    const recommendation = meta?.recommendation;
-    const name = meta?.name;
-
-    if (recommendation && name && recommendation[name]) {
-      const configs = [];
-      recommendation[name].forEach((rec) => {
-        const resource = rec.resource;
-        if (rec.allocated) {
-          Object.keys(rec.allocated).forEach((key) => {
-            if (rec.allocated[key] !== null || (rec.recommended && rec.recommended[key] !== null)) {
-              const resourceTitle = titleCase(`${resource} ${key}`);
-              const allocatedValue = rec.allocated[key] ?? '-';
-              const recommendedValue = rec.recommended ? rec.recommended[key] ?? '-' : '-';
-              const isMemory = resource === 'memory';
-              const isCpu = resource === 'cpu';
-              configs.push([
-                { text: resourceTitle },
-                isMemory && !isNaN(Number(allocatedValue))
-                  ? { component: <Memory value={Number(allocatedValue)} sourceUnit='bytes' targetUnit='mb' /> }
-                  : { text: isCpu ? formatCpuValue(allocatedValue) : allocatedValue },
-                isMemory && !isNaN(Number(recommendedValue))
-                  ? { component: <Memory value={Number(recommendedValue)} sourceUnit='bytes' targetUnit='mb' /> }
-                  : { text: isCpu ? formatCpuValue(recommendedValue) : recommendedValue },
-              ]);
-            }
-          });
-        }
-      });
-      return configs;
-    }
-
-    return [];
   };
 
   const hasCpuRow = (configs) => configs.some((row) => typeof row?.[0]?.text === 'string' && row[0].text.toLowerCase().includes('cpu'));
@@ -637,6 +578,18 @@ const AutoOptimizeDetails = () => {
   };
   const router = useRouter();
 
+  // Matches Optimize's own gate on this tab (canAccessModule(['autooptimize']),
+  // optimise/index.jsx) -- without this, a user that tab hides this from could
+  // still open any task's details by its direct link. Gated on router.isReady:
+  // router.query.accountId is empty on the first render, which would otherwise
+  // read as "no account scope" and let hasGrantOnAccount's early-return skew
+  // the check before the real query params are in.
+  const canReadAutoOptimize =
+    router.isReady &&
+    (!isGrantsOnlyUser(router.query?.accountId) ||
+      hasPermission('autooptimize', 'Read') ||
+      hasGrantOnAccount('autooptimize', 'Read', router.query?.accountId));
+
   const { allCluster } = useData();
   const updateAllClusters = useUpdateAllClusterOption();
 
@@ -861,6 +814,14 @@ const AutoOptimizeDetails = () => {
         })}
       </Box>
     ) : null;
+
+  if (!router.isReady) {
+    return null;
+  }
+
+  if (!canReadAutoOptimize) {
+    return <PermissionDeniedContent message={missingPermissionMessage('autooptimize:Read')} />;
+  }
 
   return (
     <>

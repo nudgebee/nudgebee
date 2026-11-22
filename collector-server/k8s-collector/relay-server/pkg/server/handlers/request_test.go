@@ -64,8 +64,8 @@ func (f *fakeStore) GetAgentStatus(ctx context.Context, accountID, agentType str
 	return f.allowed, f.allowed, f.fallback, f.prometheuClusterLabel, f.err
 }
 
-func (f *fakeStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (bool, string, error) {
-	return false, "", f.err
+func (f *fakeStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionMark time.Time) (bool, string, time.Time, error) {
+	return false, "", time.Time{}, f.err
 }
 
 func (f *fakeStore) TouchRelaySession(ctx context.Context, accountID, agentType string) error {

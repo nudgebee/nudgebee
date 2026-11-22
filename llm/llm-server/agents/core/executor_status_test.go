@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	llmruntime "nudgebee/llm/llms/runtime"
 )
 
 func status(response string) AgentExecutionStatus {
@@ -24,7 +26,7 @@ func TestGuessAgentStatus_StructuredAnswerQuotingTriggerPhrasesIsSuccess(t *test
 		"nested error object": `{"data":{"error":"step failed but the answer is complete"},"answer":"ok"}`,
 		"leading whitespace":  "\n  {\"answer\":\"the source logs \\\"error\\\" lines\"}",
 		// A code-analysis answer about this repo quotes our own server messages.
-		"quotes server message": `{"answer":"the tool returns ` + errLlmUnableToGenerate.Error() + `"}`,
+		"quotes server message": `{"answer":"the tool returns ` + llmruntime.ErrLlmUnableToGenerateSentinel.Error() + `"}`,
 	}
 	for name, response := range cases {
 		assert.Equal(t, AgentExecutionStatusSuccess, status(response), name)
@@ -39,7 +41,7 @@ func TestGuessAgentStatus_StillFailsRealFailures(t *testing.T) {
 		"json errors list":    `{"errors":["boom"]}`,
 		"status failed":       `{"status":"failed","message":"unable to fetch metrics"}`,
 		"status error":        `{"status":"Error"}`,
-		"server message":      errLlmUnableToGenerate.Error(),
+		"server message":      llmruntime.ErrLlmUnableToGenerateSentinel.Error(),
 		"free text with hint": "Unfortunately I could not do it",
 		"json array":          `[{"error":"x"}]`,
 		"trailing error":      "something went wrong error:",

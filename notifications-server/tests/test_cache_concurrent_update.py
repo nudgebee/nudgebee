@@ -91,7 +91,7 @@ class _FlakyRedis:
 def _cache_with_entry(entry, watch_errors=0):
     cache = Cache()
     cache.redis_client = _FlakyRedis(watch_errors=watch_errors)
-    cache._ensure_connection = lambda: None  # noqa: SLF001 - skip real connection
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001 - skip real connection
     cache.redis_client.store[KEY] = json.dumps(entry)
     return cache
 
@@ -119,5 +119,5 @@ def test_update_event_entry_gives_up_after_max_retries():
 def test_update_event_entry_missing_entry_returns_false():
     cache = Cache()
     cache.redis_client = _FlakyRedis()
-    cache._ensure_connection = lambda: None  # noqa: SLF001
+    cache._ensure_connection = lambda: cache.redis_client  # noqa: SLF001
     assert cache.update_event_entry(THREAD_TS, foo="bar") is False

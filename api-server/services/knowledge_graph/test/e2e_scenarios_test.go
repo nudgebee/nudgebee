@@ -483,6 +483,54 @@ func TestE2E_TierA_AzureAllEdges(t *testing.T) {
 
 	assertGoldenGraph(t, e2eGoldenPath("azure_all_edges"), nodes, edges)
 
+	// The golden file only proves the labels did not change, so state what the
+	// Microsoft.Web / Microsoft.Logic rows must be: Azure keeps web apps and
+	// function apps under the same resource type, and only kind tells them apart.
+	wantLabels := map[string]string{
+		"func1":  "AzureFunctionApp",
+		"web1":   "AzureAppService",
+		"logic1": "AzureLogicApp",
+		"plan1":  "AzureAppServicePlan",
+		"cert1":  string(core.NodeTypeCloudResource),
+	}
+	for _, n := range nodes {
+		name, _ := n.Properties["name"].(string)
+		if want, ok := wantLabels[name]; ok {
+			if n.SpecificType != want {
+				t.Errorf("azure_all_edges: %s specific_type = %q, want %q", name, n.SpecificType, want)
+			}
+			delete(wantLabels, name)
+		}
+	}
+	for name := range wantLabels {
+		t.Errorf("azure_all_edges: expected node %q not produced", name)
+	}
+
+	// Azure names are unique per resource group and parent, so resources that
+	// share a name elsewhere must stay separate nodes, and one resource reported
+	// with two region spellings must stay one.
+	wantNodesNamed := map[string]int{
+		"orders":                            2, // one database per server
+		"default":                           3, // two accounts' blob services and one's file service
+		"privatelink.blob.core.windows.net": 2, // one zone per resource group
+		"region-app":                        1, // "South Central US" and "southcentralus"
+	}
+	gotNodesNamed := map[string]int{}
+	for _, n := range nodes {
+		name, _ := n.Properties["name"].(string)
+		if _, ok := wantNodesNamed[name]; ok {
+			gotNodesNamed[name]++
+		}
+		if _, ok := n.Properties["key_collisions"]; ok {
+			t.Errorf("azure_all_edges: %s shares its unique key with another resource", n.UniqueKey)
+		}
+	}
+	for name, want := range wantNodesNamed {
+		if gotNodesNamed[name] != want {
+			t.Errorf("azure_all_edges: %d nodes named %q, want %d", gotNodesNamed[name], name, want)
+		}
+	}
+
 	// Azure edge-type coverage gate (offline-reachable meta-driven edges).
 	wantEdgeTypes := []core.RelationshipType{
 		core.RelationshipBelongsTo,

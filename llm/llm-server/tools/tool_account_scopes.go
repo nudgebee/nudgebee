@@ -7,7 +7,7 @@ import toolcore "nudgebee/llm/tools/core"
 // TestEveryToolDeclaresAnAccountScope fails.
 func init() {
 	toolcore.DeclareAccountScope(toolcore.AccountScopeFollowsTarget,
-		"es_metrics_query", "splunk_metrics_query",
+		"es_metrics_query", "splunk_metrics_query", "metric_forecast",
 		"cloud_resource_search_execute", "kg_search_nodes",
 		"aggregate_events", "anomaly_execute", "dryrun_triage_rule", "events_execute", "get_event_by_id",
 		"get_event_classification", "get_event_evidence", "get_event_incident_assembly",
@@ -16,7 +16,7 @@ func init() {
 		"metrics_labels_list", "metrics_list", "metrics_series_match", "nudgebee_agent_health_get",
 		"prometheus_execute", "propose_recommendation_apply", "recommendation_execute",
 		"recommendation_resolution_execute", "search_metrics", "security_execute",
-		"service_dependency_graph_execute", "signoz_log_execute", "spend_allocation", "spend_forecast",
+		"service_dependency_graph_execute", "spend_allocation", "spend_forecast",
 		"spend_summary", "traces_execute", "traces_execute_chronosphere", "traces_execute_default",
 		"traces_execute_jaeger", "traces_execute_v2",
 	)
@@ -25,17 +25,17 @@ func init() {
 		"resource_search_execute", "shell_execute",
 	)
 	toolcore.DeclareAccountScope(toolcore.AccountScopeIndependent,
-		"crawl_execute", "github_execute", "gitlab_execute",
+		"analyze_metric_series", "crawl_execute", "github_execute", "gitlab_execute",
 		"kg_get_node", "kg_traverse", "load_skills", "mermaid_validation",
 		"nudgebee_account_get", "nudgebee_accounts_count", "nudgebee_accounts_list",
 		"nudgebee_docs_search", "nudgebee_integration_diagnose", "nudgebee_integration_get_status",
 		"nudgebee_integrations_count", "nudgebee_integrations_list", "search_docs", "search_execute",
-		"search_skills", "standard_diagnostic_grep", "think", "ticket_master", "ticket_master_v2",
-		"update_notebook",
+		"search_skills", "think", "ticket_master_v2",
+		"update_notebook", "update_notebook_v2",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundWrite,
-		"recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",
-		"recommendation_set_dismissal", "remediation_execute", "remediation_generate", "trigger_cis_scan",
+		"im_message_send", "recommendation_apply", "recommendation_execute_cli", "recommendation_record_ticket_resolution",
+		"recommendation_set_dismissal", "remediation_execute", "remediation_generate", "run_step", "trigger_cis_scan",
 		"trigger_image_scan", "watch_cancel", "watch_resource",
 	)
 	// Run against the target account's own integration, picked by
@@ -52,6 +52,13 @@ func init() {
 		"oracle_query_execute", "postgres_query_execute", "rabbit_execute", "redis_command_executer",
 	)
 	toolcore.DeclareOriginBound(toolcore.OriginBoundConversationState,
+		"propose_fix",          // NudgeBee's own plan for the conversation's alert; nothing in the account changes
+		"schedule_recheck",     // when NudgeBee looks at the conversation's alert again; nothing in the account changes
+		"get_remediation_plan", // NudgeBee's own plan for the conversation's alert, read only
+		// workflow_search / workflow_list also list the user's other accounts,
+		// and workflow_get / workflow_trigger / workflow_execution_get act on
+		// one by account_id (tool_workflow_accounts.go), never by `target`; a
+		// child handed another cluster is still refused them.
 		"watch_list", "watch_status", "workflow_config_delete", "workflow_config_get",
 		"workflow_config_list", "workflow_config_save", "workflow_create", "workflow_delete",
 		"workflow_delete_version", "workflow_dry_run", "workflow_examples", "workflow_execution_cancel",

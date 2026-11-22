@@ -104,7 +104,7 @@ func TestFetchAllMeasurements_PayloadTooLargeHalvesPageSize(t *testing.T) {
 		return []byte(`{"groupings":[{"attributes":[],"measurements":[]}],"pageInfo":{"nextPage":""}}`), http.StatusOK, nil
 	}
 
-	groupings, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
+	groupings, _, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
 	require.NoError(t, err)
 	assert.Len(t, groupings, 1)
 	assert.Equal(t, []string{"100", "50", "25"}, tried)
@@ -131,7 +131,7 @@ func TestFetchAllMeasurements_PayloadTooLargeRestartsFromFirstPage(t *testing.T)
 		}
 	}
 
-	groupings, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
+	groupings, _, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
 	require.NoError(t, err)
 	assert.Equal(t, []call{{"100", ""}, {"100", "t100"}, {"50", ""}, {"50", "t50"}}, calls)
 	require.Len(t, groupings, 2, "the first attempt's page is discarded, not kept twice")
@@ -148,7 +148,7 @@ func TestFetchAllMeasurements_PayloadTooLargeAtFloorSaysWhatToDo(t *testing.T) {
 		return []byte(`{"message":"Response payload too large"}`), http.StatusInternalServerError, nil
 	}
 
-	_, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
+	_, _, _, err := fetchAllMeasurements("tok", swTestBaseURL, "/v1/metrics/m/measurements", swMeasurementQuery{aggregateBy: "AVG"})
 	require.Error(t, err)
 	assert.Equal(t, []string{"100", "50", "25", "12", "10"}, tried)
 	assert.Contains(t, err.Error(), "narrower window")

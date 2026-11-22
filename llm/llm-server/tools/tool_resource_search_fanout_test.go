@@ -1,11 +1,13 @@
 package tools
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
@@ -301,4 +303,65 @@ func TestLabelLookup_SameCommandInBothPasses(t *testing.T) {
 	multi := K8sResourceSearchTool{}.generateResourceSearchStrategies("Payment Service", "shop")
 	assert.Equal(t, "payment-service", multi[0].LabelValue)
 	assert.Equal(t, "kubectl get pods -n shop --show-labels --no-headers | grep -i -- 'payment-service'", multi[0].Command)
+}
+
+// TestFindActualResources_TimeoutNamesPendingStrategies: when a strategy has
+// not answered by the deadline, the note names it and says a miss may be
+// partial, so the model doesn't conclude the resource is absent.
+func TestFindActualResources_TimeoutNamesPendingStrategies(t *testing.T) {
+	origTimeout := config.Config.AsyncOperationTimeoutSeconds
+	config.Config.AsyncOperationTimeoutSeconds = 1
+	t.Cleanup(func() { config.Config.AsyncOperationTimeoutSeconds = origTimeout })
+	slowDone := make(chan struct{})
+	ws := &scriptedKubectlWorkspace{respond: func(cmd string) string {
+		if cmd == "kubectl get customresourcedefinitions --no-headers" {
+			time.Sleep(1500 * time.Millisecond)
+			close(slowDone)
+		}
+		return ""
+	}}
+	ctx := useScriptedWorkspace(t, ws)
+
+	_, note := K8sResourceSearchTool{}.findActualResources("payments", "--all-namespaces", "", ctx)
+	<-slowDone // the slow call has read wm before the cleanup restores it
+
+	assert.Contains(t, note, "timed out after 1s before these searches finished:")
+	assert.Contains(t, note, "custom resources.")
+	assert.Contains(t, note, "may still exist")
+}
+
+// TestFindActualResources_CompleteSearchHasNoNote: no note when every
+// strategy answered and nothing was capped.
+func TestFindActualResources_CompleteSearchHasNoNote(t *testing.T) {
+	ws := &scriptedKubectlWorkspace{respond: func(string) string { return "" }}
+	ctx := useScriptedWorkspace(t, ws)
+
+	_, note := K8sResourceSearchTool{}.findActualResources("payments", "--all-namespaces", "", ctx)
+
+	assert.Empty(t, note)
+}
+
+// TestFindActualResources_CRDCapIsStated: past 10 custom resource types the
+// note says how many were searched out of how many.
+func TestFindActualResources_CRDCapIsStated(t *testing.T) {
+	var crds []string
+	for i := 0; i < 12; i++ {
+		crds = append(crds, fmt.Sprintf("kind%ds.example.com   2024-01-01T00:00:00Z", i))
+	}
+	ws := &scriptedKubectlWorkspace{respond: func(cmd string) string {
+		if cmd == "kubectl get customresourcedefinitions --no-headers" {
+			return strings.Join(crds, "\n")
+		}
+		return ""
+	}}
+	ctx := useScriptedWorkspace(t, ws)
+
+	_, note := K8sResourceSearchTool{}.findActualResources("payments", "--all-namespaces", "", ctx)
+
+	assert.Equal(t, " Custom resource search was capped at the first 10 of 12 types; pass resource_type to search another one.", note)
+}
+
+func TestStrategyCutoffNote(t *testing.T) {
+	assert.Empty(t, strategyCutoffNote(11, 0, 5), "last pattern tried: nothing left out")
+	assert.Equal(t, " Stopped after 11 live matches with 3 of 5 fallback name patterns not tried; more may match, narrow with namespace, resource_type or a more specific name.", strategyCutoffNote(11, 3, 5))
 }

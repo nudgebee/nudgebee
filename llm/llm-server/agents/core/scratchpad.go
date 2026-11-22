@@ -7,6 +7,7 @@ import (
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 )
 
@@ -37,15 +38,6 @@ func getMaxObservationChars() int {
 	return limit
 }
 
-// scratchpadCharsPerToken translates a model context window (tokens) into a char
-// budget for compression gating. We deliberately use the DENSE end of the ratio (~3
-// bytes/token for code/JSON, vs ~4 for prose): converting window→chars with the small
-// ratio yields a smaller, safer char budget, so the scratchpad's worst-case token
-// footprint stays under the configured window fraction even for dense content. The
-// scratchpad is only part of the prompt, and the reactive token-limit handler is the
-// final backstop — so erring toward a tighter budget here avoids window overflow.
-const scratchpadCharsPerToken = 3
-
 // compressionActivationFraction is the fraction of the model context window at which
 // scratchpad compression activates. Configurable; defaults to 0.75.
 func compressionActivationFraction() float64 {
@@ -73,7 +65,7 @@ func scratchpadBudget(maxContextTokens int) (activation, hardCap int) {
 	if maxContextTokens <= 0 {
 		return legacy, legacy
 	}
-	windowChars := maxContextTokens * scratchpadCharsPerToken
+	windowChars := maxContextTokens * llmruntime.ScratchpadCharsPerToken
 	activation = int(float64(windowChars) * compressionActivationFraction())
 	hardCap = int(float64(windowChars) * 0.90) // leave ~10% headroom for prompt overhead + output
 	if hardCap < activation {
@@ -91,11 +83,11 @@ func resolveMaxContextTokens(ctx *security.RequestContext, accountId, agentName,
 	if ctx == nil || accountId == "" {
 		return 0
 	}
-	resolution, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId)
+	resolution, err := llmruntime.ResolveLLMConfig(ctx, accountId, agentName, conversationId)
 	if err != nil || resolution == nil {
 		return 0
 	}
-	return ResolveModelMaxContext(resolution, resolution.Model)
+	return llmruntime.ResolveModelMaxContext(resolution, resolution.Model)
 }
 
 // recentStepsFullContext is how many recent tool steps retain full observations.
@@ -202,14 +194,14 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 			for j := i + 1; j < len(intermediateSteps); j++ {
 				plannerStep := intermediateSteps[j]
 				if strings.EqualFold(plannerStep.Action.Tool, plannerDummyTool) {
-					if strings.EqualFold(intermediateSteps[j-1].Action.Tool, ToolLlm) {
+					if strings.EqualFold(intermediateSteps[j-1].Action.Tool, llmruntime.ToolLlm) {
 						plannerSummaryToolIndex[i] = j - 1
 					}
 					nextPlannerFound = true
 					break
 				}
 			}
-			if !nextPlannerFound && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, ToolLlm) {
+			if !nextPlannerFound && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, llmruntime.ToolLlm) {
 				plannerSummaryToolIndex[i] = len(intermediateSteps) - 1
 			}
 		}
@@ -273,7 +265,7 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		comp.IsToolStep = true
 		hhsb := "  <step>\n"
 		hhsb += fmt.Sprintf("    <id>%s</id>\n", plan.Action.ToolID)
-		if !strings.EqualFold(plan.Action.Tool, ToolLlm) {
+		if !strings.EqualFold(plan.Action.Tool, llmruntime.ToolLlm) {
 			hhsb += fmt.Sprintf("    <thought><![CDATA[%s]]></thought>\n", plan.Action.Log)
 		}
 		hhsb += fmt.Sprintf("    <tool>%s</tool>\n", plan.Action.Tool)
@@ -433,7 +425,7 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 	// We track unique tools by their LAST outcome to avoid counting retries as separate failures.
 	toolLastStatus := make(map[string]ToolStatus)
 	for _, step := range intermediateSteps {
-		if strings.EqualFold(step.Action.Tool, plannerDummyTool) || step.Action.Tool == "" || strings.EqualFold(step.Action.Tool, ToolLlm) {
+		if strings.EqualFold(step.Action.Tool, plannerDummyTool) || step.Action.Tool == "" || strings.EqualFold(step.Action.Tool, llmruntime.ToolLlm) {
 			continue
 		}
 		key := step.Action.Tool

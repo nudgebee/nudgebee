@@ -13,8 +13,21 @@ import UploadFileIcon from '@mui/icons-material/UploadFile';
 import CloseIcon from '@mui/icons-material/Close';
 import { getLlmIdentifierValidationMessage, parseHttpResponseBodyMessage, getToolLabel } from 'src/utils/common';
 import { ds } from '@utils/colors';
-import { FormCard, FormField } from '@shared/NewReusabeFormComponents';
-const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData, triggerSubmit, onSubmitStart, onSubmitEnd, customizeMode }) => {
+import { FormCard, FormField } from '@shared/forms/FormComponents';
+import OrgScopeField, { isOrgItem, isOrgScope, SCOPE_SELECTED_ACCOUNTS } from './OrgScopeField';
+const CreateAgentNew = ({
+  accountId,
+  handleClose,
+  allAgents,
+  editMode,
+  agentData,
+  triggerSubmit,
+  onSubmitStart,
+  onSubmitEnd,
+  customizeMode,
+  scopeOptions = null,
+  initialVisibility = 'account',
+}) => {
   const [description, setDescription] = useState('');
   const [name, setName] = useState('');
   const [instructions, setInstructions] = useState('');
@@ -39,6 +52,16 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
   });
   const [ragData, setRagData] = useState([]);
   const [hasSubmitted, setHasSubmitted] = useState(false);
+  // "Who can use it" — tenant admins creating a custom agent (#41073). Edits
+  // change it from the list's "Who can use it" action instead.
+  const showScope = !editMode && !customizeMode && Array.isArray(scopeOptions) && scopeOptions.length > 0;
+  const [visibility, setVisibility] = useState(initialVisibility);
+  const [scopeAccountIds, setScopeAccountIds] = useState([]);
+  // An organisation agent can only use tools every account it reaches has:
+  // offer the tenant-wide list without account-only custom tools (the backend
+  // refuses those and names them).
+  const orgAgent = (showScope && isOrgScope(visibility)) || (editMode && isOrgItem(agentData));
+  const toolsAccountId = accountId;
 
   // Step navigation state
   const [activeStep, setActiveStep] = useState(1);
@@ -171,9 +194,15 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
   };
 
   useEffect(() => {
+    let active = true;
     setToolOptions([]);
-    apiAskNudgebee.listTools({ accountId }).then((res) => {
-      const listToolsResponse = res.data?.data?.ai_list_tools?.data ?? [];
+    apiAskNudgebee.listTools({ accountId: toolsAccountId }).then((res) => {
+      if (!active) return;
+      // An organisation agent may use built-in, MCP and organisation tools and
+      // agents, not a custom one that belongs to one account.
+      const listToolsResponse = (res?.data?.data?.ai_list_tools?.data ?? []).filter(
+        (g) => !orgAgent || g.type !== 'custom' || g.executor_type === 'mcp' || (g.visibility && g.visibility !== 'account')
+      );
       if (listToolsResponse.length > 0) {
         const GROUP_ORDER = { tool: 0, agent: 1, other: 2 };
         setToolOptions(
@@ -195,7 +224,12 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
         );
       }
     });
+    return () => {
+      active = false;
+    };
+  }, [toolsAccountId, orgAgent]);
 
+  useEffect(() => {
     if (editMode && agentData) {
       setName(agentData.name);
       setDescription(agentData.description);
@@ -307,6 +341,13 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
       } // Reset loading state
       return;
     }
+    if (showScope && visibility === SCOPE_SELECTED_ACCOUNTS && scopeAccountIds.length === 0) {
+      snackbar.error('Pick at least one account to share this agent with');
+      if (onSubmitEnd) {
+        onSubmitEnd();
+      }
+      return;
+    }
     setLoading(true);
     if (onSubmitStart) {
       onSubmitStart();
@@ -330,6 +371,7 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
       config: {}, // Assuming config is not editable for now
       // Only include rags when creating a new agent, not when updating
       ...((!editMode || customizeMode) && { rags: ragData }),
+      ...(showScope && { visibility, account_ids: visibility === SCOPE_SELECTED_ACCOUNTS ? scopeAccountIds : [] }),
     };
 
     if (editMode && !customizeMode) {
@@ -369,7 +411,8 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
       // Create new agent or customize/override system agent
       apiAskNudgebee
         .createAgent({
-          account_id: accountId,
+          // An organisation agent belongs to the tenant, not to one account.
+          account_id: showScope && isOrgScope(visibility) ? '' : accountId,
           agent: agentPayload,
           override_agent: customizeMode ? true : false,
         })
@@ -612,6 +655,18 @@ const CreateAgentNew = ({ accountId, handleClose, allAgents, editMode, agentData
                 fieldType='textarea'
                 rows={4}
               />
+
+              {showScope && (
+                <OrgScopeField
+                  noun='agent'
+                  options={scopeOptions}
+                  visibility={visibility}
+                  onVisibilityChange={setVisibility}
+                  accountIds={scopeAccountIds}
+                  onAccountIdsChange={setScopeAccountIds}
+                  disabled={loading}
+                />
+              )}
             </FormCard>
           </Box>
 
@@ -883,6 +938,8 @@ CreateAgentNew.propTypes = {
   triggerSubmit: PropTypes.bool,
   onSubmitStart: PropTypes.func,
   onSubmitEnd: PropTypes.func,
+  scopeOptions: PropTypes.arrayOf(PropTypes.shape({ value: PropTypes.string, label: PropTypes.string })),
+  initialVisibility: PropTypes.string,
 };
 
 export default CreateAgentNew;

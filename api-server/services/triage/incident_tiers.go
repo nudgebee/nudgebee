@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"nudgebee/services/forecast/keys"
 )
 
 // incident_tiers.go is the deterministic tiered incident assembly (#34658,
@@ -112,7 +114,10 @@ func isDerivedSignal(a AlertIdentity) bool {
 	case "slo", "anomaly":
 		return true
 	}
-	return false
+	// SLO forecasts and their breaches (CPU and memory) are derived from a threshold,
+	// like SLO violations: one must never lead or join a real crashloop or OOM
+	// incident. A memory breach leaves the incident to the OOMKilled alert.
+	return keys.IsForecast(a.FindingType)
 }
 
 // Rate is an alert's trailing firing frequency relative to the incident window:

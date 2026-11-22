@@ -508,6 +508,16 @@ func TestGetBaseGroupingTraceQuery_FallbackDerivesDestinationZone(t *testing.T) 
 	assert.Contains(t, q, query.DestinationZoneExpr+" AS destination_workload_zone")
 }
 
+// TestBaseTraceQueries_FallbackReadsTraceResourceExpr pins that both non-materialized queries
+// derive resource through query.TraceResourceExpr, so spans carrying only url.full get one.
+func TestBaseTraceQueries_FallbackReadsTraceResourceExpr(t *testing.T) {
+	ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+	s := &OtelClickhouseTraceSource{}
+
+	assert.Contains(t, s.GetBaseTraceQuery(ctx, "no-such-account"), query.TraceResourceExpr+" AS resource")
+	assert.Contains(t, s.GetBaseGroupingTraceQuery(ctx, "no-such-account"), query.TraceResourceExpr+" AS resource")
+}
+
 // TestQueryTracesRaw_Live exercises the raw-table capability against a live relay +
 // ClickHouse. It runs an aggregation (GROUP BY service with count + p95 latency) and
 // asserts QueryTracesRaw returns the real computed columns/values, while the typed

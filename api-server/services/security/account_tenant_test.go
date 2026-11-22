@@ -42,4 +42,8 @@ func TestIsTenantAccount(t *testing.T) {
 	if sc.IsTenantAccount("b1") || sc.IsTenantAccount("") {
 		t.Error("only the tenant's own accounts belong to it")
 	}
+	var missing *SecurityContext
+	if missing.IsTenantAccount("a1") {
+		t.Error("a nil security context must fail closed")
+	}
 }

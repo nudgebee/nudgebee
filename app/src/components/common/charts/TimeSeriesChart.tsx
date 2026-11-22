@@ -39,6 +39,8 @@ export interface TimeSeriesChartProps {
   format?: (value: number) => string;
   /** Compact formatter — y-axis ticks, on-bar totals, average line. Default: compactCurrency. */
   compactFormat?: (value: number) => string;
+  /** Legend-total formatter; the full `format` value moves to a hover title. Default: `format`. */
+  legendFormat?: (value: number) => string;
   /** Integer y-axis (e.g. call counts): whole-number tick steps; labels use `compactFormat` when given. */
   integerY?: boolean;
   /** Colour per series key. Default: built-in categorical ramp by index. */
@@ -49,6 +51,10 @@ export interface TimeSeriesChartProps {
   id?: string;
   /** Click a column/point to drill; receives its label + index. */
   onSelectPoint?: (label: string, index: number) => void;
+  /** Series keys drawn as thin dotted reference lines (thresholds), without a fill. */
+  referenceKeys?: string[];
+  /** Legend value: the series total (default) or its latest value — a level metric's samples do not sum. */
+  legendValue?: 'total' | 'last';
 }
 
 /** Top→bottom gradient per bar (full colour → lighter) for depth. */
@@ -88,12 +94,15 @@ export function TimeSeriesChart({
   shape = 'bar',
   format = roundedFormat,
   compactFormat: compactFormatProp,
+  legendFormat,
   integerY = false,
   colorFor = paletteColorFor,
   showLegend = true,
   height = 264,
   id,
   onSelectPoint,
+  referenceKeys,
+  legendValue = 'total',
 }: TimeSeriesChartProps) {
   const isBar = shape === 'bar';
   const isArea = shape === 'area';
@@ -116,28 +125,33 @@ export function TimeSeriesChart({
         }
         // line / area: a single line reads richer with a fill; many thin strokes
         // keep subtle gradient fills so they layer without mud. `area` forces fills.
-        const fill = isArea || series.length <= 3;
+        // Reference lines are strokes only.
+        const reference = Boolean(referenceKeys?.includes(key));
+        const fill = !reference && (isArea || series.length <= 3);
         return {
           label: key,
           data,
           borderColor: color,
           backgroundColor: fill ? areaFill(color, isArea) : color,
-          fill: isArea ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
-          borderWidth: isArea ? 1.5 : 2.5,
+          fill: isArea && !reference ? (i === 0 ? 'origin' : '-1') : fill ? 'origin' : false,
+          borderWidth: reference || isArea ? 1.5 : 2.5,
+          ...(reference ? { borderDash: [2, 3] } : {}),
           pointRadius: 0,
           pointHoverRadius: 4,
           pointBackgroundColor: color,
           tension: 0.35,
         };
       }),
-    [series, colorFor, isBar, isArea]
+    [series, colorFor, isBar, isArea, referenceKeys]
   );
 
   const seriesTotals = React.useMemo(() => {
     const totals: Record<string, number> = {};
-    series.forEach(({ key, data }) => (totals[key] = data.reduce((s, v) => s + (v ?? 0), 0)));
+    series.forEach(({ key, data }) => {
+      totals[key] = legendValue === 'last' ? data[data.length - 1] ?? 0 : data.reduce((s, v) => s + (v ?? 0), 0);
+    });
     return totals;
-  }, [series]);
+  }, [series, legendValue]);
 
   const compactFormat = compactFormatProp ?? compactCurrency;
   // A caller's compact formatter wins over plain 'int' labels (200M, not 200000000).
@@ -152,14 +166,29 @@ export function TimeSeriesChart({
     ...base,
     // Bars are fat enough to hit directly; snap-to-nearest reads as a phantom
     // tooltip on sparse data. Scoped to the tooltip plugin only — the global
-    // interaction stays intersect:false so onClick/onSelectPoint keeps working
-    // on zero-value columns (their bars have no pixels to hit). Line/area keep
-    // intersect:false everywhere: pointRadius is 0, so a direct-hit requirement
-    // would make their tooltips unreachable.
+    // interaction stays intersect:false so hover/tooltip still reach zero-value
+    // columns and 0-radius line points. (The drill in onClick does NOT lean on
+    // that loose mode — it runs its own strict hit test below.)
     ...(isBar ? { plugins: { ...base.plugins, tooltip: { ...base.plugins.tooltip, mode: 'index' as const, intersect: true } } } : {}),
     ...(singleColumn ? { scales: { ...base.scales, x: { ...base.scales.x, offset: true } } } : {}),
     ...(onSelectPoint
-      ? { onClick: (_e: unknown, els: { index: number }[]) => els?.length && onSelectPoint(labels[els[0].index], els[0].index) }
+      ? {
+          onClick: (e: any, _els: unknown, chart: any) => {
+            if (isBar) {
+              const hit = chart.getElementsAtEventForMode(e, 'index', { intersect: true }, false);
+              if (hit.length) onSelectPoint(labels[hit[0].index], hit[0].index);
+              return;
+            }
+            const { chartArea, scales } = chart;
+            const { x, y } = e;
+            if (!chartArea || x < chartArea.left || x > chartArea.right || y < chartArea.top || y > chartArea.bottom) return;
+            const i = Math.round(scales.x.getValueForPixel(x));
+            if (!(i >= 0) || i >= labels.length) return;
+            const stackTop = series.reduce((sum, ds, di) => (chart.isDatasetVisible(di) ? sum + (ds.data[i] ?? 0) : sum), 0);
+            if (stackTop <= 0 || y < scales.y.getPixelForValue(stackTop)) return;
+            onSelectPoint(labels[i], i);
+          },
+        }
       : {}),
   };
 
@@ -217,8 +246,12 @@ export function TimeSeriesChart({
             >
               <Box sx={{ width: 9, height: 9, borderRadius: swatchRadius, backgroundColor: colorFor(key, i), flexShrink: 0 }} />
               <Box component='span'>{key}</Box>
-              <Box component='span' sx={{ color: 'var(--ds-gray-400)', fontVariantNumeric: 'tabular-nums' }}>
-                {format(seriesTotals[key] ?? 0)}
+              <Box
+                component='span'
+                title={legendFormat ? format(seriesTotals[key] ?? 0) : undefined}
+                sx={{ color: 'var(--ds-gray-400)', fontVariantNumeric: 'tabular-nums' }}
+              >
+                {(legendFormat ?? format)(seriesTotals[key] ?? 0)}
               </Box>
             </Box>
           ))}

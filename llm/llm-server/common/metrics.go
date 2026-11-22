@@ -17,8 +17,10 @@ var (
 	metricsApiRequestsTotal       metric.Int64Counter
 
 	metricsAgentOperationsTotal       metric.Int64Counter
+	metricsCitationLinks              metric.Int64Counter
 	metricsAgentLatencySeconds        metric.Float64Histogram
 	metricsToolOperationsTotal        metric.Int64Counter
+	metricsToolReportedFailure        metric.Int64Counter
 	metricsToolLatencySeconds         metric.Float64Histogram
 	metricsLLMRequestsTotal           metric.Int64Counter
 	metricsLLMTokensTotal             metric.Int64Counter
@@ -27,6 +29,7 @@ var (
 	metricsLLMCacheSkipTotal          metric.Int64Counter
 	metricsLLMCachedTokensTotal       metric.Int64Counter
 	metricsLLMCacheInvalidationsTotal metric.Int64Counter
+	metricsReplicaBroadcastTotal      metric.Int64Counter
 	metricsLLMCircuitBreakerTripped   metric.Int64Counter
 	metricsLLMRateLimitHitsTotal      metric.Int64Counter
 
@@ -156,6 +159,14 @@ func InitMetrics() {
 			slog.Error("metrics: failed to create nb_llm_agent_operations metric", "error", err)
 		}
 
+		metricsCitationLinks, err = meter.Int64Counter(
+			"nb_llm_citation_links",
+			metric.WithDescription("Step citations in agent answers, by whether they were linked to a tool-call row"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_citation_links metric", "error", err)
+		}
+
 		// Histogram names omit the unit suffix; the OTel SDK propagates
 		// the unit via metadata and the Prometheus exporter appends _seconds.
 		metricsAgentLatencySeconds, err = meter.Float64Histogram(
@@ -175,6 +186,14 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_tool_operations metric", "error", err)
+		}
+
+		metricsToolReportedFailure, err = meter.Int64Counter(
+			"nb_llm_tool_reported_failure",
+			metric.WithDescription("Tool replies that came back OK but say they failed; outcome is would_fail (logged only) or enforced"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_tool_reported_failure metric", "error", err)
 		}
 
 		metricsToolLatencySeconds, err = meter.Float64Histogram(
@@ -250,6 +269,15 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_cache_invalidations metric", "error", err)
+		}
+
+		// Replica broadcast messages (#40807)
+		metricsReplicaBroadcastTotal, err = meter.Int64Counter(
+			"nb_llm_replica_broadcast",
+			metric.WithDescription("Replica broadcast messages published by or received on this pod, by type and direction"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_replica_broadcast metric", "error", err)
 		}
 
 		// LLM circuit breaker trips
@@ -483,6 +511,20 @@ func MetricsAgentOperationsTotal(agent, status, accountID string) {
 	))
 }
 
+// MetricsCitationLinks counts step citations in an agent answer. outcome is
+// "linked" or the reason a citation was left as plain text.
+func MetricsCitationLinks(agent, outcome, accountID string, count int) {
+	InitMetrics()
+	if metricsCitationLinks == nil || count <= 0 {
+		return
+	}
+	metricsCitationLinks.Add(context.Background(), int64(count), metric.WithAttributes(
+		attribute.String("agent", agent),
+		attribute.String("outcome", outcome),
+		attribute.String("account_id", accountID),
+	))
+}
+
 // MetricsToolOperationsTotal increments the tool operations counter.
 // toolType is the implementation class label (e.g. "tool" for built-in,
 // "mcp" for MCP integrations) so dashboards can slice by tool family.
@@ -496,6 +538,22 @@ func MetricsToolOperationsTotal(toolType, tool, status, accountID string) {
 		attribute.String("type", toolType),
 		attribute.String("tool", tool),
 		attribute.String("status", status),
+		attribute.String("account_id", accountID),
+	))
+}
+
+// MetricsToolReportedFailure counts a tool reply that came back OK but says it
+// failed. outcome is "would_fail" (only logged) or "enforced" (recorded as failed).
+func MetricsToolReportedFailure(tool, reason, outcome, accountID string) {
+	InitMetrics()
+	if metricsToolReportedFailure == nil {
+		slog.Warn("metrics: metricsToolReportedFailure is not initialized")
+		return
+	}
+	metricsToolReportedFailure.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("tool", tool),
+		attribute.String("reason", reason),
+		attribute.String("outcome", outcome),
 		attribute.String("account_id", accountID),
 	))
 }
@@ -747,5 +805,18 @@ func MetricsToolCacheLookup(toolType, outcome string) {
 	metricsToolCacheLookup.Add(context.Background(), 1, metric.WithAttributes(
 		attribute.String("type", toolType),
 		attribute.String("outcome", outcome),
+	))
+}
+
+// metricsReplicaBroadcast counts one replica broadcast message (#40807).
+// direction is "published", "publish_failed", "received" or "ignored".
+func metricsReplicaBroadcast(changeType, direction string) {
+	InitMetrics()
+	if metricsReplicaBroadcastTotal == nil {
+		return
+	}
+	metricsReplicaBroadcastTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("type", changeType),
+		attribute.String("direction", direction),
 	))
 }

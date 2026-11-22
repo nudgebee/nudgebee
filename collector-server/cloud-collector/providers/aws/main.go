@@ -189,6 +189,23 @@ var (
 // preferable to an OOM in a multi-tenant deployment.
 const logGroupCacheMaxSize = 10_000
 
+// logStreamScoper is implemented by services whose detected log group is shared
+// by many resources, one stream per resource (the CloudWatch agent's default
+// EC2-Windows-Logs / EC2-Linux-Logs groups hold a stream per instance). For
+// them a detected group must be read through the resource's own streams only,
+// or the logs of every other host in the group are returned as this one's.
+// It returns "" when resourceId cannot be used as a stream prefix.
+type logStreamScoper interface {
+	LogStreamPrefix(resourceId string) string
+}
+
+// scopeQueryToStreamPrefix puts the stream filter in front of the query rather
+// than after it: a caller's query that ends in stats or limit has no
+// @logStream left (or has already been cut) by the time a trailing filter runs.
+func scopeQueryToStreamPrefix(queryString, prefix string) string {
+	return fmt.Sprintf("filter @logStream like /^%s/\n| %s", prefix, queryString)
+}
+
 var servicesWithoutDirectLogs = map[string]struct{}{
 	"dynamodb":      {},
 	"rds":           {},
@@ -223,9 +240,15 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 
 	//detect loggroup
 	detectionAttempted := false
+	streamPrefix := ""
 	if query.LogGroupName == "" {
 		if service, found := GetAwsService(query.ServiceName); found {
 			detectionAttempted = true
+			// Only a group found from the resource is scoped to its streams; a
+			// caller-supplied group is the caller's chosen scope.
+			if scoper, ok := service.(logStreamScoper); ok {
+				streamPrefix = scoper.LogStreamPrefix(query.ResourceId)
+			}
 			cacheKey := fmt.Sprintf("%s-%s-%s", account.AccountNumber, query.Region, query.ResourceId)
 			logGroupCacheMu.RLock()
 			loggroup, ok := logGroupCache[cacheKey]
@@ -303,11 +326,18 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 	// When a metric filter pattern is provided, use FilterLogEvents API
 	// which natively supports the same pattern syntax as CloudWatch metric filters.
 	if query.FilterPattern != "" {
-		return a.queryLogsWithFilterPattern(ctx, logsSvc, query)
+		resp, err := a.queryLogsWithFilterPattern(ctx, logsSvc, query, streamPrefix)
+		if err == nil && len(resp.Results) > 0 {
+			resp.LogGroupName, resp.LogStreamPrefix = query.LogGroupName, streamPrefix
+		}
+		return resp, err
 	}
 
 	if query.QueryString == "" {
 		query.QueryString = "fields @timestamp, @message"
+	}
+	if streamPrefix != "" {
+		query.QueryString = scopeQueryToStreamPrefix(query.QueryString, streamPrefix)
 	}
 
 	startQueryInput := &cloudwatchlogs.StartQueryInput{
@@ -387,10 +417,12 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 			}
 
 			return providers.QueryLogsResponse{
-					QueryId:    queryId,
-					Results:    logMessages,
-					Status:     string(status),
-					Statistics: stats,
+					QueryId:         queryId,
+					Results:         logMessages,
+					Status:          string(status),
+					Statistics:      stats,
+					LogGroupName:    query.LogGroupName,
+					LogStreamPrefix: streamPrefix,
 				},
 				nil
 		case logstypes.QueryStatusFailed, logstypes.QueryStatusCancelled, logstypes.QueryStatusTimeout:
@@ -407,7 +439,7 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 // queryLogsWithFilterPattern uses the FilterLogEvents API which natively supports
 // CloudWatch metric filter patterns. This returns exactly the log events that
 // would increment a metric filter counter — i.e., the logs that triggered the alarm.
-func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderContext, logsSvc *cloudwatchlogs.Client, query providers.QueryLogsRequest) (providers.QueryLogsResponse, error) {
+func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderContext, logsSvc *cloudwatchlogs.Client, query providers.QueryLogsRequest, streamPrefix string) (providers.QueryLogsResponse, error) {
 	logger := ctx.GetLogger()
 	logger.Info("using FilterLogEvents with metric filter pattern",
 		"logGroupName", query.LogGroupName, "filterPattern", query.FilterPattern)
@@ -421,6 +453,9 @@ func (a *awsProvider) queryLogsWithFilterPattern(ctx providers.CloudProviderCont
 		StartTime:     ptr.Int64(query.StartTime.UTC().UnixMilli()),
 		EndTime:       ptr.Int64(query.EndTime.UTC().UnixMilli()),
 		Limit:         ptr.Int32(limit),
+	}
+	if streamPrefix != "" {
+		input.LogStreamNamePrefix = ptr.String(streamPrefix)
 	}
 
 	paginator := cloudwatchlogs.NewFilterLogEventsPaginator(logsSvc, input)
@@ -996,7 +1031,10 @@ func (a *awsProvider) LookupCloudTrailEvents(ctx providers.CloudProviderContext,
 	// For action use cases, MaxResults is typically sufficient.
 	// If full historical lookup is needed, pagination would be required here.
 	output, err := svc.LookupEvents(ctx.GetContext(), input)
-	return output.Events, err
+	if err != nil {
+		return nil, err
+	}
+	return output.Events, nil
 }
 
 func (a *awsProvider) DescribeECSTasks(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier string, taskArns []string) ([]ecstypes.Task, error) {
@@ -1039,7 +1077,7 @@ func (a *awsProvider) GetUsageReport(ctx providers.CloudProviderContext, account
 }
 
 func (a *awsProvider) StreamUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int, emit func([]providers.UsageReportItem) error) error {
-	return streamAwsUsageReport(ctx, account, month, year, emit)
+	return explainAssumeRoleRefusal(account, streamAwsUsageReport(ctx, account, month, year, emit))
 }
 
 // GetAvailableUsageReportPeriods implements providers.UsageReportPeriodDiscoverer
@@ -1547,7 +1585,13 @@ func (a *awsProvider) ExecuteCliCommand(ctx providers.CloudProviderContext, acco
 		Untrusted: true,
 	})
 	if err != nil {
-		ctx.GetLogger().Error("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
+		// A command that ran and failed is the customer's cloud answering, and a
+		// caller that hung up stopped it on purpose; neither is a collector fault.
+		log := ctx.GetLogger().Error
+		if common.IsCommandOutcome(err) || ctx.GetContext().Err() != nil {
+			log = ctx.GetLogger().Warn
+		}
+		log("AWS CLI command execution failed", "error", err, "stderr", stderr, "command", command)
 		return stdout, fmt.Errorf("AWS CLI command failed: %w, Stderr: %s", err, stderr)
 	}
 

@@ -37,6 +37,32 @@ MISSING_SCHEMA_SQLSTATES = {"42703", "42P01"}
 
 _warned_missing_schema = False
 
+# The rule columns a save may set from its input. The rest (id, tenant_id,
+# created_*, updated_*) are server-owned and never read from the request.
+CLIENT_RULE_FIELDS = frozenset(
+    {
+        "name",
+        "description",
+        "source",
+        "source_mode",
+        "sources",
+        "account_id",
+        "cluster",
+        "scope_mode",
+        "exceptions",
+        "namespace",
+        "workload",
+        "aggregation_key",
+        "expires_at",
+        "is_suppressed",
+        "is_active",
+        "delivery_mode",
+        "frequency",
+        "severity",
+        "event_types",
+    }
+)
+
 
 def _is_missing_schema(exc):
     orig = getattr(exc, "orig", None)
@@ -90,18 +116,35 @@ def is_valid_string(s):
 #   daily_recap        — one nightly digest per tenant
 #   weekly_digest      — the weekly event-analysis digest, one per tenant-week
 #   ai_cost            — the AI Cost Daily Report digest, one per tenant-day
-TENANT_WIDE_SOURCES = ("daily_recap", "weekly_digest", "ai_cost")
+#   llm_budget         — AI Gateway budget alerts, one per quota threshold per window
+TENANT_WIDE_SOURCES = ("daily_recap", "weekly_digest", "ai_cost", "llm_budget")
 
 # Automation and optimize messages carry an account, but a rule may cover every account.
 AUTOMATION_SOURCE = "automation"
 OPTIMIZE_SOURCE = "optimize"
+# A message a person sent from Nubi to the channel they named. It is not a rule
+# type: no rule, snooze or default policy routes, silences or redirects it.
+NUBI_SOURCE = "nubi"
 ACCOUNT_OPTIONAL_SOURCES = TENANT_WIDE_SOURCES + (AUTOMATION_SOURCE, OPTIMIZE_SOURCE)
 
 # Every type a rule can cover. The singletons are each managed as the tenant's
 # only rule of its kind, so they are never combined with other types and an
 # all-types rule leaves them out.
-RULE_SOURCES = ("troubleshoot", "slo", "cloud", "optimize", "automation", "weekly_digest", "daily_recap", "ai_cost")
-SINGLETON_SOURCES = ("daily_recap", "ai_cost")
+RULE_SOURCES = (
+    "troubleshoot",
+    "slo",
+    "cloud",
+    "optimize",
+    "automation",
+    "weekly_digest",
+    "daily_recap",
+    "ai_cost",
+    "llm_budget",
+)
+SINGLETON_SOURCES = ("daily_recap", "ai_cost", "llm_budget")
+# Delivered only where the tenant has a rule for them: with none, they drop instead of
+# going to the default channel.
+OPT_IN_SOURCES = ("llm_budget",)
 ALL_TYPES_SOURCES = tuple(s for s in RULE_SOURCES if s not in SINGLETON_SOURCES)
 SOURCE_MODE_ALL = "all"
 SOURCE_MODE_LIST = "list"
@@ -266,7 +309,7 @@ def _resolve_sources(rule_data, existing_rule):
     if unknown:
         raise InvalidRuleError(Err.OS0011.value[0] % f"sources: {', '.join(map(str, unknown))}")
     if len(sources) > 1 and any(s in SINGLETON_SOURCES for s in sources):
-        raise InvalidRuleError(Err.OS0011.value[0] % "sources: daily_recap and ai_cost cannot be combined")
+        raise InvalidRuleError(Err.OS0011.value[0] % f"sources: {', '.join(SINGLETON_SOURCES)} cannot be combined")
     return SOURCE_MODE_LIST, sources, sources[0]
 
 
@@ -407,7 +450,7 @@ class NotificationRulesService:
                 if rule_data.get("source_mode") == SOURCE_MODE_ALL:
                     source = ALL_TYPES_MIRROR_SOURCE
 
-                fields = {k: v for k, v in rule_data.items() if hasattr(NotificationRules, k)}
+                fields = {k: v for k, v in rule_data.items() if k in CLIENT_RULE_FIELDS}
                 if "exceptions" in rule_data:
                     fields["exceptions"] = normalize_exceptions(rule_data["exceptions"])
                 if "expires_at" in fields and isinstance(fields["expires_at"], str):
@@ -441,7 +484,7 @@ class NotificationRulesService:
                     self._update_existing_rule(existing_rule, fields, user_id)
                     rule_id = existing_rule.id
                 else:
-                    rule_id = self._create_new_rule(session, fields, tenant_id, user_id, rule_data)
+                    rule_id = self._create_new_rule(session, fields, tenant_id, user_id)
                 await session.flush()
                 await self._replace_rule_accounts(session, rule_id, tenant_id, account_ids)
 
@@ -452,9 +495,9 @@ class NotificationRulesService:
 
                 # Double-invalidation: clear before commit to prevent concurrent reads
                 # from re-caching stale data during the commit window
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await session.commit()
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await self._create_audit_entry(rule_id, tenant_id, user_id, fields, is_update=existing_rule is not None)
 
                 return {"id": str(rule_id)}
@@ -529,8 +572,7 @@ class NotificationRulesService:
         }
 
         for key, value in fields.items():
-            if key != "id":
-                setattr(existing_rule, key, value)
+            setattr(existing_rule, key, value)
 
         for f in nullable_fields - fields.keys():
             if hasattr(existing_rule, f):
@@ -540,17 +582,16 @@ class NotificationRulesService:
         existing_rule.updated_at = utc_now()
 
     @staticmethod
-    def _create_new_rule(session, fields, tenant_id, user_id, rule_data):
+    def _create_new_rule(session, fields, tenant_id, user_id):
         rule_id = uuid.uuid4()
         rule = NotificationRules(
+            **{"is_active": True, **fields},
             id=rule_id,
             tenant_id=tenant_id,
             created_by=user_id,
             updated_by=user_id,
             created_at=utc_now(),
             updated_at=utc_now(),
-            is_active=rule_data.get("is_active", True),
-            **{k: v for k, v in fields.items() if k != "id"},
         )
         session.add(rule)
         return rule_id
@@ -574,8 +615,8 @@ class NotificationRulesService:
                 )
             await self._get_tenant_account_names(session, tenant_id, list(dict.fromkeys(account_ids)))
 
-    def invalidate_cached_rules(self, tenant_id):
-        self._invalidate_cache(tenant_id)
+    async def invalidate_cached_rules(self, tenant_id):
+        await self._invalidate_cache(tenant_id)
 
     async def get_default_policies(self, tenant_id):
         """{source: {"action", "mappings"}} for the tenant's saved defaults. Read in
@@ -583,7 +624,7 @@ class NotificationRulesService:
         migration) cannot abort the caller's transaction; that case reads as no
         saved defaults and is not cached."""
         if self.cache and self.cache.redis_client:
-            cached = self.cache.get_default_policies(tenant_id)
+            cached = await self.cache.aio.get_default_policies(tenant_id)
             if cached is not None:
                 return cached
         async with BaseDB.async_session(self.engine)() as session:
@@ -600,17 +641,20 @@ class NotificationRulesService:
                 LOG.exception("Error loading notification default policies for tenant %s: %s", tenant_id, e)
                 return {}
         if self.cache and self.cache.redis_client:
-            self.cache.cache_default_policies(tenant_id, policies)
+            await self.cache.aio.cache_default_policies(tenant_id, policies)
         return policies
 
     async def get_default_policy(self, tenant_id, source):
         """The type's own default, else the all-types default. The singletons
-        (daily email, AI cost report) never follow the all-types default."""
+        (daily email, AI cost report, budget alerts) never follow the all-types default;
+        an opt-in type with no row of its own drops."""
         policies = await self.get_default_policies(tenant_id)
         if source in policies:
             return policies[source]
         if source in ALL_TYPES_SOURCES:
             return policies.get(DEFAULT_ALL_SOURCES)
+        if source in OPT_IN_SOURCES:
+            return {"action": DEFAULT_DROP, "mappings": []}
         return None
 
     async def list_default_policies(self, **kwargs):
@@ -677,9 +721,9 @@ class NotificationRulesService:
                         .values(tenant_id=tenant_id, source=source, **values)
                         .on_conflict_do_update(index_elements=["tenant_id", "source"], set_=values)
                     )
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
                 await session.commit()
-                self._invalidate_cache(tenant_id)
+                await self._invalidate_cache(tenant_id)
             except Exception as e:
                 if isinstance(e, ProgrammingError) and _is_missing_schema(e):
                     return {
@@ -767,9 +811,9 @@ class NotificationRulesService:
                 LOG.debug("Removing mapping for platform: %s", platform)
                 await session.delete(existing_mappings[platform])
 
-    def _invalidate_cache(self, tenant_id):
+    async def _invalidate_cache(self, tenant_id):
         if self.cache and self.cache.redis_client:
-            self.cache.delete_cached_notification_rules(tenant_id)
+            await self.cache.aio.delete_cached_notification_rules(tenant_id)
             LOG.info("Cache invalidated for tenant: %s", tenant_id)
 
     @staticmethod
@@ -799,7 +843,7 @@ class NotificationRulesService:
 
     async def get_notification_rules(self, tenant_id):
         if self.cache and self.cache.redis_client:
-            cached = self.cache.get_notification_rules(tenant_id)
+            cached = await self.cache.aio.get_notification_rules(tenant_id)
             if cached:
                 return cached
 
@@ -821,7 +865,7 @@ class NotificationRulesService:
                 rule.missing_columns = frozenset()
             scope_loaded = await self._attach_account_ids(session, tenant_id, rules)
             if rules and scope_loaded and self.cache and self.cache.redis_client:
-                self.cache.cache_notification_rules(tenant_id, rules)
+                await self.cache.aio.cache_notification_rules(tenant_id, rules)
             return rules
 
     @staticmethod

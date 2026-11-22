@@ -1,6 +1,6 @@
 """Per-pod in-memory circuit breaker for the LLM rerank path.
 
-Mirrors llm-server's in-memory breaker (agents/core/llm_circuit_breaker.go): fail fast
+Mirrors llm-server's in-memory breaker (llms/runtime/llm_circuit_breaker.go): fail fast
 when the self-hosted endpoint is not ready so a rerank request doesn't hang on the LLM
 client's retries/timeout. Process-local — no shared/cross-service state, so cooldowns use
 a monotonic clock and nothing is serialized.

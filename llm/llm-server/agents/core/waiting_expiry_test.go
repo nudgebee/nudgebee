@@ -136,7 +136,7 @@ func TestExpireWaitingConversation_WritesNoteLikeStop(t *testing.T) {
 	mock.ExpectQuery("SELECT status FROM llm_conversations").WithArgs("conversation-1", "account-1").
 		WillReturnRows(sqlmock.NewRows([]string{"status"}).AddRow(ConversationStatusWaiting))
 	mock.ExpectQuery(regexp.QuoteMeta(`UPDATE llm_conversation_messages SET updated_at = now(), status = $2, response = $4`)).
-		WithArgs("conversation-1", string(ConversationStatusTerminated), "account-1", note).
+		WithArgs("conversation-1", string(ConversationStatusTerminated), "account-1", note, ClosedReasonLapsed).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("UPDATE llm_conversations SET status").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("UPDATE llm_conversation_agent SET status").

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	nbprompts "nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
@@ -250,7 +251,7 @@ func TestReActPlannerStopWordsCoverAttributedObservations(t *testing.T) {
 		},
 		{
 			name:     "custom Vertex endpoint",
-			provider: ProviderCustom,
+			provider: llmruntime.ProviderCustom,
 			model:    "vertex/claude-sonnet-4-6",
 			want:     []string{"<observation"},
 		},
@@ -2110,7 +2111,7 @@ func TestReAct3LeanSubagentPrompt(t *testing.T) {
 
 	t.Run("top-level agent with lean variant retains history and conversation context", func(t *testing.T) {
 		leanCtx := security.NewRequestContextForSuperAdmin()
-		leanCtx.SetContext(context.WithValue(leanCtx.GetContext(), ContextKeyPromptVariant, promptVariantLean))
+		leanCtx.SetContext(context.WithValue(leanCtx.GetContext(), llmruntime.ContextKeyPromptVariant, llmruntime.PromptVariantLean))
 
 		topLevelReq := NBAgentRequest{
 			AgentId:             "orch-1",
@@ -2150,7 +2151,7 @@ func TestReAct3LeanSubagentPrompt(t *testing.T) {
 // UTC date AND a time-of-day component the model can read directly.
 func TestReAct3HumanPrompt_TodayIncludesTimeOfDay(t *testing.T) {
 	ctx := security.NewRequestContextForSuperAdmin()
-	ctx.SetContext(context.WithValue(ctx.GetContext(), ContextKeyPromptVariant, promptVariantLean))
+	ctx.SetContext(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyPromptVariant, llmruntime.PromptVariantLean))
 	agent := &MockAgent{}
 
 	req := NBAgentRequest{AgentId: "orch-1", AccountId: "acc-1"}

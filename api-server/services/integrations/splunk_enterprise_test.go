@@ -380,7 +380,7 @@ func TestSplunkEnterpriseConfig_AuthHeaders(t *testing.T) {
 
 func TestSplunkEnterpriseConfig_SearchEndpoint(t *testing.T) {
 	cfg := SplunkEnterpriseConfig{URL: "https://splunk.example.com:8089", App: "search"}
-	assert.Equal(t, "https://splunk.example.com:8089/servicesNS/-/search/search/v2/jobs", cfg.SearchEndpoint())
+	assert.Equal(t, "https://splunk.example.com:8089/servicesNS/-/search/search/jobs", cfg.SearchEndpoint())
 }
 
 // ----- TestConnection -------------------------------------------------------

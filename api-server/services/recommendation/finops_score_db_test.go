@@ -60,7 +60,7 @@ func TestRecomputeFinOpsScores_DB(t *testing.T) {
 	// where the SQL depends on it (id is compared against a ::uuid cursor).
 	mustExec(`CREATE TABLE recommendation (
 		id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-		tenant_id text NOT NULL, cloud_account_id text, category text, rule_name text,
+		tenant_id text NOT NULL, cloud_account_id text, category text, rule_name text, account_object_id text,
 		severity text, estimated_savings float8,
 		created_at timestamp NOT NULL DEFAULT now(),
 		status text NOT NULL DEFAULT 'Open', resource_id text, recommendation jsonb,

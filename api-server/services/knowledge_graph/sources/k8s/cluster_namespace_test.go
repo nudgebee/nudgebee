@@ -59,8 +59,8 @@ func TestEnsureNamespaceNode_MintsWhenAbsent(t *testing.T) {
 	if edge.SourceNodeID != nsNode.ID {
 		t.Error("Namespace→Cluster edge does not originate at the namespace node")
 	}
-	if edge.RelationshipType != core.RelationshipBelongsTo {
-		t.Errorf("expected relationship %q, got %q", core.RelationshipBelongsTo, edge.RelationshipType)
+	if edge.RelationshipType != core.RelationshipRunsOn {
+		t.Errorf("expected relationship %q, got %q", core.RelationshipRunsOn, edge.RelationshipType)
 	}
 	if edge.DestinationNodeID != clusterNodes["cluster-1"].ID {
 		t.Error("Namespace→Cluster edge does not terminate at the cluster node")
@@ -236,6 +236,124 @@ func TestNamespaceMintedTwiceDeduplicates(t *testing.T) {
 	for _, e := range append(append([]*core.DbEdge{}, wlEdges...), secEdges...) {
 		if !surviving[e.SourceNodeID] || !surviving[e.DestinationNodeID] {
 			t.Errorf("edge %s → %s (%s) dangles after dedup", e.SourceNodeID, e.DestinationNodeID, e.RelationshipType)
+		}
+	}
+}
+
+// namespaceClusterEdges returns the edges that link the named namespace to the
+// named cluster, whatever their type. Node IDs are derived from unique keys, and
+// `cluster` is not part of a Namespace's key, so both IDs can be built directly.
+func namespaceClusterEdges(src *K8sSource, edges []*core.DbEdge, namespace, cluster string) []*core.DbEdge {
+	req := testBuildReq()
+	nsID := src.createNamespaceNode(namespace, "", req).ID
+	clusterID := src.createClusterNode(cluster, req).ID
+	var out []*core.DbEdge
+	for _, e := range edges {
+		if e.SourceNodeID == nsID && e.DestinationNodeID == clusterID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// TestNamespaceClusterEdge_RelayOnlyNamespaceRunsOn is the defect behind the
+// change: a namespace holding no workloads is minted by a relay converter, and
+// relay converters used to link it to its cluster with BELONGS_TO. The LLM's
+// cluster lookup and blast radius walk only RUNS_ON, so such a namespace was
+// unreachable from its cluster. Each relay mint site must now write RUNS_ON.
+func TestNamespaceClusterEdge_RelayOnlyNamespaceRunsOn(t *testing.T) {
+	src := newTestSource(t)
+	req := testBuildReq()
+
+	// The only workload is elsewhere; it gives the relay converters a cluster
+	// name for `monitoring` through the account-wide fallback.
+	workloads := []K8sWorkloadRow{{
+		Kind: "Deployment", Namespace: "production", Name: "api", ClusterName: "cluster-1", IsActive: true,
+	}}
+	meta := K8sServiceMetadata{Name: "x", Namespace: "monitoring"}
+
+	cases := map[string]func() []*core.DbEdge{
+		"Service": func() []*core.DbEdge {
+			_, edges, _, _ := src.convertK8sServicesToGraph([]K8sServiceFromRelay{{Metadata: meta}}, workloads,
+				map[string]*core.DbNode{}, map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+			return edges
+		},
+		"PersistentVolumeClaim": func() []*core.DbEdge {
+			_, edges, _, _ := src.convertK8sPVCsToGraph([]K8sPVCFromRelay{{Metadata: meta}}, workloads, nil,
+				map[string]*core.DbNode{}, map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+			return edges
+		},
+		"ConfigMap": func() []*core.DbEdge {
+			_, edges, _ := src.convertK8sConfigMapsToGraph([]K8sConfigMapFromRelay{{Metadata: meta}}, workloads,
+				map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+			return edges
+		},
+	}
+
+	for kind, convert := range cases {
+		t.Run(kind, func(t *testing.T) {
+			got := namespaceClusterEdges(src, convert(), "monitoring", "cluster-1")
+			if len(got) != 1 {
+				t.Fatalf("expected 1 monitoring → cluster-1 edge, got %d", len(got))
+			}
+			if got[0].RelationshipType != core.RelationshipRunsOn {
+				t.Errorf("expected %q, got %q", core.RelationshipRunsOn, got[0].RelationshipType)
+			}
+		})
+	}
+}
+
+// TestNamespaceClusterEdge_OneEdgeWhicheverConverterMints pins the property the
+// single construction point exists for. When a workload, a Service, a PVC and a
+// ConfigMap all live in one namespace, each converter may append its own copy of
+// the Namespace → Cluster edge. The copies must be identical, so the per-source
+// DeduplicateEdges leaves exactly one, of type RUNS_ON, in whatever order the
+// converters ran. Two types for the pair would both survive DeduplicateEdges,
+// and the pair-keyed phase-3 dedup would then keep whichever came first.
+func TestNamespaceClusterEdge_OneEdgeWhicheverConverterMints(t *testing.T) {
+	src := newTestSource(t)
+	req := testBuildReq()
+
+	workloads := []K8sWorkloadRow{{
+		Kind: "Deployment", Namespace: "production", Name: "api", ClusterName: "cluster-1", IsActive: true,
+	}}
+	meta := K8sServiceMetadata{Name: "api", Namespace: "production"}
+
+	workloadEdges := func() []*core.DbEdge {
+		k8sNodeMap := map[string]*core.DbNode{}
+		_, edges, _, _, _ := src.convertWorkloadsToGraph(workloads, &k8sNodeMap, map[string]string{}, req)
+		return edges
+	}
+	relayEdges := func() []*core.DbEdge {
+		// Fresh maps per converter, so every one of them mints the namespace and
+		// appends its own Namespace → Cluster edge rather than reusing another's.
+		_, svc, _, _ := src.convertK8sServicesToGraph([]K8sServiceFromRelay{{Metadata: meta}}, workloads,
+			map[string]*core.DbNode{}, map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+		_, pvc, _, _ := src.convertK8sPVCsToGraph([]K8sPVCFromRelay{{Metadata: meta}}, workloads, nil,
+			map[string]*core.DbNode{}, map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+		_, cm, _ := src.convertK8sConfigMapsToGraph([]K8sConfigMapFromRelay{{Metadata: meta}}, workloads,
+			map[string]*core.DbNode{}, map[string]*core.DbNode{}, req)
+		return append(append(svc, pvc...), cm...)
+	}
+
+	orders := map[string][]*core.DbEdge{
+		"workloads first": append(workloadEdges(), relayEdges()...),
+		"relay first":     append(relayEdges(), workloadEdges()...),
+	}
+
+	var firstID string
+	for name, edges := range orders {
+		got := namespaceClusterEdges(src, core.DeduplicateEdges(edges), "production", "cluster-1")
+		if len(got) != 1 {
+			t.Fatalf("%s: expected 1 production → cluster-1 edge after DeduplicateEdges, got %d", name, len(got))
+		}
+		if got[0].RelationshipType != core.RelationshipRunsOn {
+			t.Errorf("%s: expected %q, got %q", name, core.RelationshipRunsOn, got[0].RelationshipType)
+		}
+		if firstID == "" {
+			firstID = got[0].ID
+		} else if got[0].ID != firstID {
+			t.Errorf("%s: surviving edge ID %s differs from the other order's %s", name, got[0].ID, firstID)
 		}
 	}
 }

@@ -166,7 +166,8 @@ func TestRecommendationGroupings_StatusAndRuleNamePushdownGatedToWindowSafety(t 
 			require.Contains(t, sql, "ROW_NUMBER", "expected this request shape to take a windowed (lean/full) path")
 			// (bare "r.status" also appears in the window's own ORDER BY tie-break)
 			assert.NotContains(t, sql, "r.status = 'Archive'", "status must stay out of the CTE's WHERE on a windowed path")
-			assert.NotContains(t, sql, "r.rule_name", "rule_name must stay out of the CTE on a windowed path unless it's exactly 'image_scan'")
+			// (bare "r.rule_name" also appears in the namespace projection)
+			assert.NotContains(t, sql, " AND r.rule_name", "rule_name must stay out of the CTE on a windowed path unless it's exactly 'image_scan'")
 			assert.Contains(t, sql, tc.wantIn, "the filter must still be applied somewhere (the outer WHERE), not silently dropped")
 		})
 	}

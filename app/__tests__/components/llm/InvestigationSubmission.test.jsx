@@ -16,7 +16,7 @@ jest.mock('@context/NubiGlobalChatContext', () => ({ useOptionalNubiGlobalChat: 
 jest.mock('@hooks/useBrowserNotification', () => ({ useBrowserNotification: () => ({}) }));
 jest.mock('@hooks/useClusterInsights', () => ({ useClusterInsights: () => ({ troubleShootData: [], optimizationData: [] }) }));
 jest.mock('@hooks/useAgentConfiguration', () => ({
-  useAgentConfiguration: () => ({ allAgents: [], enabledAgents: [], allFunctions: [], refreshAgents: noop }),
+  useAgentConfiguration: () => ({ allAgents: [], enabledAgents: [], allSkills: [], refreshAgents: noop }),
 }));
 jest.mock('@hooks/useConversationManager', () => ({
   useConversationManager: () => ({ rawConversations: [], likedConversations: [], selectedConversation: { id: 'conversation' } }),

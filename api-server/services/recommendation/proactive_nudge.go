@@ -5,6 +5,7 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/internal/database"
+	"nudgebee/services/notification"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"time"
@@ -41,7 +42,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 		return err
 	}
 
-	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx)
+	tenants, err := tenant.ListTenantsWithActiveAccounts(ctx, true)
 	if err != nil {
 		ctx.GetLogger().Error("proactive nudge: error listing tenants", "error", err)
 		return err
@@ -50,7 +51,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 	totalPublished := 0
 
 	for _, t := range tenants {
-		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id)
+		accounts, err := account.ListActiveAccountsWithConnectedAgents(ctx, t.Id, true)
 		if err != nil {
 			ctx.GetLogger().Error("proactive nudge: error listing accounts", "error", err, "tenant", t.Id)
 			continue
@@ -92,6 +93,7 @@ func ProcessProactiveNudges(ctx *security.RequestContext) error {
 				FROM recommendation r
 				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
 				WHERE r.tenant_id = $1
+					AND `+notification.NotOwnRecommendationSQL+`
 					AND r.status = 'Open'
 					AND r.category <> 'Security'
 					AND r.finops_band = 'Act Now'
