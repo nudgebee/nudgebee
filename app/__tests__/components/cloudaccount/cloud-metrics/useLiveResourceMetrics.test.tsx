@@ -25,8 +25,10 @@ it('stops loading when the resources disappear during a request', async () => {
     initialProps: { resources: [instance] },
   });
   expect(result.current.loading).toBe(true);
+  const emptyCharts = result.current.dataByMetric;
 
   rerender({ resources: [] });
+  expect(result.current.dataByMetric).toBe(emptyCharts);
   expect(result.current).toEqual({ dataByMetric: {}, loading: false, error: null });
   await act(async () => finish({ data: { data: { metrics_list: { results: [] } } } }));
   expect(result.current).toEqual({ dataByMetric: {}, loading: false, error: null });
