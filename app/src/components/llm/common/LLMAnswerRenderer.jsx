@@ -359,8 +359,6 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
     } catch {
       return renderMarkdownWithCharts(cleanedText, { ...chipSx, maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
     }
-
-    return renderMarkdownWithCharts(cleanedText, { ...chipSx, width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
   };
 
   return <>{renderContent()}</>;
