@@ -102,13 +102,14 @@ jobs:
           # ClickHouse 26.10 for the chart from its 26.10 upgrade on. The 24.12.4-nb-1
           # tag above stays for charts released before it.
           - { image: clickhouse,        context: deploy/kubernetes/nudgebee-mirrors/clickhouse-official-26, tag: 26.10.4-nb-1 }
-          # Distroless passthrough of the upstream prometheus-community image
+          # Rebuild of the upstream prometheus-community exporter
           # (replaces the CVE-heavy bitnamilegacy build: 2C/35H fixable + debian-11
           # floor -> 0/1/1, 0 unfixable). OS_PKG_EPOCH is accepted but unused there.
           # -nb2 rebuilds the exporter on a patched Go and x/text, on a distroless
           # runtime (v0.20.1 is the newest release, so no tag bump clears these).
+          # -nb4 puts it on Red Hat ubi9-micro for chart certification.
           # Needs a Go build stage — the shared build step handles it.
-          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb3 }
+          - { image: postgres-exporter, context: deploy/kubernetes/nudgebee-mirrors/postgres-exporter, tag: v0.20.1-nb4 }
           # Alpine re-mirrors of official images (apk upgrade; no version change).
           # postgres also swaps in a gosu rebuilt on a patched Go (the image's
           # prebuilt gosu carries Go-stdlib CVEs); needs a Go build stage.
@@ -183,7 +184,7 @@ jobs:
           - { image: clickhouse,        tag: 24.12.4-debian-12-r0-nb-3 }
           - { image: clickhouse,        tag: 24.12.4-nb-1 }
           - { image: clickhouse,        tag: 26.10.4-nb-1 }
-          - { image: postgres-exporter, tag: v0.20.1-nb3 }
+          - { image: postgres-exporter, tag: v0.20.1-nb4 }
           - { image: postgres,          tag: 16.15-alpine-nb1 }
           - { image: postgres,          tag: 16.15-trixie-nb1 }
           - { image: nginx,             tag: stable-alpine3.24-slim-nb1 }
