@@ -2515,6 +2515,75 @@ const apiKubernetes1 = {
       throw err;
     }
   },
+  /**
+   * DORA delivery metrics for Troubleshoot > Analytics (#300).
+   *
+   * What counts as a deploy, a failed deploy and a recovery is defined once, in
+   * the event_groupings_v2 columns is_rollout / count_failed_changes /
+   * minutes_to_resolve (api-server query/metadata.go). This only narrows rows
+   * to Kubernetes workload changes and to the urgent issues the tab already
+   * treats as eligible, and windows both on starts_at — when the change or the
+   * outage happened, not when we ingested it.
+   */
+  doraAggregates: async function (data: { startDate: string; endDate: string; accountId?: string[] | string }) {
+    const DISTINCT_WORKLOADS = '[{name: "event_count", expr: "distinct", args: ["account_id", "service_key"]}]';
+    const DORA_AGGREGATES = `
+    query TroubleshootDoraAggregates {
+      deploys: event_groupings_v2(where: __WHERE_DEPLOYS__, group_by: [], columns: ["event_count", "count_failed_changes"]) {
+        rows {
+          event_count
+          count_failed_changes
+        }
+      }
+
+      deployed_workloads: event_groupings_v2(
+        where: __WHERE_DEPLOYS__, group_by: [], column_transformations: ${DISTINCT_WORKLOADS}, columns: ["event_count"]
+      ) {
+        rows {
+          event_count
+        }
+      }
+
+      recovery: event_groupings_v2(where: __WHERE_RECOVERY__, group_by: [], columns: ["minutes_to_resolve", "count_resolved_issues"]) {
+        rows {
+          minutes_to_resolve
+          count_resolved_issues
+        }
+      }
+    }
+    `;
+
+    const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
+    const base: any = {
+      ...(accountIds.length > 0 ? { account_id: { _in: accountIds } } : {}),
+      _and: [{ starts_at: { _gte: data.startDate } }, { starts_at: { _lte: data.endDate } }],
+    };
+    // Same change definition the Deployment History card reads, limited to the
+    // workload kinds the collector resolves service_key for. A row with no
+    // service_key names no workload: it could never be marked failed, and every
+    // such row would collapse into one "workload" in deployed_workloads.
+    const deploys = {
+      ...base,
+      service_key: { _neq: '' },
+      finding_type: { _eq: 'configuration_change' },
+      aggregation_key: { _eq: 'ConfigurationChange/KubernetesResource/Change' },
+      subject_type: { _in: ['deployment', 'statefulset', 'daemonset', 'rollout'] },
+      is_rollout: { _eq: true },
+    };
+    // Urgent issues only, matching the severities that can fail a change.
+    const recovery = { ...base, finding_type: { _eq: 'issue' }, priority: { _in: ['HIGH', 'CRITICAL'] } };
+
+    try {
+      return await queryGraphQL(
+        DORA_AGGREGATES.replace(/__WHERE_DEPLOYS__/g, gqlStringify(deploys)).replace(/__WHERE_RECOVERY__/g, gqlStringify(recovery)),
+        'TroubleshootDoraAggregates',
+        {}
+      );
+    } catch (err) {
+      console.error('Error in doraAggregates:', err);
+      throw err;
+    }
+  },
   utilisationApi: async function (query: any) {
     const METRICS_QUERY_UTILISATION = `
     query MetricsQueryUtilisation($jsonFilter: jsonb!, $accountId: String!, $startTime: Float!, $endTime: Float!) {
