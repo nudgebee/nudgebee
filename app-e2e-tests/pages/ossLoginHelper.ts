@@ -3,6 +3,10 @@ import { Page } from "@playwright/test";
 const CLUSTER_SELECT_ATTEMPTS = 6;
 const CLUSTER_SELECT_RETRY_DELAY_MS = 2000;
 
+// Sign-in lands on /ask-nudgebee since #39730; /home and /workflow kept for older builds.
+const LANDING_PATHS = ["/ask-nudgebee", "/home", "/workflow"];
+const isLanded = (href: string): boolean => LANDING_PATHS.some((p) => href.includes(p));
+
 // Pick a cluster from the global cluster dropdown. The dropdown is populated
 // asynchronously and intermittently comes back empty on the first try, so
 // re-type the name and re-check up to CLUSTER_SELECT_ATTEMPTS times with a
@@ -61,13 +65,12 @@ export async function doCredentialsLogin(page: Page): Promise<void> {
   await page.goto(baseUrl);
   await page
     .waitForURL(
-      (url) => url.href.includes("/home") || url.href.includes("/signin"),
+      (url) => isLanded(url.href) || url.href.includes("/signin"),
       { timeout: 15000 }
     )
     .catch(() => {});
 
-  const alreadyLoggedIn =
-    page.url().includes("/home") || page.url().includes("/workflow");
+  const alreadyLoggedIn = isLanded(page.url());
 
   if (!alreadyLoggedIn) {
     let loginSuccess = false;
@@ -99,7 +102,7 @@ export async function doCredentialsLogin(page: Page): Promise<void> {
     }
   }
 
-  await page.waitForURL(/\/(home|workflow)/, { timeout: 50000 });
+  await page.waitForURL((url) => isLanded(url.href), { timeout: 50000 });
 }
 
 async function credentialsLogin(
