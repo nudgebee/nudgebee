@@ -15,10 +15,31 @@ import (
 )
 
 // JaegerTraceSource - Agent mode (relay to K8s agent)
-type JaegerTraceSource struct{}
+//
+// Every Jaeger read is one of five primitive actions (jaeger_query_traces, _services,
+// _operations, _trace_by_id, _metrics). exec says how one is carried out: nil sends it
+// through the relay to the agent; JaegerSaasTraceSource sets it to call the Jaeger query
+// API directly, so both modes share the filtering and conversion below.
+type JaegerTraceSource struct{ exec jaegerExecFunc }
 
-// JaegerSaasTraceSource - SaaS mode (direct API call)
+// jaegerExecFunc runs one Jaeger primitive action and returns the relay-shaped answer
+// ({"status_code": 200, "data": <Jaeger JSON>}).
+type jaegerExecFunc func(ctx *security.RequestContext, body relay.ActionExecuteBody) (map[string]any, error)
+
+func (j *JaegerTraceSource) execute(ctx *security.RequestContext, body relay.ActionExecuteBody) (map[string]any, error) {
+	if j.exec != nil {
+		return j.exec(ctx, body)
+	}
+	return relay.Execute(relay.RelayExecuteRequest{NoSinks: true, Cache: false, Body: body})
+}
+
+// JaegerSaasTraceSource - SaaS mode: a Jaeger the user connected, reached directly.
 type JaegerSaasTraceSource struct{}
+
+// direct is the shared logic with the transport swapped for the Jaeger query API.
+func (j *JaegerSaasTraceSource) direct() *JaegerTraceSource {
+	return &JaegerTraceSource{exec: jaegerDirectExec}
+}
 
 // jaegerMetricKey identifies a unique (service, operation) combination from Jaeger metrics
 type jaegerMetricKey struct {
@@ -169,11 +190,7 @@ func (j *JaegerTraceSource) getServices(ctx *security.RequestContext, accountId 
 		NoSinks:      true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute jaeger_query_services via relay: %w", err)
@@ -230,11 +247,7 @@ func (j *JaegerTraceSource) getOperations(ctx *security.RequestContext, accountI
 		NoSinks: true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute jaeger_query_operations via relay: %w", err)
@@ -250,8 +263,7 @@ func (j *JaegerTraceSource) getOperations(ctx *security.RequestContext, accountI
 
 // GetLabelValues returns label values for SaaS mode
 func (j *JaegerSaasTraceSource) GetLabelValues(ctx *security.RequestContext, req TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
-	// SaaS mode not yet implemented - return empty values
-	return common.OpenTelemetryTraceLabelValues{Label: req.Label, Values: []string{}}, nil
+	return j.direct().GetLabelValues(ctx, req)
 }
 
 // GetQuery returns the query string representation
@@ -317,7 +329,7 @@ func (j *JaegerTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req
 
 // QueryGroupedTraces for SaaS mode
 func (j *JaegerSaasTraceSource) QueryGroupedTraces(ctx *security.RequestContext, req TracesV3Request) ([]TraceGroupingValues, error) {
-	return nil, fmt.Errorf("grouped traces not yet available for Jaeger SaaS mode")
+	return j.direct().QueryGroupedTraces(ctx, req)
 }
 
 // QueryGroupedTracesCount returns count of grouped traces via Jaeger Metrics API (SPM)
@@ -353,7 +365,7 @@ func (j *JaegerTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext
 
 // QueryGroupedTracesCount for SaaS mode
 func (j *JaegerSaasTraceSource) QueryGroupedTracesCount(ctx *security.RequestContext, req TracesV3Request) (common.OpenTelemetryTraceGroupCount, error) {
-	return common.OpenTelemetryTraceGroupCount{Count: -1}, fmt.Errorf("grouped traces not yet available for Jaeger SaaS mode")
+	return j.direct().QueryGroupedTracesCount(ctx, req)
 }
 
 // extractServicesFromQuery extracts all service names from the query WHERE clause
@@ -427,11 +439,7 @@ func (j *JaegerTraceSource) queryMetrics(ctx *security.RequestContext, accountId
 		NoSinks: true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute jaeger_query_metrics via relay: %w", err)
@@ -699,11 +707,7 @@ func (j *JaegerTraceSource) queryTraceById(ctx *security.RequestContext, account
 		NoSinks: true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute jaeger_query_trace_by_id: %w", err)
@@ -827,11 +831,7 @@ func (j *JaegerTraceSource) queryTracesForService(ctx *security.RequestContext, 
 		NoSinks:      true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute Jaeger query via relay: %w", err)
@@ -1063,7 +1063,7 @@ func (j *JaegerSaasTraceSource) QueryTraces(ctx *security.RequestContext, req Tr
 	if req.Query != "" {
 		return nil, fmt.Errorf("custom query not supported for Jaeger SaaS trace source")
 	}
-	return nil, fmt.Errorf("JaegerSaas.QueryTraces not implemented yet - use agent mode")
+	return j.direct().QueryTraces(ctx, req)
 }
 
 // QueryTracesHeatmap fetches trace heatmap data for a specific trace
@@ -1079,11 +1079,7 @@ func (j *JaegerTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, req
 		NoSinks:      true,
 	}
 
-	respData, err := relay.Execute(relay.RelayExecuteRequest{
-		NoSinks: true,
-		Cache:   false,
-		Body:    jaegerRequest,
-	})
+	respData, err := j.execute(ctx, jaegerRequest)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute Jaeger trace query via relay: %w", err)
@@ -1121,7 +1117,7 @@ func (j *JaegerTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, req
 
 // QueryTracesHeatmap for SaaS mode
 func (j *JaegerSaasTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, req TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error) {
-	return nil, fmt.Errorf("JaegerSaas.QueryTracesHeatmap not implemented yet")
+	return j.direct().QueryTracesHeatmap(ctx, req)
 }
 
 // buildJaegerParams converts the query request to Jaeger API parameters

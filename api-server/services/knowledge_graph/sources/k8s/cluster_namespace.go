@@ -115,9 +115,9 @@ func clusterNameForNamespace(namespace string, workloads []K8sWorkloadRow) strin
 // when no earlier converter has already registered it in namespaceNodes.
 //
 // Converters that only ever *attach* to a pre-existing namespace silently drop
-// their BELONGS_TO edge for any namespace holding no workloads, Services or
-// PVCs; since the KG never lists Namespace objects, such a namespace is absent
-// from the graph entirely. Minting here closes that gap.
+// their resource → Namespace BELONGS_TO edge for any namespace holding no
+// workloads, Services or PVCs; since the KG never lists Namespace objects, such
+// a namespace is absent from the graph entirely. Minting here closes that gap.
 //
 // Re-minting the same namespace from two converters is safe: core.NewNode
 // derives the node ID from the unique key, and `cluster` is not a unique-key
@@ -151,14 +151,29 @@ func (s *K8sSource) ensureNamespaceNode(
 		clusterNodes[clusterName] = clusterNode
 		newNodes = append(newNodes, clusterNode)
 	}
-	newEdges = append(newEdges, core.NewEdge(
-		nsNode.ID, clusterNode.ID,
-		core.RelationshipBelongsTo,
-		map[string]interface{}{"connection_type": "cluster"},
-		req.TenantID, req.CloudAccountID, "k8s",
-	))
+	newEdges = append(newEdges, namespaceClusterEdge(nsNode, clusterNode, req))
 
 	return nsNode, newNodes, newEdges
+}
+
+// namespaceClusterEdge is the one Namespace → Cluster edge, whichever converter
+// mints the namespace. It is RUNS_ON because that is what the workload converter
+// has always written and what readers follow: the LLM's "what cluster hosts Y?"
+// recipe (kg_usage.yaml) and blast radius's fallback set (core/impact.go) both
+// walk RUNS_ON and neither walks BELONGS_TO, so a namespace linked any other way
+// is unreachable from its cluster.
+//
+// Every caller must build it here. Identical endpoints, type and properties give
+// an identical edge ID, so the per-source DeduplicateEdges collapses the copies.
+// Two types for one pair would both survive that, and the phase-3 dedup — which
+// keys on the node pair, not the type — would then keep whichever came first.
+func namespaceClusterEdge(nsNode, clusterNode *core.DbNode, req *core.SourceBuildRequest) *core.DbEdge {
+	return core.NewEdge(
+		nsNode.ID, clusterNode.ID,
+		core.RelationshipRunsOn,
+		map[string]interface{}{"connection_type": "cluster"},
+		req.TenantID, req.CloudAccountID, "k8s",
+	)
 }
 
 // createClusterNode creates a Cluster node

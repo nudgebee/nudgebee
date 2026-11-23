@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import { Switch } from '@ui/Switch';
-import apiAccount from '@api1/account';
+import { Callout } from '@ui/Callout';
 import { ds } from 'src/utils/colors';
 import TemplateTextField, { TemplateSuggestion } from '../TemplateTextField';
 import HybridField from '../HybridField';
@@ -29,6 +29,7 @@ import {
 } from '../../utils/fieldTypeUtils';
 import FieldGuidance from '../FieldGuidance';
 import { useTaskFormData } from '../../hooks/data-fetchers/useTaskFormData';
+import { useDmUserOptions } from '../../hooks/data-fetchers/useDmUserOptions';
 import type { PreviousTask } from '../../utils/templateUtils';
 
 interface SubTaskParamFormProps {
@@ -83,40 +84,16 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
   workflowConfigs,
 }) => {
   const [draggingOverField, setDraggingOverField] = useState<string | null>(null);
-  const [dmUserOptions, setDmUserOptions] = useState<{ label: string; value: string }[]>([]);
-  const [dmUserLoading, setDmUserLoading] = useState(false);
   const isDmTask = taskDefinition?.name === 'notifications.dm';
   const dmProvider = isDmTask && typeof values?.provider === 'string' ? values.provider : '';
-
-  // DM recipients load for the chosen provider, as in the action sidebar, so
-  // the user picks a person instead of hunting for a raw user ID.
-  useEffect(() => {
-    if (!dmProvider) {
-      setDmUserOptions([]);
-      return;
-    }
-    let cancelled = false;
-    setDmUserLoading(true);
-    apiAccount
-      .getNotificationUserList(dmProvider)
-      .then((res: any) => {
-        if (cancelled) return;
-        const users = (res?.data?.data || []).map((item: any) => ({
-          label: item.display_name || item.real_name || item.name || item.id,
-          value: item.id,
-        }));
-        setDmUserOptions(users);
-      })
-      .catch(() => {
-        if (!cancelled) setDmUserOptions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setDmUserLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dmProvider]);
+  // DM recipients load for the chosen provider, as in the action sidebar.
+  const {
+    options: dmUserOptions,
+    loading: dmUserLoading,
+    error: dmUserError,
+    retryable: dmUserRetryable,
+    retry: retryDmUsers,
+  } = useDmUserOptions(dmProvider);
 
   const inputSchema: Record<string, SchemaProperty> = taskDefinition?.input_schema || {};
 
@@ -300,28 +277,41 @@ const SubTaskParamForm: React.FC<SubTaskParamFormProps> = ({
         ? 'Select a provider first'
         : dmUserLoading
         ? 'Loading users...'
+        : dmUserError
+        ? 'Could not load users'
         : dmUserOptions.length === 0
         ? 'No users available'
         : 'Select user';
       return row(
-        <HybridField
-          fieldName={fieldName}
-          value={typeof fieldValue === 'string' ? fieldValue : ''}
-          onChange={(newValue: string) => onChange(fieldName, newValue)}
-          placeholder={userPlaceholder}
-          disabled={disabled || !dmProvider}
-          error={error}
-          required={isRequired}
-          options={dmUserOptions}
-          optionsLoading={dmUserLoading}
-          previousTasks={previousTasks}
-          workflowInputs={workflowInputs}
-          workflowConfigs={workflowConfigs}
-          onDrop={disabled ? undefined : (e) => handleDrop(e, fieldName, fieldValue)}
-          onDragOver={disabled ? undefined : (e) => handleDragOver(e, fieldName)}
-          onDragLeave={disabled ? undefined : handleDragLeave}
-          isDropTarget={draggingOverField === fieldName}
-        />
+        <>
+          <HybridField
+            fieldName={fieldName}
+            value={typeof fieldValue === 'string' ? fieldValue : ''}
+            onChange={(newValue: string) => onChange(fieldName, newValue)}
+            placeholder={userPlaceholder}
+            disabled={disabled || !dmProvider}
+            error={error}
+            required={isRequired}
+            options={dmUserOptions}
+            optionsLoading={dmUserLoading}
+            previousTasks={previousTasks}
+            workflowInputs={workflowInputs}
+            workflowConfigs={workflowConfigs}
+            onDrop={disabled ? undefined : (e) => handleDrop(e, fieldName, fieldValue)}
+            onDragOver={disabled ? undefined : (e) => handleDragOver(e, fieldName)}
+            onDragLeave={disabled ? undefined : handleDragLeave}
+            isDropTarget={draggingOverField === fieldName}
+          />
+          {dmUserError && (
+            <Box sx={{ mt: ds.space[1] }}>
+              <Callout
+                tone='critical'
+                message={dmUserError}
+                action={dmUserRetryable ? { label: 'Retry', onClick: retryDmUsers, id: 'dm-user-list-retry-btn' } : undefined}
+              />
+            </Box>
+          )}
+        </>
       );
     }
 

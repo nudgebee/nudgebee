@@ -542,6 +542,7 @@ func handlePublicWebhooksApis(r *gin.Engine, tracer *trace.Tracer, meter *metric
 	webhookGroup.POST("/signoz", genericWebhookHandler("signoz_webhook", tracer, meter, logger))
 	webhookGroup.POST("/workflow", genericWebhookHandler("workflow_webhook", tracer, meter, logger))
 	webhookGroup.POST("/event", genericWebhookHandler("event_webhook", tracer, meter, logger))
+	webhookGroup.POST("/orion", genericWebhookHandler("orion_webhook", tracer, meter, logger))
 
 	// Azure Event Grid webhook — custom handler for validation handshake + relay to cloud-collector
 	webhookGroup.POST("/azure-eventgrid", azureEventGridWebhookHandler(tracer, meter, logger))

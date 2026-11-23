@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"regexp"
 	"testing"
+	"time"
 
 	"nudgebee/runbook/internal/model"
 
@@ -151,7 +153,7 @@ func TestWorkflowDaoList_BindsTagKeyAsParameter(t *testing.T) {
 	defer func() { _ = mockDB.Close() }()
 	dao := &WorkflowDao{db: sqlx.NewDb(mockDB, "sqlmock")}
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND tags->>$3 = $4")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM workflows WHERE tenant_id = $1 AND account_id = ANY($2) AND (bee IS NULL OR COALESCE(bee->>'role', '') <> 'trigger') AND tags->>$3 = $4")).
 		WithArgs("t1", sqlmock.AnyArg(), "team", "payments").
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectQuery(regexp.QuoteMeta("AND w.tags->>$3 = $4")).
@@ -163,4 +165,60 @@ func TestWorkflowDaoList_BindsTagKeyAsParameter(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// #40216: a link without ?accountId= resolves the account by id, scoped to the caller's tenant.
+func TestWorkflowDaoFindAccountID(t *testing.T) {
+	mockDB, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = mockDB.Close() }()
+	dao := &WorkflowDao{db: sqlx.NewDb(mockDB, "sqlmock")}
+	query := regexp.QuoteMeta("SELECT account_id FROM workflows WHERE tenant_id = $1 AND id = $2")
+
+	mock.ExpectQuery(query).WithArgs("t1", "wf-1").WillReturnRows(sqlmock.NewRows([]string{"account_id"}).AddRow("acc-1"))
+	accountID, err := dao.FindAccountID(context.Background(), "t1", "wf-1")
+	require.NoError(t, err)
+	assert.Equal(t, "acc-1", accountID)
+
+	mock.ExpectQuery(query).WithArgs("t1", "wf-missing").WillReturnError(sql.ErrNoRows)
+	_, err = dao.FindAccountID(context.Background(), "t1", "wf-missing")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// These writes commit in a deferred func that assigns err = tx.Commit(). That
+// only reaches the caller when err is the named result; with an unnamed result
+// a failed commit was reported as success.
+func TestWorkflowDao_TxWritesReturnCommitError(t *testing.T) {
+	newDao := func(t *testing.T) (*WorkflowDao, sqlmock.Sqlmock) {
+		mockDB, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = mockDB.Close() })
+		return &WorkflowDao{db: sqlx.NewDb(mockDB, "postgres")}, mock
+	}
+	commitErr := sql.ErrConnDone
+	ctx := context.Background()
+	cases := map[string]func(*WorkflowDao) error{
+		"SetState": func(d *WorkflowDao) error {
+			return d.SetState(ctx, "wf", []model.WorkflowStateUpdate{{Key: "k", Value: 1}})
+		},
+		"Delete": func(d *WorkflowDao) error { return d.Delete(ctx, "t", "a", "wf") },
+		"UpdateWorkflowStatus": func(d *WorkflowDao) error {
+			return d.UpdateWorkflowStatus(ctx, "t", "a", "wf", "", model.WorkflowStatus("active"))
+		},
+		"SetLastExecutionStatus": func(d *WorkflowDao) error {
+			return d.SetLastExecutionStatus(ctx, "t", "a", "wf", model.WorkflowExecutionStatus("success"), time.Now(), "", nil)
+		},
+	}
+	for name, call := range cases {
+		t.Run(name, func(t *testing.T) {
+			dao, mock := newDao(t)
+			mock.ExpectBegin()
+			mock.ExpectExec(".*").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit().WillReturnError(commitErr)
+			require.ErrorIs(t, call(dao), commitErr)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }

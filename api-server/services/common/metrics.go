@@ -69,11 +69,13 @@ var (
 	metricsPlaybookActionFailed     metric.Int64Counter
 	metricsSubjectResolutionTotal   metric.Int64Counter
 	metricsKGEndpointCollision      metric.Int64Counter
+	metricsKGBuildAborted           metric.Int64Counter
 	metricsKGRoute53Unmatched       metric.Int64Counter
 	metricsPRFollowupDispatchTotal  metric.Int64Counter
 	metricsPRFollowupOutcomeTotal   metric.Int64Counter
 	metricsPRFollowupReclaimedTotal metric.Int64Counter
 	metricsPRFollowupWebhookTotal   metric.Int64Counter
+	metricsReplicaBroadcastTotal    metric.Int64Counter
 )
 
 // Histogram bucket boundaries for event and playbook processing.
@@ -195,10 +197,22 @@ func InitMetrics() {
 		"Total number of webhook subject resolution attempts via LLM",
 	)
 
+	metricsReplicaBroadcastTotal = mustCreateInt64Counter(
+		meter,
+		"nb_services_replica_broadcast",
+		"Replica broadcast messages published by or received on this pod, by type and direction",
+	)
+
 	metricsKGEndpointCollision = mustCreateInt64Counter(
 		meter,
 		"nb_services_kg_endpoint_collision",
 		"Knowledge graph cloud-resource endpoint collisions during in-memory index build (first-write-wins)",
+	)
+
+	metricsKGBuildAborted = mustCreateInt64Counter(
+		meter,
+		"nb_services_kg_build_aborted",
+		"Knowledge graph builds aborted before saving, by tenant and reason (too_large: the graph exceeded kg_build_max_nodes or kg_build_max_edges)",
 	)
 
 	metricsKGRoute53Unmatched = mustCreateInt64Counter(
@@ -513,6 +527,20 @@ func MetricsKGEndpointCollision(ctx context.Context, tenantId, nodeType string) 
 	))
 }
 
+// MetricsKGBuildAborted counts a knowledge-graph build that was stopped before
+// it saved. The tenant keeps its previous graph, so nothing looks wrong in the UI
+// until behavioural edges age out (kg_edge_stale_after_days) — this counter is
+// what makes a repeatedly-aborting tenant visible before then.
+func MetricsKGBuildAborted(ctx context.Context, tenantId, reason string) {
+	if metricsKGBuildAborted == nil {
+		return
+	}
+	metricsKGBuildAborted.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(MetricKeyTenantID, tenantId),
+		attribute.String(MetricKeyReason, reason),
+	))
+}
+
 func MetricsKGRoute53Unmatched(ctx context.Context, tenantId, accountId string) {
 	if metricsKGRoute53Unmatched == nil {
 		return
@@ -569,5 +597,19 @@ func MetricsPRFollowupWebhook(ctx context.Context, result string) {
 	}
 	metricsPRFollowupWebhookTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(MetricKeyResult, result),
+	))
+}
+
+// metricsReplicaBroadcast counts one replica broadcast message (#40807).
+// direction is "published", "publish_failed", "received" or "ignored".
+func metricsReplicaBroadcast(changeType, direction string) {
+	if metricsReplicaBroadcastTotal == nil {
+		return
+	}
+	metricsCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	metricsReplicaBroadcastTotal.Add(metricsCtx, 1, metric.WithAttributes(
+		attribute.String("type", changeType),
+		attribute.String("direction", direction),
 	))
 }

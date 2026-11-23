@@ -70,8 +70,8 @@ func TestListTokens_FillsEveryKeyOnThePage(t *testing.T) {
 			AddRow(other, "cli", "token", KindPlatform, "active", "2026-09-01T00:00:00Z", nil, nil, nil, "", storedUser, "Asha"))
 	keys := pq.Array([]string{storedKey, other})
 	mock.ExpectQuery(`FROM llm_gateway_rate_limits[\s\S]*api_key_id = ANY\(\$2\)`).WithArgs(storedTenant, keys).
-		WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "metric", "period", "value", "model"}).
-			AddRow(storedKey, "cost", "month", 20.0, ""))
+		WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "metric", "period", "value", "model", "soft_pct"}).
+			AddRow(storedKey, "cost", "month", 20.0, "", 80))
 	mock.ExpectQuery(`FROM user_auths ua\s+JOIN llm_gateway_access_policies p[\s\S]*ua.id = ANY\(\$1::uuid\[\]\)`).WithArgs(keys).
 		WillReturnRows(sqlmock.NewRows([]string{"api_key_id", "dimension", "value"}).AddRow(storedKey, "model", "gpt-4o-mini"))
 	mock.ExpectQuery(`FROM llm_gateway_usage[\s\S]*GROUP BY api_key_id`).WithArgs(storedTenant, keys).
@@ -87,7 +87,8 @@ func TestListTokens_FillsEveryKeyOnThePage(t *testing.T) {
 	assert.Equal(t, "a1b2", got[0].TokenSuffix)
 	assert.Equal(t, "gpt-4o-mini", got[0].LastModel)
 	assert.Equal(t, "openai", got[0].LastProvider)
-	assert.Equal(t, []TokenLimit{{Metric: "cost", Period: "month", Value: 20, Model: ""}}, got[0].Limits)
+	warn := 80
+	assert.Equal(t, []TokenLimit{{Metric: "cost", Period: "month", Value: 20, Model: "", SoftPct: &warn}}, got[0].Limits)
 	assert.Equal(t, []string{"gpt-4o-mini"}, got[0].GatewayPolicy.Models)
 	assert.Equal(t, int64(3), got[0].Usage.Requests)
 	assert.Equal(t, "", got[1].LastModel)

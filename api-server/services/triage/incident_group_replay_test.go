@@ -54,6 +54,10 @@ type replayFixture struct {
 		// another at the least — the ones that share a subject and start minutes
 		// apart. Without it a run in which nothing grouped at all would pass.
 		MinLinked int `json:"min_linked,omitempty"`
+		// Together lists, for a tagged run, sets of events that must end up in
+		// one incident; Apart, pairs that must not.
+		Together [][]string  `json:"together,omitempty"`
+		Apart    [][2]string `json:"apart,omitempty"`
 	} `json:"expect"`
 	Events []replayEvent `json:"events"`
 }
@@ -77,6 +81,12 @@ type replayEvent struct {
 	// join the incident.
 	Placed     *bool `json:"placed,omitempty"`
 	ServiceMap bool  `json:"service_map,omitempty"`
+	// Tags, on a cloud alarm, are the tags of the resource it is about, stored
+	// the way the cloud collector stores them.
+	Tags map[string]string `json:"tags,omitempty"`
+	// Source, on a cloud alarm, is the source it is stored under; a polled
+	// CloudWatch alarm when empty.
+	Source string `json:"source,omitempty"`
 }
 
 func (e replayEvent) placed() bool { return e.Placed == nil || *e.Placed }
@@ -144,6 +154,10 @@ type replayOutcome struct {
 	// neighbour sits in another subject's incident, on timing, and nothing is
 	// placed through it. Reported, not asserted: it is what that rule costs.
 	aloneBesideTiming int
+	// notTogether and notApart list, for a tagged run, the expectations that
+	// did not hold.
+	notTogether []string
+	notApart    []string
 }
 
 func (o replayOutcome) ok(f replayFixture) bool {
@@ -152,10 +166,24 @@ func (o replayOutcome) ok(f replayFixture) bool {
 	if f.Shape == replayShapeCloud {
 		return stable && len(o.lateCross) == 0 && o.lateCrossAgain == 0 && o.linked >= f.Expect.MinLinked
 	}
+	if f.Shape == replayShapeTagged {
+		return stable && len(o.notTogether) == 0 && len(o.notApart) == 0
+	}
 	return stable && o.groups == 1 && o.headSubject == f.Expect.HeadSubject
 }
 
-const replayShapeCloud = "cloud"
+const (
+	replayShapeCloud = "cloud"
+	// replayShapeTagged is a run of cloud alarms on tagged resources, with no
+	// service map: which alarms belong together is stated per event set
+	// (Expect.Together, Expect.Apart).
+	replayShapeTagged = "tagged"
+)
+
+// cloudShape reports whether a fixture is a run of cloud alarms.
+func (f replayFixture) cloudShape() bool {
+	return f.Shape == replayShapeCloud || f.Shape == replayShapeTagged
+}
 
 func loadReplayFixtures(t *testing.T) []replayFixture {
 	t.Helper()
@@ -261,10 +289,10 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 				if only != "" && !strings.Contains(label, only) {
 					continue
 				}
-				if fx.Shape == replayShapeCloud && v.dropPath != "" {
+				if fx.cloudShape() && v.dropPath != "" {
 					continue // one ingest path only: these would repeat the variants above
 				}
-				if v.cloudOpen && fx.Shape != replayShapeCloud {
+				if v.cloudOpen && !fx.cloudShape() {
 					continue
 				}
 				fx, v, salt := fx, v, fi*100+vi
@@ -285,6 +313,18 @@ func TestGroupingReplay_RealRuns(t *testing.T) {
 							out.retriageMoved, out.retriageTwoParents, out.retriageWrongChild)
 						if !out.ok(fx) {
 							t.Errorf("REPLAY FAIL %-58s %s\n      filed under another subject's incident without having started with it:\n        %s", label, summary, strings.Join(out.lateCross, "\n        "))
+							return
+						}
+						t.Logf("REPLAY ok   %-58s %s", label, summary)
+						return
+					}
+					if fx.Shape == replayShapeTagged {
+						summary = fmt.Sprintf("groups=%d largest=%d/%d two_parents=%d chains=%d again: moved=%d two_parents=%d wrong_child=%d",
+							out.groups, out.largest, out.required, out.twoParents, out.chains,
+							out.retriageMoved, out.retriageTwoParents, out.retriageWrongChild)
+						if !out.ok(fx) {
+							t.Errorf("REPLAY FAIL %-58s %s\n      expected together:\n        %s\n      expected apart:\n        %s", label, summary,
+								strings.Join(out.notTogether, "\n        "), strings.Join(out.notApart, "\n        "))
 							return
 						}
 						t.Logf("REPLAY ok   %-58s %s", label, summary)
@@ -581,6 +621,21 @@ func replayRun(t *testing.T, ctx context.Context, dbConn *sqlx.DB, tenant, accou
 		}
 	}
 
+	if fx.Shape == replayShapeTagged {
+		for _, set := range fx.Expect.Together {
+			for _, id := range set[1:] {
+				if rootOf(ids[id]) != rootOf(ids[set[0]]) {
+					out.notTogether = append(out.notTogether, fmt.Sprintf("%s and %s", set[0], id))
+				}
+			}
+		}
+		for _, pair := range fx.Expect.Apart {
+			if rootOf(ids[pair[0]]) == rootOf(ids[pair[1]]) {
+				out.notApart = append(out.notApart, fmt.Sprintf("%s and %s", pair[0], pair[1]))
+			}
+		}
+	}
+
 	// Triage runs again on stored rows. A second pass over every event must leave
 	// every link where it is, and must tell scoring "symptom" for exactly the rows
 	// filed under another alert — never for the head or a further row of it.
@@ -686,11 +741,31 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 	status, endsAt := "FIRING", (*time.Time)(nil)
 	if e.Path == "cloud" {
 		source = "AWS_CloudWatch_Alarm"
+		if e.Source != "" {
+			source = e.Source
+		}
 		subjectNS, subjectType, ownerKind, owner = e.SubjectNamespace, e.SubjectType, "", ""
 		serviceKey = fmt.Sprintf("arn:aws:replay:us-east-1:000000000000:%s:%s", e.SubjectType, e.Subject)
 		if e.EndsS != nil && *e.EndsS <= e.StartsS {
 			status, endsAt = "CLOSED", &starts
 		}
+	}
+	var resourceID *string
+	if e.Path == "cloud" && len(e.Tags) > 0 {
+		tags := map[string][]string{}
+		for k, v := range e.Tags {
+			tags[k] = []string{v}
+		}
+		raw, err := json.Marshal(tags)
+		require.NoError(t, err)
+		var rid string
+		require.NoError(t, tx.GetContext(ctx, &rid, `
+			INSERT INTO cloud_resourses (tenant, account, cloud_provider, region, resourse_id, name, type, service_name, tags, is_active)
+			VALUES ($1, $2, 'AWS', 'us-east-1', $3, $4, $5, $6, $7::jsonb, true)
+			ON CONFLICT (account, resourse_id, type, region, service_name) DO UPDATE SET updated_at = now()
+			RETURNING id::text`,
+			tenant, account, ns+"-"+e.Subject, e.Subject, e.SubjectType, e.SubjectNamespace, string(raw)))
+		resourceID = &rid
 	}
 	evidence := "[]"
 	if e.ServiceMap && serviceMap != "" {
@@ -703,11 +778,11 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		INSERT INTO events (id, tenant, cloud_account_id, aggregation_key, subject_type,
 			subject_namespace, subject_name, subject_owner, subject_owner_kind, service_key,
 			fingerprint, finding_id, finding_type, priority, cluster, starts_at, created_at,
-			status, source, title, evidences, ends_at)
+			status, source, title, evidences, ends_at, cloud_resource_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'HIGH', 'replay-cluster',
-			$14, $15, $18, $16, $4, $17::jsonb, $19)`,
+			$14, $15, $18, $16, $4, $17::jsonb, $19, $20)`,
 		id, tenant, account, e.Alert, subjectType, subjectNS, e.Subject, owner, ownerKind, serviceKey,
-		fingerprint, "fid-"+id, findingType, starts, arrives, source, evidence, status, endsAt)
+		fingerprint, "fid-"+id, findingType, starts, arrives, source, evidence, status, endsAt, resourceID)
 	require.NoError(t, err, "%s %s", e.ID, e.Alert)
 
 	ev := &models.Event{
@@ -728,6 +803,7 @@ func insertReplayEvent(t *testing.T, ctx context.Context, tx *sqlx.Tx, tenant, a
 		CreatedAt:        &arrives,
 		Status:           &status,
 		EndsAt:           endsAt,
+		CloudResourceId:  resourceID,
 	}
 	if evidence != "[]" {
 		var j models.Json

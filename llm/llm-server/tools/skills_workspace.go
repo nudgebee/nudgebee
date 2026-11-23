@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"nudgebee/llm/knowledge"
+
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -47,72 +49,41 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 		return knowledgeFailure(fmt.Errorf("select exactly one skill name or candidate ID"))
 	}
 	name = names[0]
-	keyword, _ := input.Arguments["keyword"].(string)
-	if len(keyword) > 256 {
-		return knowledgeFailure(fmt.Errorf("keyword exceeds 256 bytes"))
-	}
-	_, hasKeyword := input.Arguments["keyword"]
-	rawStartLine, hasStartLine := input.Arguments["start_line"]
-	rawStartByte, hasStartByte := input.Arguments["start_byte"]
-	if hasStartByte && (hasKeyword || hasStartLine) {
-		return knowledgeFailure(fmt.Errorf("start_byte cannot be combined with keyword or start_line"))
-	}
-	start := 1
-	if hasStartLine {
-		value, err := strconv.Atoi(fmt.Sprint(rawStartLine))
-		if err != nil || value < 1 {
-			return knowledgeFailure(fmt.Errorf("start_line must be a positive integer"))
-		}
-		start = value
-	}
-	var startByte int64
-	if hasStartByte {
-		if value, ok := rawStartByte.(float64); ok {
-			// Tool JSON numbers arrive as float64. Formatting large values can
-			// produce exponent notation, which ParseInt would reject.
-			if value < 0 || value > float64(core.MaxKnowledgeDocumentBytes) || value != float64(int64(value)) {
-				return knowledgeFailure(fmt.Errorf("start_byte must be a non-negative integer within the document limit"))
-			}
-			startByte = int64(value)
-		} else {
-			value, err := strconv.ParseInt(fmt.Sprint(rawStartByte), 10, 64)
-			if err != nil || value < 0 || value > core.MaxKnowledgeDocumentBytes {
-				return knowledgeFailure(fmt.Errorf("start_byte must be a non-negative integer within the document limit"))
-			}
-			startByte = value
-		}
+	keyword, start, startByte, err := parseKnowledgeReadArgs(input)
+	if err != nil {
+		return knowledgeFailure(err)
 	}
 	deadline, cancel := context.WithTimeout(ctx.Ctx.GetContext(), 90*time.Second)
 	defer cancel()
 	ctx.Ctx = security.NewRequestContext(deadline, ctx.Ctx.GetSecurityContext(), ctx.Ctx.GetLogger(), ctx.Ctx.GetTracer(), ctx.Ctx.GetMeter())
-	c, found := core.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name)
+	c, found := knowledge.LoadKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, name)
 	if strings.HasPrefix(name, "knowledge:") && !found {
 		return knowledgeFailure(fmt.Errorf("candidate expired; run search_skills again"))
 	}
 	if !found || c.KBID != "" {
-		selected, kbType, err := core.ResolveKnowledgeSelection(ctx.Ctx, ctx.AccountId, name, c.KBID)
+		selected, kbType, err := knowledge.ResolveKnowledgeSelection(ctx.Ctx, ctx.AccountId, name, c.KBID)
 		if err != nil {
 			return knowledgeFailure(err)
 		}
-		if kbType == "integration" || kbType == core.KnowledgeKindIndexedOnly {
-			searchCtx, traceID := core.WithRetrievalTraceID(deadline)
+		if kbType == "integration" || kbType == knowledge.KnowledgeKindIndexedOnly {
+			searchCtx, traceID := knowledge.WithRetrievalTraceID(deadline)
 			// load_skills names a document but states no search intent, so the
 			// turn's task prompt was being embedded. Prefer the model's own
 			// keyword; else build from the subject. Falls back to ctx.Query.
-			searchQuery := core.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
+			searchQuery := knowledge.BuildRetrievalQuery(keyword, ctx.QueryConfig, ctx.Query)
 			if searchQuery == "" {
 				searchQuery = ctx.Query
 			}
-			docs := core.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, searchQuery, ragKBModule, selected.Collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
-			docs = core.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, searchQuery, docs, traceID)
-			var scoped core.RAGSearchResults
+			docs := knowledge.QueryRAGCollectionReranked(searchCtx, ctx.UserId, ctx.AccountId, searchQuery, ragKBModule, selected.Collection, ragSkillTopK, ctx.ConversationId, ctx.MessageId, "", false)
+			docs = knowledge.JudgeKBResults(ctx.Ctx, ctx.AccountId, ctx.UserId, ctx.ConversationId, ctx.MessageId, searchQuery, docs, traceID)
+			var scoped knowledge.RAGSearchResults
 			for _, doc := range docs {
 				if collection, _ := doc.Metadata["collection"].(string); collection == selected.Collection {
 					scoped = append(scoped, doc)
 				}
 			}
 			// PDF chunks need their account-owned category before handles are cached.
-			scoped = core.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, scoped)
+			scoped = knowledge.ResolveManualKnowledge(ctx.Ctx, ctx.AccountId, scoped)
 			menu := cacheSearchKnowledgeCandidates(ctx, scoped)
 			if len(menu) == 0 {
 				return knowledgeFailure(fmt.Errorf("no indexed documents found in this knowledge base"))
@@ -126,7 +97,7 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 		c = selected
 	}
 	if c.ID == "" {
-		c.ID = core.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.Collection+":"+c.KBID+":"+c.Version)
+		c.ID = knowledge.NewKnowledgeCandidateID(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c.Collection+":"+c.KBID+":"+c.Version)
 	}
 	wm := workspace.NewWorkspaceManagerWithTimeout(90 * time.Second)
 	if c.Path == "" {
@@ -134,13 +105,13 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 			return knowledgeFailure(err)
 		}
 	} else if c.KBID == "" {
-		validation, err := core.OpenKnowledgeDocument(deadline, ctx.AccountId, c, true)
+		validation, err := knowledge.OpenKnowledgeDocument(deadline, ctx.AccountId, c, true)
 		if err != nil {
 			return knowledgeFailure(err)
 		}
 		_ = validation.Close()
 	}
-	if err := core.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c); err != nil {
+	if err := knowledge.StoreKnowledgeCandidate(ctx.AccountId, ctx.ConversationId, ctx.MessageId, c); err != nil {
 		return knowledgeFailure(err)
 	}
 	var reader io.ReadCloser
@@ -155,28 +126,69 @@ func (m LoadSkillsTool) callWorkspaceKnowledge(ctx core.NbToolContext, input cor
 	}
 	defer func() { _ = reader.Close() }()
 	// The panel shows the page itself, not this call's numbered read window.
-	page := &headBuffer{limit: core.MaxKnowledgeReferenceBytes}
+	page := &headBuffer{limit: knowledge.MaxKnowledgeReferenceBytes}
 	text, err := readKnowledgeLinesFromByte(io.TeeReader(reader, page), c.FileSHA256, keyword, start, startByte, c.Purpose)
 	if err != nil {
 		return knowledgeFailure(err)
 	}
-	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: core.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), "")}}
-	result := fmt.Sprintf("%s\nTitle: %s\nHandle: %s\nSize: %d bytes. Use load_skills with this handle and keyword or start_line for selective reads.\n%s", core.KnowledgePurposeGuidance(c.Purpose), c.Title, c.ID, c.Bytes, text)
+	refs := []core.NBToolResponseReference{{Text: c.Title, Url: c.ReferenceID, Type: "knowledge_base", Description: knowledge.KnowledgePurposeGuidance(c.Purpose), Snippet: strings.ToValidUTF8(page.String(), ""), Handle: c.ID, SourceUrl: c.URL}}
+	result := fmt.Sprintf("%s\nTitle: %s\nHandle: %s\nSize: %d bytes. Use load_skills with this handle and keyword or start_line for selective reads.\n%s", knowledge.KnowledgePurposeGuidance(c.Purpose), c.Title, c.ID, c.Bytes, text)
 	if c.Path != "" {
-		refs = append(refs, core.NBToolResponseReference{Text: c.Title, Url: c.Path, Type: "file", Query: c.ID, Description: core.KnowledgePurposeGuidance(c.Purpose) + " Read through load_skills using " + c.ID})
+		refs = append(refs, core.NBToolResponseReference{Text: c.Title, Url: c.Path, Type: "file", Query: c.ID, Description: knowledge.KnowledgePurposeGuidance(c.Purpose) + " Read through load_skills using " + c.ID})
 		result = "Saved knowledge document to workspace: " + c.Path + "\nUse shell_execute on this exact path and bound both rows and width (e.g. grep -n -o for known text or sed -n for a line range, piped through head -n 20 and cut -c1-200). Avoid cat on large files. Use load_skills for hash-checked continuation.\n" + result
 	}
 	return core.NBToolResponse{Status: core.NBToolResponseStatusSuccess, Type: core.NBToolResponseTypeText, Data: result, References: refs}, nil
 }
 
-func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager, c *core.KnowledgeCandidate) error {
+// parseKnowledgeReadArgs reads load_skills' paging arguments: keyword,
+// start_line (from 1) and start_byte (not combinable with the other two).
+func parseKnowledgeReadArgs(input core.NBToolCallRequest) (string, int, int64, error) {
+	keyword, _ := input.Arguments["keyword"].(string)
+	if len(keyword) > 256 {
+		return "", 0, 0, fmt.Errorf("keyword exceeds 256 bytes")
+	}
+	_, hasKeyword := input.Arguments["keyword"]
+	rawStartLine, hasStartLine := input.Arguments["start_line"]
+	rawStartByte, hasStartByte := input.Arguments["start_byte"]
+	if hasStartByte && (hasKeyword || hasStartLine) {
+		return "", 0, 0, fmt.Errorf("start_byte cannot be combined with keyword or start_line")
+	}
+	start := 1
+	if hasStartLine {
+		value, err := strconv.Atoi(fmt.Sprint(rawStartLine))
+		if err != nil || value < 1 {
+			return "", 0, 0, fmt.Errorf("start_line must be a positive integer")
+		}
+		start = value
+	}
+	var startByte int64
+	if hasStartByte {
+		if value, ok := rawStartByte.(float64); ok {
+			// Tool JSON numbers arrive as float64. Formatting large values can
+			// produce exponent notation, which ParseInt would reject.
+			if value < 0 || value > float64(knowledge.MaxKnowledgeDocumentBytes) || value != float64(int64(value)) {
+				return "", 0, 0, fmt.Errorf("start_byte must be a non-negative integer within the document limit")
+			}
+			startByte = int64(value)
+		} else {
+			value, err := strconv.ParseInt(fmt.Sprint(rawStartByte), 10, 64)
+			if err != nil || value < 0 || value > knowledge.MaxKnowledgeDocumentBytes {
+				return "", 0, 0, fmt.Errorf("start_byte must be a non-negative integer within the document limit")
+			}
+			startByte = value
+		}
+	}
+	return keyword, start, startByte, nil
+}
+
+func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager, c *knowledge.KnowledgeCandidate) error {
 	select {
 	case knowledgeSaveSlots <- struct{}{}:
 		defer func() { <-knowledgeSaveSlots }()
 	case <-ctx.Ctx.GetContext().Done():
 		return ctx.Ctx.GetContext().Err()
 	}
-	if c.Bytes > core.MaxKnowledgeDocumentBytes {
+	if c.Bytes > knowledge.MaxKnowledgeDocumentBytes {
 		return fmt.Errorf("document exceeds the 32 MiB transfer limit")
 	}
 	if ctx.AccountId == "" || ctx.ConversationId == "" {
@@ -191,15 +203,15 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	out := io.MultiWriter(temp, digest)
 	wholeDocument, wholeSHA256 := false, ""
 	if c.KBID != "" {
-		err = core.WriteManualKnowledge(ctx.Ctx, ctx.AccountId, *c, out)
+		err = knowledge.WriteManualKnowledge(ctx.Ctx, ctx.AccountId, *c, out)
 	} else {
-		var source *core.KnowledgeDocumentStream
-		source, err = core.OpenKnowledgeDocument(ctx.Ctx.GetContext(), ctx.AccountId, *c, false)
+		var source *knowledge.KnowledgeDocumentStream
+		source, err = knowledge.OpenKnowledgeDocument(ctx.Ctx.GetContext(), ctx.AccountId, *c, false)
 		if err == nil {
 			var n int64
-			n, err = io.Copy(out, io.LimitReader(source, core.MaxKnowledgeDocumentBytes+1))
+			n, err = io.Copy(out, io.LimitReader(source, knowledge.MaxKnowledgeDocumentBytes+1))
 			_ = source.Close()
-			if n > core.MaxKnowledgeDocumentBytes {
+			if n > knowledge.MaxKnowledgeDocumentBytes {
 				err = fmt.Errorf("document exceeds transfer limit")
 			}
 			if err == nil && n != source.Bytes {
@@ -207,7 +219,7 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 			}
 			// The handle described one chunk. Once the whole page arrives, the
 			// size, and the hash the file is verified against, describe the page.
-			if err == nil && source.Scope == core.KnowledgeScopeDocument {
+			if err == nil && source.Scope == knowledge.KnowledgeScopeDocument {
 				wholeDocument, wholeSHA256 = true, source.SHA256
 				c.Bytes = source.Bytes
 			}
@@ -227,8 +239,8 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	if _, err = temp.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("rewind knowledge file: %w", err)
 	}
-	if c.Bytes <= core.KnowledgeExcerptBytes {
-		data, err := io.ReadAll(io.LimitReader(temp, core.KnowledgeExcerptBytes+1))
+	if c.Bytes <= knowledge.KnowledgeExcerptBytes {
+		data, err := io.ReadAll(io.LimitReader(temp, knowledge.KnowledgeExcerptBytes+1))
 		if err != nil {
 			return fmt.Errorf("read small knowledge: %w", err)
 		}
@@ -238,7 +250,13 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 	}
 	identity := sha256.Sum256([]byte(ctx.AccountId + "\x00" + ctx.ConversationId + "\x00" + c.Collection + "\x00" + c.DocumentID + "\x00" + c.FileSHA256))
 	path := fmt.Sprintf("knowledge/%x.txt", identity)
-	data, err := io.ReadAll(io.LimitReader(temp, core.MaxKnowledgeDocumentBytes+1))
+	// A skill goes to its own folder, where copying the skill for its scripts
+	// ("<skill>/") writes the same SKILL.md: one copy, one place. Other
+	// knowledge, and a skill whose name can't be a folder, keep the hashed path.
+	if dir := skillDirName(c.Title); c.KBID != "" && skillDirNameRe.MatchString(dir) {
+		path = "skills/" + dir + "/" + knowledge.SkillMarkdown
+	}
+	data, err := io.ReadAll(io.LimitReader(temp, knowledge.MaxKnowledgeDocumentBytes+1))
 	if err != nil {
 		return fmt.Errorf("read knowledge for workspace save: %w", err)
 	}
@@ -257,16 +275,16 @@ func materializeKnowledge(ctx core.NbToolContext, wm workspace.WorkspaceManager,
 // Scan to EOF to verify integrity before releasing excerpts. Memory and output
 // are bounded independently of the document, including when the answer is last.
 func readKnowledgeLines(source io.Reader, version, keyword string, start int) (string, error) {
-	return readKnowledgeLinesForPurpose(source, version, keyword, start, core.KnowledgePurposeReference)
+	return readKnowledgeLinesForPurpose(source, version, keyword, start, knowledge.KnowledgePurposeReference)
 }
 
-func readKnowledgeLinesForPurpose(source io.Reader, version, keyword string, start int, purpose core.KnowledgeContentPurpose) (string, error) {
+func readKnowledgeLinesForPurpose(source io.Reader, version, keyword string, start int, purpose knowledge.KnowledgeContentPurpose) (string, error) {
 	return readKnowledgeLinesFromByte(source, version, keyword, start, 0, purpose)
 }
 
-func readKnowledgeLinesFromByte(source io.Reader, version, keyword string, start int, startByte int64, purpose core.KnowledgeContentPurpose) (string, error) {
+func readKnowledgeLinesFromByte(source io.Reader, version, keyword string, start int, startByte int64, purpose knowledge.KnowledgeContentPurpose) (string, error) {
 	digest := sha256.New()
-	limited := &io.LimitedReader{R: source, N: core.MaxKnowledgeDocumentBytes + 1}
+	limited := &io.LimitedReader{R: source, N: knowledge.MaxKnowledgeDocumentBytes + 1}
 	reader := bufio.NewReaderSize(io.TeeReader(limited, digest), 32*1024)
 	var output strings.Builder
 	line, matches := 1, 0
@@ -290,7 +308,7 @@ func readKnowledgeLinesFromByte(source io.Reader, version, keyword string, start
 					effectiveStart = startByte
 					text = text[int(startByte-fragmentStart):]
 				}
-				if (matches >= 100 && (purpose != core.KnowledgePurposeProcedure || keyword != "")) || output.Len() >= knowledgeReadBytes-128 {
+				if (matches >= 100 && (purpose != knowledge.KnowledgePurposeProcedure || keyword != "")) || output.Len() >= knowledgeReadBytes-128 {
 					truncated = true
 					if keyword == "" && !continuation {
 						nextByte, continuation = effectiveStart, true

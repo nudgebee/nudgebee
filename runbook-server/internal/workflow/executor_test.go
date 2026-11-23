@@ -189,6 +189,28 @@ func (s *ExecutorTestSuite) TestSwitchDefaultBranchFanIn() {
 	)
 }
 
+// TestSwitchBranchThatDependsOnItsSwitchRuns reproduces #41250: JSON authors list
+// the switch under each branch's depends_on. The chosen branch must still run.
+func (s *ExecutorTestSuite) TestSwitchBranchThatDependsOnItsSwitchRuns() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	wf := switchFanInWorkflow("b")
+	for i, t := range wf.Definition.Tasks {
+		if t.ID != "router" && t.ID != "converge" {
+			wf.Definition.Tasks[i].DependsOn = []string{"router"}
+		}
+	}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"converge":"joined:SKIPPED/-|COMPLETED/ran-leaf_b|SKIPPED/-|SKIPPED/-"}`, resultStr)
+}
+
 // TestSwitchFanInAllSkippedSkipsDownstream locks in the all-skipped propagation
 // rule. If every dependency is SKIPPED — e.g. because the converge task's
 // `If` is empty and every parent was a non-selected switch branch (no case
@@ -635,4 +657,85 @@ func (s *ExecutorTestSuite) TestWorkflowTemplateClockUsesTemporalTime() {
 	s.Equal(result["expected_datetime"], result["datetime"])
 	s.Equal(result["expected_timestamp"], result["timestamp"])
 	s.Equal(result["expected_timestamp"], result["now"])
+}
+
+// TestSwitchBranchDependsOnEarlierSwitchBranch covers a branch that depends on
+// a finished branch of an earlier switch (#41250 review).
+func (s *ExecutorTestSuite) TestSwitchBranchDependsOnEarlierSwitchBranch() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	p := func(id string, deps ...string) model.Task {
+		return model.Task{ID: id, Type: "core.print", DependsOn: deps, Params: map[string]any{"message": "ran-" + id}}
+	}
+	wf := &model.Workflow{ID: "test-cross-switch", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "sw1", Type: "core.switch", Params: map[string]any{"expression": "a", "default_next": "b1",
+					"cases": []any{map[string]any{"value": "a", "next": "a1"}}}},
+				p("a1"), p("b1"),
+				{ID: "sw2", Type: "core.switch", DependsOn: []string{"a1", "b1"}, Params: map[string]any{"expression": "a",
+					"default_next": "b2", "cases": []any{map[string]any{"value": "a", "next": "a2"}}}},
+				p("a2", "sw2", "a1"), p("b2", "sw2"),
+			},
+			Output: map[string]any{"a2": "{{ Tasks['a2'].output.data }}"},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+	var resultStr string
+	s.NoError(s.env.GetWorkflowResult(&resultStr))
+	s.JSONEq(`{"a2":"ran-a2"}`, resultStr)
+}
+
+// TestNestedSwitchBranchDependsOnItsSwitch covers a branch of a switch that is
+// itself a branch of another switch (#41250 review).
+func (s *ExecutorTestSuite) TestNestedSwitchBranchDependsOnItsSwitch() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	p := func(id string, deps ...string) model.Task {
+		return model.Task{ID: id, Type: "core.print", DependsOn: deps, Params: map[string]any{"message": "ran-" + id}}
+	}
+	wf := &model.Workflow{ID: "test-nested-switch", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "sw1", Type: "core.switch", Params: map[string]any{"expression": "a", "default_next": "other",
+					"cases": []any{map[string]any{"value": "a", "next": "sw2"}}}},
+				{ID: "sw2", Type: "core.switch", Params: map[string]any{"expression": "x", "default_next": "inner_d",
+					"cases": []any{map[string]any{"value": "x", "next": "inner_x"}}}},
+				p("inner_x", "sw2"), p("inner_d", "sw2"), p("other"),
+			},
+			Output: map[string]any{"x": "{{ Tasks['inner_x'].output.data }}"},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+}
+
+// TestSwitchBranchKeepsUnrelatedSuffixDep: a branch of "db-cleanup" that depends
+// on an unfinished, unrelated step "cleanup" must keep that dependency.
+func (s *ExecutorTestSuite) TestSwitchBranchKeepsUnrelatedSuffixDep() {
+	s.registerFanInActivities()
+	executor := s.newFanInExecutor()
+	wf := &model.Workflow{ID: "test-suffix-dep", TenantID: "test-tenant", AccountID: "test-account",
+		Definition: model.WorkflowDefinition{
+			Tasks: []model.Task{
+				{ID: "db-cleanup", Type: "core.switch", Params: map[string]any{"expression": "a",
+					"cases": []any{map[string]any{"value": "a", "next": "leaf"}}}},
+				{ID: "leaf", Type: "core.print", DependsOn: []string{"db-cleanup", "cleanup"}, Params: map[string]any{"message": "leaf"}},
+				{ID: "cleanup", Type: "core.print", DependsOn: []string{"db-cleanup"}, Params: map[string]any{"message": "cleanup"}},
+			},
+		}}
+
+	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
+	s.env.ExecuteWorkflow(executor.ExecuteWorkflowInternal, wf, nil)
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.Error(s.env.GetWorkflowError())
+	s.Contains(s.env.GetWorkflowError().Error(), "cleanup")
 }

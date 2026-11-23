@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel"
 
 	"nudgebee/llm/security"
+	"nudgebee/llm/watch"
 )
 
 // ErrRecoveryAccessDenied means the person who sent a message may no longer run
@@ -69,4 +70,30 @@ func RecoveryContext(message ConversationMessage, conversation Conversation) (*s
 		return nil, ErrRecoveryAccessDenied
 	}
 	return security.NewRequestContext(context.Background(), sc, logger, tracer, nil), nil
+}
+
+// WatchPollSecurityContext is who a watch's poll runs as (the watch package's SecurityContextBuilder): the person
+// who set it up, with their own access, never an admin on their behalf (a read as account admin could return data
+// they cannot see). A watch with no user (NudgeBee's own, such as a remediation wait) runs as NudgeBee limited to the
+// watch's account. watch.ErrOwnerAccessRevoked when services-server rejects the person or they may no longer run
+// Nubi on the account; any other error means services-server could not be asked.
+func WatchPollSecurityContext(w watch.Watch) (*security.SecurityContext, error) {
+	if w.UserID == nil || *w.UserID == uuid.Nil {
+		sc := security.NewSecurityContextForTenantAccountAdmin(w.TenantID.String(), security.GetSystemUserId(), []string{w.AccountID.String()})
+		if sc == nil {
+			return nil, fmt.Errorf("watch poll: build system context for tenant %s", w.TenantID)
+		}
+		return sc, nil
+	}
+	sc, err := newSecurityContext(w.TenantID.String(), w.UserID.String())
+	if errors.Is(err, security.ErrSecurityContextRejected) {
+		return nil, fmt.Errorf("%w: %w", watch.ErrOwnerAccessRevoked, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("watch owner access: %w", err)
+	}
+	if sc == nil || !sc.CanRunAI(w.AccountID.String()) {
+		return nil, watch.ErrOwnerAccessRevoked
+	}
+	return sc, nil
 }

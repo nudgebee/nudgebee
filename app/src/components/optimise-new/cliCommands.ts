@@ -180,12 +180,12 @@ const BUILDERS: Record<string, Builder> = {
 
   storage_class_optimization: (rec, payload) => {
     const bucket = payload?.bucket_name || payload?.bucket_id;
-    const target = Array.isArray(payload?.recommended_classes) ? payload.recommended_classes[0] : null;
-    if (payload?.cloud_provider !== 'gcp' || !bucket || !target) return null;
+    if (payload?.cloud_provider !== 'gcp' || !bucket || payload?.recommended_action !== 'enable_autoclass') return null;
+    const charge = typeof payload?.enablement_charge === 'number' ? ` One-time enablement charge ≈ $${payload.enablement_charge.toFixed(2)}.` : '';
     return {
       title: 'gcloud command',
-      intro: `Sets the default storage class of ${bucket} to ${target} for new objects; existing objects keep their class.`,
-      commands: [`gcloud storage buckets update ${sh(`gs://${bucket}`)} --default-storage-class=${sh(target)}`],
+      intro: `Turns on Autoclass for ${bucket}. Objects not read for 30 days move to Nearline; objects that are read return to Standard.${charge}`,
+      commands: [`gcloud storage buckets update ${sh(`gs://${bucket}`)} --enable-autoclass`],
       destructive: false,
     };
   },

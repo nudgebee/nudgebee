@@ -180,3 +180,21 @@ it('keeps a query that arrived in the link when the account default is not Prome
   await submit();
   expectLastRequest('up', 'victoria-metrics');
 });
+
+/*
+ * Submit used to render only for a hard-coded provider list. A provider the backend
+ * can serve but that nobody added to it (OpenObserve, #39356; Splunk Enterprise,
+ * #41386) got an editor with no way to run it — and because the screen starts on
+ * Prometheus, the button appeared for a second and then vanished. This covers the
+ * control staying put for a provider no list was ever updated for.
+ */
+it.each(['splunk_enterprise', 'azure_app_insights'])('keeps Submit for %s and runs its native query', async (provider) => {
+  getDefaultProvider.mockResolvedValue(providers(provider, []));
+  renderScreen();
+  // The resolve is what used to remove the button, so wait for it before asserting.
+  await screen.findByText(provider === 'splunk_enterprise' ? 'Splunk Enterprise' : 'Azure App Insights');
+
+  fireEvent.change(editor(), { target: { value: '| mstats avg(k8s.pod.cpu.usage) span=1m' } });
+  await submit();
+  expectLastRequest('| mstats avg(k8s.pod.cpu.usage) span=1m', provider);
+});

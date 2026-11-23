@@ -128,6 +128,7 @@ const CARDS = [
       { label: 'Route optimization alerts to a channel', hash: 'notification-rules', action: 'alert-optimize' },
       { label: 'Route SLO alerts to a channel', hash: 'notification-rules', action: 'alert-slo' },
       { label: 'Schedule a weekly digest', hash: 'notification-rules', action: 'alert-weekly_digest' },
+      { label: 'See delivery history', hash: 'notification-rules/delivery-history' },
       { label: 'Manage notification channels', hash: 'integrations', query: { integration: 'alert' } },
     ],
   },

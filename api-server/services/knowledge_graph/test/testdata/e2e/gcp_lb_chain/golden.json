@@ -32,7 +32,8 @@
       "query_attributes": {
         "name": "my-backend",
         "port": 0,
-        "protocol": ""
+        "protocol": "",
+        "region": ""
       },
       "ontology_attributes": {}
     },
@@ -120,7 +121,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-vpc"
+        "name": "my-vpc",
+        "region": "global"
       },
       "ontology_attributes": {
         "location": "global",

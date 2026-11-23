@@ -34,6 +34,7 @@ const (
 	SlackConfigTeamName              = "team_name"
 	SlackConfigDefaultChannelId      = "default_channel_id"
 	SlackConfigDefaultChannelName    = "default_channel_name"
+	SlackConfigThreadRepeats         = "thread_repeats"
 )
 
 // Slack connects a Slack workspace (one per tenant, code-enforced at install) to
@@ -79,6 +80,9 @@ func (Slack) ConfigSchema() core.IntegrationSchema {
 			SlackConfigTeamName:              {Type: core.ToolSchemaTypeString, Description: "Slack workspace name", Hidden: true},
 			SlackConfigDefaultChannelId:      {Type: core.ToolSchemaTypeString, Description: "Default Slack channel ID for notifications"},
 			SlackConfigDefaultChannelName:    {Type: core.ToolSchemaTypeString, Description: "Cached display name of the default Slack channel", Hidden: true},
+			// No Default: applySchemaDefaults would write it back on every save that
+			// omits it, undoing a stored "false". Absent means threading stays on.
+			SlackConfigThreadRepeats: {Type: core.ToolSchemaTypeBoolean, Description: "Reply to repeat alerts in the original thread", Hidden: true},
 		},
 	}
 }

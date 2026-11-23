@@ -264,7 +264,7 @@ func TestDeleteSLOConfig_ClosesWithoutADigestItem(t *testing.T) {
 	setResolvedDigestFlag(t, true)
 	ctx := slosAdminContext(t, mock)
 	mock.ExpectBegin()
-	mock.ExpectQuery(`SELECT "name" FROM slo_config`).WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("latency"))
+	mock.ExpectQuery(`SELECT "name", container FROM slo_config`).WillReturnRows(sqlmock.NewRows([]string{"name", "container"}).AddRow("latency", nil))
 	mock.ExpectExec("DELETE FROM slo_report").WillReturnResult(sqlmock.NewResult(0, 4))
 	mock.ExpectExec("DELETE FROM slo_config").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

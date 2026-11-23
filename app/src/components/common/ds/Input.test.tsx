@@ -1,4 +1,5 @@
-import { render, screen } from '@testing-library/react';
+import React, { useState } from 'react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { Input } from './Input';
 
 // Emotion inserts rules via CSSOM in jsdom; gather them to inspect selectors.
@@ -36,5 +37,35 @@ describe('Input autofill styling', () => {
     render(<Input label='Name' value='postgresql' onChange={() => {}} error='Required' />);
     const rules = autofillRules(injectedCss());
     expect(rules.some((r) => r.includes(':focus') && /0 0 0 3px var\(--ds-red-100\)/.test(r))).toBe(true);
+  });
+});
+
+describe('Input with an icon that depends on its value', () => {
+  // Regression (#42088): the icon wrapper was only rendered while an icon was
+  // set, so the first keystroke that made the icon appear remounted the
+  // <input>: focus dropped and every later key was lost.
+  const Harness = ({ prop }: { prop: 'leadingIcon' | 'trailingIcon' }) => {
+    const [value, setValue] = useState('');
+    const icon = value ? <span data-testid='status-icon' /> : undefined;
+    return <Input label='Url' value={value} onChange={setValue} {...{ [prop]: icon }} />;
+  };
+
+  it.each(['trailingIcon', 'leadingIcon'] as const)('keeps the same focused input when the %s appears and goes', (prop) => {
+    render(<Harness prop={prop} />);
+    const input = screen.getByLabelText('Url');
+    input.focus();
+
+    fireEvent.change(input, { target: { value: 'h' } });
+    expect(screen.getByTestId('status-icon')).toBeInTheDocument();
+    expect(screen.getByLabelText('Url')).toBe(input);
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: 'https://example.com/health' } });
+    expect(input).toHaveValue('https://example.com/health');
+
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.queryByTestId('status-icon')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Url')).toBe(input);
+    expect(input).toHaveFocus();
   });
 });

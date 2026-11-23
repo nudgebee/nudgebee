@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -13,7 +14,7 @@ func init() {
 	toolInput := "Provide container data question in natural language"
 	toolOutput := "The tool will return the Datadog container query retrieved from your question"
 
-	core.RegisterNBAgentFactoryAsTool(DatadogContainersQueryAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAsTool(DatadogContainersQueryAgentName, func(accountId string) (core.NBAgent, error) {
 		return DatadogContainersQueryAgent{}, nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -109,6 +110,6 @@ func (d DatadogContainersQueryAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeTool
 }
 
-func (d DatadogContainersQueryAgent) GetModelCategory() core.ModelTier {
-	return core.ModelTierRetrieval
+func (d DatadogContainersQueryAgent) GetModelCategory() llmruntime.ModelTier {
+	return llmruntime.ModelTierRetrieval
 }

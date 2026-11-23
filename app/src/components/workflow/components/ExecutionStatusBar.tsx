@@ -7,6 +7,8 @@ import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 export interface PendingApproval {
   taskId: string;
   options: string[];
+  message?: string;
+  respondHint?: string;
 }
 
 interface ExecutionStatusBarProps {
@@ -127,8 +129,24 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
             }}
           >
             <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}>
-              {pa.taskId}: respond below or via Slack/MS Teams
+              {`${pa.taskId}: ${pa.respondHint ?? 'Respond below'}`}
             </Typography>
+            {pa.message && (
+              <Typography
+                data-testid={`workflow-approval-message-${pa.taskId}`}
+                title={pa.message}
+                sx={{
+                  fontSize: 'var(--ds-text-body)',
+                  color: 'var(--ds-gray-700)',
+                  whiteSpace: 'pre-wrap',
+                  overflowWrap: 'anywhere',
+                  maxHeight: '120px',
+                  overflowY: 'auto',
+                }}
+              >
+                {pa.message}
+              </Typography>
+            )}
             <Input
               size='sm'
               type='textarea'

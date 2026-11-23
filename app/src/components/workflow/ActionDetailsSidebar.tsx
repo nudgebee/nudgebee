@@ -16,6 +16,7 @@ import { useTaskFormData } from './hooks/data-fetchers/useTaskFormData';
 import { useTicketDynamicFields } from './hooks/data-fetchers/useTicketDynamicFields';
 import { getTicketProjectFieldLabel } from '@components/tickets/ticketProjectLabels';
 import { useOptionsSource } from './hooks/data-fetchers/useOptionsSource';
+import { useDmUserOptions } from './hooks/data-fetchers/useDmUserOptions';
 import { useSelectedNodeConfig } from './hooks/useSelectedNodeConfig';
 import { validateTaskData } from './hooks/useTaskValidation';
 import TemplateTextField, { TemplateSuggestion } from './components/TemplateTextField';
@@ -396,10 +397,6 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   const [imTeamOptions, setImTeamOptions] = useState<{ label: string; value: string; channels?: { label: string; value: string }[] }[]>([]);
   const [imChannelLoading, setImChannelLoading] = useState(false);
   const [imNotConnected, setImNotConnected] = useState(false);
-
-  // State for DM notification user dropdown (notifications.dm task)
-  const [dmUserOptions, setDmUserOptions] = useState<{ label: string; value: string }[]>([]);
-  const [dmUserLoading, setDmUserLoading] = useState(false);
 
   // State for Slack join_channel channel dropdown (slack.join_channel task)
   const [slackJoinChannelOptions, setSlackJoinChannelOptions] = useState<{ label: string; value: string }[]>([]);
@@ -1002,39 +999,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
 
   // Check if this is a DM notification task
   const isDmNotificationTask = selectedActionType === 'notifications.dm';
-
-  // Fetch users for DM notification task
-  useEffect(() => {
-    if (!isDmNotificationTask) {
-      setDmUserOptions([]);
-      return;
-    }
-
-    const provider = localData?.provider;
-    if (!provider) {
-      setDmUserOptions([]);
-      return;
-    }
-
-    setDmUserLoading(true);
-    apiAccount
-      .getNotificationUserList(provider)
-      .then((res: any) => {
-        const response = res?.data?.data || [];
-        const users = response.map((item: any) => ({
-          label: item.display_name || item.real_name || item.name || item.id,
-          value: item.id,
-        }));
-        setDmUserOptions(users);
-      })
-      .catch((error) => {
-        console.error('Failed to fetch DM users:', error);
-        setDmUserOptions([]);
-      })
-      .finally(() => {
-        setDmUserLoading(false);
-      });
-  }, [selectedActionType, localData?.provider]);
+  const dmProvider = isDmNotificationTask && typeof localData?.provider === 'string' ? localData.provider : '';
+  const {
+    options: dmUserOptions,
+    loading: dmUserLoading,
+    error: dmUserError,
+    retryable: dmUserRetryable,
+    retry: retryDmUsers,
+  } = useDmUserOptions(dmProvider);
 
   // Check if this is a Slack join_channel task
   const isSlackJoinChannelTask = selectedActionType === 'slack.join_channel';
@@ -2453,6 +2425,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           const getUserPlaceholder = () => {
             if (!provider) return 'Select a provider first';
             if (dmUserLoading) return 'Loading users...';
+            if (dmUserError) return 'Could not load users';
             if (dmUserOptions.length === 0) return 'No users available';
             return 'Select user';
           };
@@ -2491,6 +2464,15 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                   onDragLeave={viewOnlyMode ? undefined : handleDragLeave}
                   isDropTarget={isDraggingOver === fieldName}
                 />
+                {dmUserError && (
+                  <Box sx={{ mt: ds.space[1] }}>
+                    <Callout
+                      tone='critical'
+                      message={dmUserError}
+                      action={dmUserRetryable ? { label: 'Retry', onClick: retryDmUsers, id: 'dm-user-list-retry-btn' } : undefined}
+                    />
+                  </Box>
+                )}
                 {fieldSchema.description && (
                   <Typography variant='caption' color='text.secondary' sx={{ mt: ds.space[1], display: 'block' }}>
                     {fieldSchema.description}

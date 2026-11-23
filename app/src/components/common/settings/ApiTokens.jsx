@@ -6,7 +6,7 @@ import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { Banner } from '@ui/Banner';
 import { Button } from '@ui/Button';
 import { ToggleGroup } from '@ui/ToggleGroup';
-import { Select } from '@ui/Select';
+import FilterDropdownButton from '@ui/FilterDropdown';
 import { toast as snackbar } from '@ui/Toast';
 import { ds } from 'src/utils/colors';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
@@ -23,9 +23,9 @@ import { KIND_LABELS } from './keyKinds';
 
 const TENANT_PAGE_SIZE = 50;
 const NO_TENANT_FILTER = { userId: '', kind: '' };
-const KIND_FILTER_OPTIONS = [{ value: '', label: 'All types' }, ...Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }))];
+const KIND_FILTER_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
 // Where an admin narrows a user without revoking their keys.
-const USER_ACCESS_PATH = '/user-management#ai-tools/gateway';
+const USER_ACCESS_PATH = '/user-management#ai-tools/gateway/access';
 
 // `defaultKind` is the type the Create form starts on. Pass a single-purpose kind, never
 // 'all': a key that opens both the app API and the gateway must only ever be picked on purpose.
@@ -258,17 +258,30 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
         open={open}
         onClose={handleClose}
         title={title}
+        subtitle={
+          baseTitle
+            ? `Keys that let scripts and tools call ${baseTitle} APIs and the AI Gateway.`
+            : 'Keys that let scripts and tools call the APIs and the AI Gateway.'
+        }
         loader={loading}
-        width='md'
-        sx={{
-          '& .MuiPaper-root': {
-            // Wide enough for every kind's columns in one table (it was 800px when each tab held one kind).
-            maxWidth: ds.space.mul(0, 550),
-            '& .MuiDialogContent-root': {
-              padding: `${ds.space[6]} ${ds.space.mul(0, 20)} 0px ${ds.space.mul(0, 20)}`,
-            },
-          },
-        }}
+        width='lg'
+        maxHeight='85vh'
+        actionButtons={
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+            <Button
+              size='md'
+              tone='secondary'
+              onClick={() => setShowInstructions(true)}
+              icon={<InfoIcon sx={{ fontSize: ds.text.title }} />}
+              iconPlacement='start'
+            >
+              How to use
+            </Button>
+            <Button tone='secondary' size='md' onClick={handleClose}>
+              Close
+            </Button>
+          </Box>
+        }
       >
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5] }}>
           {/* Created Token Display */}
@@ -317,8 +330,8 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
 
           {/* Tokens List */}
           <Box>
-            {isKeyAdmin && (
-              <Box sx={{ mb: ds.space[4] }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[3], mb: ds.space[4] }}>
+              {isKeyAdmin && (
                 <ToggleGroup
                   selection='single'
                   size='sm'
@@ -336,11 +349,31 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
                     { value: 'all', label: 'All keys' },
                   ]}
                 />
-              </Box>
-            )}
-            {view === 'mine' && (
-              <>
-                <Box sx={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', mb: ds.space[4] }}>
+              )}
+              {view === 'all' && (
+                <>
+                  <FilterDropdownButton
+                    id='tenant-keys-owner'
+                    disablePortal={false}
+                    label='Owner'
+                    placeholder='All owners'
+                    options={ownerOptions}
+                    value={tenantFilter.userId || null}
+                    onSelect={(e) => changeTenantFilter({ userId: e.target.value || '' })}
+                  />
+                  <FilterDropdownButton
+                    id='tenant-keys-kind'
+                    disablePortal={false}
+                    label='Type'
+                    placeholder='All types'
+                    options={KIND_FILTER_OPTIONS}
+                    value={tenantFilter.kind || null}
+                    onSelect={(e) => changeTenantFilter({ kind: e.target.value || '' })}
+                  />
+                </>
+              )}
+              {view === 'mine' && (
+                <Box sx={{ ml: 'auto' }}>
                   <Button
                     size='md'
                     onClick={() => {
@@ -352,35 +385,9 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
                     Create Token
                   </Button>
                 </Box>
-
-                <TokenList tokens={tokens} onRevoke={revokeToken} onEditAccess={setEditAccessToken} />
-              </>
-            )}
-            {view === 'all' && (
-              <Box sx={{ display: 'flex', gap: ds.space[3], mb: ds.space[4] }}>
-                <Box sx={{ flex: 1 }}>
-                  <Select
-                    label='Owner'
-                    searchable
-                    size='sm'
-                    id='tenant-keys-owner'
-                    options={[{ value: '', label: 'All owners' }, ...ownerOptions]}
-                    value={tenantFilter.userId}
-                    onChange={(userId) => changeTenantFilter({ userId: userId || '' })}
-                  />
-                </Box>
-                <Box sx={{ flex: 1 }}>
-                  <Select
-                    label='Type'
-                    size='sm'
-                    id='tenant-keys-kind'
-                    options={KIND_FILTER_OPTIONS}
-                    value={tenantFilter.kind}
-                    onChange={(kind) => changeTenantFilter({ kind: kind || '' })}
-                  />
-                </Box>
-              </Box>
-            )}
+              )}
+            </Box>
+            {view === 'mine' && <TokenList tokens={tokens} onRevoke={revokeToken} onEditAccess={setEditAccessToken} />}
             {view === 'all' && tenantError && <Banner tone='critical' message={tenantError} />}
             {view === 'all' && !tenantError && tenantLoaded && (
               <TenantTokenList
@@ -395,32 +402,6 @@ const ApiTokens = ({ open, title, onClose, defaultKind = 'platform' }) => {
                 onManageAccess={manageUserAccess}
               />
             )}
-          </Box>
-
-          {/* Action Buttons */}
-          <Box
-            sx={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              gap: ds.space[3],
-              pt: ds.space[4],
-              borderTop: `1px solid ${ds.gray[200]}`,
-              mt: ds.space[5],
-              mb: ds.space[2],
-            }}
-          >
-            <Button
-              size='sm'
-              tone='secondary'
-              onClick={() => setShowInstructions(true)}
-              icon={<InfoIcon sx={{ fontSize: ds.text.title }} />}
-              iconPlacement='start'
-            >
-              How to use
-            </Button>
-            <Button tone='secondary' size='md' onClick={handleClose}>
-              Close
-            </Button>
           </Box>
         </Box>
       </Modal>

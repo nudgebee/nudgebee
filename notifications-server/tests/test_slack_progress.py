@@ -454,6 +454,26 @@ class TestStartProgressPoller:
             slack_progress.start_progress_poller(MagicMock(), _entry(), "1000.1", "C222-1000.1")
 
 
+class TestRunPoller:
+    def test_polls_on_its_own_session_and_closes_it(self):
+        request_service = MagicMock()
+        request_service.app_id = "A0APP"
+        with patch.object(slack_progress, "CommonService") as service_cls:
+            with patch.object(slack_progress, "_poll") as poll:
+                slack_progress._run_poller(request_service, _entry(), "1000.1")
+        poller_service = service_cls.return_value
+        poll.assert_called_once_with(poller_service, _entry(), "1000.1")
+        assert poller_service.app_id == "A0APP"
+        poller_service.close.assert_called_once()
+        request_service.close.assert_not_called()
+
+    def test_closes_its_session_when_the_poll_dies(self):
+        with patch.object(slack_progress, "CommonService") as service_cls:
+            with patch.object(slack_progress, "_poll", side_effect=RuntimeError("boom")):
+                slack_progress._run_poller(MagicMock(), _entry(), "1000.1")
+        service_cls.return_value.close.assert_called_once()
+
+
 class TestStopProgressStream:
     def test_no_stream_key_is_a_noop(self):
         common = MagicMock()
@@ -647,6 +667,22 @@ class TestPollLifecycle:
         cache.update_event_entry.return_value = True
         self._run(common, cache)
         common.slack_app.client.stop_stream.assert_not_called()
+
+    def test_ends_the_installation_read_before_opening_the_stream(self):
+        common = self._common()
+        order = []
+        common.session.close.side_effect = lambda: order.append("db_closed")
+        common.slack_app.client.start_stream.side_effect = lambda **k: order.append("start_stream") or {"ts": "3000.3"}
+        cache = MagicMock()
+        cache.get_event_entry.side_effect = [
+            {},
+            {"stream_ts": "pending-fixed"},
+            {"stream_ts": "different"},
+            {"stream_ts": "different"},
+        ]
+        cache.update_event_entry.return_value = True
+        self._run(common, cache)
+        assert order == ["db_closed", "start_stream"]
 
     def test_settle_racing_startstream_still_stops_the_stream(self):
         common = self._common()

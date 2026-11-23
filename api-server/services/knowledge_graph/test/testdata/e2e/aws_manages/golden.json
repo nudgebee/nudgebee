@@ -29,7 +29,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "eu-stack"
+        "name": "eu-stack",
+        "region": "eu-west-1"
       },
       "ontology_attributes": {
         "location": "eu-west-1",
@@ -73,6 +74,7 @@
       "labels": {},
       "query_attributes": {
         "name": "eu-bucket",
+        "region": "eu-west-1",
         "subtype": "storage"
       },
       "ontology_attributes": {
@@ -109,7 +111,8 @@
       },
       "labels": {},
       "query_attributes": {
-        "name": "my-stack"
+        "name": "my-stack",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -153,6 +156,7 @@
       "labels": {},
       "query_attributes": {
         "name": "app-bucket",
+        "region": "us-east-1",
         "subtype": "storage"
       },
       "ontology_attributes": {

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"nudgebee/services/common"
 	"nudgebee/services/integrations"
 	"nudgebee/services/security"
 
@@ -152,4 +153,40 @@ func TestInjectAzureKqlAfterTable_SkipsLetAndComments(t *testing.T) {
 	assert.Contains(t, out, "customMetrics\n| where ts > ago(1h)")
 	// the let-line pipe was not used as the split point
 	assert.NotContains(t, out, "let prefix = \"a\n")
+}
+
+// An HTTP 200 carrying tables and a top-level error object is a partial answer;
+// the error reaches the Note (#39201).
+func TestAzureMetricSource_FetchMetricsQuery_PartialErrorNote(t *testing.T) {
+	body := `{
+		"tables": [{"name": "PrimaryResult", "columns": [{"name": "timestamp"}, {"name": "value"}],
+			"rows": [["2023-11-14T22:13:20Z", 42]]}],
+		"error": {"code": "PartialError", "message": "There were some errors when processing your query.",
+			"details": [{"code": "EngineError", "message": "Query result set has exceeded the internal record count limit."}]}
+	}`
+	src := &AzureAppInsightsMetricSource{
+		getConfigs: func(_ *security.RequestContext, _ string) (integrations.AzureAppInsightsConfig, error) {
+			return integrations.AzureAppInsightsConfig{AzureAppInsightsAppID: "app"}, nil
+		},
+		execQuery: func(_ *security.RequestContext, _ integrations.AzureAppInsightsConfig, _ string) (AzureResponse, error) {
+			var out AzureResponse
+			return out, common.UnmarshalJson([]byte(body), &out)
+		},
+	}
+	out, err := src.FetchMetricsQuery(security.NewRequestContextForSuperAdmin(nil, nil, nil), FetchMetricsRequest{
+		AccountId: "acc",
+		Queries:   map[string]string{"q1": "cpu"},
+		StartTime: 1700000000000,
+		EndTime:   1700003600000,
+	})
+	assert.NoError(t, err)
+	assert.Len(t, out.Results, 1)
+	assert.Len(t, out.Results[0].Payload, 1)
+	assert.Equal(t, "Azure reported a partial error: PartialError: There were some errors when processing your query. "+
+		"(EngineError: Query result set has exceeded the internal record count limit.). These results may be incomplete.",
+		out.Results[0].Note)
+
+	assert.Empty(t, azurePartialErrorNote(nil))
+	assert.Equal(t, "Azure reported a partial error: boom. These results may be incomplete.",
+		azurePartialErrorNote(&AzureQueryError{Message: "boom"}))
 }

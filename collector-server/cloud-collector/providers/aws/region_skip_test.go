@@ -2,6 +2,7 @@ package aws
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net"
@@ -10,11 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"nudgebee/collector/cloud/providers"
+
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // testHTTPFailure is the error chain the SDK returns for an HTTP error status after
@@ -129,4 +134,26 @@ func TestRegionBackoffIsSafeForConcurrentRegions(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		<-done
 	}
+}
+
+// dialFailingAlarms answers every DescribeAlarms call with a connection failure.
+type dialFailingAlarms struct{}
+
+func (dialFailingAlarms) DescribeAlarms(context.Context, *cloudwatch.DescribeAlarmsInput, ...func(*cloudwatch.Options)) (*cloudwatch.DescribeAlarmsOutput, error) {
+	return nil, testDialFailure
+}
+
+// The alarm listing used to log the dial failure as an error itself, and its caller
+// logged it again. It now returns a region-skip failure unlogged, for the caller to
+// report once at the right level.
+func TestListCloudwatchAlarmEventsLeavesRegionSkipToTheCaller(t *testing.T) {
+	logger, logs := captureLogger()
+	ctx := providers.NewCloudProviderContextWithLogger(context.Background(), logger)
+
+	_, err := listCloudwatchAlarmEvents(ctx, dialFailingAlarms{}, nil,
+		providers.Account{AccountNumber: "123456789012"}, AlarmsFilter{Status: AlarmStatusAlarm, Region: "me-south-1"}, "me-south-1")
+
+	require.Error(t, err)
+	assert.Equal(t, regionSkipUnreachable, classifyRegionSkip(err))
+	assert.NotContains(t, logs.String(), "level=ERROR")
 }

@@ -162,6 +162,10 @@ func handleServiceError(c *gin.Context, err error, genericMessage string) bool {
 	return true
 }
 
+// ctxAllowSystemCaller marks a request (set by the webhook handlers) that may
+// proceed without a user.
+const ctxAllowSystemCaller = "runbook_allow_system_caller"
+
 func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request map[string]string, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) (*security.RequestContext, error) {
 	if c == nil || c.Request == nil {
 		return nil, errors.New("api: unable to identify user or tenant")
@@ -196,6 +200,12 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 
 	var securityContext *security.SecurityContext
 	if userId == "" || userId == uuid.Nil.String() {
+		// No user means no one to act as. Only the webhook routes, which carry
+		// their own credential and start runs that act as the workflow's owner,
+		// may proceed with the system user.
+		if !c.GetBool(ctxAllowSystemCaller) {
+			return nil, errors.New("api: request has no user")
+		}
 		userId = security.GetSystemUserId()
 		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, userId, []string{})
 	} else {
@@ -209,6 +219,8 @@ func buildContextFromRequestPayload(ctx context.Context, c *gin.Context, request
 	childLogger := logger.With("trace_id", span.SpanContext().TraceID().String())
 	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
 	rc.SetAITriggered(isAITriggeredRequest(c))
+	rc.SetBeeRunID(beeRunIDFromRequest(c))
+	rc.SetBeeConversationID(headerValue(c, HeaderBeeConversationID))
 	return rc, nil
 }
 
@@ -224,6 +236,28 @@ const (
 	TriggerSourceAI     = "ai"
 )
 
+// HeaderBeeRunID names the bee run an AI-originated request belongs to.
+// llm-server sets it when a bee's agent runs one of the bee's automations.
+const HeaderBeeRunID = "X-Bee-Run-ID"
+
+// HeaderBeeConversationID names the llm-server conversation a bee's call comes
+// from; it must match the conversation the bee run recorded.
+const HeaderBeeConversationID = "X-Bee-Conversation-ID"
+
+func headerValue(c *gin.Context, name string) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.Header.Get(name))
+}
+
+func beeRunIDFromRequest(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ""
+	}
+	return strings.TrimSpace(c.Request.Header.Get(HeaderBeeRunID))
+}
+
 func isAITriggeredRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil {
 		return false
@@ -233,6 +267,9 @@ func isAITriggeredRequest(c *gin.Context) bool {
 
 type ActionRequestAction struct {
 	Name string `json:"name"`
+	// Permission is the action's "<module>:<Class>" grant key as the app gateway
+	// classified it; empty from callers that skip the gateway.
+	Permission string `json:"permission"`
 }
 
 type ActionRequest struct {
@@ -261,7 +298,11 @@ func (d *DefaultSecurityContextBuilder) BuildContextFromPayload(ctx context.Cont
 	return buildContextFromPayload(ctx, c, h, tracer, meter, logger)
 }
 
-func (s *Server) getActionRequestDetails(c *gin.Context) (*security.RequestContext, map[string]any, string, bool) {
+// getActionRequestDetails builds the context for an /autopilot action request
+// and admits the caller to the request's account with the access the operation
+// needs: a built-in role granting it, or a custom grant for the action's key
+// (SecurityContext.CanAccessAccount). A Read-classified key never admits a write.
+func (s *Server) getActionRequestDetails(c *gin.Context, access security.SecurityAccessType) (*security.RequestContext, map[string]any, string, bool) {
 	var actionReq ActionRequest
 	if err := c.ShouldBindJSON(&actionReq); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request format: " + err.Error()})
@@ -291,7 +332,7 @@ func (s *Server) getActionRequestDetails(c *gin.Context) (*security.RequestConte
 		return nil, nil, "", false
 	}
 
-	if !sc.GetSecurityContext().HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+	if !sc.GetSecurityContext().CanAccessAccount(accountID, access) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return nil, nil, "", false
 	}
@@ -327,18 +368,14 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 		userId = actionRequestPayload["user_id"].(string)
 	}
 
-	role := sessionString(h.SessionVariables, "role")
-
+	// A caller's claimed role is never trusted, and a missing user is never
+	// upgraded to admin: permissions always come from the user's own roles.
 	var securityContext *security.SecurityContext
 	var err error
-	if role == "admin" && tenantId == "" && userId == "" {
-		securityContext = security.NewSecurityContextForSuperAdmin()
-	} else if role == "admin" && tenantId != "" {
-		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, userId, []string{})
-	} else if tenantId == "" {
+	if tenantId == "" {
 		return nil, errors.New("api: unable to identify tenant")
 	} else if userId == "" || userId == uuid.Nil.String() {
-		securityContext = security.NewSecurityContextForTenantAccountAdmin(tenantId, uuid.Nil.String(), []string{})
+		return nil, errors.New("api: request has no user")
 	} else {
 		securityContext, err = security.NewSecurityContext(tenantId, userId)
 		if err != nil {
@@ -363,6 +400,9 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	span := trace.SpanFromContext(ctx)
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	rc := security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter)
+	rc.SetActionPermission(security.ActionKey(h.Action.Name, h.Action.Permission))
 	rc.SetAITriggered(isAITriggeredRequest(c))
+	rc.SetBeeRunID(beeRunIDFromRequest(c))
+	rc.SetBeeConversationID(headerValue(c, HeaderBeeConversationID))
 	return rc, nil
 }

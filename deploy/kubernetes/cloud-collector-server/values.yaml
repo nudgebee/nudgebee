@@ -33,6 +33,35 @@ serviceAccount:
   # If not set and create is true, a name is generated using the fullname template
   name: ''
 
+# AWS credentials from this pod's Kubernetes service-account token (web identity), instead of
+# node credentials or a static access key. Works on any cluster whose service-account issuer
+# is registered as an IAM OIDC provider in AWS (EKS, GKE, ...).
+#
+# roleArn must be the identity that connected AWS accounts trust: the role configured as
+# NUDGEBEE_INSTANCE_ROLE, which the CloudFormation/Terraform onboarding writes into each
+# account's trust policy. Pointing it at a different role breaks AssumeRole for every
+# existing account until each account's trust names the new role.
+#
+# Rollout:
+#   1. Register the cluster's service-account issuer as an IAM OIDC provider in the account
+#      that owns NUDGEBEE_INSTANCE_ROLE.
+#   2. Add a web-identity trust statement to that role: Federated = the provider,
+#      `aud` = `audience`, `sub` = system:serviceaccount:<namespace>:<this service account>.
+#   3. If that role is also the nodes' instance role, give the nodes their own role. Otherwise
+#      every pod on those nodes can still obtain it through instance metadata.
+#
+# If NUDGEBEE_INSTANCE_ROLE is not a role (for example an IAM user), create a role, set
+# NUDGEBEE_INSTANCE_ROLE to it, and update each connected account's trust before enabling this.
+awsWebIdentity:
+  enabled: false
+  roleArn: ''
+  audience: sts.amazonaws.com
+  expirationSeconds: 3600
+  mountPath: /var/run/secrets/aws/web-identity
+  # Pod fsGroup applied when podSecurityContext sets none. The token file is group-readable by
+  # this group and not world-readable.
+  fsGroup: 1001
+
 podAnnotations: {}
 
 podSecurityContext:

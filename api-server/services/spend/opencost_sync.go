@@ -133,13 +133,29 @@ const needsServerSideStampQuery = `
 // or re-onboarded K8s account showing OpenCost "disconnected" (opencostConnection
 // off, opencostServerSide not yet stamped) until the next cron tick.
 //
-// Best-effort and idempotent. The in-flight guard drops overlapping connect
-// events for the same cluster; the eligibility probe and sync then run on a
-// detached, timeout-bounded goroutine so the caller (the /v1/audit ingest
-// handler) returns immediately and a client disconnect can't cancel the probe.
-// Once the marker is stamped (or the cluster runs its own OpenCost) the probe
-// returns false and the worker exits without syncing.
+// Best-effort and idempotent. The probe and sync run on a goroutine detached
+// from the caller's context, so the /v1/audit ingest handler returns immediately
+// and a client disconnect can't cancel the probe. Once the marker is stamped (or
+// the cluster runs its own OpenCost) the probe returns false and the worker
+// exits without syncing.
 func TriggerServerSideOnConnect(ctx *security.RequestContext, accountId, tenantId string) {
+	bgCtx := security.NewRequestContext(
+		context.WithoutCancel(ctx.GetContext()),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+	go RunServerSideOnConnect(bgCtx, accountId, tenantId)
+}
+
+// RunServerSideOnConnect is the blocking body of TriggerServerSideOnConnect. The
+// agent-connect queue consumer calls it directly so the sync finishes before the
+// message is acked, and is redelivered if the worker dies mid-run.
+//
+// The in-flight guard drops overlapping connect events for the same cluster, and
+// the run is bounded so a hung call can't hold that guard indefinitely.
+func RunServerSideOnConnect(ctx *security.RequestContext, accountId, tenantId string) {
 	if accountId == "" || tenantId == "" {
 		return
 	}
@@ -155,49 +171,41 @@ func TriggerServerSideOnConnect(ctx *security.RequestContext, accountId, tenantI
 	if _, loaded := serverSideOnConnectInFlight.LoadOrStore(accountUUID, struct{}{}); loaded {
 		return
 	}
+	defer serverSideOnConnectInFlight.Delete(accountUUID)
 
-	// Detach from the ingest request context (cancelled once /v1/audit responds)
-	// and bound the run so a hung call can't leak the goroutine or hold the
-	// in-flight guard indefinitely.
-	detached, cancel := context.WithTimeout(
-		context.WithoutCancel(ctx.GetContext()),
-		serverSideOnConnectTimeout,
-	)
+	bounded, cancel := context.WithTimeout(ctx.GetContext(), serverSideOnConnectTimeout)
+	defer cancel()
 	bgCtx := security.NewRequestContext(
-		detached,
+		bounded,
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	go func() {
-		defer cancel()
-		defer serverSideOnConnectInFlight.Delete(accountUUID)
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Error("opencost on-connect trigger: worker panicked", "panic", r)
-			}
-		}()
-
-		dbms, err := database.GetDatabaseManager(database.Metastore)
-		if err != nil {
-			logger.Warn("opencost on-connect trigger: db manager", "error", err)
-			return
-		}
-		var needs bool
-		if err := dbms.Db.GetContext(bgCtx.GetContext(), &needs, needsServerSideStampQuery, accountUUID); err != nil {
-			logger.Warn("opencost on-connect trigger: eligibility probe failed", "error", err)
-			return
-		}
-		if !needs {
-			return
-		}
-		logger.Info("opencost on-connect trigger: syncing server-side spends for newly-connected cluster")
-		if err := SyncOpenCostSpends(bgCtx, []string{accountId}); err != nil {
-			logger.Error("opencost on-connect trigger: sync failed", "error", err)
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("opencost on-connect trigger: worker panicked", "panic", r)
 		}
 	}()
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		logger.Warn("opencost on-connect trigger: db manager", "error", err)
+		return
+	}
+	var needs bool
+	if err := dbms.Db.GetContext(bgCtx.GetContext(), &needs, needsServerSideStampQuery, accountUUID); err != nil {
+		logger.Warn("opencost on-connect trigger: eligibility probe failed", "error", err)
+		return
+	}
+	if !needs {
+		return
+	}
+	logger.Info("opencost on-connect trigger: syncing server-side spends for newly-connected cluster")
+	if err := SyncOpenCostSpends(bgCtx, []string{accountId}); err != nil {
+		logger.Error("opencost on-connect trigger: sync failed", "error", err)
+	}
 }
 
 type k8sAccount struct {

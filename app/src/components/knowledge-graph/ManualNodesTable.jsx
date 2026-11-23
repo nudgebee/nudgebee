@@ -13,6 +13,8 @@ import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Tooltip from '@ui/Tooltip';
 import { DeleteIconRed, EditIcon, pmCheckCircle as MergeIcon } from '@assets';
 import { ds } from 'src/utils/colors';
+import { nodeRoleLabel } from './nodeRoleLabels';
+import { humanizeType } from './kgFilterCascade';
 
 // What each status tells the operator. An adopted node is the collector's
 // now — nothing left to do; a possible duplicate wants a Merge.
@@ -46,13 +48,8 @@ const buildMenuItems = (row) => {
   return items;
 };
 
-// PascalCase specific type → spaced label ("SQSQueue" → "SQS Queue",
-// "EC2Instance" → "EC2 Instance"). The type picker searches these labels.
-export const humanizeType = (type) =>
-  (type || '')
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([0-9])([A-Z][a-z])/g, '$1 $2')
-    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2');
+// humanizeType lives in ./kgFilterCascade; re-exported for existing importers.
+export { humanizeType };
 
 // "Where" cell: the account (or "Outside connected accounts") plus the
 // identity qualifiers that place the node.
@@ -102,7 +99,10 @@ const ManualNodesTable = ({ rows, accountNames, onEditClick, onMergeClick, onDel
             <Tooltip title={row.unique_key}>
               <Text value={row.name} sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium }} />
             </Tooltip>
-            <Text value={humanizeType(row.specific_type)} sx={{ fontSize: ds.text.caption, color: ds.gray[500] }} />
+            <Text
+              value={[humanizeType(row.specific_type), nodeRoleLabel(row.role)].filter(Boolean).join(' · ')}
+              sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}
+            />
           </Box>
         ),
       },

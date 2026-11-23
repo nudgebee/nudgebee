@@ -41,7 +41,6 @@ import {
   NAME_COLUMN,
   NO_CRITERIA_ERROR,
   NO_SUCH_RULE_NAME,
-  REENABLE_BLOCKED_MESSAGE,
   RETRO_MATCH_FIXTURE_TITLE,
   RETRO_MATCH_RULE_NAME,
   SCORING_RULE_NAME,
@@ -312,7 +311,7 @@ test(
 );
 
 test(
-  "Triage Rules - open Create Rule, create a rule, filter Status by Enabled, verify it's listed, disable it through the row menu, filter Status by Disabled, verify the disabled rule is listed, then verify re-enabling is blocked",
+  "Triage Rules - open Create Rule, create a rule, filter Status by Enabled, verify it's listed, disable it through the row menu, filter Status by Disabled, verify the disabled rule is listed, then re-enable it and verify it returns to Enabled",
   { tag: ["@dev", "@test", "@regression", "@functional", "@crud", "@oss"] },
   async ({ page }) => {
     const locators = await openTriageRulesForCluster(page);
@@ -338,10 +337,12 @@ test(
         await expect(locators.rowByName(name)).toBeVisible();
       });
 
-      await test.step("Disabling it through the row menu is immediate — no confirmation step", async () => {
+      await test.step("Disabling it through the row menu asks for confirmation, then applies", async () => {
         const row = locators.rowByName(name);
         await locators.rowMenuTrigger(row).click();
         await locators.rowMenuItem(DISABLE_MENU_ITEM).click();
+        await locators.disableConfirmButton.click();
+        await expect(locators.ruleModal).toBeHidden();
       });
 
       await test.step("Filtering Status by Disabled now lists the same rule, showing Disabled", async () => {
@@ -351,14 +352,14 @@ test(
         await expect(locators.rowByName(name)).toContainText(DISABLED_STATUS);
       });
 
-      await test.step("Re-enabling from the row menu is blocked, not silently ignored", async () => {
+      await test.step("Re-enabling from the row menu flips the rule back to Enabled", async () => {
         const row = locators.rowByName(name);
         await locators.rowMenuTrigger(row).click();
         await locators.rowMenuItem(ENABLE_MENU_ITEM).click();
-        await expect(locators.toastRegion).toContainText(REENABLE_BLOCKED_MESSAGE);
-        // The block has to actually refuse the change, not just say so — still Disabled here is
-        // what proves the info toast isn't papering over a mutation that happened anyway.
-        await expect(locators.rowByName(name)).toContainText(DISABLED_STATUS);
+        await expect(locators.toastRegion).toContainText(`Rule "${name}" enabled`);
+        // The Disabled filter hides the re-enabled row, so the filter is switched back to Enabled.
+        await pickFilterOption(locators, locators.statusFilter, ENABLED_STATUS);
+        await expect(locators.rowByName(name)).toContainText(ENABLED_STATUS);
       });
     } finally {
       await deleteRuleByName(locators, name);
@@ -681,7 +682,7 @@ test(
 
 test(
   "Triage Rules - apply a rule to a real open backlog, verify the Matches count is recorded and consistent across the scoped and global views, then re-save the rule and verify the count does not double",
-  { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@crud", "@oss"] },
   async ({ page }) => {
     const accountId = await resolveAccountId(page);
     const fixtureEventIds = await findOpenFixtureEventIds(page, accountId);

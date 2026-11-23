@@ -8,9 +8,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
-// alarmFiringSources are the sources a CloudWatch alarm firing is stored under:
-// the poll's and the push's.
-var alarmFiringSources = []string{"AWS_CloudWatch_Alarm", "AWS_EventBridge"}
+// cloudWatchAlarmEventSource is the source a CloudWatch alarm firing is stored
+// under, polled or pushed.
+const cloudWatchAlarmEventSource = "AWS_CloudWatch_Alarm"
+
+// alarmFiringSources are the sources a CloudWatch alarm firing is stored under.
+// Pushed firings were stored as AWS_EventBridge before they were stored as
+// alarms, and those rows remain.
+var alarmFiringSources = []string{cloudWatchAlarmEventSource, "AWS_EventBridge"}
 
 // alarmFingerprintLike matches the fingerprints AlarmIdentity accepts.
 const alarmFingerprintLike = "arn:%:cloudwatch:%:alarm:%"

@@ -215,13 +215,25 @@ type boundNode struct {
 	nodeID, nodeType, name, namespace, accountID string
 }
 
+// boundNodeFor is the endpoint a ref'd declaration is stored with. A node
+// outside any account is qualified by the tenant (its cloud_account_id in the
+// graph), so when the pin is lost it re-resolves among the tenant's own
+// declarations and never to a same-named collected node in some account.
+func boundNodeFor(n *ManualNode, nodeID string) boundNode {
+	account := n.CloudAccountID
+	if account == "" {
+		account = n.TenantID
+	}
+	return boundNode{nodeID, n.NodeType, n.Name, n.Namespace, account}
+}
+
 // Import declares the document in order: nodes first, then dependencies. It
 // is not transactional; the result says exactly what landed. A node that is
 // already declared or already collected is reported as existing and still
 // binds the dependencies that ref it. A rejected node binds nothing, and
 // carries no node id: a refused caller must not learn whether the resource
 // is collected.
-func (i *ManualDeclarationsImporter) Import(ctx context.Context, tenantID, userID string, authorize ManualAccountAuthorizer, doc *ManualDeclarationsDocument) (*ManualDeclarationsResult, error) {
+func (i *ManualDeclarationsImporter) Import(ctx context.Context, tenantID, userID string, authorize ManualAccountAuthorizer, authorizeNewKind func() bool, doc *ManualDeclarationsDocument) (*ManualDeclarationsResult, error) {
 	if tenantID == "" {
 		return nil, ErrTenantIDRequired
 	}
@@ -252,31 +264,40 @@ func (i *ManualDeclarationsImporter) Import(ctx context.Context, tenantID, userI
 		}
 		item := ManualNodeDeclarationResult{Index: idx, Ref: d.Ref, Declaration: d}
 		req := d.ManualNodeCreate
-		req.TenantID, req.DeclaredByUserID, req.Authorize = tenantID, userID, authorize
+		req.TenantID, req.DeclaredByUserID, req.Authorize, req.AuthorizeNewKind = tenantID, userID, authorize, authorizeNewKind
 
 		n, err := nodes.prepare(req)
 		if err == nil {
 			var created *ManualNode
-			created, err = nodes.createPrepared(ctx, i.graph, n, authorize)
+			created, err = nodes.createPrepared(ctx, i.graph, n, authorize, authorizeNewKind)
 			var exists *ManualNodeExistsError
 			switch {
 			case err == nil:
 				item.ID, item.NodeID, item.Node = created.ID, created.KGNodeID, created
 				res.Nodes.Created = append(res.Nodes.Created, item)
-				bound[d.Ref] = boundNode{created.KGNodeID, created.NodeType, created.Name, created.Namespace, created.CloudAccountID}
+				bound[d.Ref] = boundNodeFor(created, created.KGNodeID)
 				continue
 			case errors.Is(err, ErrManualNodeDuplicate):
+				existing, lookupErr := nodes.activeDeclaration(tenantID, n.KGNodeID)
+				if lookupErr == nil && n.IsCustomKind() && existing.SpecificType != n.SpecificType {
+					// Same category and name, another kind: binding the ref
+					// would point its dependencies at the wrong node.
+					err = nodes.explainKindCollision(n, err)
+					break
+				}
 				item.NodeID, item.Error = n.KGNodeID, err.Error()
-				if existing, lookupErr := nodes.activeDeclaration(tenantID, n.KGNodeID); lookupErr == nil {
+				if lookupErr == nil {
 					item.ID, item.Node = existing.ID, existing
+					bound[d.Ref] = boundNodeFor(existing, n.KGNodeID)
+				} else {
+					bound[d.Ref] = boundNodeFor(n, n.KGNodeID)
 				}
 				res.Nodes.Existing = append(res.Nodes.Existing, item)
-				bound[d.Ref] = boundNode{n.KGNodeID, n.NodeType, n.Name, n.Namespace, n.CloudAccountID}
 				continue
 			case errors.As(err, &exists):
 				item.NodeID, item.Error = exists.NodeID, err.Error()
 				res.Nodes.Existing = append(res.Nodes.Existing, item)
-				bound[d.Ref] = boundNode{exists.NodeID, n.NodeType, n.Name, n.Namespace, n.CloudAccountID}
+				bound[d.Ref] = boundNodeFor(n, exists.NodeID)
 				continue
 			}
 		}

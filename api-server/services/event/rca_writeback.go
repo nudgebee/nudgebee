@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -245,11 +246,23 @@ func parseSeveritySet(csv string) map[string]bool {
 	return out
 }
 
+// rcaChartBlockRe matches an nb-chart fenced block (a JSON chart spec the app
+// renders). Same pattern as llm-server's chart resolver.
+var rcaChartBlockRe = regexp.MustCompile("(?s)```nb-chart[ \t]*\r?\n?(.*?)```")
+
+// rcaChartNote replaces each chart block in the note: an incident comment can't
+// render the chart, and its multi-KB JSON spec would use up the comment budget.
+const rcaChartNote = "_Chart: open the investigation in Nudgebee to view it._"
+
+func replaceChartBlocks(text string) string {
+	return rcaChartBlockRe.ReplaceAllLiteralString(text, rcaChartNote)
+}
+
 // buildRCAComment renders the incident note: the RCA report (rune-safe truncated
 // to keep within provider note limits) plus a deep link back to the full
 // analysis in NudgeBee.
 func buildRCAComment(rcaText, eventId string) string {
-	body := strings.TrimSpace(rcaText)
+	body := strings.TrimSpace(replaceChartBlocks(rcaText))
 	if runes := []rune(body); len(runes) > rcaWritebackMaxCommentChars {
 		body = string(runes[:rcaWritebackMaxCommentChars]) + "\n\n…(truncated)"
 	}

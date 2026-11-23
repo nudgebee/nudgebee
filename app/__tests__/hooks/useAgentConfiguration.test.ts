@@ -5,13 +5,20 @@ jest.mock('@api1/ask-nudgebee', () => ({
   __esModule: true,
   default: {
     listAgents: jest.fn(),
-    listFunctions: jest.fn(),
+  },
+}));
+
+jest.mock('@api1/knowledge-base', () => ({
+  __esModule: true,
+  default: {
+    listSkillCommands: jest.fn(),
   },
 }));
 
 import apiAskNudgebee from '@api1/ask-nudgebee';
+import apiKnowledgeBase from '@api1/knowledge-base';
 const mockListAgents = apiAskNudgebee.listAgents as jest.Mock;
-const mockListFunctions = apiAskNudgebee.listFunctions as jest.Mock;
+const mockListSkillCommands = apiKnowledgeBase.listSkillCommands as jest.Mock;
 
 const mockAgents = [
   { name: 'k8s_debug', status: 'enabled', aliases: ['K8s Debug'] },
@@ -19,12 +26,12 @@ const mockAgents = [
   { name: 'disabled_agent', status: 'disabled', aliases: [] },
 ];
 
-const mockFunctions = [{ id: 'fn-1', name: 'get_pods', description: 'Get pods', status: 'active' }];
+const mockSkills = [{ name: 'DB failover', description: 'Fail the primary over' }];
 
 describe('useAgentConfiguration', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockListFunctions.mockResolvedValue({ res: { llm_functions: mockFunctions } });
+    mockListSkillCommands.mockResolvedValue(mockSkills);
     mockListAgents.mockResolvedValue({ data: { data: { ai_list_agents: { data: mockAgents } } } });
   });
 
@@ -32,24 +39,38 @@ describe('useAgentConfiguration', () => {
     const { result } = renderHook(() => useAgentConfiguration(''));
     expect(result.current.allAgents).toEqual([]);
     expect(result.current.enabledAgents).toEqual([]);
+    expect(result.current.allSkills).toEqual([]);
     expect(result.current.loadingAgents).toBe(false);
   });
 
   it('does not fetch when accountId is falsy', () => {
     renderHook(() => useAgentConfiguration(''));
     expect(mockListAgents).not.toHaveBeenCalled();
-    expect(mockListFunctions).not.toHaveBeenCalled();
+    expect(mockListSkillCommands).not.toHaveBeenCalled();
   });
 
-  it('fetches functions on mount', async () => {
-    renderHook(() => useAgentConfiguration('acc-1'));
-    await waitFor(() => expect(mockListFunctions).toHaveBeenCalledWith({ accountId: 'acc-1' }));
+  it('fetches skills on mount', async () => {
+    const { result } = renderHook(() => useAgentConfiguration('acc-1'));
+    await waitFor(() => expect(mockListSkillCommands).toHaveBeenCalledWith('acc-1'));
+    await waitFor(() => expect(result.current.allSkills).toEqual(mockSkills));
   });
 
-  it('fetches both agents and functions when accountId is provided', async () => {
+  it('clears the skills on account switch and drops a late reply for the old account', async () => {
+    let resolveOld: (v: unknown) => void = () => {};
+    mockListSkillCommands.mockImplementation((id: string) =>
+      id === 'acc-old' ? new Promise((r) => (resolveOld = r)) : Promise.resolve([{ name: 'new_skill', description: '' }])
+    );
+    const { result, rerender } = renderHook(({ id }) => useAgentConfiguration(id), { initialProps: { id: 'acc-old' } });
+    rerender({ id: 'acc-new' });
+    await waitFor(() => expect(result.current.allSkills).toEqual([{ name: 'new_skill', description: '' }]));
+    await act(async () => resolveOld([{ name: 'old_skill', description: '' }]));
+    expect(result.current.allSkills).toEqual([{ name: 'new_skill', description: '' }]);
+  });
+
+  it('fetches both agents and skills when accountId is provided', async () => {
     renderHook(() => useAgentConfiguration('acc-1'));
     await waitFor(() => {
-      expect(mockListFunctions).toHaveBeenCalled();
+      expect(mockListSkillCommands).toHaveBeenCalled();
       expect(mockListAgents).toHaveBeenCalled();
     });
   });

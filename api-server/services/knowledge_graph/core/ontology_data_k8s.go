@@ -31,6 +31,8 @@ var k8sOntology = map[string]OntologyNodeSpec{
 	"KubernetesStatefulSet": {NodeType: NodeTypeWorkload, Fields: k8sWorkloadFields},
 	"KubernetesDaemonSet":   {NodeType: NodeTypeWorkload, Fields: k8sWorkloadFields},
 	"KubernetesReplicaSet":  {NodeType: NodeTypeWorkload, Fields: k8sWorkloadFields},
+	// Argo Rollout: a Deployment-shaped controller, same ontology shape.
+	"KubernetesRollout": {NodeType: NodeTypeWorkload, Fields: k8sWorkloadFields},
 
 	// --- Batch workloads: distinct ontology types (no replicas/type in vocab) ---
 	"KubernetesJob": {NodeType: NodeTypeJob, Fields: []OntologyField{

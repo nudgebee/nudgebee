@@ -292,7 +292,18 @@ const AllUsers = () => {
     () =>
       users.map((user) => [
         {
-          component: <Text value={user.display_name} showAutoEllipsis />,
+          component:
+            user.kind === 'bee' ? (
+              // A bee account is an AI worker: it holds roles and shows in audit, but never signs in.
+              <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], minWidth: 0 }}>
+                <Text value={user.display_name} showAutoEllipsis />
+                <Chip variant='tag' size='xs' tone='agent'>
+                  Bee
+                </Chip>
+              </Box>
+            ) : (
+              <Text value={user.display_name} showAutoEllipsis />
+            ),
           drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
         },
         {

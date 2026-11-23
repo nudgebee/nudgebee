@@ -1,5 +1,6 @@
 // Not for OSS
 import { Locator, Page, expect } from "@playwright/test";
+import { skipWhenMissing } from "../memoryFixtures";
 import { LoginPage } from "../../../pages/LoginPage";
 import { NubiLocators } from "../nubiLocators";
 import { PatternsLocators } from "./patternsLocators";
@@ -72,11 +73,9 @@ export async function remountPatternsTab(locators: PatternsLocators): Promise<vo
 // conversations, so this is a data precondition, not a product bug.
 export async function requirePatternRows(locators: PatternsLocators, minimum: number): Promise<number> {
   const rows = await locators.rowActionButtons.count();
-  if (rows < minimum) {
-    throw new Error(
-      `this case needs at least ${minimum} pattern(s) in b-Cortex > Memory > Patterns, found ${rows} — the signed-in user has no inferred patterns on this environment`
-    );
-  }
+  // Skipped, not failed: patterns come from a background job over past conversations and nothing a
+  // test does makes one appear, so an empty list says "none inferred here", not "broken".
+  skipWhenMissing(rows, minimum, "inferred pattern(s) in b-Cortex > Memory > Patterns");
   return rows;
 }
 
@@ -86,9 +85,7 @@ export async function requirePatternRows(locators: PatternsLocators, minimum: nu
 // letting the case click a button that is not there.
 export async function requireUnpinnedRow(locators: PatternsLocators): Promise<void> {
   const unpinned = await locators.pinButtons.count();
-  if (unpinned < 1) {
-    throw new Error("this case needs at least one unpinned pattern in b-Cortex > Memory > Patterns, found none — every pattern is already pinned");
-  }
+  skipWhenMissing(unpinned, 1, "unpinned pattern in b-Cortex > Memory > Patterns (every pattern is already pinned)");
 }
 
 // Reads a row's rendered description, which is how a row is identified again

@@ -68,7 +68,7 @@ unchanged. When enabled, every `GenerateContent` call is intercepted:
    forward the original payload unchanged.
 
 The wrapper is installed at the LLM factory chokepoint
-(`agents/core/llm_config.go:GetLLMModel`), so all call sites inherit it
+(`llms/runtime/llm_config.go:GetLLMModel`), so all call sites inherit it
 automatically.
 
 ## 4. Detection

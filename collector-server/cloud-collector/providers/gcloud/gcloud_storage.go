@@ -118,6 +118,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 		storageAlarmTemplates = []providers.AlarmTemplate{} // Continue with other recommendations
 	}
 
+	var autoclassCandidates []providers.Resource
 	for _, resource := range existingResources {
 		if resource.ServiceName != ServiceNameStorage {
 			continue
@@ -258,28 +259,9 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			}
 		}
 
-		// Recommendation 5: Check storage class
-		if storageClass, ok := resource.Meta["StorageClass"].(string); ok {
-			if storageClass == "STANDARD" {
-				recommendations = append(recommendations, providers.Recommendation{
-					CategoryName: providers.RecommendationCategoryRightSizing,
-					RuleName:     constants.GCPStorageClassOptimization,
-					Severity:     providers.RecommendationSeverityMedium,
-					Savings:      0,
-					Data: map[string]any{
-						"bucket_id":             resource.Id,
-						"bucket_name":           resource.Name,
-						"region":                resource.Region,
-						"current_storage_class": storageClass,
-						"recommended_classes":   []string{"NEARLINE", "COLDLINE", "ARCHIVE"},
-					},
-					Action:              providers.RecommendationActionModify,
-					ResourceServiceName: resource.ServiceName,
-					ResourceId:          resource.Id,
-					ResourceType:        resource.Type,
-					ResourceRegion:      resource.Region,
-				})
-			}
+		// Recommendation 5: Check storage class, priced from usage after the loop
+		if isAutoclassCandidate(resource) {
+			autoclassCandidates = append(autoclassCandidates, resource)
 		}
 
 		// Recommendation 6: Check encryption
@@ -367,6 +349,7 @@ func (s *cloudStorageService) GetRecommendations(ctx providers.CloudProviderCont
 			})
 		}
 	}
+	recommendations = append(recommendations, s.storageClassRecommendations(ctx, account, autoclassCandidates)...)
 
 	return recommendations, nil
 }

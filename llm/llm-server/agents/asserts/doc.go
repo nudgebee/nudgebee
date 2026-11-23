@@ -50,7 +50,8 @@ import (
 // ForbiddenTools) deliberately still see control tools, so a fixture can assert
 // on notebook usage explicitly when that is the point of the test.
 var controlTools = map[string]bool{
-	toolcore.NotebookToolName: true,
+	toolcore.NotebookToolName:   true,
+	toolcore.NotebookV2ToolName: true,
 }
 
 // investigationTools returns only the invocations that represent real

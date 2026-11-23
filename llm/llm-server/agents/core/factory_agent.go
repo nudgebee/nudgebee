@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -50,6 +51,13 @@ func RegisterNBAgentFactoryWithAliases(agent string, agentFactory func(accountId
 // target. Agent-tools are target-blind unless their implementation opts in.
 type ExecutionTargetAwareAgent interface {
 	AcceptsExecutionTarget()
+}
+
+// PriorObservationsConsumer marks an agent that answers from its caller's
+// earlier step observations (a summarizer). Called without dependency context,
+// it gets those observations as QueryContext; other agent-tools get none.
+type PriorObservationsConsumer interface {
+	ConsumesPriorObservations()
 }
 
 // ProviderBoundAgent is a target-aware agent whose tools reach one kind of
@@ -284,11 +292,6 @@ const (
 	NBToolCallAdditionalDetailsFollowupRequest = nbToolCallAdditionalDatailsFollowupRequest
 )
 
-type AgentTool interface {
-	toolcore.NBTool
-	GetAgent(ctx *security.RequestContext) NBAgent
-}
-
 type nbAgentTool struct {
 	name              string
 	description       string
@@ -356,6 +359,11 @@ func (m *nbAgentTool) PrepareDelegatedTargetInput(target *toolcore.ExecutionTarg
 }
 
 func (m *nbAgentTool) SupportsDelegatedTarget() bool { return m.targetSupported }
+
+func (m *nbAgentTool) consumesPriorObservations(ctx *security.RequestContext) bool {
+	_, ok := m.GetAgent(ctx).(PriorObservationsConsumer)
+	return ok
+}
 
 // agentForCall is the agent this call runs: the tool's own, or for a tool
 // routed by target, the one its factory builds for the target account.
@@ -457,7 +465,7 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 	} else if resp.Status == ConversationStatusFailed {
 		responseData := "Agent failed to provide a response."
 		if len(resp.Response) > 0 {
-			responseData = resp.Response[0]
+			responseData = StripUnresolvedStepLinks(resp.Response[0])
 		}
 		return toolcore.NBToolResponse{
 			Data:              responseData,
@@ -490,8 +498,10 @@ func (m *nbAgentTool) Call(nbRequestContext toolcore.NbToolContext, input toolco
 				}, nil
 			}
 		}
+		// An E-number in the sub-agent's answer names one of its own steps;
+		// the parent would cite it as one of its own.
 		return toolcore.NBToolResponse{
-			Data:              resp.Response[0],
+			Data:              StripUnresolvedStepLinks(resp.Response[0]),
 			Type:              toolcore.NBToolResponseTypeText,
 			Status:            toolcore.NBToolResponseStatusSuccess,
 			IsTerminal:        parentTerminal,
@@ -665,8 +675,12 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 // created a cache.
 func subAgentCacheContext(ctx *security.RequestContext) *security.RequestContext {
 	goCtx := ctx.GetContext()
-	if disabled, _ := goCtx.Value(ContextKeyDisableCaching).(bool); !disabled {
+	if disabled, _ := goCtx.Value(llmruntime.ContextKeyDisableCaching).(bool); !disabled {
 		return ctx
 	}
-	return ctx.WithContext(context.WithValue(goCtx, ContextKeyDisableCaching, false))
+	return ctx.WithContext(context.WithValue(goCtx, llmruntime.ContextKeyDisableCaching, false))
 }
+
+// GrantScope: an agent wrapper reads nothing itself; the agent it delegates to
+// has each of its own tool calls checked at dispatch.
+func (m *nbAgentTool) GrantScope() toolcore.GrantScope { return toolcore.GrantScope{Unscoped: true} }

@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/tmc/langchaingo/llms"
+	"nudgebee/llm/llms/classify"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 )
@@ -331,7 +333,7 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := stubGenerate(t, tc.answers, nil)
 			ctx := security.NewRequestContext(
-				context.WithValue(context.Background(), ContextKeyModelTier, ModelTierReasoning),
+				context.WithValue(context.Background(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierReasoning),
 				security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 			got, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
 				NBAgentPlannerToolAction{Tool: "mock_cli", ToolInput: "mock list"}, tool)
@@ -345,32 +347,32 @@ func TestInferToolRequestTypeFromPrompt_Answers(t *testing.T) {
 // The check runs on the calling agent's tier. A caller with no tier gets the
 // classification tier, which is the summary tier until one is configured.
 func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
-	var tier ModelTier
-	old := classificationGenerate
-	classificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-		tier = modelTierFromContext(ctx)
+	var tier llmruntime.ModelTier
+	old := classify.ClassificationGenerate
+	classify.ClassificationGenerate = func(ctx *security.RequestContext, _, _, _, _, _ string, _ bool, _ []llms.MessageContent, _ bool, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+		tier = llmruntime.ModelTierFromContext(ctx)
 		return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "read"}}}, nil
 	}
-	t.Cleanup(func() { classificationGenerate = old })
+	t.Cleanup(func() { classify.ClassificationGenerate = old })
 
 	tool := mockInferenceTool{mockTool: mockTool{name: "mock_cli"}, prompt: "Classify the command"}
 	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{tool}}
 	cases := []struct {
 		name       string
-		callerTier ModelTier
+		callerTier llmruntime.ModelTier
 		source     string // where the classification tier would resolve from
-		want       ModelTier
+		want       llmruntime.ModelTier
 	}{
-		{"caller tier is kept", ModelTierRetrieval, "db-tier", ModelTierRetrieval},
-		{"no caller tier, classification not configured", "", "db-global", ModelTierSummary},
-		{"no caller tier, classification configured", "", "db-tier", ModelTierClassification},
+		{"caller tier is kept", llmruntime.ModelTierRetrieval, "db-tier", llmruntime.ModelTierRetrieval},
+		{"no caller tier, classification not configured", "", "db-global", llmruntime.ModelTierSummary},
+		{"no caller tier, classification configured", "", "db-tier", llmruntime.ModelTierClassification},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			stubClassificationTier(t, tc.source)
 			goCtx := context.Background()
 			if tc.callerTier != "" {
-				goCtx = context.WithValue(goCtx, ContextKeyModelTier, tc.callerTier)
+				goCtx = context.WithValue(goCtx, llmruntime.ContextKeyModelTier, tc.callerTier)
 			}
 			ctx := security.NewRequestContext(goCtx, security.NewRequestContextForSuperAdmin().GetSecurityContext(), slog.Default(), nil, nil)
 			_, err := inferToolRequestTypeFromPrompt(ctx, NBAgentRequest{AccountId: "test-account"}, agent, "mock_cli",
@@ -379,4 +381,94 @@ func TestInferToolRequestTypeFromPrompt_Tier(t *testing.T) {
 			require.Equal(t, tc.want, tier)
 		})
 	}
+}
+
+// #40734: the alert's follow-up check (StrictReadOnly) dispatches only its agent's own tools; the same call
+// in any other turn still reaches the builtin fallback.
+func TestStrictReadOnlyTurnDispatchesOnlyTheAgentsTools(t *testing.T) {
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "test_agent"}, tools: []toolcore.NBTool{mockTool{name: "own_read"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "own_read"})
+	require.NoError(t, err)
+	_, _, err = IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: toolcore.ToolExecuteShellCommand})
+	require.ErrorContains(t, err, "not one of test_agent's tools in this check")
+	_, _, err = IsAgentToolAuthorizedToProcessRequest(ctx, agent, NBAgentRequest{AccountId: "test-account"}, NBAgentPlannerToolAction{Tool: toolcore.ToolExecuteShellCommand})
+	if err != nil {
+		require.NotContains(t, err.Error(), "in this check")
+	}
+}
+
+// The planner adds the notebook tool to every notebook-enabled agent, so the strict check must dispatch it
+// too, or the plan update the model was offered fails as "not one of remediation's tools".
+func TestStrictReadOnlyTurnDispatchesTheNotebookTool(t *testing.T) {
+	for _, name := range []string{toolcore.NotebookToolName, toolcore.NotebookV2ToolName} {
+		if _, ok := toolcore.GetNBTool("test-account", name); !ok {
+			toolcore.RegisterNBToolFactory(name, func(_ string) (toolcore.NBTool, error) { return mockTool{name: name}, nil })
+		}
+	}
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"}, tools: []toolcore.NBTool{mockTool{name: "own_read"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	for _, name := range []string{toolcore.NotebookToolName, toolcore.NotebookV2ToolName} {
+		_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: name})
+		require.NoError(t, err, name)
+	}
+	// A notebook-like alias is not a registered notebook tool and could name an account's own tool.
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "write_notebook"})
+	require.ErrorContains(t, err, "not one of remediation's tools in this check")
+}
+
+// The follow-up check offered shell_execute and watch tools, then rejected every call to them ("not one of
+// remediation's tools in this check"). In strict mode the planner now offers only what dispatch accepts.
+func TestStrictCheckToolsOffersOnlyDispatchableTools(t *testing.T) {
+	agent := mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"}, tools: []toolcore.NBTool{mockTool{name: "kubectl_execute"}}}
+	ctx := security.NewRequestContextForSuperAdmin()
+	offered := []toolcore.NBTool{
+		mockTool{name: "kubectl_execute"}, mockTool{name: toolcore.ToolExecuteShellCommand}, mockTool{name: "watch_list"},
+		mockTool{name: "load_skills"}, mockTool{name: "client_tool"}, mockTool{name: "configured_tool"},
+	}
+	names := func(ts []toolcore.NBTool) []string {
+		out := make([]string, 0, len(ts))
+		for _, tl := range ts {
+			out = append(out, tl.Name())
+		}
+		return out
+	}
+
+	strict := NBAgentRequest{AccountId: "test-account", QueryConfig: toolcore.NBQueryConfig{ReadOnlyRun: true, StrictReadOnly: true}}
+	kept := strictCheckTools(ctx, agent, strict, offered)
+	require.Equal(t, []string{"kubectl_execute", "load_skills"}, names(kept))
+	_, _, err := IsAgentToolAuthorizedToProcessRequest(ctx, agent, strict, NBAgentPlannerToolAction{Tool: "kubectl_execute"})
+	require.NoError(t, err)
+
+	require.Len(t, strictCheckTools(ctx, agent, NBAgentRequest{AccountId: "test-account"}, offered), len(offered))
+}
+
+// requestAwareMockAgent narrows its tools per request, like remediation does for its strict turns.
+type requestAwareMockAgent struct {
+	mockAgentWithTools
+	forRequest []toolcore.NBTool
+}
+
+func (a requestAwareMockAgent) GetSupportedToolsForRequest(_ *security.RequestContext, _ NBAgentRequest) []toolcore.NBTool {
+	return a.forRequest
+}
+
+// ReAct4 built its tools from GetSupportedTools, so remediation's planning turn offered aws_execute that the
+// request-aware list (and dispatch) leave out; the model called it and every call failed. ReAct4 now starts
+// from the same request-aware list as ReAct3 and the auth check.
+func TestResolveReact4ToolsUsesTheRequestAwareToolList(t *testing.T) {
+	agent := requestAwareMockAgent{
+		mockAgentWithTools: mockAgentWithTools{mockPlainAgent: mockPlainAgent{name: "remediation"},
+			tools: []toolcore.NBTool{mockTool{name: "get_remediation_plan"}, mockTool{name: "aws_execute"}}},
+		forRequest: []toolcore.NBTool{mockTool{name: "get_remediation_plan"}},
+	}
+	tools, _ := resolveReact4Tools(security.NewRequestContextForSuperAdmin(), NBAgentRequest{}, agent, "")
+	var names []string
+	for _, tl := range tools {
+		names = append(names, tl.Name())
+	}
+	require.Contains(t, names, "get_remediation_plan")
+	require.NotContains(t, names, "aws_execute")
 }

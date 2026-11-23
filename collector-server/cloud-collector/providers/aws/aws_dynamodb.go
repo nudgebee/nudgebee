@@ -41,7 +41,7 @@ type amazonDynamoDB struct {
 }
 
 func (a *amazonDynamoDB) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return errors.ErrUnsupported
+	return applyAlarmMissingRecommendation(ctx, account, recommendation, "aws_dynamodb_")
 }
 
 func (a *amazonDynamoDB) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -61,6 +61,7 @@ func (a *amazonDynamoDB) GetResources(ctx providers.CloudProviderContext, accoun
 	cfg.Region = regionName
 	svc := dynamodb.NewFromConfig(cfg)
 	resources := []providers.Resource{}
+	attachAlarms := regionAlarmAttacher(ctx, account, regionName)
 	paginator := dynamodb.NewListTablesPaginator(svc, &dynamodb.ListTablesInput{})
 
 	for paginator.HasMorePages() {
@@ -168,6 +169,8 @@ func (a *amazonDynamoDB) GetResources(ctx providers.CloudProviderContext, accoun
 				createdAt = *tableDetails.CreationDateTime
 			}
 
+			attachAlarms(meta, tableName)
+
 			resource := providers.Resource{
 				Id:          tableName,
 				ServiceName: ServiceNameDynamoDB,
@@ -207,6 +210,10 @@ func (a *amazonDynamoDB) GetRecommendations(ctx providers.CloudProviderContext, 
 			ctx.GetLogger().Info("Resource meta is nil or empty, skipping recommendations for DynamoDB table", "tableArn", resource.Arn, "region", resource.Region)
 			continue
 		}
+
+		recommendations = append(recommendations, alarmMissingRecommendations(ctx, "dynamodb", resource,
+			providers.AlarmDimension{Name: "TableName", Value: resource.Id},
+			map[string]any{"table_name": resource.Id, "table_arn": resource.Arn, "table_region": resource.Region})...)
 
 		// Check 1: Point-in-Time Recovery (PITR) Enabled
 		pitrEnabled := false

@@ -27,6 +27,7 @@ export const ANNOTATIONS = {
   CI_HELM_VALUES_PATH: `${CI_PREFIX}/helm.values.filePath`,
   WORKLOAD_GIT_REPO: `${WORKLOADS_PREFIX}/git.repo`,
   WORKLOAD_GIT_HASH: `${WORKLOADS_PREFIX}/git.hash`,
+  WORKLOAD_GIT_BRANCH: `${WORKLOADS_PREFIX}/git.branch`,
 } as const;
 
 /**
@@ -34,3 +35,10 @@ export const ANNOTATIONS = {
  * when creating recommendation PRs.
  */
 export const CI_REQUEST_ANNOTATIONS = [ANNOTATIONS.CI_GIT_HASH, ANNOTATIONS.CI_GIT_REPO, ANNOTATIONS.CI_HELM_VALUES_PATH] as const;
+
+/**
+ * Attribute name for a per-service value on a VM: the workload key with the service's
+ * node-agent container_id appended (`workloads.<domain>/git.repo//system.slice/nginx.service`).
+ * llm-server builds the same names to look the link up.
+ */
+export const serviceAnnotationKey = (key: string, containerId: string) => `${key}/${containerId}`;

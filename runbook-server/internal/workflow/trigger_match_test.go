@@ -248,3 +248,31 @@ func TestCheckTriggerMatch_OptimizationClustersAreListenAccounts(t *testing.T) {
 	})
 	assert.Equal(t, model.CheckTriggerGateAccount, resp.Gate)
 }
+
+// #42099: params.event_type stored as a list (what the builder saves) was read as
+// "no event type", so the check skipped the type gate and, with no filter, reported
+// the trigger as never registered although the registry does register it.
+func TestCheckTriggerMatch_EventTypeList(t *testing.T) {
+	for name, types := range map[string]any{"[]any": []any{"Foo", "KubePodCrashLooping"}, "[]string": []string{"Foo", "KubePodCrashLooping"}} {
+		t.Run(name, func(t *testing.T) {
+			resp := checkTriggerMatch(t, model.CheckTriggerMatchRequest{
+				TriggerType: model.WorkflowTriggerEvent,
+				Params:      map[string]any{"event_type": types},
+				Payload:     eventPayload(),
+			})
+			assert.True(t, resp.Matched, resp.Reason)
+
+			payload := eventPayload()
+			payload["event_type"] = "Bar"
+			resp = checkTriggerMatch(t, model.CheckTriggerMatchRequest{
+				TriggerType: model.WorkflowTriggerEvent,
+				Params:      map[string]any{"event_type": types},
+				Payload:     payload,
+			})
+			assert.False(t, resp.Matched)
+			assert.Equal(t, model.CheckTriggerGateEventType, resp.Gate)
+			assert.Contains(t, resp.Reason, "'Bar'")
+			assert.Contains(t, resp.Reason, "'Foo', 'KubePodCrashLooping'")
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 
 	"nudgebee/llm/security"
@@ -20,6 +21,10 @@ const (
 	// on, as {provider, name, account_id}, when that is not the conversation's
 	// own default. The conversation view shows it per step.
 	MetadataExecutedTarget = "nb_executed_target"
+	// MetadataApprovedByRule records the tool approval rule that waived this
+	// call's confirmation, as {rule_id, rule_name, rule_revision}. The
+	// conversation view shows it per step.
+	MetadataApprovedByRule = "nb_approved_by_rule"
 )
 
 // WithExecutedTarget records where a call ran in its response details.
@@ -53,11 +58,23 @@ const (
 
 const ToolExecuteShellCommand = "shell_execute"
 
+// The alert's remediation tools (#40734), defined in the api package, which owns plans and runs.
+const (
+	ToolGetRemediationPlan = "get_remediation_plan"
+	ToolProposeFix         = "propose_fix"
+	ToolScheduleRecheck    = "schedule_recheck"
+	ToolRunStep            = "run_step"
+)
+
 // NotebookToolName is the registered name of the update_notebook control tool.
 // Canonical here (in tools/core) because both the tool implementation (package
 // tools) and the ReAct4 planner (package agents/core) reference it and both
 // import this package, avoiding a duplicated literal or an import cycle.
 const NotebookToolName = "update_notebook"
+
+// NotebookV2ToolName is the structured-plan successor of update_notebook,
+// loaded instead of it by ReAct4 when NotebookV2Enabled is on (#41443).
+const NotebookV2ToolName = "update_notebook_v2"
 
 type NBToolCommand struct {
 	Name        string     `json:"name"`
@@ -227,6 +244,11 @@ type NBToolResponseReference struct {
 	// of a category, so it cannot tell a reader WHICH page or figure was used —
 	// the Additional Contexts panel renders this instead when it is set.
 	Snippet string `json:"snippet,omitempty"`
+	// Handle is the handle the model was given for this document, and SourceUrl the page it came from.
+	// A remediation step cites the document by Handle (api/remediation_source.go), which reads both
+	// back from the saved reference along with Snippet.
+	Handle    string `json:"handle,omitempty"`
+	SourceUrl string `json:"source_url,omitempty"`
 }
 
 type NBToolResponse struct {
@@ -278,11 +300,18 @@ type NBToolResponseMetadata struct {
 	// callers can tell the planner how much was dropped.
 	Truncated   bool `json:"truncated,omitempty"`
 	OriginalLen int  `json:"original_len,omitempty"`
+	// Charts are the nb-chart specs a metrics tool built from its exact results,
+	// keyed by chart_ref (#40909). Saved with the tool call; never rendered to
+	// the planner, which only sees the ref.
+	Charts map[string]json.RawMessage `json:"charts,omitempty"`
 	// SavedOutputNote names the workspace file that holds a cut output in full
 	// (or says why none was saved). It is added to the observation only when
 	// the prompt is built, so Data, the stored response and the UI keep the
 	// tool's own output shape.
 	SavedOutputNote string `json:"saved_output_note,omitempty"`
+	// FailureReason is set by a tool that judged its own OK reply to be a
+	// failure; the executor only carries it.
+	FailureReason FailureReason `json:"failure_reason,omitempty"`
 	// DBQueries/DBMs and RelayCalls/RelayMs split a tool's wall-clock time by
 	// where it went. ExecutionDurationMs alone can't answer the question that
 	// actually matters for resource lookups — "did this hit the inventory DB or
@@ -352,6 +381,12 @@ type ToolRequestInference interface {
 	InferToolRequestType(ctx *security.RequestContext, toolName, input string) (ToolRequestType, error)
 }
 
+// IntegrationTool is implemented by tools that belong to one integration, such
+// as an MCP server's tools, so an approval rule can be pinned to it.
+type IntegrationTool interface {
+	IntegrationID() string
+}
+
 // ReadOnlyTool is embedded by tools that only ever read (observability
 // queries, searches, read-only views, skills, the notebook). It classifies every
 // call as a read, so the approval check does not log it as unchecked (#39880
@@ -361,6 +396,44 @@ type ReadOnlyTool struct{}
 
 func (ReadOnlyTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (ToolRequestType, error) {
 	return ToolRequestTypeRead, nil
+}
+
+// ReadOnly marks a tool that embeds ReadOnlyTool, so lists can show it never
+// asks for approval.
+func (ReadOnlyTool) ReadOnly() bool { return true }
+
+// ToolApproval says when calls of a tool ask for approval, as tool lists show it.
+type ToolApproval string
+
+const (
+	// ToolApprovalAlways: every call asks (an MCP or custom tool marked as a write).
+	ToolApprovalAlways ToolApproval = "always"
+	// ToolApprovalAuto: decided per call; reads run, writes ask.
+	ToolApprovalAuto ToolApproval = "auto"
+	// ToolApprovalNever: calls run without asking.
+	ToolApprovalNever ToolApproval = "never"
+)
+
+// ApprovalMode is when calls of the tool ask for approval. Agents have none:
+// the tools they call decide.
+func ApprovalMode(tool NBTool) ToolApproval {
+	if tool == nil || tool.GetType() != NBToolTypeTool {
+		return ""
+	}
+	if marked, ok := tool.(interface{ ReadOnly() bool }); ok && marked.ReadOnly() {
+		return ToolApprovalNever
+	}
+	// An interface, not a type switch, so a value or a pointer both match.
+	if marked, ok := tool.(interface{ approvalMark() ToolApproval }); ok {
+		return marked.approvalMark()
+	}
+	_, static := tool.(ToolRequestInference)
+	_, prompt := tool.(ToolRequestInferencePrompt)
+	if static || prompt {
+		return ToolApprovalAuto
+	}
+	// Unclassified calls run as reads.
+	return ToolApprovalNever
 }
 
 // ResultCanChangeTool is implemented by tools whose result for the same input
@@ -427,6 +500,15 @@ type ToolConfirmationScope interface {
 // target, since that is where a write lands.
 type PerCallTargetTool interface {
 	RequestedTarget(toolInput string) (string, error)
+}
+
+// AccountArgTool is implemented by write tools whose call may name another
+// account (by id) to act on, rather than a cluster or cloud connection: an
+// automation runs on the account it belongs to. The executor checks write
+// access on that account and scopes the approval to it. "" means the
+// conversation's own account.
+type AccountArgTool interface {
+	RequestedAccountID(toolInput string) string
 }
 
 // ToolConfirmationExempt is an optional interface for write tools that may skip

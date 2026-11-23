@@ -60,11 +60,14 @@ type UsageEvent struct {
 	Streaming         bool   `db:"streaming"`
 
 	// Response.
-	StatusCode int    `db:"status_code"`
-	LatencyMS  int64  `db:"latency_ms"`
-	RequestID  string `db:"request_id"`
+	StatusCode int   `db:"status_code"`
+	LatencyMS  int64 `db:"latency_ms"`
+	// TTFTMs is the time to the first streamed chunk; nil (NULL) for a non-streaming request.
+	TTFTMs    *int64 `db:"ttft_ms"`
+	RequestID string `db:"request_id"`
 
 	// Usage (raw). Zero when core extracted no billable usage.
+	// InputTokens excludes cache reads and writes, which have their own columns.
 	InputTokens      int    `db:"input_tokens"`
 	OutputTokens     int    `db:"output_tokens"`
 	TotalTokens      int    `db:"total_tokens"`
@@ -77,6 +80,8 @@ type UsageEvent struct {
 	// retroactively rewrites it. Set by the handler from the pricer. Read paths sum
 	// this column instead of re-joining the pricing catalog.
 	CostUsd float64 `db:"cost_usd"`
+	// CacheSavingsUsd is what prompt caching saved on this request, snapshotted like CostUsd.
+	CacheSavingsUsd float64 `db:"cache_savings_usd"`
 }
 
 // EventInput is what the edge knows at capture time, independent of core internals.
@@ -89,6 +94,7 @@ type EventInput struct {
 	Streaming  bool
 	StatusCode int
 	LatencyMS  int64
+	TTFTMs     *int64            // time to the first streamed chunk; nil when not streamed
 	Headers    map[string]string // provider response headers (for request-id)
 	Usage      *schemas.BifrostPassthroughUsage
 	SessionID  string
@@ -127,6 +133,7 @@ func NewEvent(in EventInput) UsageEvent {
 		Streaming:  in.Streaming,
 		StatusCode: in.StatusCode,
 		LatencyMS:  in.LatencyMS,
+		TTFTMs:     in.TTFTMs,
 		RequestID:  requestIDFromHeaders(in.Headers),
 		SessionID:  in.SessionID,
 		Attributes: marshalAttributes(in.Attributes),
@@ -153,6 +160,9 @@ func NewEvent(in EventInput) UsageEvent {
 			if d := l.PromptTokensDetails; d != nil {
 				ev.CacheReadTokens = d.CachedReadTokens
 				ev.CacheWriteTokens = d.CachedWriteTokens
+				// Core's PromptTokens includes cache reads and writes on every provider; keep
+				// only the fresh part so pricing doesn't bill cached tokens at the full rate too.
+				ev.InputTokens = max(l.PromptTokens-d.CachedReadTokens-d.CachedWriteTokens, 0)
 			}
 		}
 	}

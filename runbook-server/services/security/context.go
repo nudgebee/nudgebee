@@ -27,6 +27,35 @@ type RequestContext struct {
 	// HTTP edge (background jobs, schedules, tests) is treated as
 	// not-AI-originated — which is correct: those paths are not the AI.
 	aiTriggered bool
+	// beeRunID names the bee run a request says it belongs to (X-Bee-Run-ID).
+	// A claim, not a credential: the bee gate checks it against bee_runs and
+	// the caller's identity before a bee's automation runs. Only callers that
+	// hold the service token can send it: the app gateway forwards a fixed
+	// header set that does not include it.
+	beeRunID string
+	// beeConversationID names the llm-server conversation the call comes from
+	// (X-Bee-Conversation-ID); the bee gate matches it with the run's.
+	beeConversationID string
+}
+
+// BeeConversationID returns the conversation the request says it comes from, or "".
+func (rc *RequestContext) BeeConversationID() string {
+	return rc.beeConversationID
+}
+
+// SetBeeConversationID is called only at the HTTP edge, from X-Bee-Conversation-ID.
+func (rc *RequestContext) SetBeeConversationID(id string) {
+	rc.beeConversationID = id
+}
+
+// BeeRunID returns the bee run the request says it belongs to, or "".
+func (rc *RequestContext) BeeRunID() string {
+	return rc.beeRunID
+}
+
+// SetBeeRunID is called only at the HTTP edge, from the X-Bee-Run-ID header.
+func (rc *RequestContext) SetBeeRunID(id string) {
+	rc.beeRunID = id
 }
 
 // IsAITriggered reports whether this request originated from the AI assistant.
@@ -56,7 +85,20 @@ func (rc *RequestContext) SetAITriggered(aiTriggered bool) {
 	rc.aiTriggered = aiTriggered
 }
 
+// SetActionPermission records the current action's grant key on the caller's
+// SecurityContext, where the access checks read it.
+func (rc *RequestContext) SetActionPermission(permission string) {
+	if rc != nil {
+		rc.securityContext.SetActionPermission(permission)
+	}
+}
+
+// GetSecurityContext is nil for a nil RequestContext, so a check made through it
+// fails closed.
 func (rc *RequestContext) GetSecurityContext() *SecurityContext {
+	if rc == nil {
+		return nil
+	}
 	return rc.securityContext
 }
 

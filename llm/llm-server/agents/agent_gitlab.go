@@ -2,6 +2,7 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -393,6 +394,6 @@ func (a GitlabAgent) GetPlannerType() core.AgentPlannerType {
 // later, so it may register a background watch.
 func (a GitlabAgent) IsWatchCapable() bool { return true }
 
-func (a GitlabAgent) GetCacheScope() core.CacheScope {
-	return core.CacheScopeAccount
+func (a GitlabAgent) GetCacheScope() llmruntime.CacheScope {
+	return llmruntime.CacheScopeAccount
 }

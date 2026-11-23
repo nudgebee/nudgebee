@@ -34,6 +34,11 @@ describe('reconcilePendingFollowups', () => {
   const NOW = 1_700_000_000_000;
   const run = (rows, messages, pending = new Map(), now = NOW) => reconcilePendingFollowups({ rows, messages, pending, now });
 
+  it("does not wait for a block on NudgeBee's own watch (no chat block comes for it)", () => {
+    const next = run([{ id: W1, status: 'COMPLETED', origin: 'remediation' }], [reply('Watching.')]);
+    expect(next.size).toBe(0);
+  });
+
   it('tracks a terminal watch whose block has not landed yet', () => {
     const next = run([{ id: W1, status: 'COMPLETED' }], [reply('Watching.')]);
     expect(next.get(W1)).toBe(NOW + WATCH_FOLLOWUP_BUDGET_MS);

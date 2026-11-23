@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -46,6 +47,12 @@ type anthropicBinGenerationInputSource struct {
 	Data string `json:"data"`
 }
 
+// anthropicCacheControl marks the end of a cached prompt prefix.
+type anthropicCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
 // anthropicTextGenerationInputContent is the content of the message.
 type anthropicTextGenerationInputContent struct {
 	// The type of the content. Required
@@ -55,6 +62,8 @@ type anthropicTextGenerationInputContent struct {
 	Text string `json:"text,omitempty"`
 	// The source of the content. Required if type is "image"
 	Source *anthropicBinGenerationInputSource `json:"source,omitempty"`
+	// Prompt-cache marker on this block. Optional
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 // anthropicTextGenerationInputMessage is the message to the model.
@@ -72,8 +81,9 @@ type anthropicTextGenerationInput struct {
 	AnthropicVersion string `json:"anthropic_version"`
 	// The maximum number of tokens to generate per result. Required
 	MaxTokens int `json:"max_tokens"`
-	// The system prompt to use. Optional
-	System string `json:"system,omitempty"`
+	// The system prompt to use: a string, or text blocks when it carries a
+	// cache marker. Optional
+	System any `json:"system,omitempty"`
 	// The messages to use. Required
 	Messages []*anthropicTextGenerationInputMessage `json:"messages"`
 	// The amount of randomness injected into the response. Optional, default = 1
@@ -117,12 +127,43 @@ type anthropicTextGenerationOutput struct {
 	// Which custom stop sequence was matched, if any.
 	StopSequence string `json:"stop_sequence"`
 	Usage        struct {
-		InputTokens              int `json:"input_tokens"`
-		OutputTokens             int `json:"output_tokens"`
-		ThinkingTokens           int `json:"thinking_tokens,omitempty"`
-		CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-		CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+		InputTokens              int                     `json:"input_tokens"`
+		OutputTokens             int                     `json:"output_tokens"`
+		ThinkingTokens           int                     `json:"thinking_tokens,omitempty"`
+		CacheCreationInputTokens int                     `json:"cache_creation_input_tokens,omitempty"`
+		CacheReadInputTokens     int                     `json:"cache_read_input_tokens,omitempty"`
+		CacheCreation            *anthropicCacheCreation `json:"cache_creation,omitempty"`
+		// OutputTokensDetails is where Anthropic reports thinking: a breakdown
+		// of OutputTokens, which already includes the thinking tokens.
+		OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
 	} `json:"usage"`
+}
+
+// anthropicCacheCreation splits cache-write tokens by TTL; 1h writes bill at
+// 2x input instead of 1.25x.
+type anthropicCacheCreation struct {
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens,omitempty"`
+}
+
+// anthropicOutputTokensDetails breaks down usage.output_tokens.
+type anthropicOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"`
+}
+
+// splitAnthropicThinking returns the visible output and thinking token counts.
+// Anthropic reports thinking under output_tokens_details.thinking_tokens as a
+// share of output_tokens. Callers price output and thinking separately and add
+// them (the Gemini convention), so the share moves out of output or it is billed
+// twice. A top-level thinking count, when present, is taken as already separate.
+// A detail count outside (0, output] is not trusted.
+func splitAnthropicThinking(output, thinking int, details *anthropicOutputTokensDetails) (int, int) {
+	if thinking > 0 || details == nil {
+		return output, thinking
+	}
+	if details.ThinkingTokens <= 0 || details.ThinkingTokens > output {
+		return output, 0
+	}
+	return output - details.ThinkingTokens, details.ThinkingTokens
 }
 
 // Finish reason for the completion of the generation.
@@ -157,7 +198,7 @@ func createAnthropicCompletion(ctx context.Context,
 	messages []Message,
 	options llms.CallOptions,
 ) (*llms.ContentResponse, error) {
-	inputContents, systemPrompt, err := processInputMessagesAnthropic(messages)
+	inputContents, systemPrompt, err := processInputMessagesAnthropic(messages, modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -236,19 +277,23 @@ func createAnthropicCompletion(ctx context.Context,
 		return nil, errors.New("no results")
 	}
 
+	outputTokens, thinkingTokens := splitAnthropicThinking(output.Usage.OutputTokens, output.Usage.ThinkingTokens, output.Usage.OutputTokensDetails)
 	genInfo := map[string]any{
 		"input_tokens":  output.Usage.InputTokens,
-		"output_tokens": output.Usage.OutputTokens,
+		"output_tokens": outputTokens,
 	}
-	if output.Usage.ThinkingTokens > 0 {
-		genInfo["ThinkingTokens"] = output.Usage.ThinkingTokens
-		genInfo["thinking_tokens"] = output.Usage.ThinkingTokens
+	if thinkingTokens > 0 {
+		genInfo["ThinkingTokens"] = thinkingTokens
+		genInfo["thinking_tokens"] = thinkingTokens
 	}
 	if output.Usage.CacheReadInputTokens > 0 {
 		genInfo["CacheReadInputTokens"] = output.Usage.CacheReadInputTokens
 	}
 	if output.Usage.CacheCreationInputTokens > 0 {
 		genInfo["CacheCreationInputTokens"] = output.Usage.CacheCreationInputTokens
+	}
+	if cc := output.Usage.CacheCreation; cc != nil && cc.Ephemeral1hInputTokens > 0 {
+		genInfo["CacheCreation1hInputTokens"] = cc.Ephemeral1hInputTokens
 	}
 
 	var combinedText strings.Builder
@@ -322,6 +367,8 @@ type streamingCompletionResponseChunk struct {
 	Usage struct {
 		OutputTokens   int `json:"output_tokens"`
 		ThinkingTokens int `json:"thinking_tokens,omitempty"`
+		// Only the final message_delta carries the thinking breakdown.
+		OutputTokensDetails *anthropicOutputTokensDetails `json:"output_tokens_details,omitempty"`
 	} `json:"usage"`
 	Message struct {
 		ID           string `json:"id"`
@@ -332,11 +379,12 @@ type streamingCompletionResponseChunk struct {
 		StopReason   any    `json:"stop_reason"`
 		StopSequence any    `json:"stop_sequence"`
 		Usage        struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			ThinkingTokens           int `json:"thinking_tokens,omitempty"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+			InputTokens              int                     `json:"input_tokens"`
+			OutputTokens             int                     `json:"output_tokens"`
+			ThinkingTokens           int                     `json:"thinking_tokens,omitempty"`
+			CacheCreationInputTokens int                     `json:"cache_creation_input_tokens,omitempty"`
+			CacheReadInputTokens     int                     `json:"cache_read_input_tokens,omitempty"`
+			CacheCreation            *anthropicCacheCreation `json:"cache_creation,omitempty"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -389,6 +437,9 @@ func parseStreamingCompletionResponse(ctx context.Context, client *bedrockruntim
 				if resp.Message.Usage.CacheCreationInputTokens > 0 {
 					contentchoices[0].GenerationInfo["CacheCreationInputTokens"] = resp.Message.Usage.CacheCreationInputTokens
 				}
+				if cc := resp.Message.Usage.CacheCreation; cc != nil && cc.Ephemeral1hInputTokens > 0 {
+					contentchoices[0].GenerationInfo["CacheCreation1hInputTokens"] = cc.Ephemeral1hInputTokens
+				}
 
 			case "content_block_start":
 				acc := &bedrockBlockAccumulator{
@@ -435,10 +486,11 @@ func parseStreamingCompletionResponse(ctx context.Context, client *bedrockruntim
 
 			case "message_delta":
 				contentchoices[0].StopReason = resp.Delta.StopReason
-				contentchoices[0].GenerationInfo["output_tokens"] = resp.Usage.OutputTokens
-				if resp.Usage.ThinkingTokens > 0 {
-					contentchoices[0].GenerationInfo["ThinkingTokens"] = resp.Usage.ThinkingTokens
-					contentchoices[0].GenerationInfo["thinking_tokens"] = resp.Usage.ThinkingTokens
+				outputTokens, thinkingTokens := splitAnthropicThinking(resp.Usage.OutputTokens, resp.Usage.ThinkingTokens, resp.Usage.OutputTokensDetails)
+				contentchoices[0].GenerationInfo["output_tokens"] = outputTokens
+				if thinkingTokens > 0 {
+					contentchoices[0].GenerationInfo["ThinkingTokens"] = thinkingTokens
+					contentchoices[0].GenerationInfo["thinking_tokens"] = thinkingTokens
 				}
 			}
 		}
@@ -589,9 +641,32 @@ func resolveAnthropicThinking(modelID string, options llms.CallOptions, maxToken
 	}
 }
 
+// anthropicCacheControlFor converts a cache marker for modelID, or returns nil
+// when the model can't take it. Bedrock rejects cache_control on Claude models
+// without prompt caching (before 3.7) and "ttl" on models with only the
+// 5-minute cache (before 4.5), so those markers are dropped or shortened.
+// Model IDs that don't name a Claude generation (e.g. application inference
+// profile ARNs) get no marker.
+func anthropicCacheControlFor(modelID string, cc *llms.CacheControl) *anthropicCacheControl {
+	if cc == nil {
+		return nil
+	}
+	major, minor, ok := parseClaudeGeneration(strings.ToLower(modelID))
+	if !ok || major < 3 || (major == 3 && minor < 7) {
+		return nil
+	}
+	out := &anthropicCacheControl{Type: "ephemeral"}
+	if cc.Duration >= time.Hour && (major > 4 || (major == 4 && minor >= 5)) {
+		out.TTL = "1h"
+	}
+	return out
+}
+
 // process the input messages to anthropic supported input
-// returns the input content and system prompt.
-func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerationInputMessage, string, error) {
+// returns the input content and system prompt. The system prompt is a string,
+// or text blocks when a system message carries a cache marker (a marker needs a
+// block to sit on); it is nil when there is no system text.
+func processInputMessagesAnthropic(messages []Message, modelID string) ([]*anthropicTextGenerationInputMessage, any, error) {
 	chunkedMessages := make([][]Message, 0, len(messages))
 	currentChunk := make([]Message, 0, len(messages))
 	var lastRole llms.ChatMessageType
@@ -610,6 +685,8 @@ func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerati
 	}
 
 	systemPrompt := ""
+	var systemBlocks []anthropicTextGenerationInputContent
+	systemCached := false
 	inputMessages := make([]*anthropicTextGenerationInputMessage, 0, len(chunkedMessages))
 	for _, chunk := range chunkedMessages {
 		var role string
@@ -623,6 +700,13 @@ func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerati
 					systemPrompt += "\n\n"
 				}
 				systemPrompt += message.Content
+				cc := anthropicCacheControlFor(modelID, message.CacheControl)
+				systemCached = systemCached || cc != nil
+				systemBlocks = append(systemBlocks, anthropicTextGenerationInputContent{
+					Type:         AnthropicMessageTypeText,
+					Text:         message.Content,
+					CacheControl: cc,
+				})
 			}
 			continue
 		case llms.ChatMessageTypeGeneric, llms.ChatMessageTypeHuman:
@@ -632,11 +716,12 @@ func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerati
 		case llms.ChatMessageTypeTool:
 			role = AnthropicRoleUser
 		default:
-			return nil, "", fmt.Errorf("role %v not supported", chunk[0].Role)
+			return nil, nil, fmt.Errorf("role %v not supported", chunk[0].Role)
 		}
 
 		contents := make([]anthropicTextGenerationInputContent, 0, len(chunk))
 		for _, message := range chunk {
+			n := len(contents)
 			switch message.Type {
 			case AnthropicMessageTypeText, "tool_call_response", "tool_call":
 				if strings.TrimSpace(message.Content) == "" {
@@ -664,6 +749,9 @@ func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerati
 					Text: message.Content,
 				})
 			}
+			if len(contents) > n {
+				contents[n].CacheControl = anthropicCacheControlFor(modelID, message.CacheControl)
+			}
 		}
 		if len(contents) == 0 {
 			continue
@@ -675,7 +763,14 @@ func processInputMessagesAnthropic(messages []Message) ([]*anthropicTextGenerati
 		})
 	}
 
-	return inputMessages, systemPrompt, nil
+	switch {
+	case systemCached:
+		return inputMessages, systemBlocks, nil
+	case systemPrompt != "":
+		return inputMessages, systemPrompt, nil
+	default:
+		return inputMessages, nil, nil
+	}
 }
 
 func parseIntFromMetadata(val any) int {

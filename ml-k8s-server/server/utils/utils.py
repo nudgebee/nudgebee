@@ -449,6 +449,8 @@ SQL_QUERY = "SELECT value FROM cloud_account_attrs WHERE cloud_account_id = :acc
 
 TENANT_SQL_QUERY = "SELECT tenant FROM cloud_accounts WHERE id = :account_id"
 
+ACCOUNT_STATUS_SQL_QUERY = "SELECT status FROM cloud_accounts WHERE id = :account_id"
+
 # Process-local, mirroring the equivalent cache in llm-server's security package. An
 # account's tenant never changes, so a miss is a one-time cost per account per pod.
 _tenant_id_cache: Dict[str, str] = {}
@@ -483,6 +485,20 @@ def resolve_tenant_id(account_id: str) -> str:
     except Exception as e:
         logger.warning(f"Failed to resolve tenant from DB for account:{account_id}, {e}")
     return ""
+
+
+def is_account_active(account_id: str) -> bool:
+    """Whether the cloud account exists and has status 'active'.
+
+    Rightsizing results are upserted with a status CASE that moves an archived row
+    back to Open, so a run for an account that is not active re-opens the
+    recommendations archived on it. A read error is raised, failing the message like
+    any other database error in the run.
+    """
+    engine = DatabaseEngine.get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(text(ACCOUNT_STATUS_SQL_QUERY), {"account_id": account_id}).first()
+    return row is not None and row[0] == "active"
 
 
 def get_prediction_duration(account_id: str) -> int:

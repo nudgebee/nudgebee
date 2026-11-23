@@ -1,6 +1,7 @@
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
+import { logsServedBy } from '@utils/logsServedBy';
 
 const isConnectedUsingDate = (lastConnectedDateStr) => {
   if (!lastConnectedDateStr) {
@@ -74,7 +75,10 @@ export const checkConnections = (clusterData = {}) => {
     }
   }
 
-  if (!connectionStatus.logsConnection && !servedByHealthyIntegration('logs')) {
+  // Logs served by the agent's ClickHouse are judged by its ClickHouse logs check; the
+  // Loki flag says nothing about them.
+  const logs = logsServedBy(connectionStatus);
+  if (logs.by === 'clickhouse' ? !logs.connected : !connectionStatus.logsConnection && !servedByHealthyIntegration('logs')) {
     return false;
   }
 

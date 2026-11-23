@@ -30,7 +30,7 @@ func TestCallNbTool_VMAccountTargetFromClusterConversation(t *testing.T) {
 		input, err := json.Marshal(args)
 		require.NoError(t, err)
 		req := NBAgentRequest{AccountId: accountId, UserId: os.Getenv("TEST_USER"), ConversationId: uuid.NewString(), MessageId: uuid.NewString(), AgentId: uuid.NewString()}
-		resp, err := callNbTool(sc, req, "vm-target-e2e", tool, string(input), nil, "", uuid.NewString(), "")
+		resp, err := callNbTool(sc, req, "vm-target-e2e", tool, string(input), nil, "", uuid.NewString(), "", toolcore.ToolRequestTypeRead)
 		t.Logf("%s: status=%s err=%v data=%.600s details=%v", toolName, resp.Status, err, fmt.Sprint(resp.Data), resp.AdditionalDetails)
 		return resp
 	}

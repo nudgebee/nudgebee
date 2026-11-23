@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -43,6 +44,8 @@ func failoverTarget(requested string, fb routing.Endpoint) (schemas.ModelProvide
 func markFailover(c *gin.Context, rm *reqMeta, target schemas.ModelProvider, model string, primaryStatus int) {
 	rm.provider = target
 	rm.model = model
+	// TTFT is reported per provider, so time it from the fallback attempt, not the failed primary.
+	rm.attemptStart = time.Now()
 	rm.decision.Reason = routing.ReasonFallback
 	rm.failover = map[string]any{
 		"from":           rm.decision.RequestedProvider,

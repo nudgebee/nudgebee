@@ -1,3 +1,4 @@
+import { clickSidenavRail } from "../utils/helpers";
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../GlobalLocators";
 
@@ -60,7 +61,7 @@ export class OptimizeLocators extends CommonLocators {
             // Click + URL-wait in one try so a failed click retries immediately instead of eating the 8s timeout.
             try {
                 await this.OptimizeBtn.waitFor({ state: "visible", timeout: 15000 });
-                await this.OptimizeBtn.click();
+                await clickSidenavRail(this.OptimizeBtn);
                 await this.page.mouse.move(0, 0);
                 await this.page.waitForURL(/\/optimise/, { timeout: 8000 });
             } catch {

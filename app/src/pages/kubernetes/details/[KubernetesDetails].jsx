@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
@@ -9,6 +10,7 @@ import {
   hasReadAccess,
   isGrantsOnlyUser,
   hasPermission,
+  hasGrantOnAccount,
   missingPermissionMessage,
   fetchFeatureFlagsForTenant,
   hasFeatureAccessCached,
@@ -436,8 +438,8 @@ const KubernetesDetails = () => {
       value: 1,
       icon: OptimizeIconBlue,
       tabOptions: [
-        { id: 'summary', text: 'Summary', value: 7, fragment: 'summary', icon: OptimizeSummaryIcon },
-        { id: 'right-sizing', text: 'Right Sizing', value: 0, fragment: 'right-sizing', icon: RightSizingIcon },
+        { id: 'summary', text: 'Summary', value: 0, fragment: 'summary', icon: OptimizeSummaryIcon },
+        { id: 'right-sizing', text: 'Right Sizing', value: 7, fragment: 'right-sizing', icon: RightSizingIcon },
         { id: 'auto-scaler', text: 'Auto Scaler', value: 8, fragment: 'auto-scaler', icon: AutoScalerIcon },
         { id: 'unused-volume', text: 'Unused Volumes', value: 1, fragment: 'unused-volume', icon: UnusedVolumeIcon },
         { id: 'best-practices', text: 'Best Practices', value: 2, fragment: 'best-practices', icon: BestPracticesIcon },
@@ -603,7 +605,7 @@ const KubernetesDetails = () => {
   const subTabModule = (tabValue, subTab) => SUBTAB_MODULE_OVERRIDES[`${tabValue}:${subTab.id}`] ?? TAB_REQUIRED_MODULE[tabValue];
   const canAccessSubTab = (tabValue, subTab) => {
     const requiredModule = subTabModule(tabValue, subTab);
-    return !requiredModule || !grantsOnlyUser || hasPermission(requiredModule, 'Read');
+    return !requiredModule || !grantsOnlyUser || hasPermission(requiredModule, 'Read') || hasGrantOnAccount(requiredModule, 'Read', kubeId);
   };
   // A top-level tab is reachable if the user can open at least one of its
   // (visible) sub-tabs; a tab with no sub-tabs (Summary) falls back to its own
@@ -614,7 +616,7 @@ const KubernetesDetails = () => {
     const visibleSubTabs = (option.tabOptions || []).filter((subTab) => !subTab.hidden);
     if (visibleSubTabs.length === 0) {
       const requiredModule = TAB_REQUIRED_MODULE[option.value];
-      return !requiredModule || hasPermission(requiredModule, 'Read');
+      return !requiredModule || hasPermission(requiredModule, 'Read') || hasGrantOnAccount(requiredModule, 'Read', kubeId);
     }
     return visibleSubTabs.some((subTab) => canAccessSubTab(option.value, subTab));
   };
@@ -633,7 +635,11 @@ const KubernetesDetails = () => {
     return tabOptions.map((option) => {
       const next = { ...option };
       if (option.tabOptions) {
-        next.tabOptions = option.tabOptions.map((subTab) => (canAccessSubTab(option.value, subTab) ? subTab : { ...subTab, disabled: true }));
+        next.tabOptions = option.tabOptions.map((subTab) =>
+          canAccessSubTab(option.value, subTab)
+            ? subTab
+            : { ...subTab, disabled: true, disabledTooltip: missingPermissionMessage(`${subTabModule(option.value, subTab)}:Read`) }
+        );
       }
       if (!canAccessTab(option)) {
         next.disabled = true;
@@ -641,9 +647,9 @@ const KubernetesDetails = () => {
       }
       return next;
     });
-    // The helpers above are pure functions of the session (grantsOnlyUser) + tabOptions.
+    // The helpers above are pure functions of the session (grantsOnlyUser) + tabOptions + the account.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabOptions, grantsOnlyUser]);
+  }, [tabOptions, grantsOnlyUser, kubeId]);
 
   useEffect(() => {
     const init = async () => {
@@ -970,38 +976,49 @@ const KubernetesDetails = () => {
     }
     const [fragment, subFragment] = hash.split('/');
     const filter = tabOptions.find((option) => option.fragment === fragment);
-    // Unknown fragment, or a permission-gated tab reached by deep link, falls
-    // back to the first accessible tab and canonicalizes the URL — a disabled
-    // tab can't be reached by URL.
-    if (filter && canAccessTab(filter)) {
-      setSelectedTab(filter.value);
-      const requested = subFragment ? (filter.tabOptions || []).find((tab) => tab.fragment === subFragment) : null;
-      // Open the requested sub-tab when the user can reach it.
-      if (requested && canAccessSubTab(filter.value, requested)) {
-        setSelectedSubTab(requested.value);
-        return;
-      }
-      // No sub in the URL and the default sub-tab is reachable → leave it (keeps
-      // the clean `#tab` URL for the common case).
-      const defaultSubTab = (filter.tabOptions || []).find((tab) => tab.value === 0);
-      if (!subFragment && (!defaultSubTab || canAccessSubTab(filter.value, defaultSubTab))) {
-        return;
-      }
-      // Gated deep-link (e.g. #events/anomaly) or a gated default sub-tab (a
-      // traces-only user opening Monitoring) → open the first reachable sub-tab
-      // and canonicalize the URL so the sub-tab bar highlights it.
-      const allowed = firstAllowedSubTab(filter);
-      if (allowed) {
-        setSelectedSubTab(allowed.value);
-        router.replace({ pathname: router.pathname, query: router.query, hash: `${filter.fragment}/${allowed.fragment}` }, undefined, {
-          shallow: true,
-        });
-      }
-    } else {
+    // Unknown fragment falls back to the first accessible tab and canonicalizes
+    // the URL. A fragment that matches a real tab settles on it below, even when
+    // it's permission-gated.
+    if (!filter) {
       canonicalizeToFallback();
+      return;
+    }
+    // A tab named directly in the hash wins even when it's permission-gated —
+    // it still highlights and settles here; the content area renders a
+    // permission-denied placeholder instead (see the render below), so the
+    // real section (and its APIs) never mounts, rather than this effect
+    // silently bouncing the user to another tab.
+    setSelectedTab(filter.value);
+    const requested = subFragment ? (filter.tabOptions || []).find((tab) => tab.fragment === subFragment) : null;
+    // Same reasoning one level down: a sub-tab named directly in the hash
+    // (e.g. #events/anomaly) wins even when gated.
+    if (requested) {
+      setSelectedSubTab(requested.value);
+      return;
+    }
+    // No sub-tab named in the URL (a bare top-level click/link) — land on the
+    // default sub-tab when reachable, else steer to the first one the user can
+    // open (e.g. a traces-only user opening Monitoring lands on Traces, not
+    // the gated Query Log) and canonicalize the URL so the sub-tab bar follows.
+    const defaultSubTab = (filter.tabOptions || []).find((tab) => tab.value === 0);
+    if (!defaultSubTab || canAccessSubTab(filter.value, defaultSubTab)) {
+      return;
+    }
+    const allowed = firstAllowedSubTab(filter);
+    if (allowed) {
+      setSelectedSubTab(allowed.value);
+      router.replace({ pathname: router.pathname, query: router.query, hash: `${filter.fragment}/${allowed.fragment}` }, undefined, {
+        shallow: true,
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The active tab/sub-tab's disabled entry (if any), so the content area can
+  // render a permission-denied placeholder instead of the real section.
+  const blockedParent = anchorFilterOptions.find((option) => option.value === selectedTab);
+  const blockedSub = blockedParent?.tabOptions?.find((subTab) => subTab.value === selectedSubTab);
+  const blockedOption = blockedParent?.disabled ? blockedParent : blockedSub?.disabled ? blockedSub : null;
 
   return (
     <>
@@ -1038,7 +1055,9 @@ const KubernetesDetails = () => {
       />
       <ErrorBoundary key={`${kubeId}-${selectedTab}-${selectedSubTab}`}>
         <Box>
+          {blockedOption && <PermissionDeniedContent message={blockedOption.disabledTooltip} />}
           {[tabOptions[0].value].includes(selectedTab) &&
+            !blockedOption &&
             (clusterSummary && Object.keys(clusterSummary).length > 0 ? (
               <>
                 <KubernetesClusterSummary accountId={kubeId} clusterSummary={clusterSummary} />
@@ -1054,9 +1073,9 @@ const KubernetesDetails = () => {
             ) : (
               <Loader style={{ width: '100%' }} />
             ))}
-          {[tabOptions[1].value].includes(selectedTab) && (
+          {[tabOptions[1].value].includes(selectedTab) && !blockedOption && (
             <>
-              {selectedSubTab === 0 && (
+              {selectedSubTab === 7 && (
                 <KubernetesRightSizing
                   showUpdatedEmptyData={true}
                   kubernetes={{ id: kubeId }}
@@ -1087,7 +1106,7 @@ const KubernetesDetails = () => {
                   groupName={router?.query?.groupName}
                 />
               )}
-              {selectedSubTab === 7 && <KubernetesOptimizeSummary showUpdatedEmptyData={true} kubernetes={{ id: kubeId }} heading={''} />}
+              {selectedSubTab === 0 && <KubernetesOptimizeSummary showUpdatedEmptyData={true} kubernetes={{ id: kubeId }} heading={''} />}
               {selectedSubTab === 8 && (
                 <>
                   <Box
@@ -1157,7 +1176,7 @@ const KubernetesDetails = () => {
               {selectedSubTab === 9 && <ListingRecommendationResolution accountId={kubeId} />}
             </>
           )}
-          {[tabOptions[2].value].includes(selectedTab) && (
+          {[tabOptions[2].value].includes(selectedTab) && !blockedOption && (
             <>
               {selectedSubTab === 0 && <KubernetesEventsSummary accountId={kubeId} />}
               {selectedSubTab === 1 && (
@@ -1298,11 +1317,11 @@ const KubernetesDetails = () => {
                 <FeatureDisabledEmptyState id='anomaly-flag-disabled' title={ANOMALY_FLAG_DISABLED_MESSAGE} />
               )}
               {selectedSubTab == 7 && <KubernetesGroupedEventsTable accountId={kubeId} groupEventType={'fingerprint'} isTroubleshootPage={false} />}
-              {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} />}
+              {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} provider='K8s' />}
               {selectedSubTab === 10 && <WorkloadCriticalityManager accountId={kubeId} />}
             </>
           )}
-          {[tabOptions[3].value].includes(selectedTab) && (
+          {[tabOptions[3].value].includes(selectedTab) && !blockedOption && (
             <>
               {selectedSubTab == 0 && <KubernetesNodesTable accountId={kubeId} heading={''} />}
               {selectedSubTab == 1 && <KubernetesWorkloadsTable accountId={kubeId} />}
@@ -1315,7 +1334,7 @@ const KubernetesDetails = () => {
               {selectedSubTab == 8 && <KubernetesQueueTable accountId={kubeId} />}
             </>
           )}
-          {[tabOptions[4].value].includes(selectedTab) && (
+          {[tabOptions[4].value].includes(selectedTab) && !blockedOption && (
             <>
               {selectedSubTab == 0 && (
                 <KubernetesLogs
@@ -1337,7 +1356,7 @@ const KubernetesDetails = () => {
               {selectedSubTab == 9 && kubeId && hasReadAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
             </>
           )}
-          {[tabOptions[5].value].includes(selectedTab) && (
+          {[tabOptions[5].value].includes(selectedTab) && !blockedOption && (
             <>
               {selectedSubTab === 0 && <KubernetesSecurity kubernetes={{ id: kubeId }} heading={''} />}
               {selectedSubTab === 1 && <KubernetesCisSecurityV2 kubernetes={{ id: kubeId }} heading={''} />}

@@ -1,6 +1,7 @@
 package watch
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,31 @@ func GetSource(kind SourceKind) (Source, bool) {
 func init() {
 	RegisterSource(&toolSource{})
 	RegisterSource(&sqlSource{})
+	RegisterSource(&timerSource{})
+}
+
+// timerSourceConfig is a timer watch's source config: why it waits, for display.
+type timerSourceConfig struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// timerSource observes nothing; with the never predicate the watch ends EXPIRED at its deadline (#42461).
+type timerSource struct{}
+
+func (timerSource) Kind() SourceKind { return SourceKindTimer }
+
+func (timerSource) ValidateConfig(rawCfg json.RawMessage) error {
+	var cfg timerSourceConfig
+	if len(rawCfg) > 0 {
+		if err := json.Unmarshal(rawCfg, &cfg); err != nil {
+			return fmt.Errorf("timer source: invalid config json: %w", err)
+		}
+	}
+	return nil
+}
+
+func (timerSource) Observe(_ *security.RequestContext, _ Watch) (Observation, error) {
+	return Observation{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +116,10 @@ type toolSourceConfig struct {
 	// config for the account. Mirroring the chat planner's
 	// `nb_tool_config_name` resolution.
 	ToolConfigName string `json:"tool_config_name,omitempty"`
+	// StrictReadOnly runs every poll under NBQueryConfig.StrictReadOnly: only strict kubectl reads of the watch's
+	// own cluster, no cloud CLI (the rule a remediation follow-up turn runs under, #42461). NudgeBee sets it on its own
+	// watches; a model that sets it only makes its own watch stricter.
+	StrictReadOnly bool `json:"strict_read_only,omitempty"`
 }
 
 // UnmarshalJSON tolerates the LLM's most common shape mistake: emitting
@@ -107,6 +138,7 @@ func (c *toolSourceConfig) UnmarshalJSON(data []byte) error {
 		ToolInput      json.RawMessage `json:"tool_input"`
 		Command        string          `json:"command,omitempty"`
 		ToolConfigName string          `json:"tool_config_name,omitempty"`
+		StrictReadOnly bool            `json:"strict_read_only,omitempty"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
@@ -115,6 +147,7 @@ func (c *toolSourceConfig) UnmarshalJSON(data []byte) error {
 	c.ToolName = raw.ToolName
 	c.Command = raw.Command
 	c.ToolConfigName = raw.ToolConfigName
+	c.StrictReadOnly = raw.StrictReadOnly
 
 	if len(raw.ToolInput) == 0 {
 		c.ToolInput = nil
@@ -206,9 +239,24 @@ func (toolSource) Observe(ctx *security.RequestContext, w Watch) (Observation, e
 		return Observation{}, fmt.Errorf("tool source: %q is an agent-style tool; watch sources must use a primitive *_execute tool (e.g. kubectl_execute, github_execute, shell_execute) — agent tools assume a parent message context that watch polls do not have", cfg.ToolName)
 	}
 
+	// Fall back: if the agent stored the command inside tool_input.command
+	// (a common shape for shell-style tools), surface it as Command so the
+	// tool's Call sees it. Without this, github_execute / kubectl_execute
+	// receive an empty command string and silently produce no output.
+	command := cfg.Command
+	if command == "" {
+		if v, ok := cfg.ToolInput["command"].(string); ok {
+			command = v
+		}
+	}
+	request := toolcore.NBToolCallRequest{Command: command, Arguments: cfg.ToolInput}
+	if err := requireReadOnly(ctx, tool, request); err != nil {
+		return Observation{}, err
+	}
+
 	// tool_config_name is VALIDATED not trusted -> nothing grounds it (LLM
 	// invents it, e.g. "github" vs real "nudgebee"). Unmatched -> auto-resolve, not FAILED.
-	queryConfig := toolcore.NBQueryConfig{}
+	queryConfig := toolcore.NBQueryConfig{StrictReadOnly: cfg.StrictReadOnly}
 	if _, isCfg := tool.(toolcore.NBToolConfig); isCfg {
 		availableConfigs, err := toolcore.ListToolConfigs(ctx, w.AccountID.String(), tool)
 		if err != nil {
@@ -285,18 +333,6 @@ func (toolSource) Observe(ctx *security.RequestContext, w Watch) (Observation, e
 		"",          // toolCallId
 	)
 
-	// Fall back: if the agent stored the command inside tool_input.command
-	// (a common shape for shell-style tools), surface it as Command so the
-	// tool's Call sees it. Without this, github_execute / kubectl_execute
-	// receive an empty command string and silently produce no output.
-	command := cfg.Command
-	if command == "" {
-		if v, ok := cfg.ToolInput["command"].(string); ok {
-			command = v
-		}
-	}
-
-	request := toolcore.NBToolCallRequest{Command: command, Arguments: cfg.ToolInput}
 	if ResolveToolCallTarget != nil {
 		var targetErr error
 		if toolCtx, targetErr = ResolveToolCallTarget(toolCtx, tool, request); targetErr != nil {
@@ -319,6 +355,55 @@ func (toolSource) Observe(ctx *security.RequestContext, w Watch) (Observation, e
 		return Observation{}, fmt.Errorf("tool source: tool %q returned error: %s", cfg.ToolName, truncate(resp.Data, 500))
 	}
 	return Observation{Data: normalizeToolObservation(resp.Data)}, nil
+}
+
+// ErrNotReadOnly marks a source command that was refused before it ran because
+// the tool does not classify it as a read (#42460).
+var ErrNotReadOnly = errors.New("watch sources must only read")
+
+// requireReadOnly asks the tool whether request only reads, with the same
+// static classifier the write-approval check uses (InferToolRequestType). A
+// watch re-runs its command on every poll with nobody to approve it, so
+// anything else is refused: a write, a command the tool cannot classify, and a
+// tool with no classifier. The mutating-verb deny-list in ValidateConfig only
+// sees a verb in the first position, so `kubectl -n x delete pod y` got past it.
+//
+// It never asks a model (no InferToolRequestTypePrompt fallback, unlike the
+// approval check): it runs on every poll of every watch, so it must stay static
+// and cheap. An MCP tool its server marks readOnlyHint counts as a read, as in
+// the planner and bee runs.
+func requireReadOnly(ctx *security.RequestContext, tool toolcore.NBTool, request toolcore.NBToolCallRequest) error {
+	const hint = "use a plain read such as `kubectl get`, `kubectl rollout status`, `gh run view` or `aws … describe-…`"
+	inference, ok := tool.(toolcore.ToolRequestInference)
+	if !ok {
+		return fmt.Errorf("tool source: %w: %q cannot tell whether a command reads or writes, so it cannot be watched", ErrNotReadOnly, tool.Name())
+	}
+	input := map[string]any{}
+	for k, v := range request.Arguments {
+		input[k] = v
+	}
+	if request.Command != "" {
+		input["command"] = request.Command
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return fmt.Errorf("tool source: %w: encode the command: %v", ErrNotReadOnly, err)
+	}
+	requestType, err := inference.InferToolRequestType(ctx, tool.Name(), string(encoded))
+	if err != nil {
+		return fmt.Errorf("tool source: %w: %q could not classify the command: %v", ErrNotReadOnly, tool.Name(), err)
+	}
+	switch requestType {
+	case toolcore.ToolRequestTypeRead:
+		return nil
+	case "":
+		if hinter, ok := tool.(toolcore.MCPReadOnlyHinter); ok && hinter.MCPReadOnlyHint() {
+			return nil
+		}
+		return fmt.Errorf("tool source: %w: %q cannot tell whether %q only reads; %s", ErrNotReadOnly, tool.Name(), truncate(request.Command, 120), hint)
+	default:
+		return fmt.Errorf("tool source: %w: %q is a %s, and a watch re-runs it on every poll; %s", ErrNotReadOnly, truncate(request.Command, 120), requestType, hint)
+	}
 }
 
 // normalizeToolObservation turns a tool response into the plain text a
@@ -546,6 +631,20 @@ func userIDString(u *uuid.UUID) string {
 // DescribeTarget returns the command a watch polls, for display; "" for sql sources.
 // Server-side so the UI can't re-derive it with precedence the poller doesn't use.
 func DescribeTarget(w Watch) string {
+	if w.SourceKind == SourceKindTimer {
+		var cfg timerSourceConfig
+		_ = json.Unmarshal([]byte(w.SourceConfig), &cfg)
+		target := "waiting until " + w.ExpiresAt.UTC().Format("15:04") + " UTC"
+		if r := strings.TrimSpace(cfg.Reason); r != "" {
+			target += ": " + r
+		}
+		return target
+	}
+	if w.SourceKind == SourceKindAutomationRun {
+		var cfg AutomationRunSourceConfig
+		_ = json.Unmarshal([]byte(w.SourceConfig), &cfg)
+		return "until the automation " + strconv.Quote(cmp.Or(strings.TrimSpace(cfg.Name), cfg.WorkflowID)) + " finishes its run"
+	}
 	if w.SourceKind != SourceKindTool {
 		return ""
 	}

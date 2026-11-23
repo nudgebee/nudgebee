@@ -442,6 +442,14 @@ func (r *BuildRequestRepository) ExcludeBuilds(tenantID string, fn func(runningC
 	})
 }
 
+// BuildRunningFor reports, without taking the tenant's build lock, whether a
+// live build of the tenant covers the account. It answers a question for the
+// UI ("a build may overwrite this until the next one"), not a guard: a build
+// can start right after it returns.
+func (r *BuildRequestRepository) BuildRunningFor(tenantID, accountID string) (bool, error) {
+	return r.runningClaimCovers(r.dbManager.Db, tenantID, accountID)
+}
+
 // runningClaimCovers reports whether a live build is currently running for the
 // tenant with a scope that includes the account: a tenant-wide build, or an
 // account-scoped build whose account list contains it. A running row older than

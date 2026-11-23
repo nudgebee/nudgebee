@@ -96,9 +96,10 @@ func (f *skipContinueFakeDao) GetConversationMessage(id, accountId, conversation
 }
 
 // TestTrySkipAndContinueFollowup_OutOfScopeTypesNeverAttemptResume locks in
-// the v1 scope boundary: only text/single_select/multi_select/user_input are
-// eligible for skip-and-continue. tool_confirmation, tool_config, and
-// account_select must return handled=false immediately (before ever taking
+// the v1 scope boundary: only text/single_select/multi_select/user_input
+// (and tool_confirmation, answered as a denial) are eligible for
+// skip-and-continue. tool_config and account_select must return
+// handled=false immediately (before ever taking
 // the conversation lock or touching resume) so the caller's existing
 // terminate path runs unchanged — their answer field is interpreted as
 // structured data downstream, not free text, so extending skip semantics to
@@ -121,7 +122,6 @@ func TestTrySkipAndContinueFollowup_OutOfScopeTypesNeverAttemptResume(t *testing
 	}
 
 	outOfScope := []string{
-		`{"followupType":"tool_confirmation"}`,
 		`{"followupType":"tool_config"}`,
 		`{"followupType":"account_select"}`,
 	}

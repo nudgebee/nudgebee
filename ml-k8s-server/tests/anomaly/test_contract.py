@@ -284,7 +284,7 @@ def test_metric_spec_registry_values():
     # errorrate/latency/replicas are not trimmed and have a 0.0 real-data threshold.
     for name, eps, samples, step in [
         ("errorrate", 0.8, 3, "2m"),
-        ("latency", 0.6, 5, "2m"),
+        ("latency", 0.6, 5, "10m"),
         ("replicas", 1.0, 3, "5m"),
     ]:
         spec = get_metric_spec(name)

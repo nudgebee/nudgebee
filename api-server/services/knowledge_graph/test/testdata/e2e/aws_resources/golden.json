@@ -42,6 +42,7 @@
         "dns_name": "d111111abcdef8.cloudfront.net",
         "domain_name": "d111111abcdef8.cloudfront.net",
         "name": "my-cdn-distribution",
+        "region": "us-east-1",
         "status": "Deployed"
       },
       "ontology_attributes": {
@@ -97,7 +98,8 @@
         "engine_version": "7.0.7",
         "instance_type": "cache.t3.medium",
         "name": "redis-cluster-001",
-        "num_cache_nodes": 1
+        "num_cache_nodes": 1,
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "endpoint": "redis-cluster.abc123.cache.amazonaws.com",
@@ -240,7 +242,8 @@
         "Name": "example.com"
       },
       "query_attributes": {
-        "name": "example.com"
+        "name": "example.com",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -283,6 +286,7 @@
       },
       "query_attributes": {
         "name": "users-table",
+        "region": "us-east-1",
         "subtype": "table"
       },
       "ontology_attributes": {
@@ -347,6 +351,7 @@
         "instance_type": "db.t3.medium",
         "multi_az": true,
         "name": "mydb-instance",
+        "region": "us-east-1",
         "subtype": "db",
         "vpc_id": "vpc-12345"
       },
@@ -396,7 +401,8 @@
         "Purpose": "CloudWatch Logs encryption"
       },
       "query_attributes": {
-        "name": "cloudwatch-logs-key"
+        "name": "cloudwatch-logs-key",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -441,7 +447,8 @@
         "Purpose": "EBS volume encryption"
       },
       "query_attributes": {
-        "name": "ebs-encryption-key"
+        "name": "ebs-encryption-key",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -486,7 +493,8 @@
         "Purpose": "RDS Performance Insights"
       },
       "query_attributes": {
-        "name": "performance-insights-key"
+        "name": "performance-insights-key",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -531,7 +539,8 @@
         "Purpose": "RDS storage encryption"
       },
       "query_attributes": {
-        "name": "rds-encryption-key"
+        "name": "rds-encryption-key",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -583,6 +592,7 @@
         "dns_name": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
         "load_balancer_type": "application",
         "name": "my-alb",
+        "region": "us-east-1",
         "scheme": "internet-facing",
         "type": "application_loadbalancer",
         "vpc_id": "vpc-12345"
@@ -631,7 +641,8 @@
         "Name": "lambda-logs"
       },
       "query_attributes": {
-        "name": "/aws/lambda/api-handler-function"
+        "name": "/aws/lambda/api-handler-function",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -679,7 +690,8 @@
       "query_attributes": {
         "message_retention_period": "1209600",
         "name": "order-queue-dlq",
-        "queue_type": "sqs"
+        "queue_type": "sqs",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -730,6 +742,7 @@
         "message_retention_period": "345600",
         "name": "order-queue",
         "queue_type": "sqs",
+        "region": "us-east-1",
         "visibility_timeout": "30"
       },
       "ontology_attributes": {
@@ -775,7 +788,8 @@
       },
       "query_attributes": {
         "name": "trigger-queue",
-        "queue_type": "sqs"
+        "queue_type": "sqs",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -830,6 +844,7 @@
         "handler": "index.handler",
         "memory_mb": 512,
         "name": "api-handler-function",
+        "region": "us-east-1",
         "runtime": "python3.11",
         "timeout_seconds": 30
       },
@@ -890,6 +905,7 @@
         "encrypted": true,
         "iops": 3000,
         "name": "app-server-volume",
+        "region": "us-east-1",
         "size_gb": 100,
         "subtype": "storage",
         "volume_state": "in-use",
@@ -953,6 +969,7 @@
       "query_attributes": {
         "encryption_enabled": true,
         "name": "my-app-bucket",
+        "region": "us-east-1",
         "subtype": "storage",
         "versioning_enabled": true
       },
@@ -1008,6 +1025,7 @@
       "query_attributes": {
         "encrypted": true,
         "name": "shared-app-storage",
+        "region": "us-east-1",
         "size_in_bytes": 6144,
         "subtype": "filesystem"
       },
@@ -1053,7 +1071,8 @@
         "Environment": "production"
       },
       "query_attributes": {
-        "name": "order-notifications"
+        "name": "order-notifications",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",
@@ -1097,7 +1116,8 @@
         "Name": "main-vpc"
       },
       "query_attributes": {
-        "name": "main-vpc"
+        "name": "main-vpc",
+        "region": "us-east-1"
       },
       "ontology_attributes": {
         "location": "us-east-1",

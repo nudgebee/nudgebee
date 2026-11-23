@@ -17,6 +17,7 @@ import (
 
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/model"
+	"nudgebee/runbook/internal/tasks/core"
 	"nudgebee/runbook/internal/workflow"
 	"nudgebee/runbook/services/security"
 )
@@ -49,13 +50,40 @@ func (s *Server) getRequestDetails(c *gin.Context) (*security.RequestContext, st
 		return nil, "", false
 	}
 
-	if !sc.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+	if !mayReachAccount(sc.GetSecurityContext(), accountId) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return nil, "", false
 	}
 
 	return sc, accountId, true
 
+}
+
+// scopeOtherReadableAccounts (?scope=readable) asks a listing for the caller's
+// other readable accounts instead of the one in X-Account-ID.
+const scopeOtherReadableAccounts = "readable"
+
+// withoutAccount is ids without accountID.
+func withoutAccount(ids []string, accountID string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != accountID {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// mayReachAccount is the account gate in front of the workflow endpoints: a
+// built-in role with read access to the account, or a custom-role workflows
+// grant covering it (tenant-wide grants only reach accounts in the caller's
+// tenant). It only lets the request reach the endpoint; each operation still
+// makes its own check, and those already accept the same grants. Built-in roles
+// alone used to be required here, which refused every principal holding only
+// custom roles before those checks ran.
+func mayReachAccount(sc *security.SecurityContext, accountId string) bool {
+	return sc.HasAccountAccess(accountId, security.SecurityAccessTypeRead) ||
+		workflow.HasWorkflowsGrant(sc, accountId)
 }
 
 // getTenantRequestDetails is like getRequestDetails but does not require an
@@ -89,6 +117,26 @@ func (s *Server) getTenantRequestDetails(c *gin.Context) (*security.RequestConte
 	}
 	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return nil, false
+	}
+	return sc, true
+}
+
+// getIdentifiedRequestDetails builds the context from the request and requires
+// only a tenant. It checks no access level: the endpoint must check the caller
+// per account (a tenant-wide route here would otherwise be open to any user of
+// the tenant). Unlike getTenantRequestDetails, an account-scoped role passes.
+func (s *Server) getIdentifiedRequestDetails(c *gin.Context) (*security.RequestContext, bool) {
+	sc, err := s.securityContextBuilder.BuildContextFromRequestPayload(c.Request.Context(), c, map[string]string{}, s.tracer, s.meter, s.logger)
+	if err != nil || sc == nil || sc.GetSecurityContext() == nil {
+		if err != nil {
+			s.logger.Error("failed to build security context", "error", err)
+		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return nil, false
+	}
+	if sc.GetSecurityContext().GetTenantId() == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unable to identify tenant"})
 		return nil, false
 	}
 	return sc, true
@@ -211,9 +259,24 @@ func (s *Server) listWorkflows(c *gin.Context) {
 		search.Limit = limit
 	}
 
-	// The REST route stays single-account — getRequestDetails already rejects a
-	// blank account id, so this is always a one-element scope.
-	workflows, err := s.workflowService.ListWorkflows(sc, []string{accountID}, search)
+	// The REST route is single-account — getRequestDetails already rejects a
+	// blank account id — unless the caller asks for the other accounts it can
+	// read (scope=readable): the AI assistant lists those apart from the
+	// conversation's own, so each is labelled with where it runs.
+	accountIDs := []string{accountID}
+	if c.Query("scope") == scopeOtherReadableAccounts {
+		readable, err := workflow.ResolveReadableAccounts(sc, nil)
+		if err != nil {
+			handleServiceError(c, err, "failed to retrieve workflows")
+			return
+		}
+		accountIDs = withoutAccount(readable, accountID)
+		if len(accountIDs) == 0 {
+			c.JSON(http.StatusOK, model.ListWorkflowResponse{Workflows: []model.Workflow{}})
+			return
+		}
+	}
+	workflows, err := s.workflowService.ListWorkflows(sc, accountIDs, search)
 	if err != nil {
 		s.logger.Error("failed to list workflows", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to retrieve workflows"})
@@ -416,6 +479,15 @@ func (s *Server) getWorkflowExecution(c *gin.Context) {
 // DRAFT definition, while the AI must see the LIVE version's llm_description —
 // what is published, not what someone is still editing.
 func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
+	// llm-server enumerates an account's AI-invocable automations with no user
+	// (tool listing, not an action on anyone's behalf). Read-only; triggering one
+	// still needs the real user. Searching the caller's other accounts does not
+	// allow it: with no user there is no one whose accounts to search, and the
+	// system user would read every account in the tenant.
+	otherAccounts := c.Query("scope") == scopeOtherReadableAccounts
+	if !otherAccounts {
+		c.Set(ctxAllowSystemCaller, true)
+	}
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -428,7 +500,11 @@ func (s *Server) searchAIInvocableWorkflows(c *gin.Context) {
 		}
 	}
 
-	result, err := s.workflowService.SearchAIInvocableWorkflows(sc, accountID, c.Query("query"), limit)
+	search := s.workflowService.SearchAIInvocableWorkflows
+	if otherAccounts {
+		search = s.workflowService.SearchAIInvocableWorkflowsInOtherAccounts
+	}
+	result, err := search(sc, accountID, c.Query("query"), limit)
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
@@ -464,7 +540,11 @@ func (s *Server) triggerWorkflow(c *gin.Context) {
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
-			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+			body := gin.H{"error": commonErr.Message}
+			if commonErr.Reason != "" {
+				body["code"] = commonErr.Reason
+			}
+			c.JSON(commonErr.Code, body)
 			return
 		} else {
 			s.logger.Error("failed to trigger workflow", "id", id, "error", err)
@@ -554,6 +634,7 @@ func (s *Server) updateWorkflowExecution(c *gin.Context) {
 }
 
 func (s *Server) handleGenericWebhook(c *gin.Context) {
+	c.Set(ctxAllowSystemCaller, true)
 	sc, accountID, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -649,9 +730,7 @@ func (s *Server) handleGenericWebhook(c *gin.Context) {
 		}
 	}
 
-	inputs := map[string]any{
-		"webhook_payload": string(webhookPayload),
-	}
+	inputs := workflow.WebhookRunInputs(webhookPayload)
 
 	runID, err := s.workflowService.ExecuteWorkflow(sc, accountID, workflowID, "webhook", inputs)
 	if err != nil {
@@ -681,6 +760,7 @@ func (s *Server) handleWebhookFanOut(c *gin.Context) {
 	// against. Each subscriber's workflow row carries its own accountID,
 	// and FanOutWebhookEvent resolves per-subscriber access downstream.
 	// See getTenantRequestDetails for the auth model.
+	c.Set(ctxAllowSystemCaller, true)
 	sc, processRequest := s.getTenantRequestDetails(c)
 	if !processRequest {
 		return
@@ -778,8 +858,10 @@ func (s *Server) handleApproval(c *gin.Context) {
 	}
 
 	var req struct {
-		Status string `json:"status" binding:"required"` // "approved" or "rejected"
-		Result any    `json:"result"`                    // Optional result data
+		Status   string `json:"status" binding:"required"` // "approved" or "rejected"
+		Approver string `json:"approver"`                  // The email the link was sent to
+		Sig      string `json:"sig"`                       // The link's signature
+		Result   any    `json:"result"`                    // Optional result data
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -787,8 +869,23 @@ func (s *Server) handleApproval(c *gin.Context) {
 		return
 	}
 
+	// This route skips the service token: the link's signature is its
+	// credential, so it is checked here, where the decision is made. It binds
+	// the decision and the approver the run records.
+	if !core.VerifyApprovalSignature(token, req.Status, req.Approver, req.Sig, config.Config.ApprovalSigningKey) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "the approval link could not be verified"})
+		return
+	}
+
+	// A run's approval gate needs to know who answers, which a link cannot
+	// tell; the run would refuse the answer anyway (it carries no person).
+	if parts := strings.Split(token, ":"); len(parts) == 5 && parts[4] == model.ApprovalGateTaskID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "this approval can only be answered in the app, by a person allowed to make its changes"})
+		return
+	}
+
 	sc := security.NewRequestContextForSuperAdmin()
-	err := s.workflowService.CompleteApprovalTask(sc, token, req.Status, req.Result)
+	err := s.workflowService.CompleteApprovalTaskFromLink(sc, token, req.Status, req.Approver, req.Result)
 	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
@@ -879,6 +976,10 @@ func (s *Server) resumeWorkflow(c *gin.Context) {
 }
 
 func (s *Server) listTasks(c *gin.Context) {
+	// The task catalogue is the static registry (no tenant data), and
+	// llm-server's capability catalogue fetches it with no user. Read-only;
+	// executing a task still needs the real user.
+	c.Set(ctxAllowSystemCaller, true)
 	sc, _, processRequest := s.getRequestDetails(c)
 	if !processRequest {
 		return
@@ -1026,6 +1127,11 @@ func (s *Server) saveConfig(c *gin.Context) {
 	}
 
 	id, err := s.configService.SaveConfig(c.Request.Context(), config)
+	var commonErr common.Error
+	if errors.As(err, &commonErr) {
+		c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+		return
+	}
 	if err != nil {
 		s.logger.Error("failed to save config", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})

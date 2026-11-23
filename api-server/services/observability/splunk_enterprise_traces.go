@@ -989,6 +989,18 @@ func splunkEnterpriseTraceSpansPerTrace(limit int) int {
 	return max(1, splunkEnterpriseTraceMaxLimit/limit-1)
 }
 
+// splunkEnterpriseByTraceNaturalOrderReason explains the one order the By Traces view can
+// be listed in. buildSplunkEnterpriseTraceByTraceSPL refuses with it and the capability
+// advertises it, so the two cannot describe different rules.
+const splunkEnterpriseByTraceNaturalOrderReason = "splunk enterprise: the By Traces view is ordered newest first"
+
+// ByTraceNaturalOrderOnlyReason implements byTraceNaturalOrderOnlySource: this reader ranks
+// By Traces pages by each trace's newest span while streaming, so the rank that decides
+// page membership is the order, and no other can be served.
+func (s *SplunkEnterpriseTraceSource) ByTraceNaturalOrderOnlyReason() string {
+	return splunkEnterpriseByTraceNaturalOrderReason
+}
+
 // buildSplunkEnterpriseTraceByTraceSPL renders one page of the "By Traces" view: every
 // matching span of exactly the requested traces, which pickRootSpans then reduces to one
 // row per trace.
@@ -1012,9 +1024,11 @@ func buildSplunkEnterpriseTraceByTraceSPL(req TracesV3Request, index string) (st
 	// Page membership is by each trace's newest span; re-ranking by duration or oldest
 	// first would need every trace's spans before any could be ranked. pickRootSpans still
 	// orders the page it is handed, so a sort here would reorder one page, not the list.
+	// The reason is the one the capability advertises, so a client told the view is
+	// natural-order-only and a caller that asked anyway read the same sentence.
 	if !isSplunkEnterpriseNaturalTraceOrder(req.QueryRequest.OrderBy) {
-		return "", fmt.Errorf("splunk enterprise: the By Traces view is ordered newest first; order_by %v is not supported there",
-			req.QueryRequest.OrderBy)
+		return "", fmt.Errorf("%s; order_by %v is not supported there",
+			splunkEnterpriseByTraceNaturalOrderReason, req.QueryRequest.OrderBy)
 	}
 	filter, err := buildSplunkEnterpriseTraceFilter(req.QueryRequest.Where)
 	if err != nil {

@@ -176,7 +176,7 @@ func parseCanonicalWindow(v string) (time.Duration, bool) {
 	v = strings.TrimSpace(strings.ToLower(v))
 	if strings.HasSuffix(v, "d") {
 		days, err := strconv.Atoi(strings.TrimSuffix(v, "d"))
-		if err != nil || days <= 0 {
+		if err != nil || days <= 0 || days > 10000 {
 			return 0, false
 		}
 		return time.Duration(days) * 24 * time.Hour, true

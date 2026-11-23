@@ -73,10 +73,6 @@ jest.mock('@api1/kubernetes1', () => ({
     getAgentPlaybookOfEvent: jest.fn().mockResolvedValue({ data: { data: { agent_playbook: [] } } }),
   },
 }));
-jest.mock('@api1/ask-nudgebee', () => ({
-  __esModule: true,
-  default: { listFunctions: jest.fn().mockResolvedValue({ res: { llm_functions: [] } }) },
-}));
 jest.mock('@api1/observability', () => ({ __esModule: true, default: {} }));
 
 const mockGetDefaultProvider = jest.fn();

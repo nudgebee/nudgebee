@@ -185,14 +185,21 @@ func syncIntegration(fetchCtx context.Context, tctx *security.RequestContext, db
 
 // upsertAccounts writes one row per (account, external user) in a single batched
 // statement and returns how many rows were upserted plus the set of external user
-// ids seen (for reconciliation).
+// ids seen (for reconciliation). A source can return the same user twice (offset
+// paging over a shifting list), and a repeated conflict key fails the whole batched
+// statement, so each external user id is written once.
 func upsertAccounts(tctx *security.RequestContext, db *sqlx.DB, tenantId, integType, integrationId string, accountIds []string, accounts []core.ExternalUser) (int, []string) {
 	seen := make([]string, 0, len(accounts))
+	seenSet := make(map[string]struct{}, len(accounts))
 	items := make([]syncedAccount, 0, len(accountIds)*len(accounts))
 	for _, acc := range accounts {
 		if acc.ID == "" {
 			continue
 		}
+		if _, dup := seenSet[acc.ID]; dup {
+			continue
+		}
+		seenSet[acc.ID] = struct{}{}
 		seen = append(seen, acc.ID)
 		for _, accountId := range accountIds {
 			items = append(items, syncedAccount{accountId: accountId, acc: acc})

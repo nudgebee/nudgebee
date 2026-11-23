@@ -314,10 +314,16 @@ type KgEvidenceNode struct {
 // humans, for whom they are noise. It is two strings per node, and dropping
 // them silently disables cross-resource correlation for every cloud provider —
 // which is not a trade the size saving is worth.
+//
+// subtype is here for the same consumer. The VPC flow source collects every
+// address it could not identify into one node per VPC (UnresolvedVPCAddressSubtype)
+// with flow edges to and from each instance that talked to one, so correlation
+// walking this card saw any two instances of a VPC as two hops apart. It has
+// to recognise that node to stop walking through it.
 var evidenceNodeProperties = []string{
 	"name", "namespace", "cluster",
 	"kind", "engine", "role", "region",
-	"resource_id", "arn",
+	"resource_id", "arn", "subtype",
 	"phase", "status", "state", "ready",
 }
 
@@ -375,6 +381,26 @@ var serviceMapNeighbourTypes = []NodeType{
 	// its instances only via LoadBalancer -> BackendPool -> ComputeInstance,
 	// and its alarms were getting a service map containing the balancer alone.
 	NodeTypeBackendPool,
+	// CloudResource carries the network devices a user declares by hand —
+	// switches, routers — for kit no collector discovers. On a VM or on-prem
+	// estate the switch is the shared cause an operator looks for: a host's
+	// evidence should name the switch it hangs off, and the switch's own alert
+	// should list the hosts it takes down with it. Left out, the device was
+	// invisible on both sides. Verified on a declared NetworkSwitch
+	// CONNECTED_TO two hosts: both edges active in the graph, and the host's
+	// evidence card still held the two hosts alone.
+	//
+	// This does not fan a host's map out across its rack. Those edges are
+	// CONNECTED_TO, which is undirected and followed for exactly one hop
+	// (viaUndirected in discoverBFS): a walk that reaches the switch does not
+	// leave it over another CONNECTED_TO, so two hosts sharing a switch stay
+	// out of each other's neighbourhood while the switch's lists both. That is
+	// the behaviour TestCustomKind_ConnectedToBlastRadius already pins.
+	//
+	// The plumbing the comment above warns about is unaffected: VPC, Subnet,
+	// SecurityGroup, RouteTable and NetworkInterface are each their own node
+	// type and stay out, as TestNeighbourTypesExcludePlumbing asserts.
+	NodeTypeCloudResource,
 }
 
 // serviceMapLevels is how far the evidence neighbourhood walks, and
@@ -452,11 +478,33 @@ func findNodesByProviderIdentifierInTable(dbManager *database.DatabaseManager, t
 	// planner answer each side of the OR from its own index; with a bare
 	// properties->>'arn' it could use neither and walked every node in the
 	// account. The exact comparison stays, so matching is still case-sensitive.
+	ids, err := queryNodesByProviderIdentifier(dbManager, table, `
+		  AND (properties->>'resource_id' = $2
+		       OR (lower(properties->>'arn') = lower($2) AND properties->>'arn' = $2))`,
+		tenantID, accountID, resourceID)
+	if err != nil || len(ids) > 0 {
+		return ids, err
+	}
+
+	// A host scanned through a self-hosted VM account keeps its cloud instance
+	// id in instance_id, never resource_id, so the lookup above cannot see it.
+	// Ask only when nothing else matched: OR-ing it in would make a tenant-wide
+	// lookup of an i-... id return both the EC2 node and its SelfHostedVM twin,
+	// which the caller treats as ambiguous. The specific_type filter lets the
+	// planner start from the few self-hosted nodes (idx_kg_node_specific_type),
+	// so a miss never walks the tenant.
+	return queryNodesByProviderIdentifier(dbManager, table, `
+		  AND specific_type = '`+SpecificTypeSelfHostedVM+`'
+		  AND properties->>'instance_id' = $2`,
+		tenantID, accountID, resourceID)
+}
+
+// queryNodesByProviderIdentifier runs one identifier predicate (which reads $2)
+// with the scoping every provider-identifier lookup shares.
+func queryNodesByProviderIdentifier(dbManager *database.DatabaseManager, table, identifierPredicate, tenantID, accountID, resourceID string) ([]string, error) {
 	query := `
 		SELECT id FROM ` + table + `
-		WHERE tenant_id = $1
-		  AND (properties->>'resource_id' = $2
-		       OR (lower(properties->>'arn') = lower($2) AND properties->>'arn' = $2))
+		WHERE tenant_id = $1` + identifierPredicate + `
 		  AND node_type = ANY($3)
 		  AND level = 'Tenant'
 		  AND is_active = true
@@ -607,21 +655,29 @@ func buildKGInsights(graph KnowledgeGraph, serviceName string, upstream, downstr
 	// edges may land directly on Cache / MessageQueue / Storage nodes that
 	// were previously hidden behind an ExternalService hop — surface those
 	// too so the insight count doesn't shrink for tenants on the new code.
+	// A node is bucketed by what it acts as (EffectiveRole): an in-cluster
+	// redis Workload a user tagged "cache" counts as a cache, the same as a
+	// typed Cache node, and is not listed again under its type.
 	var externalServices, databases, caches, queues, storage []string
 	for _, node := range graph.Nodes {
 		name, _ := node.Properties["name"].(string)
 		if name == "" {
 			continue
 		}
+		switch EffectiveRole(node.NodeType, node.Properties) {
+		case NodeRoleDatabase:
+			databases = append(databases, name)
+			continue
+		case NodeRoleCache:
+			caches = append(caches, name)
+			continue
+		case NodeRoleMessageQueue:
+			queues = append(queues, name)
+			continue
+		}
 		switch node.NodeType {
 		case NodeTypeExternalService:
 			externalServices = append(externalServices, name)
-		case NodeTypeDatabase:
-			databases = append(databases, name)
-		case NodeTypeCache:
-			caches = append(caches, name)
-		case NodeTypeMessageQueue:
-			queues = append(queues, name)
 		case NodeTypeStorage:
 			storage = append(storage, name)
 		}

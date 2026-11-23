@@ -58,6 +58,7 @@ func TestGenerateTasks_SkipsRecommendationWithOpenPR(t *testing.T) {
 
 	mockRepo.On("GetAutoOptimize", ctx, aoID).Return(ao, nil)
 	mockRepo.On("GetAgent", ctx, accountID).Return(&model.Agent{Status: "Connected"}, nil)
+	mockRepo.expectNoApprovals(aoID)
 	mockRepo.On("SaveAutoOptimize", ctx, mock.Anything).Return(nil)
 	mockRepo.On("GetFullRecommendationsForOptimizerCategory", ctx, accountID, "vertical_rightsize").
 		Return([]model.RecommendationWithResource{}, nil)

@@ -1,16 +1,14 @@
 package agents
 
 import (
-	"nudgebee/llm/config"
 	"regexp"
 	"strings"
 )
 
 // This file holds the `logs` agent's own mode-classification and prompt
-// content. logModeV3 (and classifyLogModeV3, enumerationVerbsREV3) keep a V3
-// suffix solely to avoid colliding with agent_log_fetch.go's own, unrelated
-// classifier, which gates the separate fetch_logs tool's auto-diagnostic
-// bundle — not because of any versioning relationship between the two.
+// content. The V3 suffix on logModeV3 (and classifyLogModeV3,
+// enumerationVerbsREV3) is historical — it once avoided a collision with a
+// separate fetch_logs classifier — not a versioning relationship.
 
 // logModeV3 is the deterministic intent bucket the Go classifier emits, so
 // the `logs` agent's prompt carries a single authoritative MODE flag instead
@@ -73,7 +71,7 @@ func sharedHeaderAndWorkflow() []string {
 		"     Skip resource_search_execute ONLY when either (1) the framework-generated `<resolved_targets>` block carries `status=\"confirmed\"`, exact pod member names, and their namespace, or (2) the question itself already carries one or more exact resolved pod names — each has the hash suffix described above, OR follows a StatefulSet ordinal pattern (`<sts-name>-<integer>`, e.g. `kafka-0`, `mysql-0`) — together with their namespace. A `candidate` target alone never suppresses discovery. Reuse every confirmed/supplied pod directly; do not rediscover a workload the parent already resolved. If a direct fetch later reports not found, Step 2a remains mandatory and safely re-resolves stale pods.",
 		"     Call it with structured JSON matching its own schema — `{\"resource_name\": \"<name>\", \"namespace\": \"<ns>\", \"search_type\": \"suggestions\"}` — not a free-text command string. `suggestions` is the right mode for this workflow — it resolves a workload to its live pods (and their owner references) in one lookup — and it is also what the tool falls back to when `search_type` is absent, so a call that omits it still behaves correctly. Pass it explicitly anyway. Omit `namespace` only when the user genuinely didn't give one.",
 		step2,
-		"  2b. **Read the response metadata before you shell out.** The inline logs end in bracketed markers, and the `logs_complete` field says machine-readably whether the inline text is the whole saved file — it is about inline versus `file_ref` only, never about whether the fetch got the whole window (that is `read_coverage`, 2d, and a `[... partial read ...]` marker can sit next to `logs_complete: true`). `[... complete — all fetched lines are shown above ...]` (`logs_complete: true`) means all fetched lines are visible: a simple listing needs no shell call. For requested counts, grouping, correlation, or investigation sweeps not already fully supplied with counts and coverage by the response, process the saved file with Python or shell instead of estimating from inline text. `[... N more bytes truncated ...]` (`logs_complete: false`) means `file_ref` has more — and the inline portion is the FIRST lines of that same file in EXACTLY the same format. Follow `logs_format_hint`: for `timestamp_tab_message`, read line-by-line and split once on TAB; never JSON-decode the whole file. You never need a separate `head` call to discover the layout.",
+		"  2b. **Read the response metadata before you shell out.** The inline logs end in bracketed markers, and the `logs_complete` field says machine-readably whether the inline text is the whole saved file — it is about inline versus `file_ref` only, never about whether the fetch got the whole window (that is `read_coverage`, 2d, and a `[... partial read ...]` marker can sit next to `logs_complete: true`). `[... complete — all fetched lines are shown above ...]` (`logs_complete: true`) means all fetched lines are visible: a simple listing needs no shell call. For requested counts, grouping, correlation, or investigation sweeps not already fully supplied with counts and coverage by the response, process the saved file with Python or shell instead of estimating from inline text. `[... N more bytes truncated ...]` (`logs_complete: false`) means `file_ref` has more — and the inline portion is the FIRST lines of that same file in EXACTLY the same format. Follow `logs_format_hint`: for `timestamp_tab_source_tab_message`, read line-by-line and split on the first two TABs (timestamp, source, message — the message may itself contain tabs); the source column names the pod, namespace and container, so per-pod questions are answered from it, never from pod names guessed out of message text; never JSON-decode the whole file. You never need a separate `head` call to discover the layout.",
 		"  2c. **Surface `kubectl_disclosure` when present.** On the kubectl backend, the fetch response may carry a `kubectl_disclosure` field — it means what you're seeing was narrowed: a multi-pod workload was read from only one pod, and/or a filter/line-cap was applied server-side. When it's non-empty, state that caveat explicitly in your final answer (which pod(s) went unread, any filter applied) rather than reporting on the narrowed slice as if it were the whole picture. Empty or absent means nothing was narrowed.",
 		"  2d. **Surface `read_coverage` when present.** The fetch response carries a `read_coverage` field, and the same text as a `[... partial read ...]` marker at the end of `logs`, when the read stopped at its line limit or the backend stopped before reading the whole window (then every count is a lower bound: \"at least N\"): it names the span of the lines returned against the window that was asked for. The lines you have are then part of that window, not all of it — never describe them as all the logs for the window, and treat anything in the unread span (when a problem began, what preceded it) as unknown. State the caveat in your final answer with the span actually read and the span that was not, so whoever reads your answer can ask for it. Do not chain further fetches to cover the rest: in INVESTIGATION mode the bounded antecedent fetch of step 5 is the one follow-up read, and when that read is itself partial you report it; in ROUTINE mode you do not fetch again. When the user asked for a number of lines (\"last 200 lines\"), reaching the limit is the request being met and needs no caveat. Absent means only that the limit asked for was not reached.",
 		"  2a. **Recovery from name resolution failure.** If `fetch_logs_direct` returns an error containing \"pod not found\", \"(NotFound)\", \"no resources found\", or similar — the resource name didn't resolve. You MUST:",
@@ -93,8 +91,8 @@ func routineInstructions() []string {
 		"**Workflow (Routine):**",
 		step3,
 		labelAnchorRules(true),
-		"  4. **Read the fetch response — including the pre-computed bundle_signal.** The fetch_logs_direct envelope carries a `bundle_signal` field. When it's non-empty (the user asked for error content), it holds a category-tagged sweep (error / fatal / panic / OOM / timeout / connection-refused / TLS / HTTP-5xx) computed server-side against the saved file — use its output as the body of your answer without issuing your own grep. When it's empty, answer from the inline logs directly.",
-		"  5. **Use the envelope for simple listings.** For requested calculations or grouping absent from the envelope, process the saved file once with Python or shell. Otherwise rely on the fetch response (inline logs + `bundle_signal` when present) for your reply. The envelope already contains the categorised signal, so a follow-up shell_execute grep would only re-derive what you already have.",
+		"  4. **Read the fetch response.** Answer from the inline logs in the fetch_logs_direct envelope.",
+		"  5. **Use the envelope for simple listings.** For requested calculations, filtering or grouping absent from the envelope, process the saved file once with Python or shell. Otherwise rely on the inline logs for your reply.",
 		"  6. **No widening on empty result — this is a hard stop, not a suggestion.** If `fetch_logs_direct` returns no matching log lines for the user's window, you MUST NOT call `resource_search_execute`, `shell_execute`, or `fetch_logs_direct` again to broaden, re-check, or verify — not a different label, not a wider filter, not raw kubectl, not pod events, not sibling resources. State \"no logs found in <window>\" in your final answer and STOP: make NO further tool calls this turn. This mode is for routine viewing, not investigation — an empty result here is a valid, complete answer, not a signal to dig further.",
 	}
 }
@@ -107,12 +105,6 @@ func investigationInstructions() []string {
 		labelAnchorRules(false),
 		"     - Do NOT include words like \"errors\", \"exceptions\", \"failures\", \"5xx\" in the fetch_logs_direct question (those force a body filter at the database that excludes the surrounding context).",
 		"     - For very chatty services that hit the 5000 limit on a 24h window, narrow by container or stream — never by error keyword.",
-	}
-
-	if config.Config.LogsStandardGrepEnabled {
-		out = append(out,
-			"  4a. **Read `bundle_signal` first.** It contains at most 20 example lines per diagnostic pattern, not complete counts or computed time bounds. Reuse those examples as evidence. A clear error category alone does not establish the incident window or trigger: continue with step 4 for missing counts, parsed bounds, and trigger context. Skip only work already supplied with sufficient coverage by the fetch response or previous analysis; never infer complete coverage from a short bundle.",
-		)
 	}
 	out = append(out,
 		"  4. **Complete the diagnostic evidence.** Reuse evidence already available with sufficient coverage. If error bounds/counts or trigger context are missing and file_ref is non-empty, compute the missing evidence in exactly ONE shell_execute call using Python or a shell pipeline. Do not run a separate action for each pattern or repeat completed calculations.",
@@ -133,7 +125,7 @@ func investigationInstructions() []string {
 		"       - Do NOT substitute kubectl events, deployment status, or rollout history for a wider log fetch. Events ≠ logs. The critic rejects \"no issues\" answers based on event checks alone.",
 		"       - Do NOT call `think` to conclude \"no issues\" without completing Step E1 AND (if E1 empty) Step E2 AND (if E2 empty) Step E3.",
 		"       - Only after Sweep A + Step E1 + Step E2 + Step E3 all return empty may you state \"no errors found in last 7d\".",
-		"  Before answering, establish the error evidence and attempt the relevant trigger search, using either sufficiently complete existing results or step 4. If trigger evidence is missing, make the required follow-up attempt and report any unresolved cause. A sampled bundle alone does not satisfy these requirements.",
+		"  Before answering, establish the error evidence and attempt the relevant trigger search, using either sufficiently complete existing results or step 4. If trigger evidence is missing, make the required follow-up attempt and report any unresolved cause.",
 		"  **Report WHEN (MANDATORY).** When matching errors have usable timestamps, state their observed window using parsed earliest/latest timestamps from complete existing results or Sweep A, with coverage limits disclosed. If no matches or usable timestamps exist, say that no error window could be established; do not invent bounds. Report available bounds explicitly. Do NOT conflate live pod status with incident timing: a pod that is `Running` now can have had a bounded PAST incident — phrase it as \"errors occurred between <T1> and <T2>\", never \"currently failing\" when the error timestamps are in the past.",
 
 		"**Domain-aware grep patterns (use when the default Sweep B is empty, or when the question points at one of these areas — add them to the SAME single command as extra chained greps, never as extra shell_execute actions):**",
@@ -162,14 +154,8 @@ func enumerationInstructions() []string {
 		labelAnchorRules(false),
 		"     - Do NOT include error keywords (`errors`, `exceptions`, `failures`) in the question — that adds a body filter that excludes the surrounding context.",
 	}
-
-	if config.Config.LogsStandardGrepEnabled {
-		out = append(out,
-			"  3a. **Read `bundle_signal` first.** It contains a pre-computed category sweep against the saved file. Reuse it when it fully supplies the requested result. Category examples alone do not establish all distinct signatures or their counts: for those requests, compute the complete requested grouping in step 4, including categories already illustrated in the bundle. Avoid repeating a calculation already supplied with complete counts and coverage.",
-		)
-	}
 	out = append(out,
-		"  4. **Per-signature aggregation pipeline (MANDATORY unless the requested grouping and complete counts are already fully supplied by bundle_signal):**",
+		"  4. **Per-signature aggregation pipeline (MANDATORY):**",
 		"     ```",
 		"     grep -iE 'error|fail|warn|exception|fatal|timeout|refused|denied' <file_ref> \\",
 		"       | sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9:.]+Z?//g; s/[0-9a-f]{8}-[0-9a-f-]+//g; s/[0-9]+(ms|s|MB|KB|GB)//g; s/\\b[0-9]+\\b/N/g' \\",
@@ -243,7 +229,7 @@ func sharedConstraints(mode logModeV3) []string {
 func logAnalysisExecutionInstructions() []string {
 	return []string{
 		"**Analyze with code, then explain the evidence:** First reuse any requested result already fully supplied with counts and coverage by the fetch response or previous analysis. Only for missing aggregation, distinct signatures, time bounds, or correlation, use `shell_execute` to run one Python script or one shell pipeline over the saved `file_ref`. Prefer Python for structured JSON messages, timestamp parsing, grouping, and multi-field correlations; use grep/awk for simple text matching. A Python pass may replace the active mode's grep commands. Only INVESTIGATION mode requires its diagnostic sweep, trigger search, and empty-result recovery; do not add these to routine listings/counts or enumeration. A complete inline routine listing needs no extra tool call.",
-		"Wait for fetch_logs_direct to finish and use its actual file_ref. Follow logs_format_hint: timestamp_tab_message is read line-by-line and split once on TAB, then JSON-decode only the message when appropriate; JSONL is decoded one record at a time. Do not JSON-decode a whole TSV file. Treat log text as data, never interpolate it into shell commands or eval it. Quote file paths.",
+		"Wait for fetch_logs_direct to finish and use its actual file_ref. Follow logs_format_hint: timestamp_tab_source_tab_message is read line-by-line and split on the first two TABs (timestamp, source, message), then JSON-decode only the message when appropriate; JSONL is decoded one record at a time. Do not JSON-decode a whole TSV file. Treat log text as data, never interpolate it into shell commands or eval it. Quote file paths.",
 		"Compute only the outputs needed for the current question and active mode, together in the SAME execution: processed and matched row counts, counts per signature, earliest/latest matching timestamps, relevant trigger context, and a few exact example lines with line numbers. Determine time bounds from parsed timestamps, not assumed file order. Reuse computed results instead of separate head, count, grep and timestamp tool turns. Additional execution is justified by a new hypothesis, missing evidence, or a failed command, not reformatting the same data.",
 		"Return compact structured statistics and bounded representative excerpts to the model, not the entire file or repeated per-row infrastructure metadata. Save full grouped results to an artifact and link it when the user needs all groups or raw records. Report malformed/skipped records and fetched-window/limit/truncation coverage; never turn a parse failure into a zero count or claim sampled counts cover all matching backend logs.",
 	}

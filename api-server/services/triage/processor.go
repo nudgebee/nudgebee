@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"nudgebee/services/internal/database/models"
+	"nudgebee/services/tenant"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
@@ -171,6 +172,63 @@ func dedupWindowFrom(windows map[string]time.Duration, source *string) time.Dura
 	return DefaultDedupWindow
 }
 
+// chainBaseQuery reads the fingerprint's latest chain: its first and latest events. $1 fingerprint, $2 account,
+// $3 the event being recorded.
+const chainBaseQuery = `
+		SELECT
+			ed.first_event_id,
+			ed.event_id as latest_event_id,
+			ed.occurrence_number,
+			ed.absolute_first_seen_at,
+			first_e.starts_at as first_event_starts_at,
+			latest_e.starts_at as latest_event_starts_at,
+			COALESCE(first_e.nb_status, 'OPEN') as first_event_nb_status,
+			'' as loop_resolved_by,
+			NULL::timestamp as loop_resolved_at
+		FROM event_duplicates ed
+		JOIN events first_e ON ed.first_event_id = first_e.id
+		JOIN events latest_e ON ed.event_id = latest_e.id
+		WHERE ed.fingerprint = $1
+		  AND ed.cloud_account_id = $2
+		  AND ed.event_id != $3
+		ORDER BY latest_e.starts_at DESC, ed.occurrence_number DESC
+		LIMIT 1
+	`
+
+// chainWithLoopResolveQuery is chainBaseQuery plus loop_resolved: an event of that chain, at any occurrence,
+// that was resolved for the remediation loop (LabelResolvedBy) and is still RESOLVED; the chain breaks there.
+// Only resolves within the source's dedup window ($4, seconds) are read: an older one either broke the chain
+// already (the next firing after it started a new chain) or is followed by a gap past the window, which breaks
+// it anyway. idx_events_loop_resolved (partial: loop-resolved RESOLVED events only) keeps it to a few rows
+// however often the alert flaps.
+const chainWithLoopResolveQuery = `
+		SELECT chain.first_event_id, chain.latest_event_id, chain.occurrence_number, chain.absolute_first_seen_at,
+			chain.first_event_starts_at, chain.latest_event_starts_at, chain.first_event_nb_status,
+			COALESCE(loop_resolved.resolved_by, '') as loop_resolved_by,
+			loop_resolved.resolved_at as loop_resolved_at
+		FROM (` + chainBaseQuery + `) chain
+		LEFT JOIN LATERAL (
+			SELECT r.labels->>'` + LabelResolvedBy + `' AS resolved_by, r.nb_status_changed_at AS resolved_at
+			FROM events r
+			JOIN event_duplicates rd ON rd.event_id = r.id AND rd.cloud_account_id = r.cloud_account_id
+			WHERE r.fingerprint = $1
+			  AND r.cloud_account_id = $2
+			  AND r.nb_status = 'RESOLVED'
+			  AND jsonb_typeof(r.labels) = 'object'
+			  AND r.labels ? '` + LabelResolvedBy + `'
+			  AND r.nb_status_changed_at > NOW() - make_interval(secs => $4)
+			  AND rd.first_event_id = chain.first_event_id
+			ORDER BY r.nb_status_changed_at DESC NULLS LAST
+			LIMIT 1
+		) loop_resolved ON true
+	`
+
+// remediationLoopOnForTenant reports whether the tenant's remediation loop flag is on (cached per tenant by
+// tenant.IsFeatureExplicitlyEnabled). A var so tests can turn it on.
+var remediationLoopOnForTenant = func(tenantID string) bool {
+	return tenant.IsFeatureExplicitlyEnabled(nil, tenantID, tenant.FEATURE_EVENT_REMEDIATION_LOOP)
+}
+
 // detectAndRecordDuplicate checks if this event is a duplicate and records it
 // Creates chains per fingerprint. If the chain's first event is RESOLVED, or the chain has
 // been silent for longer than the source's dedup window, starts a new chain while keeping a
@@ -213,24 +271,15 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 	// hourly re-fires of one deployment all stuck at occurrence_number = 1, which is also
 	// what silently disables event_triage_rules.match_occurrence_greater_than. Inside an
 	// unbroken chain both orderings pick the same row, so the normal path is unchanged.
-	chainQuery := `
-		SELECT
-			ed.first_event_id,
-			ed.event_id as latest_event_id,
-			ed.occurrence_number,
-			ed.absolute_first_seen_at,
-			first_e.starts_at as first_event_starts_at,
-			latest_e.starts_at as latest_event_starts_at,
-			COALESCE(first_e.nb_status, 'OPEN') as first_event_nb_status
-		FROM event_duplicates ed
-		JOIN events first_e ON ed.first_event_id = first_e.id
-		JOIN events latest_e ON ed.event_id = latest_e.id
-		WHERE ed.fingerprint = $1
-		  AND ed.cloud_account_id = $2
-		  AND ed.event_id != $3
-		ORDER BY latest_e.starts_at DESC, ed.occurrence_number DESC
-		LIMIT 1
-	`
+	//
+	// With the tenant's remediation loop on (EVENT_REMEDIATION_LOOP) the chain also reads loop_resolved
+	// (chainWithLoopResolveQuery); with it off this is the query as it always was.
+	chainQuery := chainBaseQuery
+	chainArgs := []any{*event.Fingerprint, *event.CloudAccountId, event.Id}
+	if remediationLoopOnForTenant(*event.Tenant) {
+		chainQuery = chainWithLoopResolveQuery
+		chainArgs = append(chainArgs, int(dedupWindowForSource(event.Source).Seconds()))
+	}
 
 	var chainInfo struct {
 		FirstEventID        string     `db:"first_event_id"`
@@ -240,13 +289,11 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 		FirstEventStartsAt  time.Time  `db:"first_event_starts_at"`
 		LatestEventStartsAt time.Time  `db:"latest_event_starts_at"`
 		FirstEventNBStatus  string     `db:"first_event_nb_status"`
+		LoopResolvedBy      string     `db:"loop_resolved_by"`
+		LoopResolvedAt      *time.Time `db:"loop_resolved_at"`
 	}
 
-	err = sqlx.GetContext(ctx, db, &chainInfo, chainQuery,
-		*event.Fingerprint,
-		*event.CloudAccountId,
-		event.Id,
-	)
+	err = sqlx.GetContext(ctx, db, &chainInfo, chainQuery, chainArgs...)
 
 	if err != nil {
 		// sql.ErrNoRows means this is the first event with this fingerprint.
@@ -315,8 +362,11 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 	// so it can never trip the window and the existing chaining behaviour is unchanged.
 	dedupWindow := dedupWindowForSource(event.Source)
 	chainWentStale := timeSincePrevious > int(dedupWindow.Seconds())
+	// The remediation loop resolved an event of the chain, maybe a 2nd+ occurrence: the chain breaks there,
+	// so the next firing is a new OPEN event rather than a silent DUPLICATE of a resolved incident.
+	resolvedByLoop := chainInfo.LoopResolvedBy != ""
 
-	if chainInfo.FirstEventNBStatus == NBStatusResolved || chainWentStale {
+	if chainInfo.FirstEventNBStatus == NBStatusResolved || resolvedByLoop || chainWentStale {
 		insertQuery := `
 			INSERT INTO event_duplicates (
 				event_id, fingerprint, cloud_account_id, tenant_id,
@@ -337,6 +387,9 @@ func detectAndRecordDuplicate(ctx context.Context, db sqlx.ExtContext, event *mo
 		)
 		if err != nil {
 			return 0, fmt.Errorf("failed to insert new chain: %w", err)
+		}
+		if resolvedByLoop {
+			labelRefire(ctx, db, event, chainInfo.LoopResolvedBy, chainInfo.LoopResolvedAt)
 		}
 
 		reason := "resolved"

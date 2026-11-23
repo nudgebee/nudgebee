@@ -22,7 +22,7 @@ import { Label } from '@ui/Label';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import CustomTable from '@shared/tables/CustomTable';
-import { canManage } from '@lib/auth';
+import { canManageIntegration } from '@lib/auth';
 import { getIntegrationDescription } from '@lib/integrationDescriptions';
 import { buildWebhookUrl, getWebhookToken } from '@lib/webhookUrl';
 import CopyButton from '@shared/buttons/CopyButton';
@@ -90,6 +90,7 @@ const integrationConnectionKey = {
   splunk_enterprise: 'splunk_url',
   grafana_tempo: 'tempo_url',
   chronosphere: 'chronosphere_url',
+  orion: 'orion_url',
   signoz: 'signoz_url',
   loki: 'loki_url',
   prometheus: 'prometheus_url',
@@ -157,6 +158,7 @@ const ListIntegrations = ({ integrationName }) => {
     'elasticsearch_webhook',
     'openobserve_webhook',
     'event_webhook',
+    'orion_webhook',
   ];
   const integrationWebhooks = [
     'pagerduty_webhook',
@@ -174,6 +176,7 @@ const ListIntegrations = ({ integrationName }) => {
     'elasticsearch_webhook',
     'openobserve_webhook',
     'event_webhook',
+    'orion_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
   const hideConnectionInfo =
@@ -289,12 +292,13 @@ const ListIntegrations = ({ integrationName }) => {
   const linkedAccounts = (item) => (Array.isArray(item?.integrations_cloud_accounts) ? item.integrations_cloud_accounts : []);
 
   const getMenuItems = (item) => {
-    // Same gate as the Add-integration button below (canManage('integrations',
-    // 'Write')). It used to be a bare hasWriteAccess(), which only consults the
-    // built-in roles: a pure custom-role holder with integrations:Write could
-    // add an integration but got an empty row menu — no Edit, Enable/Disable or
-    // Delete on the thing they had just created.
-    if (!canManage('integrations', 'Write')) return [];
+    // Same gate as the Add-integration button below (canManageIntegration). It
+    // used to be a bare hasWriteAccess(), which only consults the built-in
+    // roles: a pure custom-role holder with integrations:Write could add an
+    // integration but got an empty row menu — no Edit, Enable/Disable or Delete
+    // on the thing they had just created. A per-provider grant (e.g. Datadog
+    // only) counts for its own provider's list.
+    if (!canManageIntegration(integrationName)) return [];
     const status = item.status || 'enabled';
     const items = [];
     // Webhook integrations get an Activity Log entry point — the incoming events
@@ -821,7 +825,7 @@ const ListIntegrations = ({ integrationName }) => {
   // otel_clickhouse is still agent-only: it has no user-configurable form, so there is
   // nothing for an Add button to open. Loki and Prometheus have both left that list —
   // each can now be connected directly.
-  const canAddAccount = integrationName != 'otel_clickhouse' && canManage('integrations', 'Write');
+  const canAddAccount = integrationName != 'otel_clickhouse' && canManageIntegration(integrationName);
 
   const addAccountButton = canAddAccount ? (
     <DsButton
@@ -1260,13 +1264,7 @@ const ListIntegrations = ({ integrationName }) => {
           </ListingLayout.Body>
         ) : (
           <>
-            <ListingLayout.Toolbar
-              actions={
-                <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], whiteSpace: 'nowrap' }}>
-                  {totalCount} {totalCount === 1 ? 'account' : 'accounts'}
-                </Typography>
-              }
-            >
+            <ListingLayout.Toolbar>
               {(() => {
                 const statusOptions = [
                   { label: 'Enabled', value: 'enabled' },

@@ -19,6 +19,11 @@ type ServicesQueryRequest struct {
 
 type Action struct {
 	Name string `json:"name"`
+	// Permission is the action's "<module>:<Class>" grant key, which the app
+	// gateway sends for calls it forwards. Set only on calls that need a
+	// custom-role grant honoured; it names the action's class, and the grant
+	// is still looked up on the caller.
+	Permission string `json:"permission,omitempty"`
 }
 
 type Input struct {

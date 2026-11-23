@@ -4,7 +4,7 @@
 //
 // `apiAccount.getAllAccount()` merges THREE backend populations into one per-provider map:
 //   - all_accounts        — cloud / cluster / VM accounts (accounts table)
-//   - messaging_platforms — legacy Slack / Teams / Google Chat / Discord installs
+//   - messaging_platforms — legacy Slack / Google Chat / Discord installs
 //   - integrations        — the integrations table (ticketing, observability, db, webhook, …)
 // A naive integrations_aggregate count sees only the third and misses the other two, which is
 // why the Overview card used to under-report. Count through here instead.
@@ -33,11 +33,13 @@ export const normalizeIntegrationAccounts = (resData: any): Record<string, any[]
 
   // 2. Process Messaging Platforms (Custom parsing logic preservation)
   resData?.messaging_platforms?.forEach((acc: any) => {
+    // MS Teams is connected only through its integration rows.
+    if (acc.platform === 'ms_teams') {
+      return;
+    }
     let channels: string[] = [];
     if (acc.platform === 'slack' && acc.channels) {
       channels = [acc.team_name];
-    } else if (acc.platform === 'ms_teams' && acc.channels?.team_name) {
-      channels = [acc.channels.team_name];
     } else if (acc.platform === 'google_chat' || acc.platform === 'discord') {
       try {
         const parsed = typeof acc.channels === 'string' ? JSON.parse(acc.channels) : acc.channels;
@@ -49,7 +51,7 @@ export const normalizeIntegrationAccounts = (resData: any): Record<string, any[]
       }
     }
 
-    const key = acc.platform === 'ms_teams' ? 'MSTEAMS' : acc.platform;
+    const key = acc.platform;
     // Messaging platforms in this API usually don't have 'disabled' status in same way, assuming active if exists
     addToMap(key, { ...acc, status: 'active', channels });
   });

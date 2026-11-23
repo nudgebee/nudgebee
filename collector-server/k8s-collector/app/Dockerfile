@@ -64,5 +64,16 @@ COPY . .
 
 EXPOSE 5000
 
-# Launch app using gunicorn
-CMD ["gunicorn", "--workers=2", "--bind=0.0.0.0:5000", "--timeout=300", "app:app"]
+# Launch app using gunicorn.
+# Threaded workers: an agent upload that stalls mid-body holds one thread, not
+# the whole process. A worker still accepts connections when its threads are all
+# busy, so /health is safe while fewer than 4 stalls sit on any one worker. With
+# plain sync workers two stalled uploads (the agent gives up after 60s) left
+# nothing to answer /health, and the liveness probe restarted the pod. A
+# buffering proxy would also fix it, but not every install has one in front of
+# the collector. 4 threads, not more: each thread can be decoding a large upload
+# at once, and 8 tripled peak worker memory in a local load test (16 concurrent
+# ~8MB discovery bodies: sync 169MiB, 4 threads 235MiB, 8 threads 623MiB).
+# graceful-timeout stays under the pod's 30s terminationGracePeriodSeconds so
+# shutdown finishes before the kubelet's SIGKILL.
+CMD ["gunicorn", "--workers=2", "--worker-class=gthread", "--threads=4", "--bind=0.0.0.0:5000", "--timeout=300", "--graceful-timeout=25", "app:app"]

@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	llmruntime "nudgebee/llm/llms/runtime"
 )
 
 func TestCustomAgentSharedCritiquerIsOptIn(t *testing.T) {
@@ -218,11 +220,11 @@ func TestCustomAgentThinkingLevel(t *testing.T) {
 		config map[string]any
 		want   string
 	}{
-		{name: "absent", config: nil, want: ThinkingLevelLow},
-		{name: "low", config: map[string]any{"thinking_level": "LOW"}, want: ThinkingLevelLow},
-		{name: "trimmed", config: map[string]any{"thinking_level": " medium "}, want: ThinkingLevelMedium},
-		{name: "unknown", config: map[string]any{"thinking_level": "enthusiastic"}, want: ThinkingLevelLow},
-		{name: "wrong type", config: map[string]any{"thinking_level": 2}, want: ThinkingLevelLow},
+		{name: "absent", config: nil, want: llmruntime.ThinkingLevelLow},
+		{name: "low", config: map[string]any{"thinking_level": "LOW"}, want: llmruntime.ThinkingLevelLow},
+		{name: "trimmed", config: map[string]any{"thinking_level": " medium "}, want: llmruntime.ThinkingLevelMedium},
+		{name: "unknown", config: map[string]any{"thinking_level": "enthusiastic"}, want: llmruntime.ThinkingLevelLow},
+		{name: "wrong type", config: map[string]any{"thinking_level": 2}, want: llmruntime.ThinkingLevelLow},
 	}
 
 	for _, tc := range tests {

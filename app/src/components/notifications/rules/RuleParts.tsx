@@ -172,6 +172,9 @@ export const FallbackSentence: React.FC<{ fallbacks: Fallbacks; type: RuleTypeKe
   if (type === 'daily_recap') {
     return <span>Without a rule, the daily email goes to your users; this setting doesn’t apply to it.</span>;
   }
+  if (type === 'llm_budget') {
+    return <span>Without a rule, budget alerts go to no channel; the key owner still gets the email.</span>;
+  }
   if (type) {
     const f = effectiveFallback(fallbacks, type);
     const noun = RULE_TYPE[type].noun;

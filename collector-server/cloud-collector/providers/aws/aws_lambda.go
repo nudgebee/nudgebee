@@ -48,7 +48,7 @@ type awsLambda struct {
 }
 
 func (a *awsLambda) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
-	return errors.ErrUnsupported
+	return applyAlarmMissingRecommendation(ctx, account, recommendation, "aws_lambda_")
 }
 
 func (a *awsLambda) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
@@ -69,6 +69,7 @@ func (a *awsLambda) GetResources(ctx providers.CloudProviderContext, account pro
 	svc := lambda.NewFromConfig(cfg)
 	ec2Svc := ec2.NewFromConfig(cfg) // Create EC2 client once for ENI fetching
 	resources := []providers.Resource{}
+	attachAlarms := regionAlarmAttacher(ctx, account, region)
 
 	// Loop for Pagination
 	paginator := lambda.NewListFunctionsPaginator(svc, &lambda.ListFunctionsInput{})
@@ -91,7 +92,9 @@ func (a *awsLambda) GetResources(ctx providers.CloudProviderContext, account pro
 				continue
 			}
 
-			resources = append(resources, buildLambdaResource(ctx, svc, ec2Svc, instance, nil, account, region))
+			resource := buildLambdaResource(ctx, svc, ec2Svc, instance, nil, account, region)
+			attachAlarms(resource.Meta, resource.Id)
+			resources = append(resources, resource)
 		}
 	}
 	return resources, nil
@@ -352,6 +355,10 @@ func (a *awsLambda) GetRecommendations(ctx providers.CloudProviderContext, accou
 		if len(meta) == 0 {
 			continue
 		}
+
+		recommendations = append(recommendations, alarmMissingRecommendations(ctx, "lambda", resource,
+			providers.AlarmDimension{Name: "FunctionName", Value: resource.Id},
+			map[string]any{"function_name": resource.Id, "function_arn": resource.Arn, "function_region": resource.Region})...)
 
 		// Check Lambda Function URL Not in Use
 		if urls, ok := meta["FunctionUrls"]; ok {

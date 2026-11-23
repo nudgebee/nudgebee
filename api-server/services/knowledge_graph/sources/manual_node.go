@@ -33,6 +33,9 @@ type ManualNodeEntry struct {
 	Network         core.NodeType
 	NetworkRequired bool
 	NetworkHint     string
+	// ResourceGroup is set for types whose unique key carries the resource
+	// group (every Azure resource).
+	ResourceGroup bool
 }
 
 // CloudManualNodeBuilder implements core.ManualNodeBuilder over a cloud
@@ -48,6 +51,10 @@ type CloudManualNodeBuilder struct {
 	// ApplyNetwork stamps the network onto the node and re-keys it the way
 	// the source's own network pass does. Nil for clouds without one.
 	ApplyNetwork func(node *core.DbNode, network *core.ManualNodeNetwork)
+	// RowMeta is the meta the declared row carries, in the shape the cloud's
+	// classifier reads key inputs from (an Azure row's resourceGroup). Nil
+	// writes an empty object.
+	RowMeta func(in core.ManualNodeInput) []byte
 
 	once    sync.Once
 	entries map[string]ManualNodeEntry
@@ -104,6 +111,14 @@ func entryFields(e ManualNodeEntry) []core.ManualNodeField {
 			PickNodeType: e.Network,
 		})
 	}
+	if e.ResourceGroup {
+		fields = append(fields, core.ManualNodeField{
+			Name:     core.ManualNodeFieldResourceGroup,
+			Label:    "Resource group",
+			Hint:     "The resource group the resource is in",
+			Required: true,
+		})
+	}
 	return fields
 }
 
@@ -134,6 +149,10 @@ func (b *CloudManualNodeBuilder) Build(in core.ManualNodeInput) (*core.DbNode, e
 	if in.Network == nil && e.NetworkRequired {
 		return nil, fmt.Errorf("network is required for %s", in.SpecificType)
 	}
+	in.ResourceGroup = strings.TrimSpace(in.ResourceGroup)
+	if e.ResourceGroup && in.ResourceGroup == "" {
+		return nil, fmt.Errorf("resource group is required for %s", in.SpecificType)
+	}
 
 	node := b.BuildRow(b.row(e, in), &core.SourceBuildRequest{TenantID: in.TenantID, CloudAccountID: in.CloudAccountID})
 	if node == nil {
@@ -149,6 +168,10 @@ func (b *CloudManualNodeBuilder) Build(in core.ManualNodeInput) (*core.DbNode, e
 // It has no id: the change detector only considers nodes whose nb_resource_id
 // is a real inventory row, so a declared node is never proposed for deletion.
 func (b *CloudManualNodeBuilder) row(e ManualNodeEntry, in core.ManualNodeInput) *CloudResourceRow {
+	meta := []byte("{}")
+	if b.RowMeta != nil {
+		meta = b.RowMeta(in)
+	}
 	return &CloudResourceRow{
 		Name:          in.Name,
 		Type:          e.RowType,
@@ -160,6 +183,6 @@ func (b *CloudManualNodeBuilder) row(e ManualNodeEntry, in core.ManualNodeInput)
 		IsActive:      true,
 		AccountNumber: in.AccountNumber,
 		Tags:          []byte("{}"),
-		Meta:          []byte("{}"),
+		Meta:          meta,
 	}
 }

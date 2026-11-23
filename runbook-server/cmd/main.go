@@ -124,6 +124,11 @@ func main() {
 		}
 	}()
 
+	if config.Config.WorkflowServerToken == "" {
+		slog.Error("WORKFLOW_SERVER_TOKEN is not set; refusing to start. Every caller must authenticate with it (the Helm chart generates one).")
+		os.Exit(1)
+	}
+
 	if config.Config.RunbookServerDBUrl == "" {
 		slog.Info("DATABASE_URL environment variable not set, using default")
 	}

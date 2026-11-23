@@ -520,6 +520,29 @@ class TestMsTeams:
         assert len([text for text in texts if " · resolved " in text]) == 5
         assert texts[-1] == "+3 more resolved"
 
+    def test_per_account_cap_and_its_own_overflow_count(self):
+        # Regression for #41712: one busy account used to render every firing
+        # anomaly with no cap, which could push the card past Teams' size limit.
+        texts = _teams_texts(render("ms_teams", [_event(i) for i in range(8)]))
+        assert len([text for text in texts if text.startswith("- **")]) == slack_anomaly.MAX_ANOMALY_ITEMS
+        assert "+3 more" in texts
+
+    def test_other_accounts_are_unaffected_by_a_busy_one(self):
+        events = [_event(i) for i in range(8)] + [_spend(20)]
+        texts = _teams_texts(render("ms_teams", events))
+        assert any("service-20" in text for text in texts)
+
+    def test_many_accounts_drop_from_the_tail_once_the_card_is_too_large(self):
+        from notifications_server.services.ms_teams import card_actions
+
+        events = [_event(i, account=f"acc-{i}", cluster=f"cluster-{i}") for i in range(80)]
+        card = render("ms_teams", events)
+
+        assert card_actions.fits(card)
+        texts = _teams_texts(card)
+        assert any(text.startswith("+") and "more accounts with anomalies" in text for text in texts)
+        assert not any("cluster-79" in text for text in texts)
+
 
 @pytest.mark.usefixtures("flag_on")
 class TestGoogleChat:

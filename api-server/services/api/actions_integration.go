@@ -111,8 +111,9 @@ func notifyGoogleChatBinding(tenantId, spaceId, event string) {
 }
 
 // notifyMessagingCacheInvalidate drops notifications-server's cached per-tenant
-// messaging installs so a new/deleted webhook target is routable without waiting
-// out the 60-minute cache TTL. Best-effort; a miss only delays visibility.
+// messaging installs so a new/deleted webhook target, or a Slack/Discord setting
+// change, applies without waiting out the 60-minute cache TTL. Best-effort; a
+// miss only delays visibility.
 func notifyMessagingCacheInvalidate(tenantId string) {
 	if tenantId == "" || config.Config.NotificationServiceUrl == "" {
 		return
@@ -196,7 +197,7 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		}
 
 		if err := core.CheckMsTeamsGenericWrite(ctx.GetSecurityContext().GetTenantId(), request.IntegrationName,
-			request.IntegrationId, request.IntegrationConfigName); err != nil {
+			request.IntegrationId, request.IntegrationConfigName, request.IntegrationConfigValues); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
@@ -241,7 +242,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		if request.IntegrationName == integrations.IntegrationGoogleChatSpace && request.IntegrationId == "" {
 			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "bound")
 		}
-		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) {
+		if integrations.IsWebhookMessagingIntegration(request.IntegrationName) ||
+			request.IntegrationName == integrations.IntegrationSlack ||
+			request.IntegrationName == integrations.IntegrationDiscord {
 			notifyMessagingCacheInvalidate(ctx.GetSecurityContext().GetTenantId())
 		}
 		return
@@ -287,6 +290,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 
 		err = common.ValidateStruct(request)
 		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if err := core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
@@ -408,6 +416,11 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 			return
 		}
 
+		if err = core.CheckMsTeamsGenericDeleteOrStatus(request.IntegrationName); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
 		err = core.UpdateIntegrationConfigStatus(ctx, request.IntegrationName, request.IntegrationConfigName, request.IntegrationConfigStatus, request.Source)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -449,6 +462,31 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 				"integration_config_name", request.IntegrationConfigName)
 		} else {
 			onIntegrationConfigChanged(ctx, llmTenantWideAccounts(ctx, request.IntegrationName, ids))
+		}
+		return
+
+	case "integrations_update_mcp_write_tools":
+		// Which of an MCP server's tools ask for approval (#40399), saved on
+		// its own so the MCP Servers view needn't re-submit the integration.
+		requestInput, ok := actionPayload.Input["request"].(map[string]interface{})
+		if !ok {
+			c.JSON(400, common.ErrorActionBadRequest("invalid request input"))
+			return
+		}
+		integrationID, _ := requestInput["integration_id"].(string)
+		writeTools, _ := requestInput["write_tools"].(string)
+		if err := core.UpdateMCPWriteTools(ctx, integrationID, writeTools); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, map[string]string{"status": "success"})
+		// Each llm-server replica rebuilds the integration's tools, so the
+		// change applies to the next call.
+		if ids, lerr := core.ListLinkedCloudAccountIDsByIntegrationID(ctx, integrationID); lerr != nil {
+			ctx.GetLogger().Error("integrations: failed to list affected accounts after write_tools update (best-effort, cache will stay stale until TTL)",
+				"error", lerr, "integration_id", integrationID)
+		} else {
+			onIntegrationConfigChanged(ctx, ids)
 		}
 		return
 
@@ -771,10 +809,9 @@ func diagnoseIntegrationConnection(ctx *security.RequestContext, integrationID s
 	if err != nil {
 		return IntegrationDiagnosisResponse{}, err
 	}
-	securityContext := ctx.GetSecurityContext()
 	authorizedAccountID := ""
 	for _, accountID := range accountIDs {
-		if securityContext.HasAccountAccess(accountID, security.SecurityAccessTypeRead) {
+		if ctx.GetSecurityContext().CanAccessAccount(accountID, security.SecurityAccessTypeRead) {
 			authorizedAccountID = accountID
 			break
 		}

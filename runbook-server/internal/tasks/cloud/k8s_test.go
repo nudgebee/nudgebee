@@ -42,6 +42,7 @@ func TestK8sCliTask_ReportsKubectlOutcome(t *testing.T) {
 		{name: "agent refusal fails the task", payload: map[string]any{"error": "only kubectl get commands are allowed"}, wantErr: "only kubectl get commands are allowed"},
 		{name: "non-string stderr does not panic", payload: map[string]any{"stdout": "ok", "stderr": 42}, want: "ok"},
 		{name: "no stdout key still succeeds (quiet commands)", payload: map[string]any{"stderr": ""}, want: nil},
+		{name: "non-zero exit fails even without an error: prefix", payload: map[string]any{"stdout": "", "stderr": "Error from server (Forbidden)", "exit_code": 1}, wantErr: "kubectl exited 1: Error from server (Forbidden)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,4 +58,13 @@ func TestK8sCliTask_ReportsKubectlOutcome(t *testing.T) {
 			assert.Equal(t, map[string]any{"data": tc.want}, out)
 		})
 	}
+}
+
+// D8: exit 0 with a Warning on stderr is a success; the warning rides along.
+func TestK8sCliTask_ExitZeroWarningSucceeds(t *testing.T) {
+	fakeRelay(t, map[string]any{"stdout": "pod/web-1 deleted\n", "stderr": "Warning: Immediate deletion\n", "exit_code": 0})
+	taskCtx := testutils.NewTestTaskContext("tenant", "acct", "user", slog.Default())
+	out, err := (&K8sCliTask{}).Execute(taskCtx, map[string]any{"command": "kubectl delete pod web-1 --force"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"data": "pod/web-1 deleted\n", "stderr": "Warning: Immediate deletion\n", "exit_code": 0}, out)
 }

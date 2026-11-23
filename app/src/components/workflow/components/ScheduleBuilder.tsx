@@ -83,6 +83,9 @@ const buildCron = (state: VisualState): string => {
   }
 };
 
+/** The schedule a new Schedule trigger starts with: the builder's default (daily at 09:00). */
+export const DEFAULT_SCHEDULE_CRON = buildCron(DEFAULT_VISUAL);
+
 /** Expands a day-of-week field of plain numbers, lists and ranges (e.g. `1-5,0`). */
 const parseWeekdays = (field: string): number[] | null => {
   const days = new Set<number>();

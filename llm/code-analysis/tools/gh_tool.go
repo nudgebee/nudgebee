@@ -59,7 +59,7 @@ COMMON EXAMPLES:
   List PRs:        ["pr", "list"]
   List PRs (limit): ["pr", "list", "--limit", "5"]
   List all PRs:    ["pr", "list", "--state", "all", "--limit", "10"]
-  View PR:         ["pr", "view", "123"]
+  View PR:         ["pr", "view", "123", "--json", "title,body,state"]
   Create PR:       ["pr", "create", "--title", "My PR", "--body", "Description"]
 
   List issues:     ["issue", "list"]
@@ -145,6 +145,8 @@ func (t *GHTool) Execute(ctx context.Context, input map[string]any) core.NBToolR
 	// touches projects. Anything more exotic (labels, assignees, base, etc.) is
 	// left untouched so gh handles it.
 	if rewritten, ok := rewritePREditToRESTAPI(args, repoDir, t.githubToken); ok {
+		args = rewritten
+	} else if rewritten, ok := rewritePRView(args); ok {
 		args = rewritten
 	}
 
@@ -383,4 +385,45 @@ func resolvePRNumberFromBranch(repoDir, repo, token string) string {
 		return ""
 	}
 	return num
+}
+
+// defaultPRViewJSONFields lists the safe fields requested when `gh pr view` is
+// called without an explicit `--json` flag. Bare `gh pr view` runs an internal
+// GraphQL query requesting `repository.pullRequest.projectCards`. Because
+// GitHub sunset Projects (classic), that query fails fatally with:
+// "GraphQL: Projects (classic) is being deprecated in favor of the new Projects experience".
+// Supplying explicit `--json` fields makes gh query only those fields, avoiding
+// the deprecated projectCards field entirely.
+const defaultPRViewJSONFields = "number,title,state,author,body,url,headRefName,baseRefName,isDraft,createdAt,mergedAt,comments,files"
+
+// rewritePRView translates a `gh pr view` invocation that lacks `--json` into
+// one with safe, explicit JSON fields to avoid the Projects (classic) GraphQL error.
+// It returns (newArgs, true) if rewritten, or (nil, false) if the command should
+// run untouched (e.g. --json or --web was already specified, or not a `pr view` call).
+func rewritePRView(args []string) ([]string, bool) {
+	if len(args) < 2 || args[0] != "pr" || args[1] != "view" {
+		return nil, false
+	}
+
+	for _, a := range args {
+		if a == "--web" || a == "-w" || strings.HasPrefix(a, "--web=") {
+			return nil, false
+		}
+		if a == "--json" || strings.HasPrefix(a, "--json=") {
+			return nil, false
+		}
+	}
+
+	// If --comments / -c is present, gh refuses to combine it with --json. Strip it
+	// because defaultPRViewJSONFields already includes the comments field.
+	newArgs := make([]string, 0, len(args)+2)
+	for _, a := range args {
+		if a == "--comments" || a == "-c" || strings.HasPrefix(a, "--comments=") {
+			continue
+		}
+		newArgs = append(newArgs, a)
+	}
+
+	newArgs = append(newArgs, "--json", defaultPRViewJSONFields)
+	return newArgs, true
 }

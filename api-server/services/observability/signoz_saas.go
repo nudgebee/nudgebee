@@ -9,7 +9,9 @@ import (
 	"math"
 	"net/http"
 	"nudgebee/services/common"
+	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
+	"nudgebee/services/integrations/promforager"
 	"nudgebee/services/integrations/signozclient"
 	"nudgebee/services/security"
 	"strconv"
@@ -41,13 +43,15 @@ func (s *SignozSaasSource) GetSupportedOperators() []string {
 
 func (s *SignozSaasSource) ExpandedLabelKeys() map[string][]string { return signozExpandedLabelKeys }
 
-// GetSignozAuth loads the account's user-sourced SigNoz integration and returns
-// its credentials. Logging in is left to signozDo, which caches the token and
-// detects the login API of the SigNoz release behind the URL.
-func (s *SignozSaasSource) GetSignozAuth(ctx *security.RequestContext, accountId string) (signozclient.Credentials, error) {
+// signozConnection loads the account's user-sourced SigNoz integration and returns its
+// credentials and the HTTP client to send them with. Logging in is left to signozclient,
+// which caches the token and detects the login API of the release behind the URL. In
+// connection_mode=vm_agent the client's transport is the account's forager; its
+// datasource is unauthenticated, so the login and the JWT or API key travel per request.
+func (s *SignozSaasSource) signozConnection(ctx *security.RequestContext, accountId string) (signozclient.Credentials, *http.Client, error) {
 	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "signoz")
 	if err != nil {
-		return signozclient.Credentials{}, fmt.Errorf("failed to get signoz integration: %w", err)
+		return signozclient.Credentials{}, nil, fmt.Errorf("failed to get signoz integration: %w", err)
 	}
 
 	// An account can also carry an agent-detected SigNoz row, which has no URL
@@ -59,10 +63,37 @@ func (s *SignozSaasSource) GetSignozAuth(ctx *security.RequestContext, accountId
 		}
 	}
 	if len(userIntegrations) == 0 {
-		return signozclient.Credentials{}, errors.New("no signoz integrations found")
+		return signozclient.Credentials{}, nil, errors.New("no signoz integrations found")
+	}
+	dto := userIntegrations[0]
+
+	creds, err := signozCredentials(dto.Configs)
+	if err != nil {
+		return signozclient.Credentials{}, nil, err
 	}
 
-	return signozCredentials(userIntegrations[0].Configs)
+	var connectionMode, datasourceKey, agentType string
+	for _, config := range dto.Configs {
+		switch config.Name {
+		case integrations.SignozConnectionModeKey:
+			connectionMode = strings.TrimSpace(config.Value)
+		case "datasource_key":
+			datasourceKey = strings.TrimSpace(config.Value)
+		case "agent_type":
+			agentType = strings.TrimSpace(config.Value)
+		}
+	}
+	if connectionMode != integrations.SignozConnectionModeVMAgent {
+		return creds, common.HttpClient(), nil
+	}
+	if datasourceKey == "" {
+		datasourceKey = dto.Id
+	}
+	// Scoped by account and datasource: a private URL can be two customers' servers, and
+	// the token cache is keyed on URL and credentials.
+	creds.CacheScope = accountId + "|" + datasourceKey
+	transport := promforager.NewTransport(accountId, datasourceKey, agentType)
+	return creds, &http.Client{Transport: transport}, nil
 }
 
 // signozCredentials builds the credentials for one stored SigNoz integration.
@@ -134,7 +165,7 @@ func signozCredentials(configs []core.IntegrationConfigValue) (signozclient.Cred
 // signozDo sends one authenticated request to the account's SigNoz. The body
 // is marshalled to JSON when non-nil.
 func (s *SignozSaasSource) signozDo(ctx *security.RequestContext, accountId, method, path string, body any) (*http.Response, error) {
-	creds, err := s.GetSignozAuth(ctx, accountId)
+	creds, hc, err := s.signozConnection(ctx, accountId)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +179,7 @@ func (s *SignozSaasSource) signozDo(ctx *security.RequestContext, accountId, met
 	if reqCtx == nil {
 		reqCtx = context.Background()
 	}
-	return signozclient.Do(reqCtx, common.HttpClient(), creds, method, path, payload)
+	return signozclient.Do(reqCtx, hc, creds, method, path, payload)
 }
 
 func (s *SignozSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
@@ -556,14 +587,14 @@ func buildSignozSaasLogGroupFilters(req FetchLogGroupRequest) []map[string]any {
 
 	if selectedNamespace != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozNamespaceKey},
+			"key":   signozFilterKey(signozNamespaceKey),
 			"value": selectedNamespace,
 			"op":    "=",
 		})
 	}
 	if selectedWorkload != "" {
 		filters = append(filters, map[string]any{
-			"key":   map[string]string{"key": signozPodKey},
+			"key":   signozFilterKey(signozPodKey),
 			"value": selectedWorkload,
 			"op":    "contains",
 		})

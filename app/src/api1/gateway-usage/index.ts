@@ -26,13 +26,17 @@ export interface GatewayTotals {
   cache_hit_rate_pct: number;
   /** Request-weighted average end-to-end latency, in seconds. */
   avg_latency_seconds: number;
+  /** What prompt caching saved, net of cache-write premiums. Absent on an older gateway. */
+  cache_savings_usd?: number;
 }
 
 /** One breakdown row (per provider / per model / per user). */
 export interface GatewayGroupRow {
   key: string;
-  /** Stable id for drill-down — the user_id on the user breakdown; empty otherwise. */
+  /** Stable id for drill-down — the user_id (user breakdown) or api key id (api_key breakdown). */
   id?: string;
+  /** The key's owner — set on the api_key breakdown only. */
+  owner?: string;
   cost_usd: number;
   requests: number;
   input_tokens: number;
@@ -42,6 +46,8 @@ export interface GatewayGroupRow {
   cache_hit_rate_pct: number;
   /** Request-weighted average latency for this bucket, in seconds. */
   avg_latency_seconds: number;
+  /** What prompt caching saved for this bucket (provider / model breakdowns only). */
+  cache_savings_usd?: number;
 }
 
 /** One (bucket, key) cell of the over-time series. */
@@ -66,6 +72,9 @@ export interface GatewayBreakdowns {
   model: GatewayGroupRow[];
   /** Per-user usage; `key` is the resolved display name (falls back to user id). */
   user: GatewayGroupRow[];
+  /** Per-API-key usage; `key` is the key name (falls back to the key id for a deleted key).
+   * Optional so an older gateway that doesn't send it still type-checks. */
+  api_key?: GatewayGroupRow[];
 }
 
 /** One row of the tool breakdown — a tool the caller OFFERED (from request tool
@@ -122,6 +131,14 @@ export interface GatewayLatencyPct {
   p99_seconds: number;
 }
 
+/** One provider's time to first streamed chunk over its streamed requests (ms). */
+export interface GatewayProviderTTFT {
+  provider: string;
+  requests: number;
+  p50_ms: number;
+  p95_ms: number;
+}
+
 /** One from→to substitution pair and how often it fired. */
 export interface GatewayRoute {
   from_provider: string;
@@ -151,6 +168,8 @@ export interface GatewayGovernance {
   latency?: GatewayLatencyPct;
   /** from→to pairs for routing_reason=substitute — where substitution reroutes. */
   substitution_routes?: GatewayRoute[];
+  /** Time to first streamed chunk per provider (streamed requests only). */
+  ttft_by_provider?: GatewayProviderTTFT[];
 }
 
 export interface GatewayUsageMetrics {
@@ -172,6 +191,10 @@ export interface GatewayRequestRow {
   can_view_body: boolean;
   created_at: string; // RFC3339 UTC
   user: string; // resolved display name (falls back to user id)
+  /** The API key the request was sent with; '' (or absent on an older gateway) when none. */
+  api_key_id?: string;
+  /** The key's name (falls back to its id for a deleted key). */
+  api_key?: string;
   provider: string;
   model: string;
   requested_model: string;
@@ -188,6 +211,8 @@ export interface GatewayRequestRow {
   output_tokens: number;
   cached_input_tokens: number;
   latency_ms: number;
+  /** Time to the first streamed chunk; absent for non-streamed requests. */
+  ttft_ms?: number;
   cost_usd: number;
   session_id: string;
   /** How session_id was resolved, most-authoritative first:
@@ -221,6 +246,7 @@ export interface ListGatewayRequestsRequest {
   startDate: string; // RFC3339 UTC
   endDate: string; // RFC3339 UTC
   userId?: string; // optional; Users-tab drill-down or the User filter
+  apiKeyId?: string; // optional; Keys-tab drill-down or the Key filter
   providers?: string[]; // optional; empty = all providers
   models?: string[]; // optional; empty = all (routed) models
   status?: string; // optional; 'success' (2xx) | 'error' (everything else)
@@ -278,11 +304,11 @@ export async function aggregateGatewayUsage(req: AggregateGatewayUsageRequest, s
 /** Exported for the rpcGateway contract test — asserts this mutation parses into
  * an upstream body that carries every filter field the Go handler binds. */
 export const LIST_GATEWAY_REQUESTS = `mutation ListGatewayRequests(
-    $startDate: String!, $endDate: String!, $userId: String, $providers: [String!], $models: [String!],
+    $startDate: String!, $endDate: String!, $userId: String, $apiKeyId: String, $providers: [String!], $models: [String!],
     $status: String, $tool: String, $sessionId: String, $routingReason: String, $rejectReason: String, $dlp: Boolean, $limit: Int, $offset: Int
   ) {
     llm_gateway_list_requests(request: {
-      start_date: $startDate, end_date: $endDate, user_id: $userId, providers: $providers, models: $models,
+      start_date: $startDate, end_date: $endDate, user_id: $userId, api_key_id: $apiKeyId, providers: $providers, models: $models,
       status: $status, tool: $tool, session_id: $sessionId, routing_reason: $routingReason, reject_reason: $rejectReason, dlp: $dlp, limit: $limit, offset: $offset
     }) {
       data
@@ -298,6 +324,7 @@ export async function listGatewayRequests(req: ListGatewayRequestsRequest, signa
       startDate: req.startDate,
       endDate: req.endDate,
       userId: req.userId ?? '',
+      apiKeyId: req.apiKeyId ?? '',
       providers: arr(req.providers),
       models: arr(req.models),
       status: req.status ?? '',

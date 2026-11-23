@@ -14,10 +14,12 @@ import (
 )
 
 func init() {
-	// Register AWS LoadBalancer to K8s enricher factory with the global registry
+	// Register AWS LoadBalancer to K8s enricher factory with the global registry.
+	// Runs after k8s_ec2: linkBackendPoolToWorkload walks the K8s Node → EC2
+	// RUNS_ON edges that k8s_ec2 adds in this same phase.
 	RegisterCrossSourceEnricherFactory("aws_lb_k8s", func(logger *slog.Logger) core.CrossSourceEnricherInterface {
 		return NewLoadBalancerK8sEnricher(logger)
-	}, "Enriches AWS LoadBalancer nodes with edges to K8s Service/Workload nodes")
+	}, "Enriches AWS LoadBalancer nodes with edges to K8s Service/Workload nodes", "k8s_ec2")
 }
 
 // keyFormat is the format string for creating lookup keys: "account:namespace:name"
@@ -578,6 +580,20 @@ func (e *LoadBalancerK8sEnricher) collectTargetIPs(
 	for _, tg := range targetGroups {
 		tgArn, ok := tg["TargetGroupArn"].(string)
 		if !ok {
+			continue
+		}
+
+		// Membership the collector already captured on this load balancer's row.
+		// Only a target group whose membership was never captured needs a live
+		// call; nothing here reads health state.
+		if memberIDs, fromRow := flow_sources.TargetGroupMemberIDs(tg); fromRow {
+			for _, targetID := range memberIDs {
+				if strings.HasPrefix(targetID, "i-") {
+					instanceIDs[targetID] = true
+				} else {
+					uniqueIPs[targetID] = true
+				}
+			}
 			continue
 		}
 

@@ -559,7 +559,8 @@ export function evaluateOnboarding(input: EvaluateOnboardingInput = {}): Onboard
   });
   messagingPlatforms.forEach((m) => {
     const platform = m && normalize(m.platform);
-    if (!platform) return;
+    // MS Teams is connected only through its integration rows.
+    if (!platform || platform === 'ms_teams') return;
     if (!stateByType.has(platform)) stateByType.set(platform, 'done');
     // Installing a messaging app (Slack's "Add to Slack", Teams) is always a
     // deliberate action — unlike a telemetry source, there is no agent path

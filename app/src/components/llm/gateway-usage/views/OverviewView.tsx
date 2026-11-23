@@ -199,7 +199,12 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
           <Stat label='Total cost' value={fmtCost(totals?.total_cost_usd)} />
         </Card>
         <Card sx={{ flex: '1 1 180px', minWidth: 160 }}>
-          <Stat label='Cache-hit rate' value={`${(totals?.cache_hit_rate_pct ?? 0).toFixed(1)}%`} />
+          <Stat
+            id='gateway-kpi-cache'
+            label='Cache-hit rate'
+            value={`${(totals?.cache_hit_rate_pct ?? 0).toFixed(1)}%`}
+            sub={`Saved ${fmtCost(totals?.cache_savings_usd ?? 0)} by caching`}
+          />
         </Card>
         <Card sx={{ flex: '1 1 180px', minWidth: 160 }}>
           <Stat label='Avg latency' value={fmtDuration((totals?.avg_latency_seconds ?? 0) * 1000)} />
@@ -223,6 +228,7 @@ export function OverviewView({ metrics, filters, loading, error, onSelectDay }: 
             shape='bar'
             format={metric === 'cost' ? fmtCost : fmtCount}
             compactFormat={metric === 'cost' ? undefined : fmtCountCompact}
+            legendFormat={metric === 'cost' ? undefined : fmtTokens}
             integerY={metric !== 'cost'}
             onSelectPoint={handleSelectPoint}
             id='gateway-usage-over-time'

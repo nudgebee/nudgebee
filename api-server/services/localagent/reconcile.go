@@ -58,12 +58,13 @@ func Reconcile(ctx context.Context, logger *slog.Logger) error {
 
 	// cloud_accounts.created_by/updated_by are NOT NULL FKs to users(id), so the
 	// account needs an owner. Any member of the tenant satisfies the constraint;
-	// the oldest is the closest thing to "whoever set this up".
+	// the oldest person is the closest thing to "whoever set this up" (a bee
+	// account never sets anything up).
 	var userID string
 	err = dbms.Db.QueryRowContext(ctx, `
 		SELECT u.id::text FROM users u
 		JOIN tenant_users tu ON tu."user" = u.id
-		WHERE tu.tenant = $1
+		WHERE tu.tenant = $1 AND u.kind = 'person'
 		ORDER BY u.created_at LIMIT 1`, tenantID).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		logger.Info("local agent: tenant has no users yet, deferring registration to first login", "tenant", tenantID)

@@ -37,6 +37,25 @@ func getAzureAuditInfo(ctx context.Context) *AzureAuditInfo {
 	return nil
 }
 
+type skipPermissionAuditKey struct{}
+
+// withoutPermissionAudit marks calls made with ctx as best-effort. A 401/403
+// from them is expected for a Reader-only principal, not a permission gap the
+// account owner should close, so the audit policy does not record it.
+func withoutPermissionAudit(ctx context.Context) context.Context {
+	return context.WithValue(ctx, skipPermissionAuditKey{}, true)
+}
+
+func permissionAuditSkipped(ctx context.Context) bool {
+	skip, _ := ctx.Value(skipPermissionAuditKey{}).(bool)
+	return skip
+}
+
+// recordPermissionError is a variable so tests can observe what gets recorded.
+var recordPermissionError = func(r providers.PermissionAuditRecord) {
+	providers.GetPermissionAuditCollector().Record(r)
+}
+
 // permissionAuditPolicy is an Azure SDK policy that intercepts HTTP responses
 // to catch permission errors at the transport level, before service code can swallow them.
 type permissionAuditPolicy struct {
@@ -46,7 +65,7 @@ type permissionAuditPolicy struct {
 func (p *permissionAuditPolicy) Do(req *policy.Request) (*http.Response, error) {
 	resp, err := req.Next()
 
-	if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) {
+	if resp != nil && (resp.StatusCode == 401 || resp.StatusCode == 403) && !permissionAuditSkipped(req.Raw().Context()) {
 		apiOperation := extractAzureOperation(req.Raw().URL.Path)
 		errorCode, errorMessage := extractAzureErrorFromResponse(resp)
 
@@ -57,7 +76,7 @@ func (p *permissionAuditPolicy) Do(req *policy.Request) (*http.Response, error) 
 			errorMessage = resp.Status
 		}
 
-		providers.GetPermissionAuditCollector().Record(providers.PermissionAuditRecord{
+		recordPermissionError(providers.PermissionAuditRecord{
 			TenantID:       p.info.TenantID,
 			CloudAccountID: p.info.CloudAccountID,
 			AccountNumber:  p.info.AccountNumber,

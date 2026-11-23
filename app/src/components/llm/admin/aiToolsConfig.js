@@ -3,14 +3,17 @@ import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 import ShieldOutlinedIcon from '@mui/icons-material/ShieldOutlined';
 import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
+import SpeedOutlinedIcon from '@mui/icons-material/SpeedOutlined';
 import withBrandBlue from '@shared/icons/withBrandBlue';
+import { missingPermissionMessage } from '@lib/auth';
 import AgentsAdminTab from './AgentsAdminTab';
 import ToolsAndMCPAdminTab from './ToolsAndMCPAdminTab';
 import ProvidersAdminTab from './ProvidersAdminTab';
 import GatewayAdminTab from './GatewayAdminTab';
-import EgressFilterAdminTab from './EgressFilterAdminTab';
+import SecurityAdminTab from './SecurityAdminTab';
 import BudgetsAndLimitsAdminTab from './BudgetsAndLimitsAdminTab';
 import MemoryPolicyAdminTab from './MemoryPolicyAdminTab';
+import InvestigationDepthAdminTab from './InvestigationDepthAdminTab';
 import RCAFormatAdminTab from './RCAFormatAdminTab';
 import MemoryLegacyAdminTab from './MemoryLegacyAdminTab';
 import AccountContextAdminTab from './AccountContextAdminTab';
@@ -20,8 +23,9 @@ import AccountContextAdminTab from './AccountContextAdminTab';
 // of their custom-SVG siblings (Agents, Tools & MCP, …) in the same list.
 const ProvidersIcon = withBrandBlue(SettingsOutlinedIcon);
 const GatewayIcon = withBrandBlue(HubOutlinedIcon);
-const EgressFilterIcon = withBrandBlue(ShieldOutlinedIcon);
+const SecurityIcon = withBrandBlue(ShieldOutlinedIcon);
 const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
+const InvestigationDepthIcon = withBrandBlue(SpeedOutlinedIcon);
 
 /**
  * AI & Tools sub-tabs (docs/ia-consolidation-plan.md, PR 3) — the single
@@ -31,14 +35,19 @@ const MemoryPolicyIcon = withBrandBlue(LockOutlinedIcon);
  * Users' tabOptions uses on the Admin page — `module` drives per-tab
  * dynamic-RBAC gating in both places.
  *
- * `module` values reuse the dynamic-RBAC modules the underlying actions
- * already normalize to (permissionCatalog.ts's token-0 heuristic) rather
- * than inventing new ones: every `ai_*` action (agents, tools, budget,
- * rca-format) shares one module, `ai`; Providers reuses
- * `integrations` (same integrations_list/_aggregate actions Admin →
- * Integrations already gates on); Gateway reuses `llm` (llm_gateway_* —
- * same module Settings' own hasPermission('llm', 'Read') check already
- * names); Egress Filter reuses `egressfilter`.
+ * `modules` lists the dynamic-RBAC modules whose Read grant (or Write, which
+ * implies Read) opens the tab: the modules its own actions classify to in
+ * permissionCatalog.ts. AI actions are split by refineAiModule into ai_agents,
+ * ai_tools, ai_budget, ai_models, ai_rca, ai_memory, ai_guardrails, … — there is
+ * no `ai` module, so gating on it hid these tabs from every custom role.
+ * Tools & MCP opens on any of its sub-views' modules (Tools: ai_tools, MCP
+ * Servers: integrations). Providers reuses `integrations`; Security
+ * `egressfilter` (its Tool Approvals subsection is shown only to tenant-wide
+ * admin roles and keeps separate enforcement in the RPC and handler).
+ *
+ * `adminOnly: true` marks a tab no grant can open: Gateway (every llm_gateway_*
+ * config action is non-grantable) and Memory Policy (tenant memory consent stays
+ * a tenant-admin decision).
  *
  * `legacyOnly: true` (Memory, Account Context) marks the two sub-tabs that
  * only make sense for a tenant that doesn't have b-Cortex — permanently
@@ -57,7 +66,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Agents',
     icon: AgentIconTabBlue,
     Body: AgentsAdminTab,
-    module: 'ai',
+    modules: ['ai_agents'],
   },
   {
     id: 'tools-mcp',
@@ -65,7 +74,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Tools & MCP',
     icon: ToolsIconTabBlue,
     Body: ToolsAndMCPAdminTab,
-    module: 'ai',
+    modules: ['ai_tools', 'integrations'],
   },
   {
     id: 'providers',
@@ -73,7 +82,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Providers',
     icon: ProvidersIcon,
     Body: ProvidersAdminTab,
-    module: 'integrations',
+    modules: ['integrations'],
   },
   {
     id: 'gateway',
@@ -81,7 +90,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Gateway',
     icon: GatewayIcon,
     Body: GatewayAdminTab,
-    module: 'llm',
+    adminOnly: true,
     // Settings additionally gated this on the llmGateway UI feature toggle
     // (isUiFeatureEnabled) — the same flag that shows/hides the sidebar's
     // own AI Gateway entry — on top of the module permission check. Read
@@ -89,12 +98,12 @@ export const AI_TOOLS_SUB_TABS = [
     requiresUiFeature: 'llmGateway',
   },
   {
-    id: 'egress-filter',
+    id: 'security',
     fragment: 'egress-filter',
-    text: 'Egress Filter',
-    icon: EgressFilterIcon,
-    Body: EgressFilterAdminTab,
-    module: 'egressfilter',
+    text: 'Security',
+    icon: SecurityIcon,
+    Body: SecurityAdminTab,
+    modules: ['egressfilter'],
     // EE-only body (app/src/ee/), stripped on OSS — callers drop the tab there. enterprise#37063.
     eeOnly: true,
   },
@@ -104,7 +113,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Budgets & Limits',
     icon: LLMConsumptionIcon,
     Body: BudgetsAndLimitsAdminTab,
-    module: 'ai',
+    modules: ['ai_budget', 'ai_models'],
   },
   {
     id: 'memory-policy',
@@ -112,8 +121,18 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'Memory Policy',
     icon: MemoryPolicyIcon,
     Body: MemoryPolicyAdminTab,
-    module: 'ai',
+    adminOnly: true,
     // EE-only body (PrivacyTab, app/src/ee/), stripped on OSS — callers drop the tab there, as for Egress Filter.
+    eeOnly: true,
+  },
+  {
+    id: 'investigation-depth',
+    fragment: 'investigation-depth',
+    text: 'Investigation Depth',
+    icon: InvestigationDepthIcon,
+    Body: InvestigationDepthAdminTab,
+    module: 'ai',
+    // EE-only body (app/src/ee/), stripped on OSS — callers drop the tab there, as for Egress Filter.
     eeOnly: true,
   },
   {
@@ -122,7 +141,7 @@ export const AI_TOOLS_SUB_TABS = [
     text: 'RCA Format',
     icon: FileOutlineIcon,
     Body: RCAFormatAdminTab,
-    module: 'ai',
+    modules: ['ai_rca'],
   },
   {
     id: 'memory',
@@ -131,6 +150,10 @@ export const AI_TOOLS_SUB_TABS = [
     icon: InMemoryIcon,
     Body: MemoryLegacyAdminTab,
     legacyOnly: true,
+    // open to every built-in role, as before they had a module; a custom role
+    // needs the module
+    openToBuiltInRoles: true,
+    modules: ['ai_memory'],
   },
   {
     id: 'account-context',
@@ -139,5 +162,29 @@ export const AI_TOOLS_SUB_TABS = [
     icon: DocumentationIcon,
     Body: AccountContextAdminTab,
     legacyOnly: true,
+    // open to every built-in role, as before they had a module; a custom role
+    // needs the module
+    openToBuiltInRoles: true,
+    modules: ['ai_guardrails'],
   },
 ];
+
+// subTabAccess decides whether a sub-tab is enabled for the viewer: tenant-wide
+// admins see every tab; anyone else needs Read (or Write) on one of its modules
+// (`modules`, or a single `module` as the Access & Users tabs declare it), and
+// never an adminOnly tab. An `openToBuiltInRoles` tab opens for any built-in
+// role too. Shared by the Admin page and the Nubi modal so the
+// two show the same tabs.
+export function subTabAccess(tab, { isAdmin, permissions = [], hasBuiltInRole = false }) {
+  if (isAdmin || (tab.openToBuiltInRoles && hasBuiltInRole)) {
+    return { disabled: false };
+  }
+  if (tab.adminOnly) {
+    return { disabled: true, tooltip: 'Only a tenant admin can open this.' };
+  }
+  const modules = tab.modules ?? (tab.module ? [tab.module] : []);
+  if (modules.length === 0 || modules.some((m) => permissions.includes(`${m}:Read`) || permissions.includes(`${m}:Write`))) {
+    return { disabled: false };
+  }
+  return { disabled: true, tooltip: missingPermissionMessage(`${modules[0]}:Read`) };
+}

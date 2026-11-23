@@ -7,6 +7,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
 	"nudgebee/llm/events"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -233,6 +234,11 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Input: event_id.",
 			"Output: the classification record, or a clear note that none was recorded.",
 			"Use it to answer how an event was classified and why — complements get_event_triage_explanation (dedup chain/firing history).",
+		},
+		tools.ToolMetricForecast: {
+			"Use for 'will <workload> breach its CPU or memory SLO / hit CPU throttling / run out of CPU or memory?', and to re-check the forecast behind a CPUThrottlingPredicted, CPUSaturationPredicted, MemorySaturationPredicted or *SLOBreached event (take namespace and workload from the event's subject and owner, kind from its workload_kind label, metric from its condition label, container from its container label).",
+			"Input: workload_namespace, workload_name and metric (cpu_throttling|cpu_saturation|memory_saturation), container (required for memory_saturation), optional kind and threshold (%).",
+			"Output: an explicit status plus eta_hours, current_pct, threshold_pct, suggested_limit (in limit_unit) and a daily table; quote them as evidence. insufficient_history means under 48h of data since the last limit change.",
 		},
 		tools.ToolTriageRuleEvents: {
 			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
@@ -615,7 +621,7 @@ func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.
 		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
 		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
 		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
-		tools.IncidentAssemblyTool{},
+		tools.IncidentAssemblyTool{}, tools.MetricForecastTool{},
 	}
 }
 
@@ -1207,6 +1213,29 @@ func parseEventLabels(labelsStr string) map[string]any {
 	return result
 }
 
+// summaryAccountID is the account whose cloud the summary describes: the
+// events' own account when they all belong to one the caller can read (an
+// event found by id on another account), else the call's data account.
+func summaryAccountID(nbRequestContext toolcore.NbToolContext, eventData []events.Event) string {
+	own := nbRequestContext.DataAccountID()
+	if len(eventData) == 0 {
+		return own
+	}
+	account := eventData[0].CloudAccountId
+	for _, event := range eventData[1:] {
+		if event.CloudAccountId != account {
+			return own
+		}
+	}
+	if account == "" || account == own || nbRequestContext.Ctx == nil {
+		return own
+	}
+	if sc := nbRequestContext.Ctx.GetSecurityContext(); sc == nil || !sc.HasAccountAccess(account, security.SecurityAccessTypeRead) {
+		return own
+	}
+	return account
+}
+
 func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
 	dataContext := input.Context
 	if len(dataContext) == 0 {
@@ -1276,7 +1305,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 	}
 
 	// Add account context (cloud provider) as a hidden system instruction
-	if cloudProvider := GetCloudProviderForAccount(nbRequestContext.DataAccountID()); cloudProvider != "" {
+	if cloudProvider := GetCloudProviderForAccount(summaryAccountID(nbRequestContext, eventData)); cloudProvider != "" {
 		eventPrompt = eventPrompt + "\n\n[INTERNAL INSTRUCTION - DO NOT INCLUDE IN OUTPUT]: The infrastructure runs on " + cloudProvider + ". Use this context to guide your analysis approach, but do NOT mention the cloud provider context, infrastructure type, or deployment controller details in your output. Your response must remain provider-agnostic. Focus only on the evidence and findings."
 	}
 
@@ -1290,7 +1319,7 @@ func (m EventSummaryTool) Call(nbRequestContext toolcore.NbToolContext, input to
 		llms.TextParts(llms.ChatMessageTypeSystem, eventPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, batchInstruction+"\n\n --- JSON Data -- \n"+batchedEventData),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
+	completion, err := llmruntime.GenerateAndTrackLLMContent(nbRequestContext.Ctx, nbRequestContext.UserId, nbRequestContext.AccountId, nbRequestContext.ConversationId, nbRequestContext.MessageId, nbRequestContext.ParentAgentId, true, messageContent, true)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("eventsummary: unable to generate content", "error", err)
 		return toolcore.NBToolResponse{}, err

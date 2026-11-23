@@ -196,7 +196,7 @@ export class AppErrorBoundary extends React.Component<{ children: React.ReactNod
 
   handleGoHome = () => {
     this.setState({ hasError: false });
-    Router.push('/home');
+    Router.push('/ask-nudgebee');
   };
 
   render() {

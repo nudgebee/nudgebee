@@ -18,7 +18,11 @@ describe('integrationProviders (navSearchPages.ts)', () => {
 });
 
 describe('navSearchPages (navSearchPages.ts) on OSS', () => {
-  const EE_ONLY_PATHS = ['/user-management#ai-tools/egress-filter', '/user-management#ai-tools/memory-policy'];
+  const EE_ONLY_PATHS = [
+    '/user-management#ai-tools/egress-filter',
+    '/user-management#ai-tools/egress-filter/tool-approvals',
+    '/user-management#ai-tools/memory-policy',
+  ];
 
   const loadWithOSSMode = (oss: boolean) => {
     let pages: { path: string }[] = [];

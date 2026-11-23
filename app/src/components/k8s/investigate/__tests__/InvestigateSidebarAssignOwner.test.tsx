@@ -30,6 +30,11 @@ jest.mock('@components/k8s/investigate/EventStateRows', () => ({
   EventStateRows: () => null,
   useEventOccurrence: () => ({}),
 }));
+jest.mock('@components/k8s/investigate/AlertNotifications', () => ({
+  __esModule: true,
+  AlertNotifications: () => null,
+  useAlertDeliveries: () => ({ visible: false, rows: [], historyStart: null, error: '' }),
+}));
 
 // The dialog has its own suite; a marker that echoes what the sidebar hands it.
 jest.mock('@components/ownership/AssignOwnerModal', () => ({

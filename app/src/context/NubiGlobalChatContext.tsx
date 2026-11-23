@@ -21,6 +21,8 @@ export interface NubiChatContext {
   accountId?: string;
   sessionId?: string;
   query?: string;
+  // A message put in the composer for the person to review and send; never sent on its own.
+  draft?: string;
   source?: string;
   categorySource?: string;
   aboveModal?: boolean;

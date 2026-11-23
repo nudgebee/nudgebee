@@ -18,7 +18,7 @@ import (
 )
 
 // Values are synthetic — real project/instance names must not be committed.
-var sampleNormalizedCloudSQL = gcpNormalizedEvent{
+var sampleNormalizedCloudSQL = collectorNormalizedEvent{
 	Title:            "cloudsql_database: slow-queries",
 	Description:      "Alert policy 'slow-queries' is currently firing.",
 	AggregationKey:   "slow-queries",
@@ -97,7 +97,7 @@ func TestNormalizeGCPIncidentFailsWithoutAnIdentity(t *testing.T) {
 	}{
 		"collector error status": {http.StatusBadRequest, map[string]any{"errors": []map[string]string{{"message": "account is not a GCP account"}}}},
 		"error in envelope":      {http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "boom"}}}},
-		"no finding_id":          {http.StatusOK, map[string]any{"data": gcpNormalizedEvent{SubjectName: "x"}}},
+		"no finding_id":          {http.StatusOK, map[string]any{"data": collectorNormalizedEvent{SubjectName: "x"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fakeCollector(t, tc.status, tc.body, nil, nil)

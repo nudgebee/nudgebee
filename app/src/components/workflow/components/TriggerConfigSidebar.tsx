@@ -14,7 +14,6 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import apiIntegrations from '@api1/integrations';
 import recommendationApi from '@api1/recommendation';
 import { formatRuleName } from '@components/optimise-new/utils';
-import { titleCaseForAggregationKey } from 'src/utils/common';
 import CopyButton from '@shared/buttons/CopyButton';
 import {
   STRUCTURED_FILTER_FIELDS,
@@ -25,13 +24,14 @@ import {
   structuredCoversFilter,
   type FilterValues,
 } from '../utils/eventFilter';
-import { EVENT_ACCOUNT_TEMPLATE, accessibleAccountOptions, triggerListenAccounts } from '../utils/listenAccounts';
+import { EVENT_ACCOUNT_TEMPLATE, listenAccountPickerOptions, triggerListenAccounts } from '../utils/listenAccounts';
 import { isOptimizationCategoryAllowedFor, optimizationCategoryOptionsFor } from '../utils/optimizationCategories';
 import {
   type AccountFilterValues,
   type FilterValuesByAccount,
   type ScopeAccount,
   accountsSilencedByFilter,
+  eventTypeLabel,
   mergeFilterOptions,
   namespaceFieldCopy,
   silencedAccountsMessage,
@@ -295,14 +295,10 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const shownListenAccounts = listenAccounts.length > 0 ? listenAccounts : workflowAccountId ? [workflowAccountId] : [];
   // Only accounts the user can access are offered. One already saved but out of reach stays
   // visible so it can be removed — the server refuses to save it.
-  const listenAccountOptions = useMemo(() => {
-    const accessible = accessibleAccountOptions(accountOptions);
-    const unreachable = shownListenAccounts
-      .filter((id) => id !== workflowAccountId && !accessible.some((o) => o.value === id))
-      .map((id) => ({ label: id, value: id, cloud_provider: '', group: 'No access' }));
-    const own = accountOptions.find((o) => o.value === workflowAccountId);
-    return [...(own && !accessible.includes(own) ? [own] : []), ...accessible, ...unreachable];
-  }, [accountOptions, shownListenAccounts.join(','), workflowAccountId]);
+  const listenAccountOptions = useMemo(
+    () => listenAccountPickerOptions(accountOptions, shownListenAccounts, workflowAccountId, isLoadingAccounts),
+    [accountOptions, shownListenAccounts.join(','), workflowAccountId, isLoadingAccounts]
+  );
   // Filter options come from every listened account the user can reach. Without an account list
   // there is nothing to check reach against, so every listened account counts.
   const filterScopeAccounts: ScopeAccount[] = useMemo(() => {
@@ -315,7 +311,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const namespaceCopy = namespaceFieldCopy(filterScopeAccounts.map((a) => providerOf(a.id) || ''));
   const mergedFilterOptions = useMemo(
     () => ({
-      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, titleCaseForAggregationKey),
+      event_type: mergeFilterOptions('event_type', filterScopeAccounts, filterValuesByAccount, filterEventType, eventTypeLabel),
       namespace: mergeFilterOptions('namespace', filterScopeAccounts, filterValuesByAccount, filterNamespace),
       source: mergeFilterOptions('source', filterScopeAccounts, filterValuesByAccount, filterSource),
     }),
@@ -394,6 +390,11 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
     const nodeIdChanged = nodeId !== lastLoadedNodeIdRef.current;
     const currentPendingStr = pendingTriggerConfig ? JSON.stringify(pendingTriggerConfig) : '';
     if (!nodeIdChanged && currentPendingStr && currentPendingStr !== committedSnapshot) {
+      return;
+    }
+    // Our own Save coming back on the node: the form already shows it, so don't reset mode or errors.
+    const incoming = JSON.stringify({ type: triggerType || '', params: { ...(selectedNode?.data?.trigger?.params || {}) } });
+    if (!nodeIdChanged && incoming === committedSnapshot) {
       return;
     }
     lastLoadedNodeIdRef.current = nodeId;
@@ -1072,14 +1073,14 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
   const renderOptimizationConfig = () => (
     <FormCard
       title='Optimization Trigger Configuration'
-      description='Configure which optimization recommendations should trigger this automation'
+      description='Pick at least one filter: Cluster, Category or Rule Name'
       icon={null}
       number={1}
       columns={1}
     >
       <FormField
         label='Cluster'
-        description='Filter by cluster or cloud account (optional)'
+        description='Filter by cluster or cloud account'
         value={optimizationClusters[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1122,7 +1123,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Category'
-        description='Filter by recommendation category (optional)'
+        description='Filter by recommendation category'
         value={optimizationCategories[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1149,7 +1150,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
 
       <FormField
         label='Rule Name'
-        description='Filter by specific optimization rule (optional)'
+        description='Filter by specific optimization rule'
         value={optimizationRuleNames[0] || ''}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
           const value = e.target.value || '';
@@ -1202,7 +1203,6 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
           • This workflow triggers when a new optimization recommendation is created
           <br />• Use the filters above to narrow which recommendations trigger this workflow
           <br />• The recommendation data is available in the workflow as <CodeBlock inline code='event' />
-          <br />• Leave all filters empty to trigger on any recommendation
         </Typography>
       </Box>
 
@@ -1439,6 +1439,9 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 border: `1px solid ${ds.gray[200]}`,
               }}
             >
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5, mb: ds.space[1] }}>
+                In steps, read JSON fields with {'{{ Inputs.webhook_json.<field> }}'}. The raw body is {'{{ Inputs.webhook_payload }}'}.
+              </Typography>
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[400], lineHeight: 1.5 }}>
                 Need a new webhook? Create one in the{' '}
                 <Link href={WORKFLOW_WEBHOOK_INTEGRATIONS_URL} openInNew>
@@ -1505,7 +1508,7 @@ const TriggerConfigSidebar: React.FC<TriggerConfigSidebarProps> = ({
                 >
                   <FormField
                     label='Event Type'
-                    description='Aggregation key from the event rules catalog'
+                    description='Alert name from the event rules catalog. Cloud alarms are listed per resource; picking one matches only that resource'
                     value={filterEventType}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       handleStructuredFilterChange('event_type', (e.target.value as unknown as string[]) || [])

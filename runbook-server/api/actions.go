@@ -51,6 +51,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleListWorkflows(c, sc, args)
 	case "workflow_get":
 		s.handleGetWorkflow(c, sc, args)
+	case "workflow_get_account":
+		s.handleGetWorkflowAccount(c, sc, args)
 	case "workflow_update":
 		s.handleUpdateWorkflow(c, sc, args)
 	case "workflow_delete":
@@ -127,6 +129,10 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleUpdateWorkflowVersionMetadata(c, sc, args)
 	case "workflows_update_version_status":
 		s.handleUpdateWorkflowVersionStatus(c, sc, args)
+	case "workflows_list_ai_settings":
+		s.handleListAIToolSettings(c, sc, args)
+	case "workflows_update_ai_settings":
+		s.handleUpdateAISettings(c, sc, args)
 	case "workflows_delete_version":
 		s.handleDeleteWorkflowVersion(c, sc, args)
 	default:
@@ -280,6 +286,43 @@ func (s *Server) handleListWorkflows(c *gin.Context, sc *security.RequestContext
 	c.JSON(http.StatusOK, workflows)
 }
 
+// handleListAIToolSettings lists the automations that are or could be offered
+// to the AI assistant, across the caller's readable accounts, with whether each
+// is offered right now.
+func (s *Server) handleListAIToolSettings(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	resp, err := s.workflowService.ListAIToolSettings(sc, parseAccountFilter(args))
+	if err != nil {
+		s.logger.Error("failed to list automation AI settings via RPC", "error", err)
+		handleServiceError(c, err, "failed to list automation AI settings")
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// handleUpdateAISettings sets an automation's two AI flags. Both are required,
+// so an omitted flag is never read as "off".
+func (s *Server) handleUpdateAISettings(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, _ := args["account_id"].(string)
+	workflowID, _ := args["id"].(string)
+	aiInvocable, invocableSet := args["ai_invocable"].(bool)
+	aiAutoApprove, autoSet := args["ai_auto_approve"].(bool)
+	if accountID == "" || workflowID == "" || !invocableSet || !autoSet {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{errors.New("account_id, id, ai_invocable and ai_auto_approve are required")}))
+		return
+	}
+	updated, err := s.workflowService.UpdateAISettings(sc, accountID, workflowID, aiInvocable, aiAutoApprove)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
+			return
+		}
+		s.logger.Error("failed to update automation AI settings via RPC", "workflowID", workflowID, "error", err)
+		handleServiceError(c, err, "failed to update automation AI settings")
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
 // parseAccountFilter reads the optional account scope shared by the tenant-level
 // listing actions. It accepts `account_ids` (the multi-select filter) and falls
 // back to a single `account_id`, which every pre-#35113 caller — and the
@@ -343,6 +386,29 @@ func (s *Server) handleGetWorkflow(c *gin.Context, sc *security.RequestContext, 
 	}
 
 	c.JSON(http.StatusOK, wf)
+}
+
+// handleGetWorkflowAccount answers which account a workflow belongs to, for a link
+// with no account. Missing and not-readable both return 404 so ids don't leak across accounts.
+func (s *Server) handleGetWorkflowAccount(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	workflowID, ok := args["id"].(string)
+	if !ok || workflowID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("workflow id is required")}))
+		return
+	}
+
+	accountID, err := s.workflowService.GetWorkflowAccount(sc, workflowID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
+		} else {
+			s.logger.Error("failed to resolve workflow account via RPC", "workflowID", workflowID, "error", err)
+			c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to get workflow"))
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"id": workflowID, "account_id": accountID})
 }
 
 func (s *Server) handleUpdateWorkflow(c *gin.Context, sc *security.RequestContext, args map[string]any) {
@@ -660,6 +726,14 @@ func (s *Server) handleCancelWorkflowExecution(c *gin.Context, sc *security.Requ
 }
 
 func (s *Server) handleCompleteWorkflowApproval(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	// A chat approval card carries the approval token instead of the run's ids.
+	if token, _ := args["token"].(string); token != "" {
+		status, _ := args["status"].(string)
+		err := s.workflowService.CompleteApprovalTaskByToken(sc, token, status)
+		s.respondToApproval(c, err, http.StatusInternalServerError, "by", "token")
+		return
+	}
+
 	accountID, ok := args["account_id"].(string)
 	if !ok || accountID == "" {
 		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
@@ -687,15 +761,20 @@ func (s *Server) handleCompleteWorkflowApproval(c *gin.Context, sc *security.Req
 	}
 	comments, _ := args["comments"].(string)
 
-	if err := s.workflowService.CompleteApprovalTaskFromUI(sc, accountID, workflowID, executionID, taskID, status, comments); err != nil {
+	err := s.workflowService.CompleteApprovalTaskFromUI(sc, accountID, workflowID, executionID, taskID, status, comments)
+	s.respondToApproval(c, err, http.StatusBadRequest, "workflowID", workflowID, "executionID", executionID, "taskID", taskID)
+}
+
+func (s *Server) respondToApproval(c *gin.Context, err error, internalStatus int, logArgs ...any) {
+	if err != nil {
 		var commonErr common.Error
 		if errors.As(err, &commonErr) {
-			s.logger.Warn("failed to complete approval via RPC", "workflowID", workflowID, "executionID", executionID, "taskID", taskID, "error", err)
+			s.logger.Warn("failed to complete approval via RPC", append(logArgs, "error", err)...)
 			c.JSON(commonErr.Code, buildApiResponse(nil, []error{errors.New(commonErr.Message)}))
 			return
 		}
-		s.logger.Error("failed to complete approval via RPC", "workflowID", workflowID, "executionID", executionID, "taskID", taskID, "error", err)
-		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to complete approval"))
+		s.logger.Error("failed to complete approval via RPC", append(logArgs, "error", err)...)
+		c.JSON(internalStatus, common.ErrorActionInternal("failed to complete approval"))
 		return
 	}
 
@@ -949,6 +1028,11 @@ func (s *Server) handleSaveConfig(c *gin.Context, sc *security.RequestContext, a
 	}
 
 	id, err := s.configService.SaveConfig(c.Request.Context(), config)
+	var commonErr common.Error
+	if errors.As(err, &commonErr) {
+		c.JSON(http.StatusBadRequest, common.ErrorActionBadRequest(commonErr.Message))
+		return
+	}
 	if err != nil {
 		s.logger.Error("failed to save config via RPC", "error", err)
 		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to save config"))

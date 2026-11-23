@@ -90,6 +90,7 @@ func (t *TicketsGetCommentsTask) InputSchema() *types.Schema {
 			},
 			"integration_id": {
 				Type:        types.PropertyTypeTicket,
+				SubTypes:    ticketPlatforms,
 				Description: "Ticket integration (required if ticket was not created via Nudgebee)",
 				Required:    false,
 				Order:       2,

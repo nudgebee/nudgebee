@@ -7,7 +7,7 @@ templates:
     alarm_type: "RELIABILITY"
     metric_type: "NATIVE"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Monitors the number of visible messages in the SQS queue that are awaiting processing"
     configuration:
       namespace: "AWS/SQS"
@@ -25,7 +25,7 @@ templates:
     alarm_type: "RELIABILITY"
     metric_type: "NATIVE"
     category: "Configuration"
-    severity: "High"
+    severity: "Medium"
     description: "Measures the duration that the oldest message has been in the queue without being processed"
     configuration:
       namespace: "AWS/SQS"
@@ -35,6 +35,6 @@ templates:
       evaluation_periods: 5
       datapoints_to_alarm: 5
       comparison_operator: "GreaterThanOrEqualToThreshold"
-      treat_missing_data: "breaching"
+      treat_missing_data: "notBreaching"
     threshold_rules:
       default: 900.0  # 15 minutes in seconds

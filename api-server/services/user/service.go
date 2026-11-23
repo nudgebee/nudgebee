@@ -40,24 +40,32 @@ const GatewayTokenPrefix = "sk-nb-gw-"
 // future prefix. See TestLongestTokenFitsBcryptLimit, which guards this bound.
 const TokenRandomBytes = 28
 
-// createOrGetUser inserts a user or returns the existing one if username conflicts.
-// Returns the user model and whether it was newly created.
+// ErrBeeAccount refuses a sign-in, invitation, onboarding or credential for a bee
+// account: a bee acts only through the runs it is given, never as a logged-in user.
+var ErrBeeAccount = common.ErrorUnauthorized("a bee account cannot sign in, be invited or hold credentials")
+
+// createOrGetUser inserts a person or returns the existing user if username conflicts.
+// Returns the user model and whether it was newly created. An existing bee is refused,
+// so invitations and onboarding never reach a bee account.
 func createOrGetUser(dbms *database.DatabaseManager, displayName, status, username string, createdBy *string) (models.User, bool, error) {
 	var user models.User
 	err := dbms.Db.QueryRowx(
 		`INSERT INTO users (display_name, status, username, created_by, updated_by)
 		VALUES ($1, $2, $3, $4, $4)
 		ON CONFLICT ON CONSTRAINT users_username_key DO NOTHING
-		RETURNING id, username, display_name, status, created_at, updated_at, created_by, updated_by`,
+		RETURNING id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by`,
 		displayName, status, username, createdBy,
 	).StructScan(&user)
 	if err == sql.ErrNoRows {
 		// User already exists, fetch it
 		err = dbms.Db.QueryRowx(
-			`SELECT id, username, display_name, status FROM users WHERE username = $1`, username,
+			`SELECT id, username, display_name, status, kind FROM users WHERE username = $1`, username,
 		).StructScan(&user)
 		if err != nil {
 			return models.User{}, false, err
+		}
+		if user.Kind == models.UserKindBee {
+			return models.User{}, false, ErrBeeAccount
 		}
 		return user, false, nil
 	}
@@ -65,6 +73,21 @@ func createOrGetUser(dbms *database.DatabaseManager, displayName, status, userna
 		return models.User{}, false, err
 	}
 	return user, true, nil
+}
+
+// refuseBee returns ErrBeeAccount when userId is a bee account.
+func refuseBee(dbms *database.DatabaseManager, userId string) error {
+	var kind string
+	if err := dbms.Db.Get(&kind, `SELECT kind FROM users WHERE id = $1`, userId); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if kind == models.UserKindBee {
+		return ErrBeeAccount
+	}
+	return nil
 }
 
 // createUserTenant creates a tenant_users association, ignoring if already exists.
@@ -207,6 +230,12 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 		// custom grant now also reaches it, which makes the gate load-bearing:
 		// without it any grant holder could create a user, and `role` below writes
 		// user_roles, so they could mint a tenant_admin.
+		//
+		// Every authorization decision is made here, before the first write: a
+		// users:Write holder may create a user and add them to this tenant, but
+		// any tenant role in `role` (tenant_admin, tenant_admin_readonly — the
+		// only roles IsValidTenantRole admits, both tenant-wide privilege) needs a
+		// real tenant admin.
 		if !canAdministerUsers(context.GetSecurityContext()) {
 			return UserCreateResponse{}, common.ErrorUnauthorized("Not Allowed")
 		}
@@ -261,9 +290,6 @@ func CreateUser(context *security.RequestContext, userRequest UserCreateRequest)
 
 	var userTenantId string
 	if context.GetSecurityContext().GetTenantId() != "" {
-		if !context.GetSecurityContext().IsTenantAdmin() && !context.GetSecurityContext().IsSuperAdmin() {
-			return UserCreateResponse{}, common.ErrorUnauthorized("Only tenant admins can add users to a tenant")
-		}
 		context.GetLogger().Info("AssignUser to tenant", "userId", userModel.Id, "tenantId", context.GetSecurityContext().GetTenantId())
 		err = createUserTenant(dbms, userModel.Id, context.GetSecurityContext().GetTenantId(), createdBy)
 		if err != nil {
@@ -457,7 +483,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	if err != nil {
 		return models.User{}, err
 	}
-	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
+	row := manager.Db.QueryRowx("SELECT id, username, display_name, status, kind, created_at, updated_at, created_by, updated_by FROM users WHERE id = $1", id)
 	if row.Err() != nil {
 		return models.User{}, row.Err()
 	}
@@ -469,6 +495,7 @@ func GetUserById(context *security.RequestContext, id string) (models.User, erro
 	return tenant, nil
 }
 
+// GetUserByTenant returns the tenant's active people (report recipients); bees are left out.
 func GetUserByTenant(context *security.RequestContext, tenantId string) ([]models.User, error) {
 	users := []models.User{}
 	manager, err := database.GetDatabaseManager(database.Metastore)
@@ -476,9 +503,10 @@ func GetUserByTenant(context *security.RequestContext, tenantId string) ([]model
 		return users, err
 	}
 	rows, err := manager.Db.Queryx(`
-        SELECT u.id, u.username, u.display_name, u.status, u.created_at, u.updated_at, u.created_by, u.updated_by
+        SELECT u.id, u.username, u.display_name, u.status, u.kind, u.created_at, u.updated_at, u.created_by, u.updated_by
         FROM users u
         WHERE u.status = 'active'
+        AND u.kind = 'person'
         AND u.id IN (
             SELECT tu.user
             FROM tenant_users tu
@@ -537,6 +565,9 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 
 	if user.Status != "active" {
 		return UserTokenCreateResponse{}, common.ErrorUnauthorized("User is not active")
+	}
+	if user.Kind == models.UserKindBee {
+		return UserTokenCreateResponse{}, ErrBeeAccount
 	}
 
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
@@ -639,10 +670,10 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 
 	for _, l := range tokenCreateRequest.Limits {
 		if _, err := tx.Exec(
-			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled, soft_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8)`,
 			context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-			key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
+			key.KeyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct); err != nil {
 			return UserTokenCreateResponse{}, err
 		}
 	}
@@ -839,18 +870,9 @@ func UpdateUserAuthToken(context *security.RequestContext, request UserTokenUpda
 	}
 	// Omitted (nil) leaves the limits alone; a present list, even [], replaces them all.
 	if request.Limits != nil {
-		if _, err := tx.Exec(`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2`,
-			key.KeyID, context.GetSecurityContext().GetTenantId()); err != nil {
+		if err := replaceKeyLimits(tx, context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
+			key.KeyID, request.Limits); err != nil {
 			return UserTokenUpdateResponse{}, err
-		}
-		for _, l := range request.Limits {
-			if _, err := tx.Exec(
-				`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled)
-				 VALUES ($1, $2, $3, $4, $5, $6, $7, true)`,
-				context.GetSecurityContext().GetTenantId(), context.GetSecurityContext().GetUserId(),
-				key.KeyID, l.Model, l.Metric, l.Period, l.Value); err != nil {
-				return UserTokenUpdateResponse{}, err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -1200,6 +1222,10 @@ func CreateUserAuth(context *security.RequestContext, request UserCreateAuthRequ
 		return UserCreateAuthResponse{}, err
 	}
 
+	if err := refuseBee(manager, request.UserId); err != nil {
+		return UserCreateAuthResponse{}, err
+	}
+
 	tenantId := context.GetSecurityContext().GetTenantId()
 
 	var authId string
@@ -1269,6 +1295,15 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		return UserUpdateStatusResponse{}, err
 	}
 
+	allowed, err := maySuspend(context.GetSecurityContext(), manager, context.GetSecurityContext().GetTenantId(), request.UserId, request.Status)
+	if err != nil {
+		context.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("Error updating user status")
+	}
+	if !allowed {
+		return UserUpdateStatusResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
+
 	// Scope the write to the caller's tenant. `WHERE id = $1` alone is global, so
 	// any role that reaches this handler — and actions.yaml grants users_update_status
 	// to all six built-in roles — could deactivate a user in another tenant by id.
@@ -1299,6 +1334,11 @@ func UpdateUserStatus(context *security.RequestContext, request UserUpdateStatus
 		TableName:     "users",
 		NewData:       map[string]any{"id": request.UserId, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(context, request.UserId, request.Status); err != nil {
+		context.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", request.UserId)
+		return UserUpdateStatusResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	return UserUpdateStatusResponse{Id: request.UserId}, nil
 }
@@ -1333,6 +1373,14 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 	if roleChanged && !mayAssignTenantRole(sc) {
 		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Changing a user's role requires a tenant admin")
 	}
+	allowed, err := maySuspend(sc, manager, sc.GetTenantId(), target.id, request.Status)
+	if err != nil {
+		ctx.GetLogger().Error("Error checking the user's tenant role", "error", err)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user profile")
+	}
+	if !allowed {
+		return UserUpdateProfileResponse{}, common.ErrorUnauthorized("Suspending a tenant admin requires a tenant admin")
+	}
 
 	// Update display_name and status. Scoped by the id resolved within the tenant
 	// above — `WHERE username = $1` alone reaches every tenant.
@@ -1353,6 +1401,11 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		TableName:     "users",
 		NewData:       map[string]any{"username": request.Username, "display_name": request.DisplayName, "status": request.Status},
 	})
+
+	if err := endSessionsIfSuspended(ctx, target.id, request.Status); err != nil {
+		ctx.GetLogger().Error("Suspended user's sessions were not ended", "error", err, "user_id", target.id)
+		return UserUpdateProfileResponse{}, common.ErrorInternal("The user is suspended, but their open sessions could not be ended. Save again to retry.")
+	}
 
 	// Sync the tenant role only when the caller actually sent the field AND it
 	// differs from what the user already holds. A nil pointer means "role omitted
@@ -1543,6 +1596,8 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = CASE WHEN provider = 'token' THEN tenant_id ELSE $1 END, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
 			request.TenantId, request.TokenSha256, request.AuthId)
 	} else {
+		// API keys (provider 'token') keep the tenant they were created in; moving them made them
+		// spend, bill and obey rules in whichever tenant their owner last opened (#40623).
 		result, err = manager.Db.Exec(
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2) AND provider <> 'token'`,
 			request.TenantId, request.Username)
@@ -1580,6 +1635,13 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 	// 1. Create or resolve existing user
 	var userId string
 	if request.ExistingUserId != "" {
+		dbms, err := database.GetDatabaseManager(database.Metastore)
+		if err != nil {
+			return UserOnboardResponse{}, err
+		}
+		if err := refuseBee(dbms, request.ExistingUserId); err != nil {
+			return UserOnboardResponse{}, err
+		}
 		userId = request.ExistingUserId
 	} else {
 		nameParts := strings.SplitN(request.DisplayName, " ", 2)
@@ -1720,4 +1782,43 @@ func OnboardUser(context *security.RequestContext, request UserOnboardRequest) (
 		Status:  "Ok",
 		Message: "User onboarded successfully",
 	}, nil
+}
+
+// replaceKeyLimits swaps a key's quota rows for limits. A row whose metric, period, model,
+// value and warn level are unchanged keeps its budget-alert state (alerted_window/_pct), so
+// re-saving the key does not resend this window's alerts; a changed row may alert again.
+func replaceKeyLimits(tx *sqlx.Tx, tenantID, userID, keyID string, limits []TokenLimit) error {
+	type alertState struct {
+		Metric        string     `db:"metric"`
+		Period        string     `db:"period"`
+		Model         string     `db:"model"`
+		Value         float64    `db:"limit_value"`
+		SoftPct       *int       `db:"soft_pct"`
+		AlertedWindow *time.Time `db:"alerted_window"`
+		AlertedPct    *int       `db:"alerted_pct"`
+	}
+	var old []alertState
+	if err := tx.Select(&old,
+		`DELETE FROM llm_gateway_rate_limits WHERE api_key_id = $1 AND tenant_id = $2
+		 RETURNING metric, period, model, limit_value, soft_pct, alerted_window, alerted_pct`, keyID, tenantID); err != nil {
+		return err
+	}
+	samePct := func(a, b *int) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	for _, l := range limits {
+		var kept alertState
+		for _, o := range old {
+			if o.Metric == l.Metric && o.Period == l.Period && o.Model == l.Model && o.Value == l.Value && samePct(o.SoftPct, l.SoftPct) {
+				kept = o
+				break
+			}
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO llm_gateway_rate_limits (tenant_id, user_id, api_key_id, model, metric, period, limit_value, enabled,
+			     soft_pct, alerted_window, alerted_pct)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9, $10)`,
+			tenantID, userID, keyID, l.Model, l.Metric, l.Period, l.Value, l.SoftPct, kept.AlertedWindow, kept.AlertedPct); err != nil {
+			return err
+		}
+	}
+	return nil
 }

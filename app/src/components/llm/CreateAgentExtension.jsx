@@ -11,16 +11,10 @@ import { parseHttpResponseBodyMessage, getToolLabel } from 'src/utils/common';
 import { ds } from '@utils/colors';
 import { FormCard, FormField } from '@shared/NewReusabeFormComponents';
 const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExtension, editMode, triggerSubmit, onSubmitStart, onSubmitEnd }) => {
-  const [prompt, setPrompt] = useState('');
-  const [toolUsage, setToolUsage] = useState('');
   const [toolOptions, setToolOptions] = useState([]);
   const [tools, setTools] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState({
-    prompt: '',
-    tools: '',
-    toolUsage: '',
-  });
+  const [, setLoading] = useState(false);
+  const [errors, setErrors] = useState({ tools: '' });
   const [hasSubmitted, setHasSubmitted] = useState(false);
 
   // Step navigation state
@@ -32,18 +26,16 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
   // Create individual refs for each step
   const step1Ref = useRef(null);
   const step2Ref = useRef(null);
-  const step3Ref = useRef(null);
 
   // Define extension steps
   const extensionSteps = [
     { id: 'agent-info', title: 'Agent Information', description: 'Basic agent information and settings' },
-    { id: 'additional-instructions', title: 'Additional Instructions', description: 'Additional instructions and prompts' },
     { id: 'tools-config', title: 'Tools & Configuration', description: 'Configure tools and settings' },
   ];
 
   // Update stepRefs array when component mounts or updates
   useEffect(() => {
-    stepRefs.current = [step1Ref.current, step2Ref.current, step3Ref.current];
+    stepRefs.current = [step1Ref.current, step2Ref.current];
   }, []);
 
   // Common function to get active step styling
@@ -125,7 +117,6 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
   const getStepErrors = () => {
     return [
       false, // Agent Information (no validation)
-      !!errors.prompt, // Additional Instructions
       false, // Tools & Configuration (optional)
     ];
   };
@@ -160,24 +151,6 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
 
         // Handle existing extensions - pre-fill form if extension exists
         if (existingExtension) {
-          // Parse structured prompt data
-          let parsedPrompt = '';
-          let parsedToolUsage = '';
-
-          try {
-            if (existingExtension.additional_instructions) {
-              const promptData = JSON.parse(existingExtension.additional_instructions);
-              parsedPrompt = promptData.additional_instructions || '';
-              parsedToolUsage = promptData.tool_usage || '';
-            }
-          } catch {
-            // Fallback to treating as plain string if not JSON
-            parsedPrompt = existingExtension.additional_instructions || '';
-          }
-
-          setPrompt(parsedPrompt);
-          setToolUsage(parsedToolUsage);
-
           const existingTools = (existingExtension.tools || []).map((toolName) => {
             const toolOption = listToolsResponse.find((t) => t.name === toolName);
             return toolOption
@@ -198,18 +171,10 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
   }, [accountId, agentData, existingExtension]);
 
   const validateForm = () => {
-    const newErrors = {
-      prompt: promptValidation(prompt),
-      tools: '',
-      toolUsage: '',
-    };
+    const newErrors = { tools: '' };
     setErrors(newErrors);
 
-    return !(newErrors.prompt || newErrors.tools || newErrors.toolUsage);
-  };
-
-  const promptValidation = (prompt) => {
-    return !prompt.trim() ? 'Additional prompt cannot be empty.' : '';
+    return !newErrors.tools;
   };
 
   const clearFieldError = (fieldName) => {
@@ -224,14 +189,8 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
 
     if (!isValid) {
       let errorMessage = 'Please fill the following fields:';
-      if (errors.prompt) {
-        errorMessage += `\n- ${errors.prompt}`;
-      }
       if (errors.tools) {
         errorMessage += `\n- ${errors.tools}`;
-      }
-      if (errors.toolUsage) {
-        errorMessage += `\n- ${errors.toolUsage}`;
       }
 
       snackbar.error(errorMessage);
@@ -249,10 +208,9 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
       account_id: accountId,
       agent: {
         agent_name: agentData.name,
-        prompt: JSON.stringify({
-          additional_instructions: prompt.trim(),
-          tool_usage: toolUsage.trim(),
-        }),
+        // Tools only (#40899): text an agent should always read is a skill
+        // marked "Always load" under Prioritize knowledge.
+        prompt: '',
         tools: tools.map((f) => f?.value || f),
       },
     };
@@ -390,83 +348,20 @@ const CreateAgentExtension = ({ accountId, handleClose, agentData, existingExten
                   Agent: {agentData?.aliases?.[0] || agentData?.name}
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)', mb: ds.space[4] }}>
-                  {editMode
-                    ? 'Update the additional prompt and tools for this system agent'
-                    : "Add additional prompt and tools to extend this system agent's capabilities"}
+                  {editMode ? 'Update the additional tools for this system agent' : "Add tools to extend this system agent's capabilities"}
                 </Typography>
               </Box>
             </FormCard>
           </Box>
 
-          {/* Additional Instructions Card */}
-          <Box ref={step2Ref}>
-            <FormCard
-              title='Additional Instructions'
-              description='Define Additional Prompts And Behaviors For The Agent Extension'
-              number={2}
-              columns={1}
-              sx={getActiveStepSx(2)}
-            >
-              <FormField
-                label='Additional Prompt'
-                description='Add specific instructions that will be appended to the existing agent behavior'
-                value={prompt}
-                onChange={(e) => {
-                  setPrompt(e.target.value);
-                  clearFieldError('prompt');
-                }}
-                placeholder={`Add specific instructions for this agent:
-
-1. [Additional behavior or capability]
-2. [Specific task guidance]
-3. [Context-specific instructions]
-
-These instructions will be added to the existing system prompt.`}
-                required={true}
-                fieldType='textarea'
-                minRows={6}
-                maxRows={12}
-                maxLength={5000}
-                disabled={loading}
-                error={hasSubmitted ? errors.prompt : ''}
-              />
-
-              <FormField
-                label='Tool Usage Instructions'
-                description='Explain how and when the agent should use the additional tools with examples'
-                value={toolUsage}
-                onChange={(e) => {
-                  setToolUsage(e.target.value);
-                  clearFieldError('toolUsage');
-                }}
-                placeholder={`Tool: [Tool Name]
-Purpose: [What this tool does]
-When to use: [Specific scenarios]
-Input format: [Expected input]
-Output format: [Expected output]
-
-Example usage:
-\`\`\`
-[Example command or usage]
-\`\`\``}
-                fieldType='textarea'
-                minRows={4}
-                maxRows={8}
-                maxLength={5000}
-                disabled={loading}
-                error={hasSubmitted ? errors.toolUsage : ''}
-              />
-            </FormCard>
-          </Box>
-
           {/* Tools & Configuration Card */}
-          <Box ref={step3Ref}>
+          <Box ref={step2Ref}>
             <FormCard
               title='Tools & Configuration'
               description='Configure Additional Tools Available To The Agent Extension'
-              number={3}
+              number={2}
               columns={1}
-              sx={getActiveStepSx(3)}
+              sx={getActiveStepSx(2)}
             >
               <FormField
                 label='Additional Tools'

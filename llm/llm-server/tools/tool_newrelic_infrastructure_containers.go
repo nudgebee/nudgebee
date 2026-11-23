@@ -16,7 +16,10 @@ func init() {
 	})
 }
 
-type NewRelicInfrastructureContainersTool struct{}
+type NewRelicInfrastructureContainersTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 func (t NewRelicInfrastructureContainersTool) Name() string {
 	return ToolNewRelicInfrastructureContainers

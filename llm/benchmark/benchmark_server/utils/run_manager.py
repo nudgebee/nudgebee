@@ -510,7 +510,8 @@ def _recover_running_tests(db, run_id: str):
 
 
 def _run_after_test_teardown(ctx: dict) -> None:
-    """Run one test's ``after_test`` teardown from its stored ``teardown_ctx``.
+    """Run one test's ``after_test`` teardown from its stored ``teardown_ctx``,
+    then release the fixture lock it carries.
 
     Called when the RECONCILER finalizes a test — the orchestrator worker skips
     teardown for handed-off non-terminal tests (waiting / poll-budget elapsed),
@@ -518,16 +519,35 @@ def _run_after_test_teardown(ctx: dict) -> None:
     should be idempotent (delete with ``--ignore-not-found``) since a narrow
     race could let both the worker and the reconciler tear the same test down.
     """
-    if not ctx or not ctx.get("after_test"):
+    if not ctx:
         return
-    try:
-        from llm.agents.common.lifecycle import run_after_test
+    holder = ctx.get("lock_holder")
+    if holder:
+        from llm.agents.common import fixture_lock
 
-        run_after_test(ctx)
+        # Nothing renews a handed-off test's Lease after a server restart, so
+        # another run may have taken the fixture since. Tear down only while
+        # this run still holds it (or gets it back, free or expired): the
+        # resources are otherwise the other run's, and its before_test
+        # pre-clean already removed what this test left.
+        if not fixture_lock.try_acquire(ctx, holder):
+            logger.info(
+                "reconcile teardown skipped for test %s: fixture now held by another run",
+                ctx.get("__id__", "?"),
+            )
+            return
+    try:
+        if ctx.get("after_test"):
+            from llm.agents.common.lifecycle import run_after_test
+
+            run_after_test(ctx)
     except Exception as e:
         logger.warning(
             "reconcile teardown failed for test %s: %s", ctx.get("__id__", "?"), e
         )
+    finally:
+        if holder:
+            fixture_lock.release(ctx, holder)
 
 
 def _queue_verdict_row(tr, convo_id: str) -> tuple:

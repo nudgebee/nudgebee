@@ -143,6 +143,49 @@ func TestLimiter_ReconcileRespectsModelGuard(t *testing.T) {
 	assert.Nil(t, l.Check(ctx, Scope{TenantID: "t", UserID: "u", APIKeyID: "k1", Model: "gpt-5"}))
 }
 
+// #40339 / #40340: a model row matches the served target or the requested name, bare or
+// "provider/model", and a provider prefix stays pinned to that provider.
+func TestLimit_AppliesTo(t *testing.T) {
+	served := Scope{Provider: "anthropic", Model: "claude-opus-4-8", RequestedProvider: "anthropic", RequestedModel: "nb-smart"}
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"", true},
+		{"claude-opus-4-8", true},
+		{"anthropic/claude-opus-4-8", true},
+		{"Anthropic/Claude-Opus-4-8", true},
+		{"nb-smart", true},
+		{"anthropic/nb-smart", true},
+		{"bedrock/claude-opus-4-8", false},
+		{"claude-haiku-4-5", false},
+		{"anthropic/claude-haiku-4-5", false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, Limit{Model: c.model}.appliesTo(served), c.model)
+	}
+	// An OpenRouter model id that itself contains "/" still matches on OpenRouter only.
+	or := Scope{Provider: "openrouter", Model: "anthropic/claude-3.5-sonnet"}
+	assert.True(t, Limit{Model: "openrouter/anthropic/claude-3.5-sonnet"}.appliesTo(or))
+	assert.False(t, Limit{Model: "anthropic/claude-3.5-sonnet"}.appliesTo(Scope{Provider: "anthropic", Model: "claude-3.5-sonnet-x"}))
+	// A model id whose "/" is not a provider (Hugging Face org) must still match literally.
+	hf := Scope{Provider: "huggingface", Model: "Qwen/Qwen3.6-35B-A3B-FP8"}
+	assert.True(t, Limit{Model: "Qwen/Qwen3.6-35B-A3B-FP8"}.appliesTo(hf))
+}
+
+func TestLimiter_AliasAndDirectShareModelCap(t *testing.T) {
+	l := New(NewMemStore(), fakeSource{[]Limit{
+		{TenantID: "t", APIKeyID: "k1", Model: "anthropic/claude-opus-4-8", Metric: MetricTokens, Period: PeriodMinute, Value: 10, Enabled: true},
+	}})
+	fixedNow(l, time.Date(2026, 7, 10, 14, 30, 0, 0, time.UTC))
+	ctx := context.Background()
+	alias := Scope{TenantID: "t", APIKeyID: "k1", Provider: "anthropic", Model: "claude-opus-4-8", RequestedModel: "nb-smart"}
+	direct := Scope{TenantID: "t", APIKeyID: "k1", Provider: "anthropic", Model: "claude-opus-4-8", RequestedModel: "claude-opus-4-8"}
+
+	l.Reconcile(ctx, alias, 20, 0)
+	assert.NotNil(t, l.Check(ctx, direct), "tokens spent via the alias fill the opus bucket")
+}
+
 func TestLimiter_DisabledAllowsAll(t *testing.T) {
 	var l *Limiter
 	assert.Nil(t, l.Check(context.Background(), Scope{TenantID: "t"}))

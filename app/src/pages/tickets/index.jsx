@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import TicketListTable from '@components/tickets/TicketListTable';
 import TicketListInfograph from '@components/tickets/TicketListInfograph';
 import { Box } from '@mui/material';
-import { getUserSession } from '@lib/auth';
+import { getUserSession, hasPermission, isGrantsOnlyUser, missingPermissionMessage } from '@lib/auth';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
+import PermissionDeniedContent from '@components/common/navigation/PermissionDeniedContent';
 import { useRouter } from 'next/router';
 import { TicketBlueIcon, UserIconOutline } from '@assets';
 
@@ -35,6 +36,21 @@ const Tickets = () => {
   const [selectedTool, setSelectedTool] = useState(null);
   const [accountFilter, setAccountFilter] = useState([]);
   const [selectedAccount, setSelectedAccount] = useState(null);
+
+  // Matches the sidebar's own gate on this nav item (module: 'tickets',
+  // layout/index.jsx) -- without this, a grants-only user the sidebar hides
+  // Tickets from still saw this page render as an empty "No Data Available"
+  // table instead of a permission-denied placeholder.
+  const canReadTickets = !isGrantsOnlyUser() || hasPermission('tickets', 'Read');
+  const filterOptions = useMemo(
+    () =>
+      tabOptions.map((opt) => ({
+        ...opt,
+        disabled: !canReadTickets,
+        disabledTooltip: missingPermissionMessage('tickets:Read'),
+      })),
+    [canReadTickets]
+  );
 
   const handleChangeTab = (value) => {
     if (value === 1) {
@@ -95,9 +111,10 @@ const Tickets = () => {
 
   return (
     <>
-      <AnchorComponent manageRoute={true} filterOptions={tabOptions} onChangeFilter={(t, s) => handleChangeTab(t, s)} />
+      <AnchorComponent manageRoute={true} filterOptions={filterOptions} onChangeFilter={(t, s) => handleChangeTab(t, s)} />
 
-      {tab !== null && (
+      {tab !== null && !canReadTickets && <PermissionDeniedContent message={missingPermissionMessage('tickets:Read')} />}
+      {tab !== null && canReadTickets && (
         <ErrorBoundary key={tab}>
           <Box>
             <TicketListInfograph

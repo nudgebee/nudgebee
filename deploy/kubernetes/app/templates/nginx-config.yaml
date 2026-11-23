@@ -70,7 +70,7 @@ data:
 {{- if .Values.webhookRouting.servicesServer }}
 
       # services-server. Mirrors the group in api/public_webhooks.go.
-      location ~ ^/api/webhooks/(pagerduty|newrelic|zenduty|prometheus-alertmanager|datadog|azure-monitor|servicenow|grafana|splunk|gcp-monitoring|dynatrace|solarwinds|elasticsearch|openobserve|cubeapm|signoz|workflow|event|azure-eventgrid|github)/?$ {
+      location ~ ^/api/webhooks/(pagerduty|newrelic|zenduty|prometheus-alertmanager|datadog|azure-monitor|servicenow|grafana|splunk|gcp-monitoring|dynatrace|solarwinds|elasticsearch|openobserve|cubeapm|signoz|workflow|event|orion|azure-eventgrid|github)/?$ {
         include /etc/nginx/conf.d/webhook_proxy_params;
         proxy_pass http://services-server:8000;
       }

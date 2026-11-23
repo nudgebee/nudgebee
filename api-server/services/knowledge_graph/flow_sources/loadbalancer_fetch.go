@@ -21,10 +21,18 @@ import (
 // topology may be nil. When it answers, the data comes from
 // `application_loadbalancer.meta.TargetGroups` and no CLI process is started.
 //
-// Caution for callers: stored target groups carry a nested
-// TargetHealthDescriptions captured at discovery time. Target *membership* is
-// topology and safe to read from here; target *health* flips minute to minute and
-// must still come from a live describe-target-health call.
+// Stored target groups carry a nested TargetHealthDescriptions captured at
+// discovery time. Read its membership with TargetGroupMemberIDs: membership is
+// what every knowledge-graph caller wants, and for instance-type target groups
+// it is stable topology the snapshot can answer.
+//
+// describe-target-health is still needed for an ip-type target group, whose
+// members are pod or task IPs that churn faster than discovery refreshes the row,
+// and for any caller that needs live health *state* -- none in this package does.
+// The previous wording here said health "must still come from a live
+// describe-target-health call", which was read as applying to membership too --
+// and is why four call sites kept shelling out once per target group per build
+// for instance ids this already returns.
 func FetchLoadBalancerTargetGroups(
 	reqCtx *security.RequestContext,
 	awsAccountID, region, loadBalancerARN string,
@@ -141,4 +149,64 @@ func K8sServiceFromLBTags(tags map[string]string) (namespace, name string) {
 		return "", ""
 	}
 	return parts[0], parts[1]
+}
+
+// TargetGroupMemberIDs returns the target ids registered on a stored target
+// group, and whether that membership was captured at all.
+//
+// Membership is topology: it changes when a target group gains or loses a
+// target, not continuously. Health state is the volatile part, and nothing in
+// the knowledge graph reads it -- every caller of describe-target-health here
+// pulled out TargetHealthDescriptions[].Target.Id and discarded the rest, which
+// is exactly what the discovery snapshot already holds.
+//
+// Presence is a different question from emptiness and the two must not be
+// collapsed (the same rule as metaField in cloud_topology_store.go). An ABSENT
+// TargetHealthDescriptions key means discovery never captured membership for
+// this target group, so the caller must fall back to describe-target-health. An
+// EMPTY array means it did capture it and the target group genuinely has no
+// targets; falling back there would shell out for an empty answer on every
+// build, forever.
+//
+// A target group that arrived over the CLI rather than from a row carries no
+// TargetHealthDescriptions at all -- describe-target-groups does not return it --
+// so this misses and the caller's live path runs, with no flag check needed.
+//
+// Only instance-type target groups are served from the row. An ip-type group's
+// members are pod or task IPs that change on every rollout, and the row is only
+// refreshed by full discovery: Register/DeregisterTargets deliberately do not
+// trigger a resync (see ELB_CloudTrail_Resource_Sync in the collector's
+// aws_runbook.yaml). Serving them from the row would point the graph at pods
+// that no longer exist, or at whichever pod reused the IP, for up to a day.
+func TargetGroupMemberIDs(tg map[string]interface{}) ([]string, bool) {
+	if !LBTargetsFromRowsEnabled() {
+		return nil, false
+	}
+	if targetType, _ := tg["TargetType"].(string); targetType != "instance" {
+		return nil, false
+	}
+	raw, present := tg["TargetHealthDescriptions"]
+	if !present || raw == nil {
+		return nil, false
+	}
+	descriptions, ok := raw.([]interface{})
+	if !ok {
+		return nil, false
+	}
+
+	ids := make([]string, 0, len(descriptions))
+	for _, entry := range descriptions {
+		description, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		target, ok := description["Target"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, ok := target["Id"].(string); ok && id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, true
 }

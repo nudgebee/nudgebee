@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,13 +42,13 @@ func resolveTierModels(cfg codeAnalysisLLMConfig) (router, fixer, review, specia
 }
 
 func TestForwardedLLMConfigToMap_TiersSurviveTheWire(t *testing.T) {
-	fwd := &core.ForwardedLLMConfig{
+	fwd := &llmruntime.ForwardedLLMConfig{
 		Provider: "googleai",
 		Model:    "run-pro-model",
 		ApiKey:   "test-key",
 		Tiers: map[string]string{
-			string(core.ModelTierRetrieval): "cheap-exec-model",
-			string(core.ModelTierSummary):   "cheap-summary-model",
+			string(llmruntime.ModelTierRetrieval): "cheap-exec-model",
+			string(llmruntime.ModelTierSummary):   "cheap-summary-model",
 		},
 	}
 
@@ -66,7 +66,7 @@ func TestForwardedLLMConfigToMap_TiersSurviveTheWire(t *testing.T) {
 }
 
 func TestForwardedLLMConfigToMap_NoTiersOmitsKey(t *testing.T) {
-	fwd := &core.ForwardedLLMConfig{Provider: "googleai", Model: "run-pro-model", ApiKey: "k"}
+	fwd := &llmruntime.ForwardedLLMConfig{Provider: "googleai", Model: "run-pro-model", ApiKey: "k"}
 
 	m := forwardedLLMConfigToMap(fwd)
 

@@ -11,6 +11,7 @@ import {
   RESOLVER_OPTIONS,
   STATUS_COLUMN,
   STATUS_OPTIONS,
+  statusOfCell,
   TYPE_OPTIONS,
   noMatchAccountId,
   typeCellText,
@@ -126,7 +127,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
     { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       const locators = await openEventResolutions(page);
-      const status = await pickPopulatedOption(locators, STATUS_COLUMN, STATUS_OPTIONS);
+      const status = await pickPopulatedOption(locators, STATUS_COLUMN, STATUS_OPTIONS, statusOfCell);
 
       if (!status) {
         await expect(locators.emptyState, "with no rows to filter the listing should show its empty state").toHaveText(
@@ -138,7 +139,7 @@ test.describe("Troubleshoot Event Resolutions", () => {
 
       await selectFilterOption(locators, locators.statusFilter, status);
       await settleListing(locators);
-      await expectColumnToRead(locators, STATUS_COLUMN, status);
+      await expectColumnToRead(locators, STATUS_COLUMN, status, statusOfCell);
       await expect(locators.statusFilter, "the trigger should report the status it is filtering on").toContainText(status);
     }
   );

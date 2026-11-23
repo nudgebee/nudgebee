@@ -83,7 +83,7 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		logger := slog.With("conversation_id", request.ConversationID)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -169,7 +169,7 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		}
 
 		logger := slog.With("watch_id", request.WatchID)
-		agentContext, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
+		agentContext, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, logger)
 		if err != nil {
 			actionError(c, 401, err.Error())
 			return
@@ -204,6 +204,12 @@ func handleWatchesApi(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 		if !agentContext.GetSecurityContext().HasAccountAccess(existing.AccountID.String(), security.SecurityAccessTypeUpdate) &&
 			!grantedRun(agentContext.GetSecurityContext(), existing.AccountID.String(), moduleAiMisc) {
 			actionError(c, 403, errorUserAccessMessage)
+			return
+		}
+		// NudgeBee's own wait (a remediation follow-up's, or an automation step's run) ends on its own; a person's cancel
+		// would start the next check early, or leave the step's run unsettled.
+		if existing.IsNudgeBees() {
+			actionError(c, 409, "api: this is NudgeBee's own wait for a remediation step; it ends on its own")
 			return
 		}
 
@@ -301,6 +307,16 @@ type watchRow struct {
 	ExpiresAt       string  `json:"expires_at"`
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
+	// Origin is "" for a person's watch, else the NudgeBee feature that owns it (a remediation wait): the drawer
+	// shows it without a Cancel, and no chat summary comes for it.
+	Origin string `json:"origin"`
+}
+
+func originOf(w watch.Watch) string {
+	if w.Origin == nil {
+		return ""
+	}
+	return *w.Origin
 }
 
 func toListResponse(in []watch.Watch) []watchRow {
@@ -331,6 +347,7 @@ func toListResponse(in []watch.Watch) []watchRow {
 			ExpiresAt:       w.ExpiresAt.Format("2006-01-02T15:04:05.000000Z"),
 			CreatedAt:       w.CreatedAt.Format("2006-01-02T15:04:05.000000Z"),
 			UpdatedAt:       w.UpdatedAt.Format("2006-01-02T15:04:05.000000Z"),
+			Origin:          originOf(w),
 		})
 	}
 	return out

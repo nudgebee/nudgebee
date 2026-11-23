@@ -54,7 +54,7 @@ import {
 //
 // The tab opens tenant-wide: ToolsAndMCPAdminTab starts with accountId '', which
 // puts ListTools in its isTenantWide branch — an Account column instead of
-// NB Tool Type + Actions, and no Create Tool. Picking an account in the header
+// NB Tool Type, and no Create Tool. Picking an account in the header
 // filter is what swaps the mount, so several cases below turn on that difference.
 //
 // This runs against a shared tenant, so exactly one case writes: it registers a
@@ -65,7 +65,7 @@ import {
 
 test.describe("Admin AI & Tools - Tools & MCP", () => {
   test(
-    "Tools & MCP sanity - deep-link to Admin AI & Tools Tools & MCP, verify the Tools toggle is selected and the tenant-wide listing renders Name, Description, Status and Account columns with no Create Tool control",
+    "Tools & MCP sanity - deep-link to Admin AI & Tools Tools & MCP, verify the Tools toggle is selected and the tenant-wide listing renders Name, Description, Status and Account columns with Actions but no Create Tool control",
     { tag: ["@dev", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
@@ -86,9 +86,9 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
       // which branch of ListTools actually mounted.
       await expect(locators.toolsHeader(HEADER_ACCOUNT)).toBeVisible();
       await expect(locators.toolsHeader(HEADER_NB_TOOL_TYPE)).toHaveCount(0);
-      await expect(locators.toolsHeader(HEADER_ACTIONS)).toHaveCount(0);
-      // Create is per-account, so the tenant-wide mount hides it alongside the
-      // per-row Edit and Delete controls.
+      // Tenant-wide rows keep Edit / Delete (run against the row's own account), so Actions stays.
+      await expect(locators.toolsHeader(HEADER_ACTIONS)).toBeVisible();
+      // Create is per-account, so the tenant-wide mount hides it.
       await expect(locators.createToolBtn).toHaveCount(0);
     }
   );

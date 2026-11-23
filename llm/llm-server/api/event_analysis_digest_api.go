@@ -87,7 +87,8 @@ func HandleGetEventAnalysisDigestApi(
 }
 
 // assertDigestReadAccess rejects a caller who cannot see the whole tenant, and
-// returns the tenant the digest belongs to.
+// returns the tenant the digest belongs to: a built-in tenant reader, or a
+// tenant-wide events Read or Write grant.
 //
 // Tenant-wide access, not per-account: the review spans every account in the
 // tenant and names them individually, so an account-level grant would leak the
@@ -99,7 +100,7 @@ func assertDigestReadAccess(ctx *security.RequestContext) (string, error) {
 	if sec == nil {
 		return "", fmt.Errorf("digest: missing security context")
 	}
-	if !sec.HasTenantAccess(security.SecurityAccessTypeRead) {
+	if !sec.CanReadTenantModule(moduleEvents) {
 		return "", fmt.Errorf("digest: forbidden, the weekly review covers every account in the tenant")
 	}
 	tenantID := sec.GetTenantId()
@@ -117,8 +118,9 @@ func assertDigestReadAccess(ctx *security.RequestContext) (string, error) {
 // it. Scheduled output stays authoritative; on-demand is a preview that closes
 // the up-to-six-hour wait.
 //
-// Requires tenant write access: a run costs real LLM spend across every account
-// in the tenant, so an account-level grant is not enough to trigger it.
+// Requires tenant write access or a tenant-wide events:Execute grant: a run
+// costs real LLM spend across every account in the tenant, so an account-level
+// grant is not enough to trigger it.
 func HandleGenerateEventAnalysisDigestApi(
 	ctx *security.RequestContext,
 	request GenerateEventAnalysisDigestRequest,
@@ -135,7 +137,7 @@ func HandleGenerateEventAnalysisDigestApi(
 		return events.Digest{}, fmt.Errorf(
 			"digest: on-demand generation requires a requesting user; refusing to run without one")
 	}
-	if !sec.HasTenantAccess(security.SecurityAccessTypeCreate) {
+	if !sec.HasTenantAccess(security.SecurityAccessTypeCreate) && !sec.HasTenantWideGrant(moduleEvents, "Execute") {
 		return events.Digest{}, fmt.Errorf("digest: forbidden, generating the weekly review is a tenant-wide action")
 	}
 	tenantID := sec.GetTenantId()
@@ -231,7 +233,7 @@ func bindDigestRequest(
 	requestMap := make(map[string]any)
 	if err := c.ShouldBindJSON(&requestMap); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
@@ -240,7 +242,7 @@ func bindDigestRequest(
 	var actionRequest ActionRequest
 	if err := common.DecodeMapToStruct(requestMap, &actionRequest); err != nil {
 		slog.Error(errorBindingMessage, "error", err)
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
@@ -254,15 +256,15 @@ func bindDigestRequest(
 		payload = requestMap
 	}
 	if err := common.DecodeMapToStruct(payload, target); err != nil {
-		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{
+		c.JSON(http.StatusBadRequest, BuildApiResponse(nil, []error{
 			common.Error{Message: "api: " + err.Error()},
 		}))
 		return nil, false
 	}
 
-	reqCtx, err := buildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
+	reqCtx, err := BuildContextFromPayload(c.Request.Context(), c, &actionRequest, tracer, meter, slog.Default())
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, buildApiResponse(nil, []error{err}))
+		c.JSON(http.StatusUnauthorized, BuildApiResponse(nil, []error{err}))
 		return nil, false
 	}
 	return reqCtx, true

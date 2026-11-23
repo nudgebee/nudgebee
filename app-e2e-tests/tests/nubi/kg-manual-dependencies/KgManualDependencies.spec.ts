@@ -15,7 +15,6 @@ import {
   draftDeclaration,
   expectDeclarationAbsent,
   expectDeclarationListed,
-  fillDeclarationForm,
   openManualDependencies,
   openNewDeclarationDialog,
   openRowMenu,
@@ -40,7 +39,7 @@ import {
 test.describe("Nubi KG Manual Dependencies", () => {
   test(
     "Nubi KG Manual Dependencies sanity - open b-Cortex, select Knowledge Graph, open Settings, switch to Manual Declarations, verify the tab is selected and shows the declaration guidance, the Status filter, Import JSON, Declare node and Declare dependency, and the list settles on rows or its empty state",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const locators = await openManualDependencies(page);
@@ -64,7 +63,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies sanity - open the Status filter, verify it offers All, Resolved, Pending, Ambiguous, Unmatched, Too many matches and Node inactive, close it without picking, verify All stays selected and no list request is sent",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const locators = await openManualDependencies(page);
@@ -87,7 +86,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - open Declare dependency, verify Create is blocked while both names are empty, enter a source name, verify it stays blocked, enter a destination name, verify Create enables, cancel, close and reopen Settings, verify no row with that name is listed and no create mutation is sent",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const counts = trackOperations(page, [OP_CREATE]);
@@ -118,7 +117,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - open Declare dependency, switch the Source kind to Cloud, verify Namespace and Cluster give way to Resource ID, Cloud account and Region and the node type resets to Database, switch back to Kubernetes, verify Namespace and Cluster return with K8sService, cancel, verify no create mutation is sent",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const counts = trackOperations(page, [OP_CREATE]);
@@ -155,7 +154,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - create a CALLS declaration between two unique Kubernetes services with a namespace and cluster, verify the row lists the qualified source, the destination, the CALLS type and a resolution status, close and reopen Settings, verify the declaration persisted",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const counts = trackOperations(page, [OP_CREATE, ...BULK_OPS]);
@@ -192,7 +191,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - create a declaration, reopen it with Edit, verify the form is prefilled with the stored names and qualifiers, change the relationship to PUBLISHES_TO and add a unique note, save, close and reopen Settings, verify the row shows PUBLISHES_TO and Edit shows the note",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const counts = trackOperations(page, BULK_OPS);
@@ -251,7 +250,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - create a declaration then choose Delete from its row menu, verify the confirm names the source and destination, cancel it, verify the row is still listed, confirm the delete, verify the row is gone and stays gone after closing and reopening Settings",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const counts = trackOperations(page, [OP_DELETE, ...BULK_OPS]);
@@ -301,7 +300,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - create a declaration, choose Re-resolve from its row menu, verify exactly one re-resolve request for that row is sent and the row stays listed with a resolution status, and the tenant-wide re-resolve is never sent",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const counts = trackOperations(page, [OP_RERESOLVE, ...BULK_OPS]);
@@ -335,7 +334,7 @@ test.describe("Nubi KG Manual Dependencies", () => {
 
   test(
     "Nubi KG Manual Dependencies - create a declaration, pick Resolved in the Status filter, verify the unresolvable new declaration drops out and every remaining row reports Resolved or the list is empty, pick All, verify the declaration is listed again",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@test", "@regression", "@search"] },
     async ({ page }) => {
       test.setTimeout(300000);
       const counts = trackOperations(page, BULK_OPS);

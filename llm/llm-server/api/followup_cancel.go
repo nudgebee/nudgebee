@@ -45,6 +45,11 @@ func handleFollowupCancel(ctx *security.RequestContext, request ConversationApiR
 	if conversation.AccountID.String() != request.AccountId {
 		return nil, http.StatusForbidden, errors.New(errorUserAccessMessage)
 	}
+	// The run policy may keep a conversation's follow-ups to one user:
+	// dismissing resumes the run.
+	if !core.MayActOnConversation(conversation, core.ActingUser(ctx, request.UserId)) {
+		return nil, http.StatusForbidden, errors.New(errorUserAccessMessage)
+	}
 
 	// Idempotent: already-terminal conversation → report and exit, keeping
 	// retries from flaky clients safe.
@@ -61,6 +66,9 @@ func handleFollowupCancel(ctx *security.RequestContext, request ConversationApiR
 	// message, this lets the agent keep working instead of ending the
 	// conversation. handled=false means neither condition held; fall
 	// through to the existing terminate path below exactly as before.
+	// The resumed run is governed by the conversation's owner, read from the
+	// row loaded above.
+	ctx = core.WithRunProfile(ctx, conversation.RunProfile)
 	handled, resumeResp, skipErr := core.TrySkipAndContinueFollowup(ctx, request.AccountId, request.ConversationId, request.AgentId, request.Reason)
 	if skipErr != nil {
 		return nil, http.StatusInternalServerError, fmt.Errorf("api: skip-and-continue failed: %w", skipErr)

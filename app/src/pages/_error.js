@@ -86,7 +86,7 @@ function Error({ statusCode }) {
           tone='secondary'
           size='md'
           onClick={() => {
-            router.push(`/home`);
+            router.push(`/ask-nudgebee`);
           }}
         >
           Go to Homepage

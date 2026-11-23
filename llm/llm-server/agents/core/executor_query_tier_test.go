@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/config"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/assert"
@@ -28,7 +29,7 @@ func TestQueryModelDownshift_BothEngines(t *testing.T) {
 	setEnvKey(t, "llm_tier_model_summary", "gemini-3-flash-preview")
 	previous := config.Config.LlmServerPlannerEngine
 	t.Cleanup(func() { config.Config.LlmServerPlannerEngine = previous })
-	agent := catTestCategorisedAgent{category: ModelTierReasoning}
+	agent := catTestCategorisedAgent{category: llmruntime.ModelTierReasoning}
 	for _, engine := range []struct {
 		name   string
 		engine string
@@ -40,19 +41,19 @@ func TestQueryModelDownshift_BothEngines(t *testing.T) {
 				name    string
 				enabled bool
 				request NBAgentRequest
-				want    ModelTier
+				want    llmruntime.ModelTier
 				model   string
 			}{
-				{"disabled query", false, NBAgentRequest{OriginalQuery: "list pods"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
-				{"enabled query", true, NBAgentRequest{OriginalQuery: "list pods"}, ModelTierSummary, "gemini-3-flash-preview"},
-				{"investigation", true, NBAgentRequest{OriginalQuery: "why is the api pod crashlooping"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
-				{"sub-agent", true, NBAgentRequest{OriginalQuery: "list pods", AgentId: "child", ParentAgentId: "parent"}, ModelTierReasoning, "gemini-3.1-pro-preview"},
+				{"disabled query", false, NBAgentRequest{OriginalQuery: "list pods"}, llmruntime.ModelTierReasoning, "gemini-3.1-pro-preview"},
+				{"enabled query", true, NBAgentRequest{OriginalQuery: "list pods"}, llmruntime.ModelTierSummary, "gemini-3-flash-preview"},
+				{"investigation", true, NBAgentRequest{OriginalQuery: "why is the api pod crashlooping"}, llmruntime.ModelTierReasoning, "gemini-3.1-pro-preview"},
+				{"sub-agent", true, NBAgentRequest{OriginalQuery: "list pods", AgentId: "child", ParentAgentId: "parent"}, llmruntime.ModelTierReasoning, "gemini-3.1-pro-preview"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					defer setDownshift(tc.enabled)()
 					ctx := applyAgentModelTier(security.NewRequestContextForSuperAdmin(), agent, tc.request)
-					require.Equal(t, tc.want, modelTierFromContext(ctx))
-					require.Equal(t, tc.model, GetLLMModelName(ctx, "", "googleai", agent.GetName(), true, ""))
+					require.Equal(t, tc.want, llmruntime.ModelTierFromContext(ctx))
+					require.Equal(t, tc.model, llmruntime.GetLLMModelName(ctx, "", "googleai", agent.GetName(), true, ""))
 					require.Equal(t, engine.react4, useReAct4Engine(ctx, agent, tc.request))
 				})
 			}
@@ -86,37 +87,37 @@ func TestIsTopLevelPlainRetrievalTurn(t *testing.T) {
 // orchestrator downshifts to Summary ONLY when the flag is on; everything else
 // keeps the agent's declared tier.
 func TestResolveModelTier(t *testing.T) {
-	reasoning := catTestCategorisedAgent{category: ModelTierReasoning}
+	reasoning := catTestCategorisedAgent{category: llmruntime.ModelTierReasoning}
 	query := NBAgentRequest{OriginalQuery: "list pods in the default namespace"}
 	investigation := NBAgentRequest{OriginalQuery: "why is the api pod crashlooping"}
 	subAgentQuery := NBAgentRequest{OriginalQuery: "list pods", AgentId: "a2", ParentAgentId: "a1"}
 
 	t.Run("flag off → base tier (no-op, byte-identical to today)", func(t *testing.T) {
 		defer setDownshift(false)()
-		assert.Equal(t, ModelTierReasoning, resolveModelTier(nil, reasoning, query))
+		assert.Equal(t, llmruntime.ModelTierReasoning, resolveModelTier(nil, reasoning, query))
 	})
 	t.Run("flag on + top-level query + Reasoning → Summary", func(t *testing.T) {
 		defer setDownshift(true)()
-		assert.Equal(t, ModelTierSummary, resolveModelTier(nil, reasoning, query))
+		assert.Equal(t, llmruntime.ModelTierSummary, resolveModelTier(nil, reasoning, query))
 	})
 	t.Run("flag on + investigation → Reasoning (no downshift)", func(t *testing.T) {
 		defer setDownshift(true)()
-		assert.Equal(t, ModelTierReasoning, resolveModelTier(nil, reasoning, investigation))
+		assert.Equal(t, llmruntime.ModelTierReasoning, resolveModelTier(nil, reasoning, investigation))
 	})
 	t.Run("flag on + sub-agent query → no downshift (not top-level)", func(t *testing.T) {
 		defer setDownshift(true)()
-		assert.Equal(t, ModelTierReasoning, resolveModelTier(nil, reasoning, subAgentQuery))
+		assert.Equal(t, llmruntime.ModelTierReasoning, resolveModelTier(nil, reasoning, subAgentQuery))
 	})
 	t.Run("flag on + non-Reasoning agent → unchanged (only Reasoning downshifts)", func(t *testing.T) {
 		defer setDownshift(true)()
-		retrieval := catTestCategorisedAgent{category: ModelTierRetrieval}
-		assert.Equal(t, ModelTierRetrieval, resolveModelTier(nil, retrieval, query))
+		retrieval := catTestCategorisedAgent{category: llmruntime.ModelTierRetrieval}
+		assert.Equal(t, llmruntime.ModelTierRetrieval, resolveModelTier(nil, retrieval, query))
 	})
 }
 
 // ctxWithModelConfigKey stamps one explicit-model-config context key, mirroring
 // what conversation.go does before the executor runs.
-func ctxWithModelConfigKey(key LLMContextKey, val any) *security.RequestContext {
+func ctxWithModelConfigKey(key llmruntime.LLMContextKey, val any) *security.RequestContext {
 	base := security.NewRequestContextForSuperAdmin()
 	goCtx := context.WithValue(base.GetContext(), key, val)
 	return security.NewRequestContext(goCtx, base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
@@ -127,32 +128,32 @@ func ctxWithModelConfigKey(key LLMContextKey, val any) *security.RequestContext 
 // downshift flag is on — the flag optimizes the default path only.
 func TestResolveModelTier_ExplicitConfigNeverDownshifted(t *testing.T) {
 	defer setDownshift(true)()
-	reasoning := catTestCategorisedAgent{category: ModelTierReasoning}
+	reasoning := catTestCategorisedAgent{category: llmruntime.ModelTierReasoning}
 	query := NBAgentRequest{OriginalQuery: "list pods in the default namespace"}
 
 	cases := []struct {
 		name string
 		ctx  *security.RequestContext
 	}{
-		{"blanket provider override", ctxWithModelConfigKey(ContextKeyLlmProviderOverride, "openai")},
-		{"blanket model override", ctxWithModelConfigKey(ContextKeyLlmModelOverride, "gpt-5")},
-		{"per-tier picks", ctxWithModelConfigKey(ContextKeyLlmTierModelOverrides,
-			ConversationTierOverrides{Picks: map[string]TierModelPick{"reasoning": {Provider: "openai", Model: "gpt-5"}}})},
-		{"config-source pin", ctxWithModelConfigKey(ContextKeyLlmConfigSourceOverride, "db:11111111-1111-1111-1111-111111111111:all")},
+		{"blanket provider override", ctxWithModelConfigKey(llmruntime.ContextKeyLlmProviderOverride, "openai")},
+		{"blanket model override", ctxWithModelConfigKey(llmruntime.ContextKeyLlmModelOverride, "gpt-5")},
+		{"per-tier picks", ctxWithModelConfigKey(llmruntime.ContextKeyLlmTierModelOverrides,
+			llmruntime.ConversationTierOverrides{Picks: map[string]llmruntime.TierModelPick{"reasoning": {Provider: "openai", Model: "gpt-5"}}})},
+		{"config-source pin", ctxWithModelConfigKey(llmruntime.ContextKeyLlmConfigSourceOverride, "db:11111111-1111-1111-1111-111111111111:all")},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, ModelTierReasoning, resolveModelTier(c.ctx, reasoning, query),
+			assert.Equal(t, llmruntime.ModelTierReasoning, resolveModelTier(c.ctx, reasoning, query),
 				"explicit config must never be downshifted")
 		})
 	}
 
 	t.Run("no explicit config → downshift still applies", func(t *testing.T) {
 		base := security.NewRequestContextForSuperAdmin()
-		assert.Equal(t, ModelTierSummary, resolveModelTier(base, reasoning, query))
+		assert.Equal(t, llmruntime.ModelTierSummary, resolveModelTier(base, reasoning, query))
 	})
 	t.Run("empty tier-picks map does not block the downshift", func(t *testing.T) {
-		ctx := ctxWithModelConfigKey(ContextKeyLlmTierModelOverrides, ConversationTierOverrides{})
-		assert.Equal(t, ModelTierSummary, resolveModelTier(ctx, reasoning, query))
+		ctx := ctxWithModelConfigKey(llmruntime.ContextKeyLlmTierModelOverrides, llmruntime.ConversationTierOverrides{})
+		assert.Equal(t, llmruntime.ModelTierSummary, resolveModelTier(ctx, reasoning, query))
 	})
 }

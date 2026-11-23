@@ -55,6 +55,7 @@ var userHistoryModules = map[string]struct{}{
 	"metrics_query_dynatrace":                     {},
 	"metrics_query_solarwinds":                    {},
 	"log_query_cubeapm":                           {},
+	"log_query_otel_clickhouse":                   {},
 	"log_query_splunk_enterprise":                 {},
 	"metrics_query_cubeapm":                       {},
 	"metrics_query_splunk_enterprise":             {},

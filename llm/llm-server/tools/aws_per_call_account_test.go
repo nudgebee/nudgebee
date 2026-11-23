@@ -3,6 +3,7 @@ package tools
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
@@ -20,13 +21,13 @@ func awsCfg(name, id, number string) core.ToolConfig {
 // connections share one account number.
 func awsFixture(t *testing.T, account string) {
 	t.Helper()
-	prod := awsCfg("aws-prod", "prod-id", "740395098545")
+	prod := awsCfg("aws-prod", "prod-id", "777777777777")
 	cacheShellTargets(t, account, ToolExecuteAwsCliCommand, []core.ToolConfig{prod})
 	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{ToolExecuteAwsCliCommand: {
 		prod,
-		awsCfg("aws-demo", "demo-id", "136781626097"),
-		awsCfg("dev-aws", "dev1-id", "864186153326"),
-		awsCfg("Demo123", "dev2-id", "864186153326"),
+		awsCfg("aws-demo", "demo-id", "999999999999"),
+		awsCfg("dev-aws", "dev1-id", "888888888888"),
+		awsCfg("Demo123", "dev2-id", "888888888888"),
 		awsCfg("aws-secret", "no-access-id", "111111111111"),
 	}})
 }
@@ -78,20 +79,20 @@ func TestAwsExecutePerCallAccount(t *testing.T) {
 	})
 
 	t.Run("a unique account id selects that account", func(t *testing.T) {
-		capture, _, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "136781626097"}})
+		capture, _, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "999999999999"}})
 		require.NoError(t, err)
 		require.Equal(t, "demo-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
 	})
 
 	t.Run("the saved account's own id stays on the saved account", func(t *testing.T) {
-		capture, resp, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "740395098545"}})
+		capture, resp, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "777777777777"}})
 		require.NoError(t, err)
 		require.Equal(t, "prod-id", capture.env[workspace.ENV_NB_TARGET_ACCOUNT_ID])
 		require.True(t, strings.HasPrefix(resp.Data, "[account: aws-prod]\n"), resp.Data)
 	})
 
 	t.Run("a shared account id is refused with the matching names", func(t *testing.T) {
-		capture, resp, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "864186153326"}})
+		capture, resp, err := run(t, core.NBToolCallRequest{Command: "aws s3 ls", Arguments: map[string]any{"account": "888888888888"}})
 		require.Error(t, err)
 		require.Contains(t, resp.Data, "matches several connections (Demo123, dev-aws)")
 		require.Empty(t, capture.command)
@@ -176,23 +177,23 @@ func TestAwsConfirmationKeyIsPerAccount(t *testing.T) {
 
 func TestAwsIdentifyConfigPrefersExplicitAccount(t *testing.T) {
 	configs := []core.ToolConfig{
-		awsCfg("aws-prod", "prod-id", "740395098545"),
-		awsCfg("aws-demo", "demo-id", "136781626097"),
-		awsCfg("dev-aws", "dev1-id", "864186153326"),
-		awsCfg("Demo123", "dev2-id", "864186153326"),
+		awsCfg("aws-prod", "prod-id", "777777777777"),
+		awsCfg("aws-demo", "demo-id", "999999999999"),
+		awsCfg("dev-aws", "dev1-id", "888888888888"),
+		awsCfg("Demo123", "dev2-id", "888888888888"),
 	}
-	ctx := core.NbToolContext{QueryConfig: core.NBQueryConfig{Labels: map[string]any{"nb_cloud_account_id": "740395098545"}}}
+	ctx := core.NbToolContext{QueryConfig: core.NBQueryConfig{Labels: map[string]any{"nb_cloud_account_id": "777777777777"}}}
 	aws := AwsCliTool{}
 
 	got, err := aws.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"aws s3 ls","account":"aws-demo"}`}, configs)
 	require.NoError(t, err)
 	require.Equal(t, "aws-demo", got.Name, "explicit account beats the UI page label")
 
-	got, err = aws.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"aws s3 ls","account":"136781626097"}`}, configs)
+	got, err = aws.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"aws s3 ls","account":"999999999999"}`}, configs)
 	require.NoError(t, err)
 	require.Equal(t, "aws-demo", got.Name, "a unique account id selects that account")
 
-	got, err = aws.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"aws s3 ls","account":"864186153326"}`}, configs)
+	got, err = aws.IdentifyConfig(ctx, core.NBToolCallRequest{Command: `{"command":"aws s3 ls","account":"888888888888"}`}, configs)
 	require.NoError(t, err)
 	require.Equal(t, "aws-prod", got.Name, "an ambiguous id falls through to the page label")
 }
@@ -201,7 +202,7 @@ func TestRenderExecutionTargets(t *testing.T) {
 	const account = "render-targets"
 	awsFixture(t, account)
 	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{
-		ToolExecuteAwsCliCommand:   {awsCfg("aws-prod", "prod-id", "740395098545"), awsCfg("aws-demo", "demo-id", "136781626097"), awsCfg("aws-secret", "no-access-id", "1")},
+		ToolExecuteAwsCliCommand:   {awsCfg("aws-prod", "prod-id", "777777777777"), awsCfg("aws-demo", "demo-id", "999999999999"), awsCfg("aws-secret", "no-access-id", "1")},
 		ToolExecuteGcpCliCommand:   {awsCfg("gcp-prod", "prod-id", "project-prod"), awsCfg("gcp-demo", "demo-id", "project-demo")},
 		ToolExecuteAzureCliCommand: {awsCfg("azure-prod", "prod-id", "subscription-prod"), awsCfg("azure-demo", "demo-id", "subscription-demo")},
 		ToolExecuteKubectlCommand: {
@@ -215,7 +216,7 @@ func TestRenderExecutionTargets(t *testing.T) {
 	block := RenderExecutionTargets(sc, account, saved, []string{ToolExecuteAwsCliCommand, core.ToolExecuteShellCommand})
 	require.Contains(t, block, "<execution_targets>")
 	require.Contains(t, block, "Kubernetes clusters: current k8s-prod; others you can use: k8s-dev.")
-	require.Contains(t, block, "AWS accounts: current aws-prod; others you can use: aws-demo (136781626097).")
+	require.Contains(t, block, "AWS accounts: current aws-prod; others you can use: aws-demo (999999999999).")
 	require.Contains(t, block, "GCP accounts: current none selected yet; others you can use: gcp-demo (project-demo), gcp-prod (project-prod).")
 	require.Contains(t, block, "Azure accounts: current none selected yet; others you can use: azure-demo (subscription-demo), azure-prod (subscription-prod).")
 	require.Contains(t, block, "shell_execute AWS commands: pass --profile <name>")
@@ -246,4 +247,58 @@ func TestKubectlConfigDiscoveryRoutesThroughShim(t *testing.T) {
 	_, err = shell.Call(kubectlCallCtx(t, account, shell), core.NBToolCallRequest{Command: "kubectl config get-contexts"})
 	require.NoError(t, err)
 	require.Equal(t, "kubectl config get-contexts", capture.command)
+}
+
+func TestRenderExecutionTargetsMarksDisconnectedClusters(t *testing.T) {
+	const account = "render-targets-connection"
+	awsFixture(t, account)
+	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{
+		ToolExecuteKubectlCommand: {
+			{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+			{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}},
+			{Name: "a-poc", Values: []core.ToolConfigValue{{Name: "id", Value: "poc-id"}}},
+			{Name: "k8s-qa", Values: []core.ToolConfigValue{{Name: "id", Value: "qa-id"}}},
+		},
+	})
+	StubClusterConnections(t, map[string]ClusterConnection{
+		"dev-id": {Connected: true},
+		"poc-id": {Connected: false},
+	})
+	sc := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "dev-id", "poc-id", "qa-id"})
+	saved := map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}
+
+	block := RenderExecutionTargets(sc, account, saved, []string{core.ToolExecuteShellCommand})
+	require.Contains(t, block, "Kubernetes clusters: current k8s-prod; others you can use: k8s-dev, k8s-qa, a-poc (not connected).",
+		"disconnected clusters are listed last and marked; clusters with no agent row are listed as before")
+	require.Contains(t, block, "Clusters marked not connected have no connected Nudgebee agent")
+}
+
+func TestRenderExecutionTargetsWithoutDisconnectedClustersAddsNoNote(t *testing.T) {
+	const account = "render-targets-connection-ok"
+	awsFixture(t, account)
+	StubTenantAccounts(t, "tenant", map[string][]core.ToolConfig{
+		ToolExecuteKubectlCommand: {
+			{Name: "k8s-prod", Values: []core.ToolConfigValue{{Name: "id", Value: "prod-id"}}},
+			{Name: "k8s-dev", Values: []core.ToolConfigValue{{Name: "id", Value: "dev-id"}}},
+		},
+	})
+	StubClusterConnections(t, map[string]ClusterConnection{"dev-id": {Connected: true}})
+	sc := security.NewRequestContextForTenantAccountAdmin("tenant", "user", []string{account, "prod-id", "dev-id"})
+
+	block := RenderExecutionTargets(sc, account, map[string]string{ToolExecuteKubectlCommand: "k8s-prod"}, []string{core.ToolExecuteShellCommand})
+	require.Contains(t, block, "others you can use: k8s-dev.")
+	require.NotContains(t, block, "not connected")
+}
+
+func TestClusterStatusColumns(t *testing.T) {
+	seen := time.Date(2026, 10, 21, 15, 54, 30, 0, time.UTC)
+	status, last := ClusterStatusColumns(ClusterConnection{Connected: true, LastSeen: &seen}, true)
+	require.Equal(t, "Connected", status)
+	require.Equal(t, "2026-10-21T15:54Z", last)
+	status, last = ClusterStatusColumns(ClusterConnection{}, true)
+	require.Equal(t, "Disconnected", status)
+	require.Equal(t, "never", last)
+	status, last = ClusterStatusColumns(ClusterConnection{}, false)
+	require.Equal(t, "Unknown", status)
+	require.Equal(t, "-", last)
 }

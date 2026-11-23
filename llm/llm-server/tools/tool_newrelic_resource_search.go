@@ -16,7 +16,10 @@ func init() {
 	})
 }
 
-type NewRelicResourceSearchTool struct{}
+type NewRelicResourceSearchTool struct {
+	// Only reads: every call is a query, so it is classified as a read.
+	core.ReadOnlyTool
+}
 
 type NewRelicResourceSearchRequest struct {
 	ResourceType string `json:"resource_type"`

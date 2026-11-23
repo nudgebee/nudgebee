@@ -1,12 +1,21 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 	"regexp"
+	"slices"
 	"strings"
+	"time"
+
+	"github.com/google/shlex"
+	"github.com/google/uuid"
+	"github.com/lib/pq"
+	"github.com/samber/lo"
 )
 
 const ToolExecuteAwsCliCommand = "aws_execute"
@@ -143,6 +152,9 @@ func (t AwsCliTool) InputSchema() core.ToolSchema {
 }
 
 func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
+	if err := readOnlyCheckRefusal(nbRequestContext, t.Name(), input); err != nil {
+		return core.NBToolResponse{Data: err.Error(), Status: core.NBToolResponseStatusError}, err
+	}
 
 	command := strings.TrimSpace(input.Command)
 	requested := RequestedAwsAccount(input.Arguments)
@@ -168,13 +180,17 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 		workspace.ENV_NB_TOOL_CONFIG_NAME:  target.Name,
 		workspace.ENV_NB_TARGET_ACCOUNT_ID: accountId,
 	}
+	command, regionNote := withEventRegion(nbRequestContext, target, command)
+	if regionNote != "" {
+		provenance = strings.TrimSuffix(provenance, "]\n") + ", " + regionNote + "]\n"
+	}
 	response, err := t.workspace().ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, env)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("aws: unable to execute shell script", "error", err.Error(), "command", command, "account", target.Name)
 		if response == "" {
 			response = err.Error()
 		}
-		response = provenance + response
+		response = provenance + response + instanceNotFoundNote(nbRequestContext, target, response)
 		if isPermanentAwsCredentialFailure(response + " " + err.Error()) {
 			return core.NBToolResponse{Data: response, Status: core.NBToolResponseStatusError}, nil
 		}
@@ -186,13 +202,92 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
-	response = provenance + response
+	note, refs := saveCloudMetricRead(nbRequestContext, t.workspace(), awsMetricRead, command, response)
+	response = provenance + response + instanceNotFoundNote(nbRequestContext, target, response) + note
 
 	return core.NBToolResponse{
-		Data:   response,
-		Type:   core.NBToolResponseTypeText,
-		Status: core.NBToolResponseStatusSuccess,
+		Data:       response,
+		Type:       core.NBToolResponseTypeText,
+		Status:     core.NBToolResponseStatusSuccess,
+		References: refs,
 	}, nil
+}
+
+// cloudMetricReadSpec says which commands of one cloud CLI read metric time series,
+// and how their output is saved.
+type cloudMetricReadSpec struct {
+	binary string
+	// valueFlags are global flags that take a separate value ("--profile prod"), so
+	// the value is not mistaken for the service or verb.
+	valueFlags map[string]bool
+	// paths are the leading positional tokens of a metric read, e.g. cloudwatch get-metric-data.
+	paths       [][]string
+	filePrefix  string
+	description string
+}
+
+var awsMetricRead = cloudMetricReadSpec{
+	binary: "aws",
+	valueFlags: map[string]bool{
+		"--profile": true, "--region": true, "--output": true, "--endpoint-url": true,
+		"--query": true, "--color": true, "--ca-bundle": true, "--cli-read-timeout": true,
+		"--cli-connect-timeout": true, "--cli-binary-format": true,
+	},
+	paths: [][]string{
+		{"cloudwatch", "get-metric-data"},
+		{"cloudwatch", "get-metric-statistics"},
+	},
+	filePrefix:  "metrics_aws_cloudwatch",
+	description: "CloudWatch metric data (raw CLI JSON output)",
+}
+
+// isCloudMetricRead reports whether command is exactly one metric read for spec's
+// CLI: the binary, then (skipping global flags and their values) the path's tokens.
+// Any unquoted shell syntax -- a pipe, chain, redirect, substitution or comment --
+// disqualifies it, because stdout is then no longer the CLI's own JSON.
+func isCloudMetricRead(spec cloudMetricReadSpec, command string) bool {
+	if hasUnquotedShellSyntax(command) {
+		return false
+	}
+	args, err := shlex.Split(command)
+	if err != nil || len(args) == 0 || !strings.EqualFold(args[0], spec.binary) {
+		return false
+	}
+	var positional []string
+	for i := 1; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			if !strings.Contains(a, "=") && spec.valueFlags[strings.ToLower(a)] {
+				i++
+			}
+			continue
+		}
+		positional = append(positional, strings.ToLower(a))
+	}
+	for _, path := range spec.paths {
+		if len(positional) >= len(path) && slices.Equal(positional[:len(path)], path) {
+			return true
+		}
+	}
+	return false
+}
+
+// saveCloudMetricRead saves the raw JSON stdout of a successful metric read to the
+// conversation workspace, so a trend can be computed over it later, and returns a
+// one-line note naming the file plus its reference. Anything else, and any save
+// failure, returns nothing: the command's own output is never affected.
+func saveCloudMetricRead(nbRequestContext core.NbToolContext, wsm workspace.WorkspaceManager, spec cloudMetricReadSpec, command, stdout string) (string, []core.NBToolResponseReference) {
+	body := strings.TrimSpace(stdout)
+	if body == "" || !isCloudMetricRead(spec, command) || !json.Valid([]byte(body)) {
+		return "", nil
+	}
+	name := fmt.Sprintf("%s_%d.json", spec.filePrefix, time.Now().UnixNano())
+	if err := wsm.SaveFile(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, name, body); err != nil {
+		nbRequestContext.Ctx.GetLogger().Warn(spec.binary+": failed to save metric data to workspace", "error", err.Error(), "file", name)
+		return "", nil
+	}
+	note := fmt.Sprintf("\n[metric data saved to file_ref %q; pass it to analyze_metric_series as file_ref, or read it with shell_execute]", name)
+	return note, []core.NBToolResponseReference{{Type: "file", Url: name, Text: name, Description: spec.description}}
 }
 
 func isPermanentAwsCredentialFailure(message string) bool {
@@ -647,4 +742,185 @@ func StripQuotedContent(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// awsRegionPattern is the shape of an AWS region name (us-east-1,
+// us-gov-west-1, ap-southeast-2), so a label holding anything else is ignored.
+var awsRegionPattern = regexp.MustCompile(`^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d$`)
+
+// eventAwsRegion is the region of the alert a call is about, when the call
+// runs on the alert's AWS account: the event names its account by number
+// (nb_cloud_account_id) or, when it does not, is on the conversation's own
+// account. Empty when there is no region or the call is about another account.
+func eventAwsRegion(ctx core.NbToolContext, target core.ToolConfig) string {
+	labels := ctx.QueryConfig.Labels
+	if labels == nil {
+		return ""
+	}
+	region := ""
+	for _, key := range []string{"nb_cloud_region", "region"} {
+		if value, ok := labels[key].(string); ok && awsRegionPattern.MatchString(strings.TrimSpace(value)) {
+			region = strings.TrimSpace(value)
+			break
+		}
+	}
+	if region == "" {
+		return ""
+	}
+	if number, ok := labels["nb_cloud_account_id"].(string); ok && strings.TrimSpace(number) != "" {
+		if targetAccountNumber(target) != strings.TrimSpace(number) {
+			return ""
+		}
+		return region
+	}
+	if TargetAccountID(target) != ctx.AccountId {
+		return ""
+	}
+	return region
+}
+
+// commandAwsRegion is the region a command names with --region, if any.
+func commandAwsRegion(command string) string {
+	args, err := shlex.Split(command)
+	if err != nil {
+		return ""
+	}
+	for i, arg := range args {
+		if value, ok := strings.CutPrefix(arg, "--region="); ok {
+			return value
+		}
+		if arg == "--region" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// withEventRegion runs a command on the alert's region unless it names its
+// own, for a read. The workspace's aws is a shim that forwards only the command text, so
+// the region goes into the command as a global option right after "aws". The
+// returned note goes on the step's account line, so the region a call used is
+// visible, and a command that named a different region than the alert's says so.
+func withEventRegion(ctx core.NbToolContext, target core.ToolConfig, command string) (string, string) {
+	region := eventAwsRegion(ctx, target)
+	if region == "" {
+		return command, ""
+	}
+	named := commandAwsRegion(command)
+	if named == "" {
+		// Only a read is pointed at the alert's region: a write runs as
+		// the user approved it.
+		rest, ok := strings.CutPrefix(command, "aws ")
+		if !ok || inferAwsVerbType(command) != core.ToolRequestTypeRead {
+			return command, ""
+		}
+		return "aws --region " + region + " " + rest, fmt.Sprintf("region: %s (the alert's region)", region)
+	}
+	if named != region {
+		return command, fmt.Sprintf("region: %s; the alert is in %s", named, region)
+	}
+	return command, ""
+}
+
+// awsInstanceNotFound matches the AWS error for instance ids that do not
+// exist in the account and region a command ran on, and the ids it names.
+var (
+	awsInstanceNotFound = regexp.MustCompile(`InvalidInstanceID\.(NotFound|Malformed)[^\n]*`)
+	awsInstanceID       = regexp.MustCompile(`\bi-[0-9a-f]{8,17}\b`)
+)
+
+// awsInstanceLocation is where NudgeBee's inventory has an instance.
+type awsInstanceLocation struct {
+	ID          string `db:"resourse_id"`
+	Region      string `db:"region"`
+	AccountID   string `db:"account_id"`
+	AccountName string `db:"account_name"`
+}
+
+// awsInstanceLocations looks instance ids up in the tenant's inventory. A
+// variable so tests can stub it.
+var awsInstanceLocations = func(ctx *security.RequestContext, ids []string) ([]awsInstanceLocation, error) {
+	sc := ctx.GetSecurityContext()
+	if sc == nil {
+		return nil, nil
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("aws instance lookup: %w", err)
+	}
+	var found []awsInstanceLocation
+	err = dbms.Db.Select(&found, `SELECT cr.resourse_id, cr.region, cr.account::text AS account_id, ca.account_name
+		FROM cloud_resourses cr JOIN cloud_accounts ca ON ca.id = cr.account
+		WHERE ca.tenant = $1 AND cr.is_active AND cr.cloud_provider = 'AWS' AND cr.resourse_id = ANY($2)
+		ORDER BY cr.resourse_id, (cr.type = 'compute-instance') DESC`, sc.GetTenantId(), pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("aws instance lookup: %w", err)
+	}
+	return found, nil
+}
+
+// awsInstanceRegions is the regions an account has EC2 instances in. Other
+// inventory (security groups, sampling rules) exists in every region, so it
+// would not narrow the search. A variable so tests can stub it.
+var awsInstanceRegions = func(account string) ([]string, error) {
+	if _, err := uuid.Parse(account); err != nil {
+		return nil, nil // no NudgeBee account to list regions for
+	}
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return nil, fmt.Errorf("aws account regions: %w", err)
+	}
+	var regions []string
+	err = dbms.Db.Select(&regions, `SELECT DISTINCT region FROM cloud_resourses
+		WHERE account = $1 AND is_active AND type = 'compute-instance'
+		  AND region IS NOT NULL AND region <> '' AND LOWER(region) <> 'global'
+		ORDER BY region`, account)
+	if err != nil {
+		return nil, fmt.Errorf("aws account regions: %w", err)
+	}
+	return regions, nil
+}
+
+// instanceNotFoundNote tells Nubi where instances AWS could not find are,
+// from NudgeBee's inventory, instead of leaving it to try accounts and regions
+// one by one: the account and region of each one the caller can read, and for
+// the rest, the regions the account the command ran on has resources in.
+func instanceNotFoundNote(ctx core.NbToolContext, target core.ToolConfig, output string) string {
+	match := awsInstanceNotFound.FindString(output)
+	if match == "" || ctx.Ctx == nil {
+		return ""
+	}
+	ids := lo.Uniq(awsInstanceID.FindAllString(match, -1))
+	if len(ids) == 0 {
+		return ""
+	}
+	found, err := awsInstanceLocations(ctx.Ctx, ids)
+	if err != nil {
+		ctx.Ctx.GetLogger().Warn("aws: instance location lookup failed", "error", err)
+		return ""
+	}
+	sc := ctx.Ctx.GetSecurityContext()
+	known := map[string]bool{}
+	var lines []string
+	for _, at := range found {
+		if known[at.ID] || sc == nil || !sc.HasAccountAccess(at.AccountID, security.SecurityAccessTypeRead) {
+			continue
+		}
+		known[at.ID] = true
+		lines = append(lines, fmt.Sprintf("%s is in account %s, region %s: run again with account=%s and --region %s.", at.ID, at.AccountName, at.Region, at.AccountName, at.Region))
+	}
+	var unknown []string
+	for _, id := range ids {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		line := fmt.Sprintf("NudgeBee's inventory has no %s in an account you can read.", strings.Join(unknown, ", "))
+		if regions, err := awsInstanceRegions(TargetAccountID(target)); err == nil && len(regions) > 0 {
+			line += fmt.Sprintf(" Account %s has EC2 instances only in %s: check only those regions (one call each), and if it is in none, report that it does not exist.", target.Name, strings.Join(regions, ", "))
+		}
+		lines = append(lines, line)
+	}
+	return "\n[" + strings.Join(lines, " ") + "]"
 }

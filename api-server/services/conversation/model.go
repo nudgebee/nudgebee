@@ -104,6 +104,10 @@ type Agent struct {
 	References      *string   `json:"references" db:"references"`
 	CreatedAt       time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at" db:"updated_at"`
+	// PlanState is the structured plan JSON of the synthetic "notebook" row
+	// (update_notebook_v2, #41443); nil for every other agent, whose state
+	// column holds internal planner state that never leaves the server.
+	PlanState *string `json:"plan_state" db:"plan_state"`
 }
 
 type ToolCall struct {
@@ -118,6 +122,7 @@ type ToolCall struct {
 	References   *string   `json:"references" db:"references"`
 	ToolId       *string   `json:"tool_id" db:"tool_id"`
 	Status       *string   `json:"status" db:"status"`
+	Metadata     *string   `json:"metadata" db:"metadata"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }

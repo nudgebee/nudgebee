@@ -108,11 +108,14 @@ describe('ZenDutyAccountModal', () => {
     expect(screen.getByLabelText(/^API Token/)).toBeInTheDocument();
   });
 
-  it('shows read-only ZenDuty URL field', () => {
+  it('defaults the ZenDuty URL field to www.zenduty.com and allows editing it', () => {
     render(<ZenDutyAccountModal {...defaultProps} />);
     const urlField = screen.getByLabelText(/^Account URL/);
     expect(urlField).toHaveValue('www.zenduty.com');
-    expect(urlField).toBeDisabled();
+    expect(urlField).not.toBeDisabled();
+
+    fireEvent.change(urlField, { target: { value: 'imr.eu.xurrent.com' } });
+    expect(urlField).toHaveValue('imr.eu.xurrent.com');
   });
 
   it('renders Cancel and Save buttons', () => {

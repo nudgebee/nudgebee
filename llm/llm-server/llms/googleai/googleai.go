@@ -631,7 +631,7 @@ func accumulateStream(
 	}
 	var lastUsage *genai.GenerateContentResponseUsageMetadata
 	// stoppedEarly: the stream did not run to its own end — the prompt was
-	// blocked (no candidates) or the caller asked to stop. Neither is a cut-off.
+	// blocked or the caller asked to stop. Neither is a cut-off.
 	stoppedEarly := false
 
 	for resp, err := range stream {
@@ -640,9 +640,20 @@ func accumulateStream(
 		}
 
 		if len(resp.Candidates) == 0 {
-			// No candidates – likely blocked by safety filter; break gracefully.
-			stoppedEarly = true
-			break
+			// A blocked prompt says so in PromptFeedback. A chunk with no
+			// candidates and no block reason is not a stop: during Gemini 500s
+			// (dev 2026-10-20 01:28-01:30Z) streams ended this way after a few
+			// tokens, and the fragment was returned as a finished answer. Keep
+			// its usage and let the finish-reason check below decide.
+			if resp.PromptFeedback != nil && resp.PromptFeedback.BlockReason != "" &&
+				resp.PromptFeedback.BlockReason != genai.BlockedReasonUnspecified {
+				stoppedEarly = true
+				break
+			}
+			if resp.UsageMetadata != nil {
+				lastUsage = resp.UsageMetadata
+			}
+			continue
 		}
 		if len(resp.Candidates) != 1 {
 			return nil, fmt.Errorf("expect single candidate in stream mode; got %v", len(resp.Candidates))

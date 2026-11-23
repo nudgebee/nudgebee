@@ -2,7 +2,6 @@ package mq
 
 import (
 	"errors"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
@@ -54,14 +53,7 @@ func (t *RabbitmqadminCliTask) Execute(taskCtx types.TaskContext, params map[str
 	}
 
 	if respStr, ok := resp.(string); ok {
-		RabbitmqResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &RabbitmqResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-		if RabbitmqResp["stderr"] != nil && RabbitmqResp["stderr"] != "" {
-			return nil, errors.New(RabbitmqResp["stderr"].(string))
-		}
-		return map[string]any{"data": RabbitmqResp["stdout"]}, nil
+		return relay.InterpretCommandResponse("rabbitmqadmin", respStr)
 	}
 
 	return nil, errors.New("unable to process request")

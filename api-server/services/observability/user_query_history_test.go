@@ -25,6 +25,7 @@ var (
 		"loki", "signoz", "datadog", "observe", "loggly", "azure_app_insights",
 		"aws_cloudwatch", "ES", "newrelic", "splunk_observability_platform",
 		"cubeapm", "splunk_enterprise", "dynatrace", "solarwinds", "pinot", "hive",
+		"otel_clickhouse",
 	}
 	metricsSourceProviders = []string{
 		"datadog", "prometheus", "chronosphere", "aws_cloudwatch",

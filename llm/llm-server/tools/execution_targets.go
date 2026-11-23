@@ -75,7 +75,7 @@ func executionTargets(ctx *security.RequestContext, accountID string, saved map[
 		if strings.EqualFold(c.Name, current.Name) {
 			continue
 		}
-		if !ctx.GetSecurityContext().HasAccountAccess(KubernetesTargetAccountID(c), security.SecurityAccessTypeRead) {
+		if !security.ToolPathAccountAccess(ctx, KubernetesTargetAccountID(c), TargetModule(toolName), security.SecurityAccessTypeRead) {
 			continue
 		}
 		others = append(others, c)
@@ -115,20 +115,37 @@ func RenderExecutionTargets(ctx *security.RequestContext, accountID string, save
 		if currentName == "" {
 			currentName = "none selected yet"
 		}
+		// For clusters, list the ones whose Nudgebee agent is connected first,
+		// and mark the rest, so calls are not spent on clusters that cannot answer.
+		var connections map[string]ClusterConnection
+		if kind.tool == ToolExecuteKubectlCommand {
+			connections = ClusterConnectionsFor(others)
+		}
 		names := make([]string, 0, len(others))
+		var disconnected []string
 		for _, c := range others {
 			label := c.Name
 			if number := targetAccountNumber(c); kind.showIDs && number != "" {
 				label += " (" + number + ")"
 			}
+			if connection, known := connections[KubernetesTargetAccountID(c)]; known && !connection.Connected {
+				disconnected = append(disconnected, label+" (not connected)")
+				continue
+			}
 			names = append(names, label)
 		}
 		sortNames(names)
+		sortNames(disconnected)
+		names = append(names, disconnected...)
 		if len(names) > maxListedTargets {
 			names = append(names[:maxListedTargets], fmt.Sprintf("and %d more", len(names)-maxListedTargets))
 		}
+		usage := kind.usage
+		if len(disconnected) > 0 {
+			usage += " Clusters marked not connected have no connected Nudgebee agent, so commands sent to them fail."
+		}
 		sections = append(sections, fmt.Sprintf("%s: current %s; others you can use: %s.\n%s",
-			kind.title, currentName, strings.Join(names, ", "), kind.usage))
+			kind.title, currentName, strings.Join(names, ", "), usage))
 	}
 	if available[ToolExecuteServerCommand] {
 		if vms, err := sshVMTargets(ctx, accountID); err != nil {

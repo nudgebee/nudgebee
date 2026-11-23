@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"nudgebee/llm/agents/core"
+	llmruntime "nudgebee/llm/llms/runtime"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,9 +15,9 @@ import (
 // methods recordCodeAnalysisTokenUsage touches. Pricing mirrors the real
 // per-record long-context tier switch: totalPrompt > 200K → 2× rates.
 type fakeUsageDao struct {
-	core.IConversationDao
+	llmruntime.UsageStore
 	mu           sync.Mutex
-	inserted     []core.TokenUsageRecord
+	inserted     []llmruntime.TokenUsageRecord
 	nilAgentOnce bool // simulate the FK retry nulling record.AgentID on first insert
 }
 
@@ -31,7 +32,7 @@ func (f *fakeUsageDao) GetConversationCost(provider, model string, nonCachedInpu
 		float64(outputTokens+thinkingTokens)/m*outRate, nil
 }
 
-func (f *fakeUsageDao) InsertTokenUsage(record *core.TokenUsageRecord) error {
+func (f *fakeUsageDao) InsertTokenUsage(record *llmruntime.TokenUsageRecord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.nilAgentOnce && len(f.inserted) == 0 {
@@ -44,9 +45,8 @@ func (f *fakeUsageDao) InsertTokenUsage(record *core.TokenUsageRecord) error {
 func withFakeUsageDao(t *testing.T) *fakeUsageDao {
 	t.Helper()
 	fake := &fakeUsageDao{}
-	prev := core.GetConversationDao()
-	core.SetConversationDao(fake)
-	t.Cleanup(func() { core.SetConversationDao(prev) })
+	prev := llmruntime.SetUsageStore(fake)
+	t.Cleanup(func() { llmruntime.SetUsageStore(prev) })
 	return fake
 }
 
@@ -147,6 +147,35 @@ func TestRecordCodeAnalysisTokenUsage_ResidualRowCachedOnly(t *testing.T) {
 	require.Len(t, fake.inserted, 2)
 	assert.Equal(t, 0, fake.inserted[1].InputTokens)
 	assert.Equal(t, 40000, fake.inserted[1].CachedInputTokens)
+}
+
+// cache_hit_rate must be populated on cached rows with the same 0-100 formula
+// trackTokenUsage uses — code_analyzer rows were the only cached rows in
+// llm_conversation_token_usage leaving it NULL. Uncached rows stay NULL.
+func TestRecordCodeAnalysisTokenUsage_CacheHitRate(t *testing.T) {
+	fake := withFakeUsageDao(t)
+	tu := &codeAnalysisTokenUsage{
+		PromptTokens: 200000, CompletionTokens: 2000, TotalTokens: 202000,
+		CachedContentTokens: 150000, Model: "m", Provider: "p",
+		Calls: []codeAnalysisTokenUsageCall{
+			{PromptTokens: 100000, CompletionTokens: 1000, CachedContentTokens: 75000},
+			{PromptTokens: 100000, CompletionTokens: 1000, CachedContentTokens: 75000},
+		},
+	}
+
+	recordCodeAnalysisTokenUsage(usageQuery(), tu, 1, nil, nil)
+
+	require.Len(t, fake.inserted, 2)
+	for i, rec := range fake.inserted {
+		require.NotNil(t, rec.CacheHitRate, "row %d missing cache_hit_rate", i)
+		assert.InDelta(t, 75.0, *rec.CacheHitRate, 0.0001)
+		assert.True(t, rec.IsCacheHit)
+	}
+
+	uncached := withFakeUsageDao(t)
+	recordCodeAnalysisTokenUsage(usageQuery(), &codeAnalysisTokenUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, Model: "m", Provider: "p"}, 1, nil, nil)
+	require.Len(t, uncached.inserted, 1)
+	assert.Nil(t, uncached.inserted[0].CacheHitRate)
 }
 
 // After the FK retry nils AgentID on the first insert, subsequent rows must

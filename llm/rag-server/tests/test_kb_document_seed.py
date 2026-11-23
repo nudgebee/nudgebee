@@ -99,7 +99,7 @@ def test_run_seeds_every_collection_with_a_collection_and_reports(monkeypatch):
         ],
     )
     inserted = []
-    monkeypatch.setattr(db_query, "seed_kb_document_labels", lambda rows: inserted.extend(rows) or len(rows))
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", lambda rows: inserted.extend(rows) or len(rows))
     summary = seed.run(client)
     assert summary == {"collections_scanned": 2, "pages_seen": 2, "rows_inserted": 2, "errors": 0}
     assert {r["document_key"] for r in inserted} == {f"{COLLECTION}|1", f"{COLLECTION}|2"}
@@ -119,7 +119,7 @@ def test_a_failing_collection_is_counted_and_does_not_stop_the_rest(monkeypatch)
     def boom(rows):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(db_query, "seed_kb_document_labels", boom)
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", boom)
     assert seed.run(client)["errors"] >= 1
 
 
@@ -200,7 +200,7 @@ def test_qdrant_collections_are_listed_once_not_probed_per_collection(monkeypatc
             backfill.KBCollection("gone_knowledge_base", False, ["a"]),
         ],
     )
-    monkeypatch.setattr(db_query, "seed_kb_document_labels", lambda rows: len(rows))
+    monkeypatch.setattr(db_query, "upsert_kb_document_labels", lambda rows: len(rows))
 
     assert seed.run(client)["rows_inserted"] == 1
     assert calls["get_collections"] == 1
@@ -251,18 +251,18 @@ def test_a_batch_is_one_multi_row_insert_that_reports_rows_actually_inserted(mon
         for i in range(3)
     ]
 
-    assert db_query.seed_kb_document_labels(rows) == 1  # whatever the driver says was inserted
+    assert db_query.upsert_kb_document_labels(rows) == 1  # whatever the driver says was inserted
     assert len(executed) == 1, "one statement for the whole batch"
     sql, params = executed[0]
     assert sql.count("('kb_document', ") == 3, "one VALUES tuple per row"
     assert "ON CONFLICT (collection_name, document_key) WHERE entry_type = 'kb_document' DO UPDATE" in sql
-    # An existing row changes in exactly one case: its empty capabilities take non-empty ones.
-    # kind, shape and source_version are never in the SET list.
-    assert "SET capabilities = EXCLUDED.capabilities, updated_at = NOW()" in sql
-    assert "WHERE llm_kb_capability_entries.capabilities = '{}' AND EXCLUDED.capabilities <> '{}'" in sql
-    assert "kinds = " not in sql and "shapes = " not in sql and "source_version = " not in sql
+    # An existing row follows its page's chunks: labels are overwritten, but only when they differ,
+    # and a page with no recoverable version keeps the one a row already has.
+    assert "SET kinds = EXCLUDED.kinds, shapes = EXCLUDED.shapes, capabilities = EXCLUDED.capabilities" in sql
+    assert "source_version = COALESCE(EXCLUDED.source_version, llm_kb_capability_entries.source_version)" in sql
+    assert "IS DISTINCT FROM" in sql, "an unchanged row is not rewritten"
     assert params["document_key_2"] == "c|2" and params["shapes_0"] == [] and params["kinds_1"] == ["sop"]
-    assert db_query.seed_kb_document_labels([]) == 0
+    assert db_query.upsert_kb_document_labels([]) == 0
 
 
 def test_an_explicit_none_chunk_index_falls_back_to_line_number():
@@ -331,7 +331,7 @@ def test_a_batch_never_carries_the_same_key_twice(monkeypatch):
 
     monkeypatch.setattr(db_query, "engine", SimpleNamespace(connect=lambda: _Conn()))
     row = {"collection_name": "c", "document_key": "k", "kind": "sop", "shape": None, "source_version": None}
-    db_query.seed_kb_document_labels(
+    db_query.upsert_kb_document_labels(
         [{**row, "capabilities": []}, {**row, "capabilities": ["a"]}, {**row, "capabilities": ["b"]}]
     )
 
@@ -424,3 +424,30 @@ def test_a_mark_on_a_version_no_longer_indexed_moves_via_the_stored_source(monke
 
     # GONE_SYS is found through its stored source; OLD_SYS is in neither and stays put.
     assert moved == {f"{COLLECTION}|{GONE_SYS}": f"{COLLECTION}|KB0010108"}
+
+
+def test_a_batch_is_written_in_key_order_so_concurrent_writers_lock_rows_alike(monkeypatch):
+    executed = []
+
+    class _Conn:
+        def execute(self, statement, params):
+            executed.append(params)
+            return SimpleNamespace(rowcount=3)
+
+        def begin(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(db_query, "engine", SimpleNamespace(connect=lambda: _Conn()))
+    row = {"collection_name": "c", "kind": "sop", "shape": None, "capabilities": [], "source_version": None}
+    db_query.upsert_kb_document_labels([{**row, "document_key": key} for key in ("c|9", "c|1", "c|5")])
+
+    (params,) = executed
+    assert [params[f"document_key_{i}"] for i in range(3)] == ["c|1", "c|5", "c|9"]

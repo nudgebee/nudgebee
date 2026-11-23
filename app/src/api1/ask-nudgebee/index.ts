@@ -3,7 +3,6 @@ import { getUserSession } from '@lib/auth';
 import type {
   AgentDefinition,
   AiFeedbackCreateRequest,
-  AiFunctionData,
   ConversationComparisonRequest,
   ConversationHistoryForInvestigationRequest,
   ConversationHistoryRequest,
@@ -24,14 +23,12 @@ import type {
   InvestigateRequest,
   ListAiFeedbackRequest,
   ListAgentsRequest,
-  ListFunctionsRequest,
   ListToolsRequest,
   OwnFeedbackForSessionRequest,
   SaveConversationRequest,
   StopInvestigateRequest,
   ToolDefinition,
   UpdateAgentExtensionRequest,
-  UpdateFunctionData,
   UpdateQueuedMessageRequest,
 } from '../../types/ask-nudgebee';
 
@@ -39,6 +36,94 @@ const EVENT_DETAILS_RETRIEVAL_TITLE = 'Event details retrieval by ID';
 
 // Per-env watch flag: /v1/watches mounts only when LLM_SERVER_WATCH_ENABLED is on; a 404 latches it off for the page session.
 let watchFeatureDisabled = false;
+
+// --- Organisation custom agents / tools (#41073) ---------------------------
+// Same shape as the organisation knowledge-base calls: { data, errors } with a
+// readable message from the backend in errors[0].message.
+type OrgItemResult<T> = { data: T | null; errors: { message: string }[] };
+
+const orgItemErrorMessage = (response: any, fallback: string): string =>
+  response?.data?.errors?.[0]?.extensions?.internal?.response?.body?.errors?.[0]?.message ||
+  (response?.data?.errors?.[0]?.message !== 'internal error' && response?.data?.errors?.[0]?.message) ||
+  fallback;
+
+const runOrgItemAction = async <T>(action: string, operation: string, gql: string, request: Record<string, unknown>, fallback: string) => {
+  try {
+    const response = await queryGraphQL(gql, operation, { request });
+    if (response?.data?.errors?.length > 0) {
+      return { data: null, errors: [{ message: orgItemErrorMessage(response, fallback) }] } as OrgItemResult<T>;
+    }
+    const result = response?.data?.data?.[action];
+    if (result) {
+      if (result.errors?.length > 0) {
+        return { data: null, errors: result.errors } as OrgItemResult<T>;
+      }
+      return { data: result.data as T, errors: [] } as OrgItemResult<T>;
+    }
+    return { data: null, errors: [{ message: fallback }] } as OrgItemResult<T>;
+  } catch (error) {
+    console.error(`failed to run ${action}-`, error);
+    return { data: null, errors: [{ message: fallback }] } as OrgItemResult<T>;
+  }
+};
+
+const updateOrgItemVisibility = (action: string, id: string, visibility: string, accountIds: string[], targetAccountId: string) =>
+  runOrgItemAction(
+    action,
+    'UpdateOrgItemVisibility',
+    `mutation UpdateOrgItemVisibility($request: UpdateOrgItemVisibilityRequest!) {
+      ${action}(request: $request) {
+        data
+        errors {
+          message
+        }
+      }
+    }`,
+    { id, visibility, account_ids: accountIds, target_account_id: targetAccountId },
+    'Failed to change who can use it'
+  );
+
+const setOrgItemAccountOverride = async (action: string, accountId: string, id: string, enabled: boolean) => {
+  if (accountId === 'demo') {
+    return { data: null, errors: [{ message: 'Demo account does not have access.' }] };
+  }
+  return runOrgItemAction(
+    action,
+    'UpdateOrgItemAccountOverride',
+    `mutation UpdateOrgItemAccountOverride($request: UpdateOrgItemAccountOverrideRequest!) {
+      ${action}(request: $request) {
+        data
+        errors {
+          message
+        }
+      }
+    }`,
+    { id, account_id: accountId, enabled },
+    'Failed to switch it for this account'
+  );
+};
+
+const listOrgItemAccountOverrides = async (action: string, id: string) => {
+  const result = await runOrgItemAction<{ account_id: string; account_name: string; enabled: boolean }[]>(
+    action,
+    'ListOrgItemAccountOverrides',
+    `query ListOrgItemAccountOverrides($request: ListOrgItemAccountOverridesRequest!) {
+      ${action}(request: $request) {
+        data {
+          account_id
+          account_name
+          enabled
+        }
+        errors {
+          message
+        }
+      }
+    }`,
+    { id },
+    'Failed to load account switches'
+  );
+  return { data: result.data || [], errors: result.errors };
+};
 
 // --- ai_get_conversation_v3 helpers ----------------------------------------
 // The new action returns flat arrays; consumers want the legacy nested shape
@@ -105,6 +190,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         parent_agent_id
         status
         references
+        plan_state
         created_at
         updated_at
       }
@@ -120,6 +206,7 @@ const GET_LLM_CONVERSATION_V3_QUERY = `
         references
         tool_id
         status
+        metadata
         created_at
         updated_at
       }
@@ -380,6 +467,9 @@ const api = {
     if (data.index) {
       query.index = data.index;
     }
+    if (data.limit) {
+      query.limit = data.limit;
+    }
     const response = await queryGraphQL(ASK_AI_GENERATE_LOG_QUERY.replace('__REQUEST__', gqlStringify(query)), 'AskAiGenerateLogQuery', {});
     return response;
   },
@@ -509,6 +599,9 @@ const api = {
     }
     if (data.images?.length) {
       query.images = data.images;
+    }
+    if (data.remediation_pick) {
+      query.remediation_pick = data.remediation_pick;
     }
     query.async = true;
     const response = await queryGraphQL(
@@ -818,8 +911,15 @@ const api = {
     `;
     const query: any = {};
     query.account_id = data.accountId;
+    if (data.includeSwitchedOff) query.include_switched_off = true;
     try {
       const response = await queryGraphQL(LIST_AGENTS.replaceAll('__WHERE__', gqlStringify(query)), 'ListAgents', {});
+      // An agent that belongs to an extension (a Worker Bee's) runs only inside
+      // that extension's runs, so no agent list or picker offers it.
+      const agents = response?.data?.data?.ai_list_agents?.data;
+      if (Array.isArray(agents)) {
+        response.data.data.ai_list_agents.data = agents.filter((agent: any) => !agent?.config?.requires_extension);
+      }
       return response;
     } catch (error) {
       console.error('failed to fetch agent list-', error);
@@ -839,6 +939,8 @@ const api = {
     `;
     const query: any = {};
     query.account_id = data.accountId;
+    if (data.nbToolType) query.nb_tool_type = data.nbToolType;
+    if (data.includeSwitchedOff) query.include_switched_off = true;
     try {
       const response = await queryGraphQL(LIST_TOOLS.replaceAll('__WHERE__', gqlStringify(query)), 'ListTools', {});
       return response;
@@ -1033,100 +1135,6 @@ const api = {
       return null;
     }
   },
-  async listFunctions(data: ListFunctionsRequest) {
-    if (data.accountId === 'demo') return { res: { llm_functions: [] }, errors: [] };
-    const GET_FUNCTIONS = `
-      query GetFunctions($where: LlmFunctionsWhereRequest) {
-        llm_functions: ai_list_functions(where: $where) {
-          rows {
-            id
-            name
-            description
-            prompt
-            variables
-            variable_defaults
-            status
-            version
-            account_id
-            created_by
-            updated_by
-            created_at
-            updated_at
-          }
-        }
-      }
-    `;
-
-    try {
-      // Empty accountId == tenant-wide read (b-Cortex sidebar surface).
-      // Omit the account_id filter and let api-server's query service apply
-      // its standard row-level account ACL automatically (tenant/super
-      // admins see all in tenant; account-admins see only their assigned
-      // accounts; everyone else 403s).
-      const where: any = data.accountId ? { account_id: { _eq: data.accountId } } : {};
-      const response = await queryGraphQL(GET_FUNCTIONS, 'GetFunctions', { where });
-      const rows = response?.data?.data?.llm_functions?.rows || [];
-
-      return {
-        res: { llm_functions: rows },
-        errors: response?.data?.errors,
-      };
-    } catch (error) {
-      console.error('failed to get functions-', error);
-      return null;
-    }
-  },
-  async createAiFunction(data: AiFunctionData, accountId: string) {
-    if (accountId === 'demo') {
-      return {
-        success: false,
-        error: 'Demo account does not have access.',
-      };
-    }
-    const CREATE_AI_FUNCTION = `
-      mutation CreateAiFunction($account_id: String!) {
-        ai_create_function(
-          account_id: $account_id,
-          function: __WHERE__
-        ) {
-          data{
-            success
-            message
-            function {
-              id
-              name
-              description
-            }
-          }
-        }
-      }
-    `;
-    try {
-      const response = await queryGraphQL(CREATE_AI_FUNCTION.replaceAll('__WHERE__', gqlStringify(data)), 'CreateAiFunction', {
-        account_id: accountId,
-      });
-
-      // Check for GraphQL errors first
-      if (response.data?.errors && response.data.errors.length > 0) {
-        const error = response.data.errors[0];
-
-        return { success: false, error: error.message };
-      }
-
-      // Check for successful response
-      if (response.data?.data?.ai_create_function?.data?.success) {
-        return {
-          success: true,
-        };
-      } else if (response.data?.data?.ai_create_function?.data?.message) {
-        return { success: false, error: response.data.data.ai_create_function.data.message };
-      }
-      return { success: false, error: 'Unknown error occurred' };
-    } catch (error) {
-      console.error('failed to create ai function-', error);
-      return { success: false, error: 'Network error occurred' };
-    }
-  },
   async aiStopInvestigate(data: StopInvestigateRequest) {
     if (data.accountId === 'demo') return null;
     const AI_STOP_INVESTIGATE = `
@@ -1226,6 +1234,34 @@ const api = {
       return null;
     }
   },
+  /**
+   * Change who can use a custom agent (tenant admins only): the organisation,
+   * selected accounts, or back to one account (visibility 'account' with
+   * targetAccountId).
+   */
+  async updateAgentVisibility(id: string, visibility: string, accountIds: string[] = [], targetAccountId = '') {
+    return updateOrgItemVisibility('ai_update_agent_visibility', id, visibility, accountIds, targetAccountId);
+  },
+  /** Switch an organisation agent on or off for one account only. */
+  async setAgentAccountOverride(accountId: string, id: string, enabled: boolean) {
+    return setOrgItemAccountOverride('ai_update_agent_account_override', accountId, id, enabled);
+  },
+  /** The per-account switches of an organisation agent (tenant admins). */
+  async listAgentAccountOverrides(id: string) {
+    return listOrgItemAccountOverrides('ai_list_agent_account_overrides', id);
+  },
+  /** Tool equivalent of updateAgentVisibility. */
+  async updateToolVisibility(id: string, visibility: string, accountIds: string[] = [], targetAccountId = '') {
+    return updateOrgItemVisibility('ai_update_tool_visibility', id, visibility, accountIds, targetAccountId);
+  },
+  /** Switch an organisation tool on or off for one account only. */
+  async setToolAccountOverride(accountId: string, id: string, enabled: boolean) {
+    return setOrgItemAccountOverride('ai_update_tool_account_override', accountId, id, enabled);
+  },
+  /** The per-account switches of an organisation tool (tenant admins). */
+  async listToolAccountOverrides(id: string) {
+    return listOrgItemAccountOverrides('ai_list_tool_account_overrides', id);
+  },
   async createAgentExtension(data: CreateAgentExtensionRequest) {
     if (data?.account_id === 'demo') {
       return {
@@ -1314,77 +1350,6 @@ const api = {
     } catch (error) {
       console.error('failed to list agent extensions-', error);
       return { data: [], errors: [error] };
-    }
-  },
-  async deleteLLMFunction({ id, accountId }: { id: string; accountId: string }) {
-    if (accountId === 'demo') {
-      return {
-        data: null,
-        errors: [{ message: 'Demo account does not have access.' }],
-      };
-    }
-    const DELETE_LLM_FUNCTION = `mutation AiDeleteFunction($accountId: String!, $functionId:String!){
-      ai_delete_function(request:{account_id:$accountId, function_id:$functionId}){
-    data
-      }
-    }`;
-
-    try {
-      const response = await queryGraphQL(DELETE_LLM_FUNCTION, 'AiDeleteFunction', {
-        accountId: accountId,
-        functionId: id,
-      });
-      return {
-        data: response.data?.data?.ai_delete_function.data || [],
-        errors: response.data?.errors || [],
-      };
-    } catch (error) {
-      console.error('failed to delete llm function-', error);
-      return { data: [], errors: [error] };
-    }
-  },
-  async updateFunction({ accountId, functionId, data }: { accountId?: string; functionId: string; data: UpdateFunctionData }) {
-    if (accountId === 'demo') {
-      return {
-        success: false,
-        error: 'Demo account does not have access.',
-      };
-    }
-    const UPDATE_AI_FUNCTION = `
-      mutation AiEditFunction($account_id: String!, $function_id: String!) {
-        ai_update_function(
-          account_id: $account_id,
-          function_id: $function_id,
-          function: __WHERE__
-        ) {
-          data
-        }
-      }
-    `;
-    try {
-      const response = await queryGraphQL(UPDATE_AI_FUNCTION.replaceAll('__WHERE__', gqlStringify(data)), 'AiEditFunction', {
-        account_id: accountId,
-        function_id: functionId,
-      });
-
-      // Check for GraphQL errors first
-      if (response.data?.errors && response.data.errors.length > 0) {
-        const error = response.data.errors[0];
-        return { success: false, error: error.message };
-      }
-
-      // Check for successful response
-      if (response.data?.data?.ai_update_function?.data?.success) {
-        return {
-          success: true,
-        };
-      } else if (response.data?.data?.ai_update_function?.data?.message) {
-        return { success: false, error: response.data.data.ai_update_function.data.message };
-      }
-      return { success: false, error: 'Unknown error occurred' };
-    } catch (error) {
-      console.error('failed to update ai function-', error);
-      return { success: false, error: 'Network error occurred' };
     }
   },
   async llmConversationHistoryForInvestigation(data: ConversationHistoryForInvestigationRequest) {
@@ -1765,7 +1730,11 @@ const api = {
     }
   },
   async listModels(accountId: string) {
-    if (accountId === 'demo') return null;
+    // The demo account has no real backend to query — skip the network call,
+    // but keep the same { data, errors } shape every other path returns.
+    // A bare null here reads as "fetch failed" to callers (they check
+    // `!res?.data`), which used to throw and spam the dev error overlay.
+    if (accountId === 'demo') return { data: {}, errors: [] };
     const LIST_MODELS = `
     query ListModels($request: AIListModelsRequest!) {
       ai_list_models(request: $request) {
@@ -2017,6 +1986,7 @@ const api = {
               expires_at
               created_at
               updated_at
+              origin
             }
           }
           err

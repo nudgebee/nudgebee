@@ -668,7 +668,7 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
     const row = volumeRows[index];
     if (!row || !onDrillDown) return;
     const bounds = dayBounds(row.key);
-    onDrillDown({ status: 'ALL', ...scope, start_time: bounds.start, end_time: bounds.end });
+    onDrillDown({ status: 'ALL', ...scope, start_time: bounds.start, end_time: bounds.end, eventsView: 'unique' });
   };
 
   // A trend needs enough points to be a trend. At the 24h default this chart is
@@ -772,7 +772,12 @@ export default function TroubleshootAnalytics({ onDrillDown, filters }: Props) {
       <Box>
         <SectionHeading>Are we improving?</SectionHeading>
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', lg: 'repeat(3, 1fr)' }, gap: 'var(--ds-space-3)' }}>
-          <DeltaStat label='Distinct problems' value={issues} previous={prevIssues} onClick={() => onDrillDown({ status: 'ALL', ...scope })} />
+          <DeltaStat
+            label='Distinct problems'
+            value={issues}
+            previous={prevIssues}
+            onClick={() => onDrillDown({ status: 'ALL', ...scope, eventsView: 'unique' })}
+          />
           <DeltaStat
             label='Problems we rated urgent'
             value={urgent}

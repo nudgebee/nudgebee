@@ -187,17 +187,43 @@ func computeRedirectURL(rule InsightRule, insightTitle string, accountID string,
 		return computeK8sRedirectURL(rule, insightTitle, id)
 	}
 	if cp == "selfhosted" {
-		return computeVmRedirectURL(id)
+		return computeVmRedirectURL(rule, insightTitle, id)
 	}
 	return computeCloudRedirectURL(rule, id)
 }
 
 // computeVmRedirectURL builds the base link for a self-hosted VM account's
-// insights — the Instances tab, unscoped. A CVE-scoped link (?vulnId=...) is
-// appended client-side per application chip (ServiceChipRow in home/index.jsx),
-// since that scope lives in a query param the frontend adds, not in the rule.
-func computeVmRedirectURL(id string) string {
-	return "/vm?accountId=" + id + "#instances"
+// insights. Event-source rules (firing alerts) open the Events tab with the same
+// filters the k8s Troubleshoot rows apply — status, aggregation key, time window —
+// by reusing the k8s event link and re-pointing it at /vm. Everything else opens
+// the Instances tab, unscoped; a CVE-scoped link (?vulnId=...) is appended
+// client-side per application chip (ServiceChipRow in home/index.jsx), since that
+// scope lives in a query param the frontend adds, not in the rule.
+func computeVmRedirectURL(rule InsightRule, insightTitle string, id string) string {
+	if rule.Source != InsightSourceEvent {
+		return "/vm?accountId=" + id + "#instances"
+	}
+	// uid 135 counts a seven-day window inside its view, so the rule itself carries no
+	// range; give the link the same window or it opens a shorter list than the count.
+	linkRule := rule
+	if rule.UniqueID == "135" {
+		linkRule.Range, linkRule.RangeUnit = 7, InsightRangeUnitDay
+	}
+	link := strings.TrimSuffix(computeK8sEventRedirectURL(linkRule, insightTitle, "/vm"), "#events/all-events")
+	if strings.Contains(link, "?") {
+		link = strings.Replace(link, "?", "?accountId="+id+"&", 1)
+	} else {
+		link += "?accountId=" + id
+	}
+	// Keep the restrictions the count was computed with. The Events tab filters on a
+	// single triage priority, so only a single-valued priority filter can be carried.
+	if sources := getFilterValues(rule, "source"); len(sources) > 0 && !strings.Contains(link, "source=") {
+		link += "&source=" + url.QueryEscape(strings.Join(sources, ","))
+	}
+	if priorities := getFilterValues(rule, "computed_priority"); len(priorities) == 1 {
+		link += "&eventComputedPriority=" + url.QueryEscape(priorities[0])
+	}
+	return link + "#alerts"
 }
 
 func computeK8sRedirectURL(rule InsightRule, insightTitle string, id string) string {
@@ -318,7 +344,7 @@ func computeK8sEventRedirectURL(rule InsightRule, insightTitle, base string) str
 		if v := extractFromFormat(rule.InsightFormat, insightTitle)["subject_name"]; v != "" {
 			return base + "?subject_name=" + url.QueryEscape(v) + tp + "#events/all-events"
 		}
-	case "129":
+	case "129", "135":
 		if v := extractFromFormat(rule.InsightFormat, insightTitle)["aggregation_key"]; v != "" {
 			return base + "?eventAggregationKey=" + url.QueryEscape(v) + "&eventStatus=FIRING" + tp + "#events/all-events"
 		}

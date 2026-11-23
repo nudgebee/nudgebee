@@ -9,6 +9,7 @@ import { Button as DsButton } from '@ui/Button';
 import { Skeleton as DsSkeleton } from '@ui/Skeleton';
 import Chart from '@ui/Chart';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
+import { isRollingShortcut } from '@shared/widgets/dateRangeShortcuts';
 import observability from '@api1/observability';
 import { ds } from '@utils/colors';
 import { formatMetricName } from '@utils/common';
@@ -432,7 +433,13 @@ const CloudMetricsViewer: React.FC<CloudMetricsViewerProps> = ({ accountId, prov
   }, [accountId, dateRange, isNative, provider, selectedProvider, saasQuery, saasEsIndex, saasEsQueryType]);
 
   const handleDateRangeChange = (passedSelectedDateTime: { shortcutClickTime: number; startTime: number; endTime: number }): void => {
-    if (passedSelectedDateTime.shortcutClickTime > 0) {
+    // A rolling shortcut ("Last 7 days", "Last 1 Hour") must re-anchor to now so it
+    // always ends at the moment the query runs. A calendar shortcut ("Last Month",
+    // "Current Month") has a fixed window the picker already computed — forcing its
+    // end to now runs the query past the labelled range (e.g. Last Month drawn up to
+    // today), so keep the picked bounds. An absolute range (shortcutClickTime 0)
+    // keeps its bounds too.
+    if (passedSelectedDateTime.shortcutClickTime > 0 && isRollingShortcut(passedSelectedDateTime.shortcutClickTime)) {
       setDateRange({
         startTime: Date.now() - passedSelectedDateTime.shortcutClickTime,
         endTime: Date.now(),
@@ -442,7 +449,7 @@ const CloudMetricsViewer: React.FC<CloudMetricsViewerProps> = ({ accountId, prov
       setDateRange({
         startTime: passedSelectedDateTime.startTime,
         endTime: passedSelectedDateTime.endTime,
-        shortcutClickTime: 0,
+        shortcutClickTime: passedSelectedDateTime.shortcutClickTime,
       });
     }
   };

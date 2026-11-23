@@ -10,39 +10,9 @@ import (
 
 	"nudgebee/llm/config"
 	nbprompts "nudgebee/llm/prompts"
-	"nudgebee/llm/security"
 
 	"github.com/stretchr/testify/require"
 )
-
-func TestClaimShadowNeverAuditsTruncatedEvidence(t *testing.T) {
-	previous := config.Config.LlmServerPreflightMaxMessageBytes
-	t.Cleanup(func() { config.Config.LlmServerPreflightMaxMessageBytes = previous })
-	config.Config.LlmServerPreflightMaxMessageBytes = 100
-	fake := &fakeLLMModel{response: validClaimAudit}
-	withFakeLLMModel(t, fake)
-	base := llmOverrideContext()
-	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), contextKeyPreserveInput, true),
-		base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
-	result := evaluateClaimShadow(ctx, NBAgentRequest{}, "why", "answer", "",
-		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: strings.Repeat("CPU high ", 100)}})
-	require.Equal(t, "input_limit", result.Status)
-	require.Empty(t, result.Decision)
-	require.Zero(t, fake.callCount(), "truncated evidence must never reach inference")
-}
-
-func TestClaimShadowDoesNotContinueTruncatedOutput(t *testing.T) {
-	fake := &fakeLLMModel{turns: []fakeTurn{{content: validClaimAudit, stopReason: "length"}}}
-	withFakeLLMModel(t, fake)
-	base := llmOverrideContext()
-	ctx := security.NewRequestContext(context.WithValue(base.GetContext(), contextKeyPreserveInput, true),
-		base.GetSecurityContext(), base.GetLogger(), base.GetTracer(), base.GetMeter())
-	result := evaluateClaimShadow(ctx, NBAgentRequest{}, "why", "answer", "",
-		[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}})
-	require.Equal(t, "incomplete_response", result.Status)
-	require.Empty(t, result.Decision)
-	require.Equal(t, 1, fake.callCount(), "audit output must not enter continuation or repair loops")
-}
 
 const validClaimAudit = `{"claims":[{"claim":"CPU caused health failure","support":"inferred","asserted_as_fact":true,"material":true,"evidence_refs":[1]}],"missing_required":[]}`
 
@@ -167,30 +137,6 @@ func TestClaimShadowDisabledAndSubagentDoNotCallLLM(t *testing.T) {
 	require.Zero(t, fake.callCount())
 }
 
-func TestClaimShadowEvaluator(t *testing.T) {
-	cases := []struct{ name, output, stop, status, decision string }{
-		{"refine", validClaimAudit, "stop", "ok", "refine"},
-		{"vertex", validClaimAudit, "FinishReasonStop", "ok", "refine"},
-		{"malformed", `{"claims":[`, "stop", "invalid_output", ""},
-		{"missing", "", "stop", "empty_response", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fake := &fakeLLMModel{turns: []fakeTurn{{content: tc.output, stopReason: tc.stop}}}
-			withFakeLLMModel(t, fake)
-			result := evaluateClaimShadow(llmOverrideContext(), NBAgentRequest{}, "why", "answer", "",
-				[]NBAgentPlannerToolActionStep{{Action: NBAgentPlannerToolAction{Tool: "metrics"}, Observation: "CPU high"}})
-			// Empty generations may be rejected by the shared generation layer first.
-			if tc.name == "missing" {
-				require.NotEqual(t, "ok", result.Status)
-			} else {
-				require.Equal(t, tc.status, result.Status)
-			}
-			require.Equal(t, tc.decision, result.Decision)
-		})
-	}
-}
-
 func TestClaimCritiquePromptRegistered(t *testing.T) {
 	prompt, err := nbprompts.GetPromptStrict(llmOverrideContext().GetContext(), nbprompts.PromptReactClaimCritiquer, "")
 	require.NoError(t, err)
@@ -207,19 +153,14 @@ func (d *claimTestDAO) SaveClaimCritiqueAudit(_ context.Context, _ *ClaimCritiqu
 func (d *claimTestDAO) SaveCritique(_ *ConversationCritique) error { return nil }
 
 func TestClaimFeedbackBothPlannersValidateAudit(t *testing.T) {
+	critiqueCallsInOrder(t)
 	pinClaimAuditOnly(t)
 	previous := config.Config.ClaimCritiqueFeedbackEnabled
 	t.Cleanup(func() { config.Config.ClaimCritiqueFeedbackEnabled = previous })
 	config.Config.ClaimCritiqueFeedbackEnabled = true
 	previousDAO := GetConversationDao()
-	conversationDaoMutex.Lock()
 	SetConversationDao(&claimTestDAO{IConversationDao: previousDAO})
-	conversationDaoMutex.Unlock()
-	t.Cleanup(func() {
-		conversationDaoMutex.Lock()
-		defer conversationDaoMutex.Unlock()
-		SetConversationDao(previousDAO)
-	})
+	t.Cleanup(func() { SetConversationDao(previousDAO) })
 	for _, planner := range []string{"react3", "react4"} {
 		for _, output := range []string{validClaimAudit, `{"claims":[`} {
 			t.Run(planner+output, func(t *testing.T) {

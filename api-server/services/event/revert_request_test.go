@@ -605,3 +605,115 @@ func TestLaterChangeConflict_NamesTheSameFieldEveryTime(t *testing.T) {
 		assert.Equal(t, first, laterChangeConflict(change, targetsOf(change), later, false))
 	}
 }
+
+// redactedDiffEvent is a config change as the k8s-collector stores it after redaction: env values
+// replaced by fingerprinted markers, manifests rewritten, and the block flagged.
+func redactedDiffEvent(updatedValues []any, oldManifest string, flagged bool) models.Event {
+	data := map[string]any{
+		"resource_name":  "deployment/shop/services-server.yaml",
+		"old":            oldManifest,
+		"new":            "metadata:\n  name: services-server\n",
+		"updated_values": updatedValues,
+	}
+	if flagged {
+		data["redacted"] = true
+	}
+	j := models.NewJsonArray([]any{map[string]any{"type": "diff", "data": data}})
+	return models.Event{Id: "evt-1", SubjectNamespace: strPtr("shop"), Evidences: &j}
+}
+
+// Writing a marker back would set the env var to the literal marker in the customer's pods.
+func TestGetRevertRecommendationRequest_RefusesToWriteARedactedValue(t *testing.T) {
+	envPath := "spec.template.spec.containers[0].env[2].value"
+	ev := redactedDiffEvent([]any{
+		map[string]any{"path": "spec.template.spec.containers[0].image", "old": "app:old", "new": "app:new"},
+		map[string]any{"path": envPath, "old": "[redacted:3f9a0c11b2d4]", "new": "[redacted:77e1aa09c3f0]"},
+	}, "metadata:\n  name: services-server\n", true)
+
+	for _, undo := range []bool{false, true} {
+		_, err := getRevertRecommendationRequest(deploymentResource, ev, undo)
+		require.Error(t, err, "undo=%v", undo)
+		assert.Contains(t, err.Error(), envPath)
+		assert.Contains(t, err.Error(), "kubectl rollout undo")
+
+		// The rollback dialog asks the same question before the click and must show this reason.
+		check, checkErr := rollbackCheckResult(err)
+		require.NoError(t, checkErr)
+		assert.False(t, check.Allowed)
+		assert.Contains(t, check.Reason, envPath)
+	}
+}
+
+// A whole env entry is one recorded value; a marker anywhere inside it counts.
+func TestGetRevertRecommendationRequest_RefusesARedactedValueInsideAnObject(t *testing.T) {
+	ev := redactedDiffEvent([]any{
+		map[string]any{
+			"path": "spec.template.spec.containers[0].env[3]",
+			"old":  map[string]any{"name": "DB_PASSWORD", "value": "[redacted:3f9a0c11b2d4]"},
+			"new":  nil,
+		},
+	}, "metadata:\n  name: services-server\n", true)
+
+	_, err := getRevertRecommendationRequest(deploymentResource, ev, false)
+	require.Error(t, err)
+}
+
+// Reverting a change that ADDED an env var removes the field, which needs no value; undoing that
+// revert would write the marker back.
+func TestGetRevertRecommendationRequest_AddedEnvVarCanBeRemovedButNotReAdded(t *testing.T) {
+	ev := redactedDiffEvent([]any{
+		map[string]any{
+			"path": "spec.template.spec.containers[0].env[3]",
+			"old":  nil,
+			"new":  map[string]any{"name": "DB_PASSWORD", "value": "[redacted:3f9a0c11b2d4]"},
+		},
+	}, "metadata:\n  name: services-server\n", true)
+
+	req, err := getRevertRecommendationRequest(deploymentResource, ev, false)
+	require.NoError(t, err)
+	assert.Equal(t, []any{map[string]any{"path": "spec.template.spec.containers[0].env[3]", "old": nil}}, req["revert_paths"])
+
+	_, err = getRevertRecommendationRequest(deploymentResource, ev, true)
+	require.Error(t, err)
+}
+
+// A change that touched no redacted value still reverts through its paths, but the rewritten
+// manifest is never sent: the legacy agent would replace the whole object with it.
+func TestGetRevertRecommendationRequest_NeverSendsARedactedManifest(t *testing.T) {
+	paths := []any{map[string]any{"path": "spec.replicas", "old": float64(2), "new": float64(5)}}
+	for name, ev := range map[string]models.Event{
+		"flagged block":       redactedDiffEvent(paths, "metadata:\n  name: services-server\n", true),
+		"marker in manifest":  redactedDiffEvent(paths, "spec:\n  env:\n  - name: X\n    value: '[redacted:3f9a0c11b2d4]'\n", false),
+		"plain marker string": redactedDiffEvent(paths, "spec:\n  env:\n  - name: X\n    value: '[redacted]'\n", false),
+	} {
+		req, err := getRevertRecommendationRequest(deploymentResource, ev, false)
+		require.NoError(t, err, name)
+		assert.Equal(t, []any{map[string]any{"path": "spec.replicas", "old": float64(2)}}, req["revert_paths"], name)
+		assert.NotContains(t, req, "deployment", name)
+	}
+
+	// With no paths to write, a redacted manifest alone is no longer something to revert with, and
+	// the reason says so rather than claiming there was no change.
+	for name, ev := range map[string]models.Event{
+		"flagged block":      redactedDiffEvent(nil, "metadata:\n  name: x\n", true),
+		"marker in manifest": redactedDiffEvent(nil, "spec:\n  env:\n  - name: X\n    value: '[redacted:3f9a0c11b2d4]'\n", false),
+	} {
+		_, err := getRevertRecommendationRequest(deploymentResource, ev, false)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "secret values removed", name)
+	}
+}
+
+// A credential inside a longer string is replaced in place, so the marker is matched anywhere.
+func TestGetRevertRecommendationRequest_RefusesAPartlyRedactedString(t *testing.T) {
+	ev := redactedDiffEvent([]any{
+		map[string]any{
+			"path": "spec.template.spec.containers[0].args[1]",
+			"old":  "--db=postgres://app:[redacted:3f9a0c11b2d4]@db:5432/app",
+			"new":  "--db=postgres://app:[redacted:77e1aa09c3f0]@db:5432/app",
+		},
+	}, "metadata:\n  name: services-server\n", true)
+
+	_, err := getRevertRecommendationRequest(deploymentResource, ev, false)
+	require.Error(t, err)
+}

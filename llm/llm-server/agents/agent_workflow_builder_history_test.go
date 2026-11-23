@@ -11,8 +11,8 @@ import (
 
 // The agentic tool loop re-sends its whole message slice on every iteration, so an untrimmed
 // observation is paid for again on each remaining iteration. These tests pin the trimming
-// contract: recent observations stay verbatim, older ones shrink to a head snippet, and the
-// rewrite is one-way (#31500).
+// contract: recent observations stay verbatim, older ones shrink to a head snippet once trimming
+// saves enough to be worth a batch, and the rewrite is one-way (#31500, #39972).
 
 // messageText reads the text of a single-part message built by llms.TextParts.
 func messageText(t *testing.T, msg llms.MessageContent) string {
@@ -60,7 +60,7 @@ func TestTrimStaleObservations_KeepsRecentVerbatim(t *testing.T) {
 // Once an observation falls out of the window it is rewritten to a head snippet with a marker,
 // and the system prompt / user message / assistant turns are left alone.
 func TestTrimStaleObservations_ShrinksOlderObservations(t *testing.T) {
-	oldBody := strings.Repeat("a", trimmedObservationHeadBytes*5)
+	oldBody := strings.Repeat("a", staleObservationTrimBatchBytes+trimmedObservationHeadBytes)
 	bodies := []string{oldBody}
 	for i := 0; i < observationHistoryWindow; i++ {
 		bodies = append(bodies, fmt.Sprintf("recent %d", i))
@@ -86,7 +86,7 @@ func TestTrimStaleObservations_ShrinksOlderObservations(t *testing.T) {
 // A stale observation already short enough is marked done and left byte-identical, so the marker
 // never appears on something that would not save anything.
 func TestTrimStaleObservations_LeavesShortObservationsAlone(t *testing.T) {
-	bodies := []string{"ok: task added"}
+	bodies := []string{"ok: task added", strings.Repeat("c", staleObservationTrimBatchBytes+trimmedObservationHeadBytes)}
 	for i := 0; i < observationHistoryWindow; i++ {
 		bodies = append(bodies, fmt.Sprintf("recent %d", i))
 	}
@@ -101,7 +101,7 @@ func TestTrimStaleObservations_LeavesShortObservationsAlone(t *testing.T) {
 // Trimming is one-way: re-running it over a history whose stale entries are already trimmed must
 // not re-truncate them (which would strip the marker down a second time).
 func TestTrimStaleObservations_IsIdempotent(t *testing.T) {
-	bodies := []string{strings.Repeat("b", trimmedObservationHeadBytes*4)}
+	bodies := []string{strings.Repeat("b", staleObservationTrimBatchBytes+trimmedObservationHeadBytes)}
 	for i := 0; i < observationHistoryWindow+2; i++ {
 		bodies = append(bodies, fmt.Sprintf("recent %d", i))
 	}
@@ -136,4 +136,59 @@ func TestTrimStaleObservations_CutsTotalHistorySize(t *testing.T) {
 		trimmedTotal += len(messageText(t, messages[o.msgIdx]))
 	}
 	assert.Less(t, trimmedTotal*3, untrimmed, "trimming must cut the observation history by more than two thirds")
+}
+
+// Below the batch size nothing is rewritten, stale or not: every rewrite changes the prompt from
+// that message on and costs the provider's cached prefix (#39972).
+func TestTrimStaleObservations_WaitsForABatch(t *testing.T) {
+	bodies := []string{strings.Repeat("d", staleObservationTrimBatchBytes/2)}
+	for i := 0; i < observationHistoryWindow; i++ {
+		bodies = append(bodies, fmt.Sprintf("recent %d", i))
+	}
+	messages, observations := buildObservationHistory(bodies)
+
+	trimStaleObservations(messages, observations)
+
+	assert.False(t, observations[0].trimmed)
+	assert.Equal(t, "<observation>"+bodies[0]+"</observation>", messageText(t, messages[observations[0].msgIdx]))
+}
+
+// Driven step by step the way runToolLoop drives it, the history stays append-only on all but a
+// few steps, and the prompt stays far smaller than an untrimmed one.
+func TestTrimStaleObservations_RewritesHistoryRarely(t *testing.T) {
+	const iterations = 20
+	body := strings.Repeat("s", 8000)
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "system prompt"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "user message"),
+	}
+	var observations []loopObservation
+	rewrites := 0
+	for i := 0; i < iterations; i++ {
+		messages = append(messages,
+			llms.TextParts(llms.ChatMessageTypeAI, fmt.Sprintf("<thought_action>call %d</thought_action>", i)),
+			llms.TextParts(llms.ChatMessageTypeHuman, "<observation>"+body+"</observation>"),
+		)
+		observations = append(observations, loopObservation{msgIdx: len(messages) - 1, tool: "get_task_schema", body: body})
+		before := make([]string, len(messages))
+		for j, m := range messages {
+			before[j] = messageText(t, m)
+		}
+
+		trimStaleObservations(messages, observations)
+
+		for j, m := range messages {
+			if messageText(t, m) != before[j] {
+				rewrites++
+				break
+			}
+		}
+	}
+
+	total := 0
+	for _, m := range messages {
+		total += len(messageText(t, m))
+	}
+	assert.LessOrEqual(t, rewrites, 3, "trimming must rewrite the history in a few batches, not on every step")
+	assert.Less(t, total*2, iterations*len(body), "trimming must still keep the prompt well under the untrimmed size")
 }

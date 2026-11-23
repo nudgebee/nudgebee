@@ -64,9 +64,9 @@ func (s trackingStubTool) Call(_ toolcore.NbToolContext, _ toolcore.NBToolCallRe
 func installTrackingDao(t *testing.T) *trackingFakeDao {
 	t.Helper()
 	dao := &trackingFakeDao{}
-	prev := conversationDao
+	prev := PeekConversationDao()
 	SetConversationDao(dao)
-	t.Cleanup(func() { conversationDao = prev })
+	t.Cleanup(func() { SetConversationDao(prev) })
 	return dao
 }
 
@@ -250,4 +250,42 @@ func TestCallToolSkipsTruncationWhenMarkerWouldGrowResponse(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, dao.calls, 2)
 	assert.Equal(t, justOverCap, dao.calls[1].result, "should fall back to the untruncated response rather than persist a longer one")
+}
+
+// trackingWriteTool classifies its call as a write.
+type trackingWriteTool struct {
+	trackingStubTool
+	calls *int
+}
+
+func (trackingWriteTool) InferToolRequestType(_ *security.RequestContext, _, _ string) (toolcore.ToolRequestType, error) {
+	return toolcore.ToolRequestTypeUpdate, nil
+}
+
+func (w trackingWriteTool) Call(tc toolcore.NbToolContext, req toolcore.NBToolCallRequest) (toolcore.NBToolResponse, error) {
+	*w.calls++
+	return w.trackingStubTool.Call(tc, req)
+}
+
+// The direct-call path cannot carry a write in a governed run: a tool whose
+// own classifier says it writes is refused before it runs or is recorded.
+func TestCallToolRefusesWritesInGovernedRun(t *testing.T) {
+	withFakeRunPolicy(t, &fakeRunPolicy{})
+	dao := installTrackingDao(t)
+	calls := 0
+	tc := trackingToolCtx()
+	tc.Ctx = governedRun(tc.Ctx)
+
+	resp, err := CallTool(tc, trackingWriteTool{calls: &calls}, toolcore.NBToolCallRequest{Command: "delete it"})
+	require.NoError(t, err)
+	assert.Equal(t, toolcore.NBToolResponseStatusError, resp.Status)
+	assert.Contains(t, resp.Data, "Not run")
+	assert.Equal(t, 0, calls)
+	assert.Empty(t, dao.calls)
+
+	// In an ordinary run the same call runs as before.
+	resp, err = CallTool(trackingToolCtx(), trackingWriteTool{calls: &calls, trackingStubTool: trackingStubTool{resp: toolcore.NBToolResponse{Data: "done"}}}, toolcore.NBToolCallRequest{Command: "delete it"})
+	require.NoError(t, err)
+	assert.Equal(t, "done", resp.Data)
+	assert.Equal(t, 1, calls)
 }

@@ -64,7 +64,8 @@ const logPatternBreakdownCardJSON = `{
   "baseline_known": true,
   "counted_levels": ["error", "critical"],
   "counting_note": "Counts only log lines the log agent tagged error or critical. The tag comes from the line's own level field, or from a level word at the start of the line. A warning, or a line that only mentions \"error\" further in, is not counted.",
-  "total": {"peak": 705, "peak_at": "2026-01-15T10:10:00Z", "normal": 9},
+  "total": {"peak": 705, "peak_at": "2026-01-15T10:10:00Z", "normal": 9, "peak_ratio": 78.3},
+  "ratio_note": "total.peak_ratio is total.peak divided by total.normal. The ratio in the alert's description is a different figure: the alert's value when it fired, the count in the 5 min before it fired against the 6 h average up to then.",
   "patterns_seen": 3,
   "patterns": [
     {"pattern_hash": "aaa", "level": "error", "peak": 700, "peak_at": "2026-01-15T10:10:00Z", "normal": 2.8, "example": "ERROR relay query failed", "container_id": "/k8s/shop/api-1/api"},
@@ -105,6 +106,8 @@ func TestBuildLogPatternBreakdown_NoErrorsBeforeTheWindow(t *testing.T) {
 	require.NotNil(t, breakdown)
 	assert.True(t, breakdown.BaselineKnown, "the workload was being counted; it logged no error")
 	assert.Equal(t, 0.0, breakdown.Total.Normal)
+	assert.Equal(t, 0.0, breakdown.Total.PeakRatio, "no ratio against a normal of 0")
+	assert.Empty(t, breakdown.RatioNote)
 	assert.Equal(t, "2026-01-15T10:00:00Z", breakdown.BaselineEvaluatedAt)
 	for _, p := range breakdown.Patterns {
 		assert.Equal(t, 0.0, p.Normal)
@@ -128,6 +131,8 @@ func TestBuildLogPatternBreakdown_WorkloadNotCountedBeforeTheWindow(t *testing.T
 			breakdown := buildLogPatternBreakdown(current, nil, measured, logSpikeTestStart, end)
 			require.NotNil(t, breakdown)
 			assert.False(t, breakdown.BaselineKnown)
+			assert.Equal(t, 0.0, breakdown.Total.PeakRatio, "no ratio against an unknown normal")
+			assert.Empty(t, breakdown.RatioNote)
 			assert.Equal(t,
 				"Error and critical log lines peaked at 705 per 5 min. The workload has no log counts in the 6 h before, so what is normal for it is unknown. The busiest pattern is error-level: 700 per 5 min.",
 				breakdown.summary())
@@ -185,6 +190,26 @@ func TestBuildLogPatternBreakdown_FineGrid(t *testing.T) {
 	assert.Equal(t, 120.0, breakdown.Total.Peak)
 }
 
+// A backend that aligns the range to its step returns a point just before the
+// window start. On an alert that re-fires soon after its last firing, that
+// point holds the previous burst, which must not be reported as this peak.
+func TestBuildLogPatternBreakdown_IgnoresPointsBeforeStart(t *testing.T) {
+	metric := map[string]string{"pattern_hash": "aaa", "level": "error", "sample": "ERROR broker cancelled", "container_id": "/k8s/ci/runner-1/runner"}
+	series := Result{
+		Metric:     metric,
+		Timestamps: []int64{logSpikeTestStart.Unix() - 1, logSpikeTestStart.Unix() + 300, logSpikeTestStart.Unix() + 600},
+		Values:     []float64{713, 600, 642},
+	}
+	normal := []Result{{Metric: map[string]string{"pattern_hash": "aaa", "level": "error"}, Timestamps: []int64{logSpikeTestStart.Unix()}, Values: []float64{58.6}}}
+
+	breakdown := buildLogPatternBreakdown([]Result{series}, normal, logSpikeTestMeasured, logSpikeTestStart, logSpikeTestStart.Add(20*time.Minute))
+	require.NotNil(t, breakdown)
+	assert.Equal(t, 642.0, breakdown.Total.Peak)
+	assert.Equal(t, "2026-01-15T10:10:00Z", breakdown.Total.PeakAt)
+	assert.Equal(t, 642.0, breakdown.Patterns[0].Peak)
+	assert.Equal(t, 11.0, breakdown.Total.PeakRatio, "642 / 58.6")
+}
+
 func TestBuildLogPatternBreakdown_NewPatternSummary(t *testing.T) {
 	current := []Result{logSpikeTestSeries(map[string]string{"pattern_hash": "new", "level": "critical", "sample": "FATAL out of memory", "container_id": "/k8s/shop/api-1/api"}, 1, 40)}
 	normal := []Result{{Metric: map[string]string{"pattern_hash": "old", "level": "error"}, Timestamps: []int64{logSpikeTestStart.Unix()}, Values: []float64{3}}}
@@ -221,6 +246,9 @@ func TestLogSpikeWindow(t *testing.T) {
 	leadIn := alert.Add(-10 * time.Minute)
 	farEnd := alert.Add(5 * time.Hour)
 	nearEnd := alert.Add(20 * time.Minute)
+	// The rule held for 10 minutes before firing, plus one evaluation
+	// interval. A burst that ended before this belongs to an earlier firing.
+	holdStart := alert.Add(-11 * time.Minute)
 
 	tests := []struct {
 		name      string
@@ -233,28 +261,28 @@ func TestLogSpikeWindow(t *testing.T) {
 			name:      "anchored on the alert start, not the lead-in start",
 			event:     playbooks.PlaybookEvent{StartedAt: &leadIn, DetectedAt: &alert, EndedAt: &farEnd},
 			now:       alert.Add(24 * time.Hour),
-			wantStart: alert.Add(-30 * time.Minute),
+			wantStart: holdStart,
 			wantEnd:   alert.Add(time.Hour),
 		},
 		{
 			name:      "a new alert ends now",
 			event:     playbooks.PlaybookEvent{StartedAt: &leadIn, DetectedAt: &alert, EndedAt: &farEnd},
 			now:       alert.Add(15 * time.Second),
-			wantStart: alert.Add(-30 * time.Minute),
+			wantStart: holdStart,
 			wantEnd:   alert.Add(15 * time.Second),
 		},
 		{
 			name:      "an alert that ended early",
 			event:     playbooks.PlaybookEvent{DetectedAt: &alert, EndedAt: &nearEnd},
 			now:       alert.Add(24 * time.Hour),
-			wantStart: alert.Add(-30 * time.Minute),
+			wantStart: holdStart,
 			wantEnd:   nearEnd,
 		},
 		{
 			name:      "no times on the event",
 			event:     playbooks.PlaybookEvent{},
 			now:       alert,
-			wantStart: alert.Add(-30 * time.Minute),
+			wantStart: holdStart,
 			wantEnd:   alert,
 		},
 	}

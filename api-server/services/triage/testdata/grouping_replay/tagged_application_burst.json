@@ -1,0 +1,455 @@
+{
+ "name": "tagged_application_burst",
+ "story": "Cloud hosts with no service map between them, related only by the tags on their resources. Four hosts of one application pin their CPU over twelve minutes (an antivirus scan across a farm) and are one incident. A host of another application, and the same application's dev host, alarm in the middle of it and are not part of it. Later, a pool of desktops: one host's disk alarm has fired every half hour for hours, so it is noisy; a second host's disk alarm that starts two minutes after one of its firings joins it, and a third that starts twelve minutes after one does not.",
+ "namespace": "cloud",
+ "shape": "tagged",
+ "maps": {},
+ "expect": {
+  "together": [
+   [
+    "a1",
+    "a2",
+    "a3",
+    "a4",
+    "a5"
+   ],
+   [
+    "v11",
+    "c3"
+   ]
+  ],
+  "apart": [
+   [
+    "a1",
+    "r1"
+   ],
+   [
+    "a1",
+    "d1"
+   ],
+   [
+    "r1",
+    "d1"
+   ],
+   [
+    "v13",
+    "c2"
+   ]
+  ]
+ },
+ "events": [
+  {
+   "id": "a1",
+   "alert": "av-1-cpu-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-1",
+   "fingerprint": "fp-av-1-cpu-high",
+   "starts_s": 0,
+   "arrives_s": 90,
+   "ends_s": 0,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "prod",
+    "Patch Group": "prod-group-1"
+   }
+  },
+  {
+   "id": "r1",
+   "alert": "report-1-cpu-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "report-1",
+   "fingerprint": "fp-report-1-cpu-high",
+   "starts_s": 120,
+   "arrives_s": 210,
+   "ends_s": 120,
+   "tags": {
+    "application-name": "reporting",
+    "environment": "prod"
+   }
+  },
+  {
+   "id": "a2",
+   "alert": "av-2-cpu-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-2",
+   "fingerprint": "fp-av-2-cpu-high",
+   "starts_s": 240,
+   "arrives_s": 440,
+   "ends_s": 240,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "prod",
+    "Patch Group": "prod-group-1"
+   }
+  },
+  {
+   "id": "d1",
+   "alert": "av-dev-1-cpu-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-dev-1",
+   "fingerprint": "fp-av-dev-1-cpu-high",
+   "starts_s": 300,
+   "arrives_s": 390,
+   "ends_s": 300,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "dev"
+   }
+  },
+  {
+   "id": "a3",
+   "alert": "av-3-cpu-high",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-3",
+   "fingerprint": "fp-av-3-cpu-high",
+   "starts_s": 480,
+   "arrives_s": 570,
+   "ends_s": 480,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "prod",
+    "Patch Group": "prod-group-1"
+   }
+  },
+  {
+   "id": "a4",
+   "alert": "av-4-cpu-critical",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-4",
+   "fingerprint": "fp-av-4-cpu-critical",
+   "starts_s": 700,
+   "arrives_s": 730,
+   "ends_s": 700,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "prod",
+    "Patch Group": "prod-group-1"
+   }
+  },
+  {
+   "id": "a5",
+   "alert": "av-1-cpu-critical",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "av-1",
+   "fingerprint": "fp-av-1-cpu-critical",
+   "starts_s": 900,
+   "arrives_s": 990,
+   "ends_s": 900,
+   "tags": {
+    "application-name": "endpoint-av",
+    "environment": "prod",
+    "Patch Group": "prod-group-1"
+   }
+  },
+  {
+   "id": "v00",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 3600,
+   "arrives_s": 3660,
+   "ends_s": 3600,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v01",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 5400,
+   "arrives_s": 5460,
+   "ends_s": 5400,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v02",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 7200,
+   "arrives_s": 7260,
+   "ends_s": 7200,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v03",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 9000,
+   "arrives_s": 9060,
+   "ends_s": 9000,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v04",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 10800,
+   "arrives_s": 10860,
+   "ends_s": 10800,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v05",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 12600,
+   "arrives_s": 12660,
+   "ends_s": 12600,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v06",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 14400,
+   "arrives_s": 14460,
+   "ends_s": 14400,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v07",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 16200,
+   "arrives_s": 16260,
+   "ends_s": 16200,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v08",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 18000,
+   "arrives_s": 18060,
+   "ends_s": 18000,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v09",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 19800,
+   "arrives_s": 19860,
+   "ends_s": 19800,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v10",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 21600,
+   "arrives_s": 21660,
+   "ends_s": 21600,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v11",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 23400,
+   "arrives_s": 23460,
+   "ends_s": 23400,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "c3",
+   "alert": "vdi-3-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-3",
+   "fingerprint": "fp-vdi-3-disk-low",
+   "starts_s": 23520,
+   "arrives_s": 23580,
+   "ends_s": 23520,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v12",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 25200,
+   "arrives_s": 25260,
+   "ends_s": 25200,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v13",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 27000,
+   "arrives_s": 27060,
+   "ends_s": 27000,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "c2",
+   "alert": "vdi-2-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-2",
+   "fingerprint": "fp-vdi-2-disk-low",
+   "starts_s": 27720,
+   "arrives_s": 27780,
+   "ends_s": 27720,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  },
+  {
+   "id": "v14",
+   "alert": "vdi-1-disk-low",
+   "kind": "alert",
+   "path": "cloud",
+   "subject_type": "compute-instance",
+   "subject_namespace": "AmazonEC2",
+   "subject": "vdi-1",
+   "fingerprint": "fp-vdi-1-disk-low",
+   "starts_s": 28800,
+   "arrives_s": 28860,
+   "ends_s": 28800,
+   "tags": {
+    "Application": "desktops",
+    "Environment": "prod"
+   }
+  }
+ ]
+}

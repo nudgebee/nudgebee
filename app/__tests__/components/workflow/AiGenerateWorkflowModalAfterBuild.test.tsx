@@ -30,7 +30,7 @@ const saved = (status: string, ...triggerTypes: string[]) => ({
 
 type Handlers = { onRunNow?: jest.Mock; onActivate?: jest.Mock };
 
-async function completeBuild(savedWorkflow: ReturnType<typeof saved> | undefined, handlers: Handlers) {
+async function completeBuild(savedWorkflow: ReturnType<typeof saved> | undefined, handlers: Handlers, extra: Record<string, unknown> = {}) {
   render(
     <AiGenerateWorkflowModal
       open
@@ -39,7 +39,7 @@ async function completeBuild(savedWorkflow: ReturnType<typeof saved> | undefined
       onGenerateAsync={jest.fn().mockResolvedValue({ sessionId: 'session-1', conversationId: 'conversation-1' })}
       onPollConversation={jest
         .fn()
-        .mockResolvedValue({ status: 'COMPLETED', saved: true, workflowJson: '', summaryText: SAVED_REPLY, savedWorkflow })}
+        .mockResolvedValue({ status: 'COMPLETED', saved: true, workflowJson: '', summaryText: SAVED_REPLY, savedWorkflow, ...extra })}
       onRunNow={handlers.onRunNow}
       onActivate={handlers.onActivate}
       loading={false}
@@ -118,5 +118,54 @@ describe('AiGenerateWorkflowModal — after a build has saved an automation', ()
 
     expect(runNow()).not.toBeInTheDocument();
     expect(activate()).not.toBeInTheDocument();
+  });
+});
+
+// #40444: from an event, the build is switched on before the window says so. The window states the
+// automation's real state — and never "active" when the switch did not happen.
+describe("AiGenerateWorkflowModal — the saved automation's live state", () => {
+  const liveState = () => document.getElementById('wf-ai-live-state');
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('says it is published and active, and offers Run now but not Activate', async () => {
+    await completeBuild(saved('ACTIVE', 'manual'), { onRunNow: jest.fn() }, { liveState: 'active' });
+
+    expect(liveState()).toHaveTextContent('Saved, published as v1 and active. It is ready to run.');
+    expect(runNow()).toBeInTheDocument();
+    expect(activate()).not.toBeInTheDocument();
+  });
+
+  it('says it is still paused, with the reason and a way forward, when activation failed', async () => {
+    await completeBuild(saved('PAUSED', 'manual'), { onRunNow: jest.fn() }, { liveState: 'paused', liveStateError: 'not allowed' });
+
+    expect(liveState()).toHaveTextContent('could not be set active (not allowed). It is still paused: open it in the editor to activate it.');
+    expect(liveState()).not.toHaveTextContent('and active');
+    expect(screen.getByRole('button', { name: 'Open in Editor' })).toBeInTheDocument();
+  });
+
+  it('says it is inactive when it was saved without the configs it needs', async () => {
+    await completeBuild(saved('INACTIVE', 'manual'), {}, { liveState: 'inactive' });
+
+    expect(liveState()).toHaveTextContent('left inactive');
+  });
+
+  it('does not claim it was saved when the saved automation could not be found', async () => {
+    await completeBuild(undefined, {}, { liveState: 'unverified', saved: undefined, summaryText: '', workflowJson: '{"name":"x"}' });
+
+    expect(liveState()).toHaveTextContent('could not be found, so it was not set active');
+    expect(screen.queryByText('Your automation has been built and saved.')).not.toBeInTheDocument();
+  });
+
+  it('adds no state line for a caller that does not report one (the Automations list)', async () => {
+    await completeBuild(saved('PAUSED', 'manual'), { onRunNow: jest.fn() });
+
+    expect(liveState()).not.toBeInTheDocument();
   });
 });

@@ -37,7 +37,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 	}
 
 	if tableDef.Source == database.AgentMetrices {
-		return processAgentMetrices(query, context, startTime)
+		return processAgentMetrices(query, context, startTime, tableDef.PermissionModule)
 	}
 
 	if tableDef.SourceGenerator != nil {
@@ -45,7 +45,8 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		accountIdColumnName := tableDef.AccountIdColumnName
 		if binary != nil && binary[accountIdColumnName] != nil && binary[accountIdColumnName][Eq] != nil {
 			account_id := binary[accountIdColumnName][Eq]
-			if account_id == "" {
+			accountIdStr, isString := account_id.(string)
+			if !isString || accountIdStr == "" {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorBadRequest("account_id is required"),
@@ -53,7 +54,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 				}, nil
 			}
-			sourceDef := tableDef.SourceGenerator(context, account_id.(string), query)
+			sourceDef := tableDef.SourceGenerator(context, accountIdStr, query)
 			tableDef.Source = sourceDef
 			sourceType = sourceDef
 		}
@@ -164,7 +165,11 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			query.Columns = lo.Filter(query.Columns, func(column QueryColumn, i int) bool {
 				return column.Name != accountIdColumnName
 			})
-			if !context.GetSecurityContext().HasAccountAccess(account_id.(string), security.SecurityAccessTypeRead) {
+			// The table's PermissionModule, not the request's action key: the engine
+			// is reached from other actions too (a dashboard panel, an AI tool), and
+			// their grant must not open this table (as in the metastore branch).
+			accountIdStr, isString := account_id.(string)
+			if !isString || !context.GetSecurityContext().CanReadAccountData(accountIdStr, tableDef.PermissionModule) {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorUnauthorized("Access Denied"),
@@ -176,13 +181,13 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			queryArgs = append(queryArgs, tableDef.Source)
 
 			if slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_ADMIN_ROLE) || slices.Contains(context.GetSecurityContext().GetRoles(), security.AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
-				queryWithNamespace, queryResponse, err := updateQueryWithNamespace(context, tableDef, query, context, startTime, accountIdColumnName, []string{account_id.(string)})
+				queryWithNamespace, queryResponse, err := updateQueryWithNamespace(context, tableDef, query, context, startTime, accountIdColumnName, []string{accountIdStr})
 				if err != nil {
 					return queryResponse, err
 				}
 				query = queryWithNamespace
 			}
-			requestedAccountId = account_id.(string)
+			requestedAccountId = accountIdStr
 		} else {
 			return QueryResponse{
 				Errors: []common.Error{
@@ -201,7 +206,8 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		accountIdColumnName := tableDef.AccountIdColumnName
 		if binary != nil && binary[accountIdColumnName] != nil && binary[accountIdColumnName][Eq] != nil {
 			account_id := binary[accountIdColumnName][Eq]
-			if !context.GetSecurityContext().HasAccountAccess(account_id.(string), security.SecurityAccessTypeRead) {
+			accountIdStr, isString := account_id.(string)
+			if !isString || !context.GetSecurityContext().CanReadAccountData(accountIdStr, tableDef.PermissionModule) {
 				return QueryResponse{
 					Errors: []common.Error{
 						common.ErrorUnauthorized("Access Denied"),
@@ -209,7 +215,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 					ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 				}, nil
 			}
-			requestedAccountId = account_id.(string)
+			requestedAccountId = accountIdStr
 		} else {
 			return QueryResponse{
 				Errors: []common.Error{
@@ -221,7 +227,20 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 		return executeChronosphereQuery(context, requestedAccountId, query, tableDef, startTime)
 	}
 
-	queryText, err := generateSqlQuery(context, requestedAccountId, query, tableDef, accountScope)
+	// Fetch one extra row beyond the effective limit so a full page can be told
+	// apart from a truncated one (#26060) without a second count query.
+	effectiveLimit := query.Limit
+	if effectiveLimit <= 0 {
+		effectiveLimit = 1000
+	}
+	overfetchQuery := query
+	overfetchQuery.Limit = effectiveLimit + 1
+	if overfetchQuery.Limit <= 0 {
+		// effectiveLimit was near the int max; +1 wrapped around. Don't overfetch.
+		overfetchQuery.Limit = effectiveLimit
+	}
+
+	queryText, err := generateSqlQuery(context, requestedAccountId, overfetchQuery, tableDef, accountScope)
 	if err != nil {
 		return QueryResponse{
 			Errors: []common.Error{
@@ -233,7 +252,7 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 
 	context.GetLogger().Info(fmt.Sprintf("Query To Execute %s", queryText))
 
-	rowsMap, err := executeSqlQuery(context.GetContext(), sourceType, queryText, queryArgs, query.Limit)
+	rowsMap, err := executeSqlQuery(context.GetContext(), sourceType, queryText, queryArgs, overfetchQuery.Limit)
 	if err != nil {
 		if errors.Is(err, ErrQueryCancelled) {
 			// The caller left before the answer was ready. Reported as its own
@@ -254,8 +273,13 @@ func ExecuteQuery(context *security.RequestContext, query QueryRequest) (QueryRe
 			ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 		}, nil
 	}
+	hasMore := len(rowsMap) > effectiveLimit
+	if hasMore {
+		rowsMap = rowsMap[:effectiveLimit]
+	}
 	return QueryResponse{
 		Rows:            rowsMap,
+		HasMore:         hasMore,
 		ExecutionTimeMs: time.Since(startTime).Milliseconds(),
 	}, nil
 }

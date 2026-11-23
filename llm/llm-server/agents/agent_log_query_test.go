@@ -7,9 +7,29 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// A LogQL provider's Code-mode editor runs only LogQL, so a filter
+// services-server cannot preview as LogQL is an error there, not JSON in the
+// editor; other providers still get the canonical JSON.
+func TestPreviewOrCanonical(t *testing.T) {
+	const jsonQuery = `{"where":{"_or":[{"namespace":{"_eq":"a"}},{"pod":{"_eq":"b"}}]}}`
+
+	q, err := previewOrCanonical("otel_clickhouse", `{namespace="a"}`, jsonQuery)
+	assert.NoError(t, err)
+	assert.Equal(t, `{namespace="a"}`, q)
+
+	_, err = previewOrCanonical("otel_clickhouse", "", jsonQuery)
+	assert.ErrorContains(t, err, "cannot be written as LogQL")
+	assert.ErrorContains(t, err, jsonQuery, "the error shows the filter that was generated")
+
+	q, err = previewOrCanonical("pinot", "", jsonQuery)
+	assert.NoError(t, err)
+	assert.Equal(t, jsonQuery, q)
+}
 
 // TestLogQueryAgent_GetPlannerType covers the NBCustomAgent wiring: Execute is
 // only invoked by the executor when GetPlannerType reports Custom.
@@ -96,6 +116,19 @@ func TestLogQueryResult_MarshalWithIndex(t *testing.T) {
 	assert.JSONEq(t, `{"query":"{\"query\":{\"bool\":{}}}","provider":"ES","index":"logs-kubernetes-*"}`, string(data))
 }
 
+// TestLogQueryResult_MarshalWithWhere: the where-clause is echoed in the same
+// `_and`/`_binary` shape logs_get_query accepts as query_request.where, so the
+// logs tab can re-render the text with a new Limit without regenerating it.
+func TestLogQueryResult_MarshalWithWhere(t *testing.T) {
+	where := toolcore.QueryWhereClause{And: []toolcore.QueryWhereClause{
+		{Binary: toolcore.BinaryWhereClause{"namespace": {toolcore.Eq: "nudgebee"}}},
+	}}
+	result := logQueryResult{Query: `k8s.namespace.name:="nudgebee"`, Provider: "cubeapm", Where: &where}
+	data, err := common.MarshalJson(result)
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"query":"k8s.namespace.name:=\"nudgebee\"","provider":"cubeapm","where":{"_and":[{"_binary":{"namespace":{"_eq":"nudgebee"}}}]}}`, string(data))
+}
+
 // TestLogQueryAgent_EffectiveIndex covers the index precedence the ES "Select an
 // Index" dropdown depends on. The caller's selection is a hard pin — a generated
 // query must never be silently resolved against a different index than the one
@@ -139,6 +172,33 @@ func TestLogQueryAgent_EffectiveIndex(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &LogQueryAgent{accountId: "acct", provider: tc.provider, requestedIndex: tc.requestedIndex}
 			assert.Equal(t, tc.want, a.effectiveIndex(tc.generatedIndex))
+		})
+	}
+}
+
+// TestLogQueryAgent_EffectiveLimit: the generated query carries the smaller of
+// the logs tab's "Limit" dropdown and the generator's limit, so the generator's
+// 1000/5000 default never shows a limit the run won't apply, while a count the
+// user stated in the question survives a larger dropdown default.
+func TestLogQueryAgent_EffectiveLimit(t *testing.T) {
+	cases := []struct {
+		name           string
+		requestedLimit int
+		generatedLimit int
+		want           int
+	}{
+		{name: "dropdown caps the generator's routine default", requestedLimit: 50, generatedLimit: 1000, want: 50},
+		{name: "dropdown caps an investigation default", requestedLimit: 200, generatedLimit: 5000, want: 200},
+		{name: "count stated in the question survives a larger dropdown", requestedLimit: 100, generatedLimit: 20, want: 20},
+		{name: "equal limits", requestedLimit: 100, generatedLimit: 100, want: 100},
+		{name: "dropdown used when the generator gave none", requestedLimit: 50, generatedLimit: 0, want: 50},
+		{name: "generated limit kept when no dropdown value was sent", generatedLimit: 1000, want: 1000},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &LogQueryAgent{accountId: "acct", requestedLimit: tc.requestedLimit}
+			assert.Equal(t, tc.want, a.effectiveLimit(tc.generatedLimit))
 		})
 	}
 }

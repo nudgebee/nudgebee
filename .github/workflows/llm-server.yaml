@@ -180,6 +180,11 @@ jobs:
       # a save starting while another is committing wait and then see its revision.
       # Without it the second save passes the version check and silently overwrites
       # the first; sqlmock cannot show the wait.
+      #
+      # scan_orchestrator carries the Popeye resource link: the lookup and the move
+      # of an existing finding onto its resolved resource_id inside the unique key.
+      # A wrong predicate strands a dismissed row or aborts the scan on a unique
+      # violation; sqlmock shows neither.
       - name: Run PR-lifecycle DB tests
         working-directory: ./api-server/services
         env:
@@ -193,7 +198,10 @@ jobs:
         # integrations/core: the ms_teams rename migration must not collide with
         # integrations' unique key, which would abort the post-upgrade hook.
         run: |
-          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ ./user/ ./dashboard/ -run '_DB$' -v
+          go test ./account/adapter/ ./observability/ ./event/ ./recommendation/ ./query/ ./reports/ ./insight/ ./user/ ./dashboard/ ./scan_orchestrator/ -run '_DB$' -v
           go test ./triage/ ./eventrule/ -run '_DB$' -skip 'CascadePipeline' -v
           go test ./account/ -run 'NotificationRule.*_DB$' -v
           go test ./integrations/core/ -run 'MsTeams.*_DB$' -v
+          # tenant: who a group-membership change may add or remove is decided by
+          # a join on tenant_users / usergroup_users (#43747); sqlmock cannot evaluate it.
+          go test ./tenant/ -run '_DB$' -v

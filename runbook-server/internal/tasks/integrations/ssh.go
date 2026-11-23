@@ -2,7 +2,6 @@ package integrations
 
 import (
 	"errors"
-	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	integrationsService "nudgebee/runbook/services/integrations"
 	"nudgebee/runbook/services/relay"
@@ -53,14 +52,7 @@ func (t *SSHTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 	}
 
 	if respStr, ok := resp.(string); ok {
-		sshResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &sshResp); err != nil {
-			return nil, errors.New(respStr)
-		}
-		if sshResp["stderr"] != nil && sshResp["stderr"] != "" {
-			return nil, errors.New(sshResp["stderr"].(string))
-		}
-		return map[string]any{"data": sshResp["stdout"]}, nil
+		return relay.InterpretCommandResponse("ssh", respStr)
 	}
 
 	return nil, errors.New("unable to process request")

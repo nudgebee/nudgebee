@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -217,4 +218,30 @@ func TestGCPAgent_Execute4(t *testing.T) {
 			assert.Greater(t, len(resp.Response), 0, "Response should not be empty")
 		})
 	}
+}
+
+// gcloud has no metric-data commands; the agent used to start every metrics
+// question with `gcloud monitoring time-series list`, which fails (40 failing
+// calls in 14 days on production). It must read Cloud Monitoring over REST.
+func TestGcpMetricsAgent_ReadsCloudMonitoringOverREST(t *testing.T) {
+	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{})
+	accountId, userId := os.Getenv("TEST_GCP_ACCOUNT"), os.Getenv("TEST_USER")
+	sessionId := "ut-gcp-metrics-rest-" + uuid.NewString()
+
+	agent := GcpMetricsAgent{accountId: accountId}
+	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId, "what was the CPU utilization of my compute engine instances in the last hour?")
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+
+	usedREST := false
+	for _, step := range resp.AgentStepResponse {
+		args := step.Call.FunctionCall.Arguments
+		assert.NotContains(t, args, "gcloud monitoring time-series", "gcloud has no time-series command")
+		assert.NotContains(t, args, "gcloud monitoring metric-descriptors", "gcloud has no metric-descriptors command")
+		if strings.Contains(args, "monitoring.googleapis.com/v3/") {
+			usedREST = true
+		}
+	}
+	assert.True(t, usedREST, "metrics should be read through the Cloud Monitoring v3 REST API")
+	assert.Greater(t, len(resp.Response), 0)
 }

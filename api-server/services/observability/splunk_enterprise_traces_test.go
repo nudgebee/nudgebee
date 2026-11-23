@@ -82,6 +82,20 @@ func TestSplunkEnterpriseTraceWhereClauseKeepsExpressibleSiblings(t *testing.T) 
 	assert.NotContains(t, got, "destination_workload_namespace")
 }
 
+// The regression this provider was reported for: the Traces tab's Service filter is a
+// single-select, so it sends `_in` a bare string. That reached the SPL builder as-is and
+// failed the whole request with `operator _in needs a list of values, got string`, so the
+// list emptied the moment a service was picked (#41493). The shared rewriter every trace
+// request runs now wraps it, so the builder sees the list it documents.
+func TestSplunkEnterpriseTraceWhereClauseAcceptsScalarInFromServiceFilter(t *testing.T) {
+	where := convertWhereClauseWithMApping(query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{"workload_name": {query.In: "qa-payment-s3"}},
+	}, map[string]string{})
+	got, err := buildSplunkEnterpriseTraceWhereClause(where)
+	require.NoError(t, err)
+	assert.Equal(t, `(service.name="qa-payment-s3")`, got)
+}
+
 func TestStripSplunkEnterpriseUnsupportedTraceFieldsDoesNotMutateInput(t *testing.T) {
 	// The map belongs to the caller's request, which other providers in a fan-out may
 	// still read.

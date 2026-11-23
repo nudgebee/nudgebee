@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/prompts"
 	"nudgebee/llm/security"
 
@@ -43,15 +44,15 @@ func DeriveVoteSubject(ctx *security.RequestContext, accountID, conversationID, 
 	}
 
 	voteCtx := security.NewRequestContext(
-		context.WithValue(context.WithValue(ctx.GetContext(), ContextKeyModelTier, ModelTierSummary), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(context.WithValue(ctx.GetContext(), llmruntime.ContextKeyModelTier, llmruntime.ModelTierSummary), llmruntime.ContextKeyCacheScope, llmruntime.CacheScopeGlobal),
 		sc,
 		ctx.GetLogger(),
 		ctx.GetTracer(),
 		ctx.GetMeter(),
 	)
 
-	result, err := GenerateAndTrackLLMContent(voteCtx, sc.GetUserId(), accountID, conversationID, messageID,
-		"vote_subject", false, messages, true, llms.WithTemperature(0.0), WithThinkingLevel(ThinkingLevelFastTask))
+	result, err := llmruntime.GenerateAndTrackLLMContent(voteCtx, sc.GetUserId(), accountID, conversationID, messageID,
+		"vote_subject", false, messages, true, llms.WithTemperature(0.0), llmruntime.WithThinkingLevel(llmruntime.ThinkingLevelFastTask))
 	if err != nil {
 		return "", fmt.Errorf("DeriveVoteSubject: %w", err)
 	}

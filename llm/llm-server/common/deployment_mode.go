@@ -5,8 +5,8 @@
 // (see app/next.config.js's `env:` block that bridges the same name into
 // the client bundle). Same env var name across all services.
 //
-// This helper lives in `common` so both agents/core/memory_v2.go and
-// api/memory_v2.go can share it — avoids duplicating the tiny env-read
+// This helper lives in `common` so both ee/memory/corebridge/memory_v2.go and
+// ee/memory/httpapi/memory_v2.go can share it — avoids duplicating the tiny env-read
 // logic across the two EE-only files that need it.
 package common
 

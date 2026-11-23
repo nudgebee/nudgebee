@@ -224,6 +224,11 @@ func buildNewRelicWorkloadQueries(meta RequestMetadata, metrics []string) map[st
 	default:
 		facetClause = "FACET deploymentName"
 	}
+	// Without LIMIT, New Relic returns only its default 10 facets, so a workload with
+	// more pods silently loses the rest (#39201). An explicit 100 rather than MAX:
+	// combined with TIMESERIES, MAX can exceed New Relic's result limits. The time
+	// range and TIMESERIES are appended after this clause, which NRQL accepts.
+	facetClause += " LIMIT 100"
 
 	// Build PVC WHERE clause for volume metrics
 	var pvcWhereClause string

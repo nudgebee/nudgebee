@@ -58,18 +58,33 @@ const TerminalDots = () => (
  * Re-shows the install command for an existing K8s account whose agent was
  * never confirmed — reached from that account's own chip in Setup Center
  * (`SetupCenter.tsx`'s `reopenAgentInstall`). The original key is shown once
- * at creation and never stored, so this fetches a fresh one on open via the
- * same `agents_create_token` mutation the Integrations page's VM "Regenerate
+ * at creation and never stored, so this fetches a fresh one via the same
+ * `agents_create_token` mutation the Integrations page's VM "Regenerate
  * Token" action already uses, just for `agentType: 'k8s'` instead of 'proxy'
  * — `RegenerateAgentKeys` (api-server) has carried that branch from the
  * start. The agent ROW this reads/writes already exists from account
  * creation, so there is nothing to create here, only new credentials for it.
+ *
+ * Regenerating invalidates whatever key was issued before — including one an
+ * already-running agent on the cluster is mid-connecting with, not only a
+ * truly-never-installed one, since this dialog has no way to tell those
+ * apart before minting a new key. So the key is no longer minted the instant
+ * this opens: `confirmed` gates it behind the same explicit
+ * "existing connections will stop working" confirmation the Integrations
+ * page's own "Regenerate Token" action already requires.
  */
 const K8sAgentInstallDialog = ({ open, onClose, account }) => {
   const { relayUrl, k8sCollectorUrl, signingPublicKey } = useBrandingConfig();
   const [activeTab, setActiveTab] = useState('helm');
   const [authKey, setAuthKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  // Set when `generateAgentToken` comes back without usable credentials —
+  // distinct from `isLoading`, which only says the request is no longer in
+  // flight. Without this, a failed generation left `authKey` empty forever,
+  // which the checking-phase banner below couldn't tell apart from "about to
+  // poll" and showed as if a check were still running.
+  const [keyGenerationFailed, setKeyGenerationFailed] = useState(false);
   // 'checking' → 'waiting' → 'connected'. No 'shared' phase like the VM
   // dialog's — a K8s account's agent is keyed to this one account already,
   // not shared across a fleet, so there is no prior-agent ambiguity to flag.
@@ -81,10 +96,17 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
     if (!open || !accountId) {
       setAuthKey('');
       setAgentPhase('checking');
+      setConfirmed(false);
+      setKeyGenerationFailed(false);
+      setIsLoading(false);
+      return undefined;
+    }
+    if (!confirmed) {
       return undefined;
     }
     let cancelled = false;
     setIsLoading(true);
+    setKeyGenerationFailed(false);
     apiAccount
       .generateAgentToken(accountId, 'k8s')
       .then((res) => {
@@ -93,11 +115,14 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
         if (data?.access_key && data?.access_secret) {
           setAuthKey(`${data.access_key}:${data.access_secret}`);
         } else {
+          setKeyGenerationFailed(true);
           snackbar.error('Failed to generate a new install command');
         }
       })
       .catch(() => {
-        if (!cancelled) snackbar.error('Failed to generate a new install command');
+        if (cancelled) return;
+        setKeyGenerationFailed(true);
+        snackbar.error('Failed to generate a new install command');
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -105,7 +130,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
     return () => {
       cancelled = true;
     };
-  }, [open, accountId]);
+  }, [open, accountId, confirmed]);
 
   useEffect(() => {
     if (!open || !accountId || !authKey) {
@@ -165,18 +190,35 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
 
   const activeCommand = activeTab === 'helm' ? helmCommand : shellCommand;
 
+  const title = (
+    <Typography component='h2' variant='h6' fontWeight={ds.weight.semibold}>
+      {account?.label ? `Install command — ${account.label}` : 'Install command'}
+    </Typography>
+  );
+
+  if (!confirmed) {
+    return (
+      <Modal
+        handleClose={onClose}
+        title={title}
+        open={open}
+        width='md'
+        confirmText='Regenerate key'
+        confirmTone='danger'
+        onConfirm={() => setConfirmed(true)}
+      >
+        <Banner
+          tone='warning'
+          surface='section'
+          title='This replaces the current install key'
+          message='The previous key stops working the moment a new one is generated. If an agent is already running on this cluster — connected or not — it will need to be redeployed with the new command to reconnect.'
+        />
+      </Modal>
+    );
+  }
+
   return (
-    <Modal
-      handleClose={onClose}
-      title={
-        <Typography component='h2' variant='h6' fontWeight={ds.weight.semibold}>
-          {account?.label ? `Install command — ${account.label}` : 'Install command'}
-        </Typography>
-      }
-      open={open}
-      width='md'
-      isConfirmRequired={false}
-    >
+    <Modal handleClose={onClose} title={title} open={open} width='md' isConfirmRequired={false}>
       <Grid container sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], mt: ds.space[2], mb: ds.space[2] }}>
         <Banner
           tone='info'
@@ -194,7 +236,7 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
               </Chip>
             ))}
           </Box>
-          <Box sx={{ backgroundColor: 'var(--ds-brand-800)', borderRadius: ds.radius.sm, overflow: 'hidden' }}>
+          <Box sx={{ backgroundColor: 'var(--ds-brand-700)', borderRadius: ds.radius.sm, overflow: 'hidden' }}>
             <Box sx={terminalBarSx}>
               <TerminalDots />
             </Box>
@@ -214,6 +256,14 @@ const K8sAgentInstallDialog = ({ open, onClose, account }) => {
             </Link>
           </Typography>
         </Box>
+        {accountId && agentPhase === 'checking' && !isLoading && !keyGenerationFailed && (
+          <Box data-testid='k8s-agent-install-checking'>
+            <ProgressLinear surface='section' tone='info' aria-label='Checking for an existing connection' />
+            <Box sx={{ mt: ds.space[2] }}>
+              <Banner tone='info' surface='section' message='Checking whether the agent has already reported in…' />
+            </Box>
+          </Box>
+        )}
         {accountId && agentPhase === 'waiting' && (
           <Box data-testid='k8s-agent-install-waiting'>
             <ProgressLinear surface='section' tone='info' aria-label='Waiting for the agent to connect' />

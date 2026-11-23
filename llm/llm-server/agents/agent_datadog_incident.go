@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	llmruntime "nudgebee/llm/llms/runtime"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -16,7 +17,7 @@ func init() {
 	toolInput := "Provide incidents data question in natural language"
 	toolOutput := "The tool will return incidents data from your question"
 
-	core.RegisterNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogIncidentAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -29,7 +30,7 @@ func init() {
 	toolDescription := `Retrieves Datadog incidents. Input should be a natural language question about incidents.`
 	toolInput := "Provide a question about Datadog incidents in natural language."
 	toolOutput := "The tool will return the Datadog incident data retrieved for your query."
-	core.RegisterNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
+	core.RegisterTargetAwareNBAgentFactoryAndTool(DatadogIncidentAgentName, func(accountId string) (core.NBAgent, error) {
 		return NewDatadogIncidentAgent(accountId), nil
 	}, toolDescription, toolInput, toolOutput)
 }
@@ -78,7 +79,7 @@ func (d DatadogIncidentAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 			"Input: A valid Datadog incident query string.",
 			"Output: JSON response from Datadog containing incident data.",
 		},
-		core.ToolLlm: {
+		llmruntime.ToolLlm: {
 			"Use this tool for reasoning, generating the initial Datadog incident query string, or summarizing the results.",
 			"Input: A clear instruction or question.",
 		},
@@ -102,7 +103,7 @@ func (d DatadogIncidentAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 
 // GetSupportedTools returns the tools that this agent can use.
 func (d DatadogIncidentAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	toolsList := []string{tools.ToolDatadogIncidentExecute, core.ToolLlm}
+	toolsList := []string{tools.ToolDatadogIncidentExecute, llmruntime.ToolLlm}
 
 	tools := make([]toolcore.NBTool, 0, len(toolsList))
 	for _, toolName := range toolsList {

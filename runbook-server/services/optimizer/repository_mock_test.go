@@ -3,6 +3,7 @@ package optimizer
 import (
 	"context"
 	"nudgebee/runbook/internal/model"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/mock"
@@ -111,4 +112,72 @@ func (m *MockOptimizerRepository) GetAutoOptimizeTasksByIDs(ctx context.Context,
 func (m *MockOptimizerRepository) GetResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
 	args := m.Called(ctx, recommendationIDs)
 	return args.Get(0).(map[uuid.UUID][]model.RecommendationResolution), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) ParkAutoOptimizeRun(ctx context.Context, tasks []model.AutoOptimizeTask, a model.AutoOptimizeApproval) error {
+	args := m.Called(ctx, tasks, a)
+	return args.Error(0)
+}
+
+func (m *MockOptimizerRepository) GetAutoOptimizeApproval(ctx context.Context, id, tenantID, accountID uuid.UUID) (*model.AutoOptimizeApproval, error) {
+	args := m.Called(ctx, id, tenantID, accountID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.AutoOptimizeApproval), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) GetPendingAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeApproval, error) {
+	args := m.Called(ctx, autoOptimizeID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.AutoOptimizeApproval), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) DecideAutoOptimizeApproval(ctx context.Context, id uuid.UUID, from, to model.AutoOptimizeApprovalStatus, reviewerID *uuid.UUID, comments *string, unexpiredAt *time.Time) (bool, error) {
+	args := m.Called(ctx, id, from, to, reviewerID, comments, unexpiredAt)
+	return args.Bool(0), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) ExpireAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID, now time.Time) ([]model.AutoOptimizeApproval, error) {
+	args := m.Called(ctx, autoOptimizeID, now)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.AutoOptimizeApproval), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) CancelPendingAutoOptimizeApprovals(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeApproval, error) {
+	args := m.Called(ctx, autoOptimizeID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]model.AutoOptimizeApproval), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) MoveAutoOptimizeTasks(ctx context.Context, ids []uuid.UUID, from, to model.AutopilotTaskStatus, reason *string) ([]uuid.UUID, error) {
+	args := m.Called(ctx, ids, from, to, reason)
+	moved, _ := args.Get(0).([]uuid.UUID)
+	return moved, args.Error(1)
+}
+
+func (m *MockOptimizerRepository) GetRecommendationSnapshots(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]model.RecommendationSnapshot, error) {
+	args := m.Called(ctx, ids)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(map[uuid.UUID]model.RecommendationSnapshot), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) SetAutoOptimizeExecutionStatus(ctx context.Context, id uuid.UUID, status model.AutopilotExecutionStatus) error {
+	args := m.Called(ctx, id, status)
+	return args.Error(0)
+}
+
+// expectNoApprovals stubs the pre-flight approval checks for an automation that
+// has nothing parked.
+func (m *MockOptimizerRepository) expectNoApprovals(aoID uuid.UUID) {
+	m.On("ExpireAutoOptimizeApprovals", mock.Anything, aoID, mock.Anything).Return([]model.AutoOptimizeApproval{}, nil).Maybe()
+	m.On("GetPendingAutoOptimizeApprovals", mock.Anything, aoID).Return([]model.AutoOptimizeApproval{}, nil).Maybe()
 }

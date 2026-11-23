@@ -1,9 +1,8 @@
-import gzip
 import json
 
 from flask import request
 from exception.collector_exceptions import BadRequestError
-from apis.base.api import BaseAuthApi
+from apis.base.api import BaseAuthApi, read_json_body
 from controllers.open_cost_controller import OpenCostController
 
 
@@ -15,12 +14,7 @@ class OpenCostData(BaseAuthApi):
         return OpenCostController
 
     def post(self):
-        if request.headers.get("Content-Encoding") == "gzip":
-            compressed_data = request.get_data()
-            decompressed_data = gzip.decompress(compressed_data)
-            metric_data = json.loads(decompressed_data.decode("utf-8"))
-        else:
-            metric_data = request.get_json()
+        metric_data = read_json_body()
         start_date = request.args.get("start_date", None, type=int)
         end_date = request.args.get("end_date", None, type=int)
         account_id = request.cloud_account_id

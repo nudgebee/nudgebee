@@ -1,19 +1,22 @@
 // Not for OSS
 import { test, expect } from "@playwright/test";
 import {
-  expectScreenNotSelected,
   expectScreenSelected,
+  expectSectionSelected,
   expectToggleChecked,
   openGateway,
+  openGatewayFromOldLink,
   openGatewayWithFragment,
   openScreen,
   parkCursor,
   selectFilterOption,
 } from "./aiGatewayHelper";
+import { screenHash } from "./aiGatewayLocators";
 
-// Optimize -> AI Gateway: the BYO-token gateway usage module at /optimise#ai-gateway
-// (app/src/components/llm/gateway-usage/GatewayUsage.tsx). Its own screens live on an inner
-// CustomTabs strip that writes #ai-gateway/<screen>, so every screen is deep-linkable.
+// AI Gateway: the BYO-token gateway usage module on its own page, /ai-gateway
+// (app/src/components/llm/gateway-usage/GatewayUsage.tsx). Four sections on the page strip,
+// each section's screens on an inner CustomTabs strip; the URL is #<section>[/<screen>], so
+// every screen is deep-linkable.
 //
 // The module is read-only reporting over traffic the gateway already forwarded — its only
 // write surface is the Connect screen's API-token modal, which mints a live credential
@@ -28,8 +31,8 @@ import {
 // hold whether or not the tenant has gateway traffic in the window.
 const SPEC_TIMEOUT_MS = 180000;
 
-// Not a screen the module knows — subTabFromHash() in GatewayUsage.tsx checks the
-// sub-fragment against TAB_IDS before honouring it, and this is what that check must reject.
+// Not a screen the module knows — tabFromHash() in GatewayUsage.tsx checks the screen
+// fragment against TAB_IDS before honouring it, and this is what that check must reject.
 const UNKNOWN_SCREEN_FRAGMENT = "not-a-screen";
 
 // A session id no gateway request can carry, so the Sessions search has nothing to match.
@@ -42,33 +45,39 @@ test.beforeEach(() => {
 
 test.describe("AI Gateway", () => {
   test(
-    "AI Gateway sanity - open Optimise on the AI Gateway tab with no sub-fragment, verify the screen strip lists Connect, Overview, Models, Users, Requests, Sessions, Tools and Governance and opens on Overview",
+    "AI Gateway sanity - open /ai-gateway with no hash, verify the page strip lists Connect, Monitor, Activity and Governance, Monitor opens with Overview, Models, Users and Keys, and Overview is selected",
     { tag: ["@dev", "@test", "@sanity", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page);
 
-      await test.step("Every screen the module declares is on the strip", async () => {
-        const strip = [
-          { screen: "connect", name: "Connect" },
-          { screen: "overview", name: "Overview" },
-          { screen: "models", name: "Models" },
-          { screen: "users", name: "Users" },
-          { screen: "requests", name: "Requests" },
-          { screen: "sessions", name: "Sessions" },
-          { screen: "tools", name: "Tools" },
-          { screen: "governance", name: "Governance" },
+      await test.step("Every section is on the page strip", async () => {
+        const sections = [
+          { section: "connect", name: "Connect" },
+          { section: "monitor", name: "Monitor" },
+          { section: "activity", name: "Activity" },
+          { section: "governance", name: "Governance" },
         ] as const;
-        for (const { screen, name } of strip) {
-          await expect(locators.screenTab(screen)).toBeVisible();
-          await expect(locators.screenTab(screen)).toContainText(name);
+        for (const { section, name } of sections) {
+          await expect(locators.sectionTab(section)).toBeVisible();
+          await expect(locators.sectionTab(section)).toContainText(name);
         }
       });
 
-      await test.step("A bare #ai-gateway opens on Overview, not on the strip's first tab", async () => {
-        // DEFAULT_TAB is 'overview' while Connect sits first on the strip, so this pins the
-        // declared default rather than whichever tab happens to be leftmost.
+      await test.step("Monitor's inner strip holds only Monitor's screens", async () => {
+        for (const screen of ["overview", "models", "users", "keys"] as const) {
+          await expect(locators.screenTab(screen)).toBeVisible();
+        }
+        for (const screen of ["requests", "sessions", "tools"] as const) {
+          await expect(locators.screenTab(screen)).toHaveCount(0);
+        }
+      });
+
+      await test.step("A bare /ai-gateway opens Monitor on Overview, not the strip's first section", async () => {
+        // Connect sits first on the page strip, so this pins the declared default rather
+        // than whichever section happens to be leftmost.
         await expectScreenSelected(locators, "overview");
-        await expectScreenNotSelected(locators, "connect");
+        await expectSectionSelected(locators, "connect", false);
+        await page.waitForURL(/#monitor$/, { timeout: 30000 });
       });
     }
   );
@@ -91,7 +100,7 @@ test.describe("AI Gateway", () => {
   );
 
   test(
-    "AI Gateway - open Overview, click through to Models and then Sessions, click back to Overview, verify each screen becomes the selected one and the URL sub-fragment follows it",
+    "AI Gateway - open Overview, click through to Models and then Sessions, click back to Overview, verify each screen becomes the selected one and the URL hash follows it",
     { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "overview");
@@ -100,10 +109,10 @@ test.describe("AI Gateway", () => {
       for (const screen of ["models", "sessions", "overview"] as const) {
         await test.step(`The ${screen} screen opens and owns the URL`, async () => {
           await openScreen(locators, screen);
-          // GatewayUsage writes #ai-gateway/<screen> on every tab change so a screen can be
+          // GatewayUsage writes #<section>[/<screen>] on every tab change so a screen can be
           // shared as a link and survives a reload — a real product contract, not incidental
           // state, and the next test reloads against it.
-          await page.waitForURL(new RegExp(`#ai-gateway/${screen}`), { timeout: 30000 });
+          await page.waitForURL(new RegExp(`${screenHash(screen)}$`), { timeout: 30000 });
         });
       }
 
@@ -120,7 +129,7 @@ test.describe("AI Gateway", () => {
       await parkCursor(page);
 
       await openScreen(locators, "tools");
-      await page.waitForURL(/#ai-gateway\/tools/, { timeout: 30000 });
+      await page.waitForURL(/#activity\/tools$/, { timeout: 30000 });
 
       await page.reload();
 
@@ -134,13 +143,13 @@ test.describe("AI Gateway", () => {
   );
 
   test(
-    "AI Gateway - deep link straight to #ai-gateway/requests, verify the Requests screen opens without passing through Overview",
+    "AI Gateway - deep link straight to #activity, verify the Requests screen opens without passing through Overview",
     { tag: ["@dev", "@test", "@smoke", "@functional"] },
     async ({ page }) => {
       const locators = await openGateway(page, "requests");
 
       await expectScreenSelected(locators, "requests");
-      await expectScreenNotSelected(locators, "overview");
+      await expectSectionSelected(locators, "monitor", false);
 
       // Overview's own widgets must not be on screen — they are what a fall-back to the
       // default screen would have rendered, so their absence is what makes this a deep-link
@@ -151,13 +160,13 @@ test.describe("AI Gateway", () => {
   );
 
   test(
-    `AI Gateway - deep link to #ai-gateway/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
+    `AI Gateway - deep link to #monitor/${UNKNOWN_SCREEN_FRAGMENT}, verify the unknown sub-fragment is rejected and the Overview screen opens instead of an empty body`,
     { tag: ["@dev", "@test", "@regression", "@negative"] },
     async ({ page }) => {
       const locators = await openGatewayWithFragment(page, UNKNOWN_SCREEN_FRAGMENT);
 
-      // subTabFromHash() resolves an unrecognised sub-fragment to DEFAULT_TAB, so it must
-      // leave Overview in place rather than select nothing and render blank.
+      // tabFromHash() resolves an unrecognised screen to its section's first screen, so it
+      // must leave Overview in place rather than select nothing and render blank.
       await expectScreenSelected(locators, "overview");
       await expect(locators.kpiRow).toBeVisible({ timeout: 60000 });
     }
@@ -225,6 +234,8 @@ test.describe("AI Gateway", () => {
         await expect(locators.connectRoot).toBeVisible({ timeout: 60000 });
         await expect(locators.filterBar).toHaveCount(0);
         await expect(locators.generateTokenBtn).toBeVisible();
+        // A one-screen section shows no inner strip (Connect's own snippet tabs are unnamed).
+        await expect(page.getByRole("tablist", { name: "AI Gateway screens" })).toHaveCount(0);
       });
 
       await test.step("Leaving Connect restores the bar for the data screens", async () => {
@@ -232,6 +243,19 @@ test.describe("AI Gateway", () => {
         await expect(locators.filterBar).toBeVisible({ timeout: 60000 });
         await expect(locators.connectRoot).toHaveCount(0);
       });
+    }
+  );
+
+  test(
+    "AI Gateway - open an old /optimise#ai-gateway/requests link, verify it redirects to the AI Gateway page with Activity and Requests open",
+    { tag: ["@dev", "@test", "@regression", "@functional"] },
+    async ({ page }) => {
+      const locators = await openGatewayFromOldLink(page, "requests");
+
+      // optimise/index.jsx forwards to #monitor/requests and GatewayUsage then moves the
+      // screen to its real section, so the settled hash is Activity's own.
+      await page.waitForURL(/\/ai-gateway#activity$/, { timeout: 30000 });
+      await expectScreenSelected(locators, "requests");
     }
   );
 

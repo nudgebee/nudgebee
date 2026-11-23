@@ -3,6 +3,7 @@ package entitlement
 import (
 	"context"
 	"log/slog"
+	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 )
 
@@ -49,6 +50,7 @@ func (s *Service) SyncTenantFeatures(ctx context.Context, tenantID, planID strin
 		}
 	}
 
+	common.ReplicaBroadcast(ctx, common.ChangeFeatureFlag, tenantID)
 	slog.Info("Synced tenant features from plan", "tenantID", tenantID, "planID", planID, "features", features)
 	return nil
 }

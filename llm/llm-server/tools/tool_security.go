@@ -84,6 +84,12 @@ const SecurityView = `
 			left outer join vulnerabilities v on
 					v.id = r.vulnerability_id
 			where cr.image is not null
+				-- Open findings only, as the Image Scan tab lists them: a
+				-- dismissed, archived or in-progress finding is not an open CVE.
+				-- image_scan_summary is the per-image scan-bookkeeping row (one
+				-- per image, no CVE), so it never counts as a finding.
+				and r.status = 'Open'
+				and r.rule_name <> 'image_scan_summary'
 
 		`
 const cisScanView = `
@@ -148,7 +154,7 @@ func (m SecurityExecuteTool) GetType() core.NBToolType {
 }
 
 func (m SecurityExecuteTool) Description() string {
-	return "Executes a read-only SQL SELECT (in 'command') against the security findings view. Columns: workload_name, namespace, severity, status, image, vulnerability_id, package_id, category, recommendation. If the query references 'cis_scan', CIS-benchmark results are returned instead."
+	return "Executes a read-only SQL SELECT (in 'command') against the security findings view, which holds open image findings only (dismissed, archived and in-progress ones are left out). Columns: workload_name, namespace, severity, status, image, vulnerability_id, package_id, category, recommendation. If the query references 'cis_scan', CIS-benchmark results are returned instead."
 }
 
 func (m SecurityExecuteTool) InputSchema() core.ToolSchema {

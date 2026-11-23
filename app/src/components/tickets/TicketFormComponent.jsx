@@ -6,7 +6,7 @@ import PropTypes from 'prop-types';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 
-const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId, forceValidate, nonClearableFields = [] }) => {
+const TicketFormComponent = ({ fields, fieldOrder, initialValues, onChanges, configurationId, forceValidate, nonClearableFields = [] }) => {
   const [options, setOptions] = useState({});
   const [loadingOptions, setLoadingOptions] = useState({});
   const [touched, setTouched] = useState({});
@@ -144,154 +144,169 @@ const TicketFormComponent = ({ fields, initialValues, onChanges, configurationId
   };
 
   const renderFields = () => {
-    return Object.keys(fields)
-      .filter((b) => b != 'summary' && b != 'description')
-      .map((fieldName) => {
-        const field = fields[fieldName];
-        const showError = errors[field.key];
-        switch (field.type) {
-          case 'string':
-            return (
-              <Grid item xs={6} key={field.key}>
-                <Input
-                  id={field.key}
-                  size='sm'
-                  value={initialValues[field.key] || ''}
-                  required={field?.required || false}
-                  label={field.name}
-                  onChange={(next) => handleChange(field.key, next)}
-                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          case 'text':
-            return (
-              <Grid item xs={12} key={field.key}>
-                <Input
-                  id={field.key}
-                  type='textarea'
-                  rows={3}
-                  size='sm'
-                  value={initialValues[field.key] || ''}
-                  required={field?.required || false}
-                  label={field.name}
-                  onChange={(next) => handleChange(field.key, next)}
-                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          case 'number':
-            return (
-              <Grid item xs={6} key={field.key}>
-                <Input
-                  id={field.key}
-                  type='number'
-                  size='sm'
-                  value={initialValues[field.key] ?? ''}
-                  required={field?.required || false}
-                  label={field.name}
-                  onChange={(next) => handleChange(field.key, next)}
-                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          case 'select': {
-            const rawVal = initialValues[field.key];
-            const resolvedVal = typeof rawVal === 'object' && rawVal !== null ? rawVal?.id : rawVal;
-            const selectVal = resolvedVal == null ? null : String(resolvedVal);
-            return (
-              <Grid item xs={6} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
-                <Select
-                  id={field.key}
-                  size='sm'
-                  label={field.name}
-                  required={field?.required || false}
-                  options={options[field.key] || []}
-                  value={selectVal}
-                  clearable={!nonClearableFields.includes(field.key)}
-                  placeholder={loadingOptions[field.key] ? 'Loading...' : 'Select…'}
-                  disabled={loadingOptions[field.key]}
-                  onChange={(next) => handleChange(field.key, next)}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          }
-          case 'array':
-            return (
-              <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
-                <Select
-                  id={field.key}
-                  multiple
-                  size='sm'
-                  label={field.name}
-                  required={field?.required || false}
-                  options={options[field.key] || []}
-                  value={
-                    Array.isArray(initialValues[field.key])
-                      ? initialValues[field.key].map((val) => (typeof val === 'object' && val !== null ? val?.id : val))
-                      : []
-                  }
-                  placeholder={loadingOptions[field.key] ? 'Loading...' : 'Select…'}
-                  disabled={loadingOptions[field.key]}
-                  onChange={(next) => handleChange(field.key, next)}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          case 'multiselect':
-            return (
-              <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
-                <Select
-                  id={field.key}
-                  multiple
-                  size='sm'
-                  label={field.name}
-                  required={field?.required || false}
-                  options={options[field.key] || []}
-                  value={initialValues[field.key]?.map((o) => (typeof o === 'object' && o !== null ? o.id : o)) || []}
-                  onChange={(next) => handleChange(field.key, next)}
-                  error={showError || ''}
-                />
-              </Grid>
-            );
-          case 'datetime':
-            return (
-              <Grid item xs={6} key={field.key}>
-                <CustomDateTimePicker
-                  label={field.name}
-                  value={initialValues[field.key]}
-                  onChange={(e) => handleChange(field.key, e)}
-                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
-                  error={!!showError}
-                  helperText={showError || ''}
-                />
-              </Grid>
-            );
-          case 'datepicker':
-            return (
-              <Grid item xs={6} key={field.key}>
-                <CustomDateTimePicker
-                  views={['day']}
-                  label={field.name}
-                  value={initialValues[field.key]}
-                  onChange={(e) => handleChange(field.key, e)}
-                  format='MM/DD/YYYY'
-                  onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
-                  error={!!showError}
-                  helperText={showError || ''}
-                />
-              </Grid>
-            );
-          default:
-            // Type outside the vocabulary = backend/frontend drift; surface it.
-            console.warn('TicketFormComponent: no renderer for field type', { type: field.type, key: field.key });
-            return null;
+    const keys = Object.keys(fields).filter((b) => b != 'summary' && b != 'description');
+    // fieldOrder (set by GitHub issue-form templates) preserves the source
+    // form's layout; other providers don't send it, so keys keep map order.
+    // A key fieldOrder doesn't cover (e.g. assignee/labels, which are merged
+    // in separately and never appear in it) must sort after every ordered
+    // key, not before - indexOf's -1 for a miss is otherwise less than any
+    // real index and wrongly pushes it to the front.
+    const orderedKeys = fieldOrder?.length
+      ? [...keys].sort((a, b) => {
+          const indexA = fieldOrder.indexOf(a);
+          const indexB = fieldOrder.indexOf(b);
+          if (indexA === -1 && indexB === -1) return 0;
+          if (indexA === -1) return 1;
+          if (indexB === -1) return -1;
+          return indexA - indexB;
+        })
+      : keys;
+    return orderedKeys.map((fieldName) => {
+      const field = fields[fieldName];
+      const showError = errors[field.key];
+      switch (field.type) {
+        case 'string':
+          return (
+            <Grid item xs={6} key={field.key}>
+              <Input
+                id={field.key}
+                size='sm'
+                value={initialValues[field.key] || ''}
+                required={field?.required || false}
+                label={field.name}
+                onChange={(next) => handleChange(field.key, next)}
+                onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                error={showError || ''}
+              />
+            </Grid>
+          );
+        case 'text':
+          return (
+            <Grid item xs={12} key={field.key}>
+              <Input
+                id={field.key}
+                type='textarea'
+                rows={3}
+                size='sm'
+                value={initialValues[field.key] || ''}
+                required={field?.required || false}
+                label={field.name}
+                onChange={(next) => handleChange(field.key, next)}
+                onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                error={showError || ''}
+              />
+            </Grid>
+          );
+        case 'number':
+          return (
+            <Grid item xs={6} key={field.key}>
+              <Input
+                id={field.key}
+                type='number'
+                size='sm'
+                value={initialValues[field.key] ?? ''}
+                required={field?.required || false}
+                label={field.name}
+                onChange={(next) => handleChange(field.key, next)}
+                onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                error={showError || ''}
+              />
+            </Grid>
+          );
+        case 'select': {
+          const rawVal = initialValues[field.key];
+          const resolvedVal = typeof rawVal === 'object' && rawVal !== null ? rawVal?.id : rawVal;
+          const selectVal = resolvedVal == null ? null : String(resolvedVal);
+          return (
+            <Grid item xs={6} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
+              <Select
+                id={field.key}
+                size='sm'
+                label={field.name}
+                required={field?.required || false}
+                options={options[field.key] || []}
+                value={selectVal}
+                clearable={!nonClearableFields.includes(field.key)}
+                placeholder={loadingOptions[field.key] ? 'Loading...' : 'Select…'}
+                disabled={loadingOptions[field.key]}
+                onChange={(next) => handleChange(field.key, next)}
+                error={showError || ''}
+              />
+            </Grid>
+          );
         }
-      });
+        case 'array':
+          return (
+            <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
+              <Select
+                id={field.key}
+                multiple
+                size='sm'
+                label={field.name}
+                required={field?.required || false}
+                options={options[field.key] || []}
+                value={
+                  Array.isArray(initialValues[field.key])
+                    ? initialValues[field.key].map((val) => (typeof val === 'object' && val !== null ? val?.id : val))
+                    : []
+                }
+                placeholder={loadingOptions[field.key] ? 'Loading...' : 'Select…'}
+                disabled={loadingOptions[field.key]}
+                onChange={(next) => handleChange(field.key, next)}
+                error={showError || ''}
+              />
+            </Grid>
+          );
+        case 'multiselect':
+          return (
+            <Grid item xs={12} key={field.key} onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}>
+              <Select
+                id={field.key}
+                multiple
+                size='sm'
+                label={field.name}
+                required={field?.required || false}
+                options={options[field.key] || []}
+                value={initialValues[field.key]?.map((o) => (typeof o === 'object' && o !== null ? o.id : o)) || []}
+                onChange={(next) => handleChange(field.key, next)}
+                error={showError || ''}
+              />
+            </Grid>
+          );
+        case 'datetime':
+          return (
+            <Grid item xs={6} key={field.key}>
+              <CustomDateTimePicker
+                label={field.name}
+                value={initialValues[field.key]}
+                onChange={(e) => handleChange(field.key, e)}
+                onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                error={!!showError}
+                helperText={showError || ''}
+              />
+            </Grid>
+          );
+        case 'datepicker':
+          return (
+            <Grid item xs={6} key={field.key}>
+              <CustomDateTimePicker
+                views={['day']}
+                label={field.name}
+                value={initialValues[field.key]}
+                onChange={(e) => handleChange(field.key, e)}
+                format='MM/DD/YYYY'
+                onBlur={() => setTouched((prev) => ({ ...prev, [field.key]: true }))}
+                error={!!showError}
+                helperText={showError || ''}
+              />
+            </Grid>
+          );
+        default:
+          // Type outside the vocabulary = backend/frontend drift; surface it.
+          console.warn('TicketFormComponent: no renderer for field type', { type: field.type, key: field.key });
+          return null;
+      }
+    });
   };
 
   return (
@@ -305,6 +320,7 @@ export default TicketFormComponent;
 
 TicketFormComponent.propTypes = {
   fields: PropTypes.object,
+  fieldOrder: PropTypes.arrayOf(PropTypes.string),
   initialValues: PropTypes.object,
   onChanges: PropTypes.func,
   configurationId: PropTypes.any,

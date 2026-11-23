@@ -117,16 +117,17 @@ ScopeChip.propTypes = {
  * is in scope, and Tenant + Account chips when one is.
  *
  * The Tenant chip's `Read-only` suffix is gated on the parent's mode:
- * - Tenant-wide entry (no account): every write is blocked, suffix shows.
+ * - Tenant-wide entry (no account): writes are blocked, suffix shows, unless
+ *   `tenantWritable` (a tenant admin managing organisation items).
  * - Account entry (hybrid): writes ARE allowed against the account
  *   layer, so the Tenant chip drops the suffix — it's informational
  *   ("this view also includes the system catalog"), not a write gate.
  */
-export const HybridScopeChips = ({ accountId }) => {
+export const HybridScopeChips = ({ accountId, tenantWritable = false }) => {
   const inAccountMode = Boolean(accountId);
   return (
     <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
-      <ScopeChip accountId='' readOnly={!inAccountMode} />
+      <ScopeChip accountId='' readOnly={!inAccountMode && !tenantWritable} />
       {inAccountMode ? <ScopeChip accountId={accountId} /> : null}
     </Box>
   );
@@ -134,6 +135,7 @@ export const HybridScopeChips = ({ accountId }) => {
 
 HybridScopeChips.propTypes = {
   accountId: PropTypes.string,
+  tenantWritable: PropTypes.bool,
 };
 
 export default ScopeChip;

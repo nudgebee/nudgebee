@@ -1111,7 +1111,7 @@ Form-field value picker. Single by default; `multiple` discriminates a union. Bu
 
 **Single** (`multiple` omitted/`false`): `value: string \| null` (✓), `onChange: (next: string) => void` (✓).
 **Multi** (`multiple: true`): `value: string[]` (✓), `onChange: (next: string[]) => void` (✓), `maxChips?` (default 2), `hideOptionCheckbox?`.
-`SelectOption`: `{ value (✓), label?, icon?, disabled? }`.
+`SelectOption`: `{ value (✓), label?, icon?, disabled?, group?, searchText? }`. `searchText` is extra text the search matches besides the label — use it when the label reformats a raw key users may type.
 **Don't:** use for actions (use `DropdownMenu`); inside a toolbar filter (use `FilterDropdown`); for binary choices (use `Switch`/`ToggleGroup`).
 
 #### `Checkbox` — `import { Checkbox } from '@ui/Checkbox'`
@@ -1230,6 +1230,8 @@ Toolbar/filter value picker (pill trigger, clear-X). **Variants:** `multiple`, `
 | `required`             | `boolean`                  | `false`                     | —   |
 | `disabled`             | `boolean`                  | `false`                     | —   |
 | `isOptionsLoading`     | `boolean`                  | `false`                     | —   |
+| `searchValue`          | `string` (controlled)      | — (kept when panel closes)  | —   |
+| `onSearchChange`       | `(text) => void`           | — (fires while typing)      | —   |
 
 API preserved verbatim from the legacy component (see `__tests__/components/common/FilterDropdownButton.test.jsx`). An option's `icon` renders as a 16px leading `SafeIcon`.
 **Don't:** use for form inputs (use `Select`); render single-select when the user must always pick exactly one (use `Select`).

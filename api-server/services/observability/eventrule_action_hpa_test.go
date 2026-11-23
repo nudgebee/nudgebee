@@ -112,6 +112,44 @@ func TestHpaMetricRows(t *testing.T) {
 	assert.Equal(t, "", pinned)
 }
 
+// TestHpaMetricRowsPairsByTargetType — kube-state-metrics reports the current
+// reading once per metric_target_type. Each target must pair with the reading of
+// its own type, or a utilization target is shown against the raw `value` series
+// (0.2 cores as "0%", 91328512 bytes as "91328512%").
+func TestHpaMetricRowsPairsByTargetType(t *testing.T) {
+	sample := func(name, targetType string, v float64) latestSample {
+		return latestSample{Metric: map[string]string{"metric_name": name, "metric_target_type": targetType}, Value: v}
+	}
+	results := map[string][]latestSample{
+		"target_metric": {
+			sample("cpu", "utilization", 70),
+			sample("memory", "utilization", 80),
+		},
+		"current_metric": {
+			sample("cpu", "average", 0.1),
+			sample("cpu", "utilization", 1000),
+			sample("cpu", "value", 0.2),
+			sample("memory", "average", 45664256),
+			sample("memory", "utilization", 136),
+			sample("memory", "value", 91328512),
+		},
+	}
+	rows, pinned := hpaMetricRows(results)
+	assert.Equal(t, [][]any{
+		{"cpu utilization", "1000% (target 70%)"},
+		{"memory utilization", "136% (target 80%)"},
+	}, rows, "readings of a type no target uses must not get their own rows")
+	assert.Equal(t, "cpu utilization", pinned)
+
+	// No target series at all: every reading is shown, each under its own type.
+	delete(results, "target_metric")
+	rows, pinned = hpaMetricRows(results)
+	require.Len(t, rows, 6)
+	assert.Equal(t, []any{"cpu utilization", "1000%"}, rows[1])
+	assert.Equal(t, []any{"memory value", "91328512"}, rows[5])
+	assert.Equal(t, "", pinned, "nothing is above a target when there is no target")
+}
+
 // TestHpaConditionRows — a healthy autoscaler must add no rows. Printing
 // "AbleToScale true" on every card is noise; the false case is the answer.
 func TestHpaConditionRows(t *testing.T) {

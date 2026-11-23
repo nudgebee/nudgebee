@@ -52,12 +52,12 @@ function AcceptInvite() {
           announceTenantSwitch(next?.tenant);
           cache.clear();
         } catch {
-          // Swallow: fall through to /home on the user's current/default tenant.
+          // Swallow: fall through to the landing page on the user's current/default tenant.
         }
       }
       // Full navigation (not router.push) so stale account scopes from the
       // previous tenant aren't carried over — mirrors SwitchTenant.jsx.
-      window.location.href = '/home';
+      window.location.href = '/ask-nudgebee';
     }
     go();
   }, [router.isReady, router.query.tenant, session, update]);

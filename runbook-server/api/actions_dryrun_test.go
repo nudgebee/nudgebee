@@ -59,6 +59,7 @@ func (s *ActionDryRunHandlerTestSuite) TestDryRunWorkflowHandler() {
 
 	jsonValue, _ := json.Marshal(actionReq)
 	req, _ := http.NewRequest("POST", "/rpc", bytes.NewBuffer(jsonValue))
+	req.Header.Set(serviceTokenHeader, testServiceToken)
 	req.Header.Set("Content-Type", "application/json")
 
 	r.ServeHTTP(w, req)

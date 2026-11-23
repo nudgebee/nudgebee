@@ -7,6 +7,7 @@ import (
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
+	"strings"
 )
 
 type SshExecutor struct{}
@@ -64,21 +65,7 @@ func (e *SshExecutor) Execute(taskCtx types.TaskContext, execConfig ExecutionCon
 	}
 
 	if respStr, ok := resp.(string); ok {
-		sshResp := map[string]any{}
-		if err = common.UnmarshalJson([]byte(respStr), &sshResp); err != nil {
-			return respStr, nil
-		}
-
-		if stderr, ok := sshResp["stderr"].(string); ok && stderr != "" {
-			stdout, _ := sshResp["stdout"].(string)
-			return fmt.Sprintf("%s\n%s", stdout, stderr), nil
-		}
-
-		if stdout, ok := sshResp["stdout"].(string); ok {
-			return stdout, nil
-		}
-
-		return respStr, nil
+		return sshScriptResult(respStr)
 	}
 
 	respBytes, err := json.Marshal(resp)
@@ -99,4 +86,25 @@ func sshTargetConfigs(execConfig ExecutionConfig) map[string]any {
 		configs["port"] = execConfig.Port
 	}
 	return configs
+}
+
+// sshScriptResult reads the relay's SSH reply; a non-zero exit_code fails the
+// script with its output (#41249). Older agents without exit_code keep the old rule.
+func sshScriptResult(respStr string) (string, error) {
+	sshResp := map[string]any{}
+	if err := common.UnmarshalJson([]byte(respStr), &sshResp); err != nil {
+		return respStr, nil
+	}
+	stdout, hasStdout := sshResp["stdout"].(string)
+	output := stdout
+	if stderr, ok := sshResp["stderr"].(string); ok && stderr != "" {
+		output = fmt.Sprintf("%s\n%s", stdout, stderr)
+	}
+	if code, ok := relay.ExitCode(sshResp["exit_code"]); ok && code != 0 {
+		return output, fmt.Errorf("script exited %d: %s", code, strings.TrimSpace(output))
+	}
+	if hasStdout || output != "" {
+		return output, nil
+	}
+	return respStr, nil
 }

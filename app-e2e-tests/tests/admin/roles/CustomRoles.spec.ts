@@ -71,11 +71,13 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect(catalog.filter((e) => e.scope === "tenant").length).toBeGreaterThan(0);
     expect(catalog.filter((e) => e.scope === "account").length).toBeGreaterThan(0);
 
-    // Every advertised class must be backed by at least one action, otherwise
-    // the tooltip renders an empty explanation and the grant explains nothing.
+    // Every advertised class must be explained — by the actions it covers, or by
+    // a note for a grant only a run checks (k8s:Execute, integration use) —
+    // otherwise the tooltip renders an empty explanation and the grant explains nothing.
     for (const entry of catalog) {
       for (const cls of entry.classes) {
-        expect(entry.actions?.[cls]?.length ?? 0, `${entry.module}:${cls} must list its actions`).toBeGreaterThan(0);
+        const explained = (entry.actions?.[cls]?.length ?? 0) > 0 || !!entry.notes?.[cls];
+        expect(explained, `${entry.module}:${cls} must list its actions or carry a note`).toBe(true);
       }
       expect(entry.classes.every((c) => CLASSES.includes(c))).toBe(true);
     }
@@ -264,6 +266,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     const id = await createRole(page, name, []);
 
     await roles.open();
+    await roles.revealRole(id);
     await roles.editRoleBtn(id).click();
     await expect(roles.roleNameInput).toBeVisible();
 
@@ -283,6 +286,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     const id = await createRole(page, name, []);
 
     await roles.open();
+    await roles.revealRole(id);
     await roles.deleteRoleBtn(id).click();
     await expect(page.getByText(new RegExp(`Delete role "${name}"`))).toBeVisible();
 
@@ -400,7 +404,7 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect((saved!.permissions ?? []).map((p) => `${p.module}:${p.class}`).sort()).toEqual(
       [`${accountMod}:Read`, `${tenantMod}:Read`].sort()
     );
-    await expect(roles.editRoleBtn(saved!.id)).toBeVisible();
+    await roles.revealRole(saved!.id);
 
     await deleteRole(page, saved!.id);
   });
@@ -422,13 +426,15 @@ test.describe("Admin → Roles: custom role editor", () => {
     expect((await listRoles(page)).some((r) => r.name === name), "cancel must not write the role").toBe(false);
   });
 
-  test("Roles - tick Execute on a module with Read unticked, save, verify Execute stands alone and does not pull in Read", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
+  test("Roles - tick Read then Execute, untick Read, verify Execute clears and disables again, and Read and Execute save together", { tag: ["@dev", "@test", "@regression", "@rbac", "@oss"] }, async ({ page }) => {
     const roles = new RolesLocators(page);
     const { catalog: cat } = await fetchCatalog(page);
-    const entry = cat.find((e) => e.scope === "tenant" && e.classes.includes("Execute") && e.classes.includes("Read"));
-    expect(entry, "need a tenant module offering both Read and Execute").toBeTruthy();
+    // An Execute class that actions back needs Read, as Write does. A run-time
+    // grant (no Execute action) and integration use grants stay standalone.
+    const entry = cat.find((e) => e.scope === "tenant" && e.classes.includes("Read") && (e.actions?.Execute?.length ?? 0) > 0 && !e.independentClasses);
+    expect(entry, "need a tenant module whose Execute class has actions").toBeTruthy();
     const mod = entry!.module;
-    const name = roleName("execute-only");
+    const name = roleName("read-execute");
 
     await roles.open();
     await roles.newRoleBtn.click();
@@ -438,17 +444,21 @@ test.describe("Admin → Roles: custom role editor", () => {
     const read = roles.permCheckbox(mod, "Read");
     const execute = roles.permCheckbox(mod, "Execute");
 
-    // Only Write is gated on Read. Execute is a standalone class, so it must be
-    // reachable and savable with Read left unticked.
+    await expect(execute).toBeDisabled();
+    await read.check({ force: true });
     await expect(execute).toBeEnabled();
     await execute.check({ force: true });
-    await expect(read).not.toBeChecked();
+    await read.uncheck({ force: true });
+    await expect(execute).not.toBeChecked();
+    await expect(execute).toBeDisabled();
 
+    await read.check({ force: true });
+    await execute.check({ force: true });
     await roles.saveRoleBtn.click();
     await expect(roles.roleNameInput).toBeHidden({ timeout: 30000 });
 
     const saved = (await listRoles(page)).find((r) => r.name === name);
-    expect((saved?.permissions ?? []).map((p) => `${p.module}:${p.class}`)).toEqual([`${mod}:Execute`]);
+    expect((saved?.permissions ?? []).map((p) => `${p.module}:${p.class}`).sort()).toEqual([`${mod}:Execute`, `${mod}:Read`]);
     await deleteRole(page, saved!.id);
   });
 });

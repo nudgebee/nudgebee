@@ -89,6 +89,7 @@ type QueryRequest struct {
 type QueryRow map[string]any
 type QueryResponse struct {
 	Rows            []QueryRow     `json:"rows"`
+	HasMore         bool           `json:"has_more,omitempty"`
 	ExecutionTimeMs int64          `json:"execution_time,omitempty"`
 	Errors          []common.Error `json:"errors,omitempty"`
 }

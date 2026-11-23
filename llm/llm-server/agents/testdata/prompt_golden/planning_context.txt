@@ -7,9 +7,9 @@ it is silently discarded. E.g. a webhook trigger is
 {"type": "webhook", "integration_name": "my-hook"}.
 - "manual" → No params allowed. User runs the automation from the UI on demand. User-supplied inputs are read in tasks via {{ Inputs.<key> }}.
 - "schedule" → Requires: cron (5-field UTC string, e.g. "0 9 * * MON-FRI"). Optional: overlap_policy ("Skip"|"BufferOne"|"BufferAll"|"AllowAll"|"CancelOther"|"TerminateOther"; default "Skip"), catchup_window (Go time.ParseDuration syntax; valid units ns|us|ms|s|m|h ONLY; day/week units like "7d" are NOT supported — use hours: "168h" = 7 days; compound durations like "1h30m" ARE valid; default "60s"). IMPORTANT: Always set overlap_policy: "Skip" for monitoring automations to prevent overlapping runs.
-- "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the request body via {{ Inputs.webhook_payload }}.
+- "webhook" → Requires: integration_name (string — must reference a workflow_webhook integration configured on the account). Optional: secret (string), filter (Jinja2 expression on payload, must render to literal "true" or "1"). Filter context: {{ webhook_payload }} at root. Tasks read the raw body via {{ Inputs.webhook_payload }} and parsed JSON fields via {{ Inputs.webhook_json.<field> }}.
 - "event" → Requires AT LEAST ONE of: event_type (string or [string,...]) OR filter (Jinja2); optional "on" lifecycle phase (default event.created). Filter context: {{ event.<field> }} at root (NOT Inputs.event). Real fields: event_type, source, title, description, category, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, nb_status (OPEN|DUPLICATE|SUPPRESSED|...), computed_priority (P0-P3, may be absent), computed_score (0-100, may be absent), subject_type/name/namespace/node, cluster (a NAME, not a UUID), fingerprint, cloud_resource_id, labels (free-form alert labels — keys are source-specific, get them from get_event_trigger_schema). NO event.reason/event.message. For severity use computed_priority/computed_score (+ nb_status=='OPEN'); for AI analysis add an llm.event_investigate task. Tasks read the event via {{ Inputs.event.<field> }}.
-- "optimization" → Fires on new K8s/cost optimization recommendations. All params optional (empty = match every recommendation). Optional: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
+- "optimization" → Fires on new K8s/cost optimization recommendations. Needs at least one non-empty filter (empty params are rejected). Pick from: categories ([string,...] from: PodRightSizing, RightSizing, K8sInstanceRecommendation, K8sSpotRecommendation, Configuration, Security, K8sMissingAttribute), rule_names ([string,...] from: vertical_rightsize, horizontal_rightsize, pvc_rightsize, continuous_rightsize, replica_right_sizing, "Spot instance recommendation", "Abandoned resource"), clusters ([string,...]), filter (Jinja2). Tasks read the recommendation via {{ Inputs.event.<field> }} — known fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id.
 
 COMMON TASK TYPES — WHEN TO USE EACH:
 
@@ -29,6 +29,7 @@ AI & INVESTIGATION:
 
 NOTIFICATIONS (REQUIRES: a matching notification integration configured on the account):
 - notifications.im → Send messages to configured IM provider. Params: provider ("slack"|"teams"), channel (string), message (string). Optional: message_thread_id, template, team_id. Output: { channel, message_id, team, provider }
+- notifications.dm → Send a Slack direct message to one person. Params: provider ("slack"), user_id (the person's Slack member ID, e.g. U012AB3CD — never a display name; take it from CLARIFICATION ANSWERS, else {{ Configs.slack_user_id }}), message (string). Output: { user_id, channel_id, message_id, provider }
 - notifications.read_thread → Read thread replies/reactions. Params: provider ("slack"), channel_id, thread_ts. Output (directly on output, NOT output.data): { success, messages[], has_responses, has_reactions, reply_count, error, channel_id, thread_ts }. Each message has: ts, text, user, reactions[], is_parent.
 
 KUBERNETES (REQUIRES: K8s cloud account configured):
@@ -41,10 +42,10 @@ CLOUD CLI (REQUIRES: cloud account of matching provider type):
 
 SOURCE CONTROL (REQUIRES: matching SCM integration configured):
 - scm.github.cli → Execute GitHub CLI (gh) commands with auto-authenticated token.
-  Params: integration_id (use {{ Configs.github_integration_id }}), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
+  Params: integration_id (the GitHub integration's name from ACCOUNT ENVIRONMENT), command (gh CLI string). GITHUB_TOKEN is auto-set. Output: raw stdout
 
 DATABASES (REQUIRES: matching database integration configured):
-- dbms.query → Run SQL queries. Params: integration_id (use {{ Configs.<name>_integration_id }}), dbms_type, command (SQL). Output: query result
+- dbms.query → Run SQL queries. Params: integration_id (the database integration's name from ACCOUNT ENVIRONMENT), dbms_type, command (SQL). Output: query result
 
 TICKETING (REQUIRES: a ticketing integration configured):
 - tickets.create → Create tickets. Params: ticket details. Output: created ticket
