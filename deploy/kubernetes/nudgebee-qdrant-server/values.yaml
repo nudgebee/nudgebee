@@ -24,7 +24,17 @@ podAnnotations: { }
 podLabels:
   app: nudgebee-qdrant-server
 
-podSecurityContext: { }
+# The UBI image (-nb2) runs as uid 1001, but volumes from installs on the Debian image
+# (-nb1) hold root-owned files, so the pod would crash-loop with
+# `Wal error: Can't init WAL ... Permission denied` on helm upgrade. fsGroup makes the
+# volume group-writable. Always, not OnRootMismatch: when the volume root already has
+# the group, OnRootMismatch skips the walk and files written later by a root-run image
+# (a rollback to -nb1) stay unwritable for 1001. The cost is a recursive chown on every
+# mount of a large volume. On OpenShift set both to null: restricted-v2 only admits an
+# fsGroup from the namespace range.
+podSecurityContext:
+  fsGroup: 1001
+  fsGroupChangePolicy: Always
 
 securityContext: { }
 
