@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { readFileSync } from "fs";
 import { Page, Locator, expect } from "@playwright/test";

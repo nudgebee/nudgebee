@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   LANDING_PATH,
@@ -26,7 +25,7 @@ import {
 // assertion that has to hold on any dev tenant.
 const SPEC_TIMEOUT_MS = 180000;
 
-test("Global Search sanity - open the header search from its trigger button, verify the query input, results list and keyboard hint bar render", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("Global Search sanity - open the header search from its trigger button, verify the query input, results list and keyboard hint bar render", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -53,7 +52,7 @@ test("Global Search sanity - open the header search from its trigger button, ver
   });
 });
 
-test("Global Search sanity - press Ctrl+K, verify the panel opens, press Ctrl+K again, verify the panel closes", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("Global Search sanity - press Ctrl+K, verify the panel opens, press Ctrl+K again, verify the panel closes", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await gotoSearchHost(page);
 
@@ -67,7 +66,7 @@ test("Global Search sanity - press Ctrl+K, verify the panel opens, press Ctrl+K 
   await expectPanelClosed(search);
 });
 
-test("Global Search - open the search, type \"Knowledge Graph\", verify the Knowledge Graph row is listed under the Suggested Pages section", { tag: ["@dev", "@smoke", "@search", "@functional"] }, async ({ page }) => {
+test("Global Search - open the search, type \"Knowledge Graph\", verify the Knowledge Graph row is listed under the Suggested Pages section", { tag: ["@dev", "@smoke", "@search", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -81,7 +80,7 @@ test("Global Search - open the search, type \"Knowledge Graph\", verify the Know
   await expect(search.sectionCaption("Suggested Pages")).toBeVisible();
 });
 
-test("Global Search - open the search, type the path acronym \"vs\", verify the VM Summary row is offered for vm/summary", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type the path acronym \"vs\", verify the VM Summary row is offered for vm/summary", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -94,7 +93,7 @@ test("Global Search - open the search, type the path acronym \"vs\", verify the 
   await expect(row).toContainText("/vm/summary");
 });
 
-test("Global Search - open the search, type the misspelled query \"knowlege graph\", verify the Knowledge Graph row is still offered", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type the misspelled query \"knowlege graph\", verify the Knowledge Graph row is still offered", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -105,7 +104,7 @@ test("Global Search - open the search, type the misspelled query \"knowlege grap
   await expect(search.searchResultRow("Knowledge Graph")).toBeVisible();
 });
 
-test("Global Search - open the search, type the words out of order as \"rules triage\", verify the Troubleshoot Triage Rules row is offered", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type the words out of order as \"rules triage\", verify the Troubleshoot Triage Rules row is offered", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -116,7 +115,7 @@ test("Global Search - open the search, type the words out of order as \"rules tr
   await expect(row).toContainText("/troubleshoot/all-events/triage-rules");
 });
 
-test("Global Search - open the search, type the wildcard query \"optimi*resolutions\", verify the Optimize Resolutions row is offered", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type the wildcard query \"optimi*resolutions\", verify the Optimize Resolutions row is offered", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -127,7 +126,7 @@ test("Global Search - open the search, type the wildcard query \"optimi*resoluti
   await expect(row).toContainText("/optimise/resolutions");
 });
 
-test("Global Search - open the search, type \"Optimize Configuration\", click the result, verify the app lands on the Optimize Configuration tab and Back returns to the previous page", { tag: ["@dev", "@smoke", "@functional"] }, async ({ page }) => {
+test("Global Search - open the search, type \"Optimize Configuration\", click the result, verify the app lands on the Optimize Configuration tab and Back returns to the previous page", { tag: ["@dev", "@smoke", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -143,7 +142,7 @@ test("Global Search - open the search, type \"Optimize Configuration\", click th
   });
 });
 
-test("Global Search - open the search, type \"all-events/threshold-suggestions\", press ArrowDown then Enter, verify the app lands on the Alert Tuning page", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("Global Search - open the search, type \"all-events/threshold-suggestions\", press ArrowDown then Enter, verify the app lands on the Alert Tuning page", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -159,7 +158,7 @@ test("Global Search - open the search, type \"all-events/threshold-suggestions\"
   await expectPanelClosed(search);
 });
 
-test("Global Search - pick Optimize Resolutions from the search, reload the page, reopen the search, verify the pick persists as the first Recents row", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("Global Search - pick Optimize Resolutions from the search, reload the page, reopen the search, verify the pick persists as the first Recents row", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -180,7 +179,7 @@ test("Global Search - pick Optimize Resolutions from the search, reload the page
   });
 });
 
-test("Global Search - open the search, type a term no page can match, verify no result rows are listed and the Ask assistant hand-off stays offered", { tag: ["@dev", "@regression", "@negative", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type a term no page can match, verify no result rows are listed and the Ask assistant hand-off stays offered", { tag: ["@dev", "@regression", "@negative", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -194,7 +193,7 @@ test("Global Search - open the search, type a term no page can match, verify no 
   await expect(search.askAiTopBtn).toBeVisible();
 });
 
-test("Global Search - open the search, dismiss it with the close button, verify the panel is gone and the page did not navigate", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("Global Search - open the search, dismiss it with the close button, verify the panel is gone and the page did not navigate", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 
@@ -216,7 +215,7 @@ test("Global Search - open the search, dismiss it with the close button, verify 
   });
 });
 
-test("Global Search - open the search, type @ to scope by account, pick the configured cluster, verify its name is pinned into the search placeholder", { tag: ["@dev", "@regression", "@search", "@functional"] }, async ({ page }) => {
+test("Global Search - open the search, type @ to scope by account, pick the configured cluster, verify its name is pinned into the search placeholder", { tag: ["@dev", "@regression", "@search", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
   const cluster = requireClusterName();
@@ -248,7 +247,7 @@ test("Global Search - open the search, type @ to scope by account, pick the conf
   });
 });
 
-test("Global Search - open the search, type @ and a name no account can match, verify the No results found message", { tag: ["@dev", "@regression", "@negative", "@search"] }, async ({ page }) => {
+test("Global Search - open the search, type @ and a name no account can match, verify the No results found message", { tag: ["@dev", "@regression", "@negative", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(SPEC_TIMEOUT_MS);
   const search = await openGlobalSearch(page);
 

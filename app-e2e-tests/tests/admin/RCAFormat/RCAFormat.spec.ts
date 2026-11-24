@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { test, expect } from "@playwright/test";
 import {
@@ -40,7 +39,7 @@ import {
 test.describe("Admin AI & Tools RCA Format", () => {
   test(
     "RCA Format sanity - deep-link to Admin AI & Tools RCA Format, verify the AI & Tools tab and the RCA Format sub-tab are both selected and the account picker renders",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -57,7 +56,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format sanity - open RCA Format without picking an account, verify the Select an account empty state explains the per-account storage and no editor or Save Changes control is mounted",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -77,7 +76,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format - pick the first account, verify the template header and editor replace the empty state and Save Changes starts disabled on the freshly loaded template",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -106,7 +105,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format - pick the first account, type a character into the template, verify Save Changes becomes enabled, then delete the character and verify it goes disabled again",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -133,7 +132,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format - pick the first account, prepend a run-unique marker line, save, reload and re-pick the account, verify the marker survived the reload, then delete it and verify the restored template saves clean",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(WRITE_TIMEOUT_MS);
       const marker = uniqueMarker();
@@ -174,7 +173,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format - pick an account and edit its template, switch the picker to a second account without saving, verify the editor reloads that account's own template and Save Changes is disabled again",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -207,7 +206,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format - open the account picker and search for one account by its exact name, verify that account is listed and the other offered accounts are filtered out",
-    { tag: ["@dev", "@regression", "@search"] },
+    { tag: ["@dev", "@regression", "@search", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -232,7 +231,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format sanity - search the account picker for a name no account uses, verify the No results found message replaces the option rows and the editor stays unmounted",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@regression", "@negative", "@search", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);
@@ -256,7 +255,7 @@ test.describe("Admin AI & Tools RCA Format", () => {
 
   test(
     "RCA Format sanity - navigate from RCA Format to the Budgets & Limits sub-tab and back, verify each sub-tab is selected in turn and RCA Format returns to its unpicked empty state",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openRCAFormat(page);

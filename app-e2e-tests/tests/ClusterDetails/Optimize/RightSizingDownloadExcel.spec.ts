@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { OptimizeTabLocator } from "./OptimizeTabLocator";
 import { assert } from "console";
 
-test("Download Excel from Right Sizing tab", async ({ page }, testInfo) => {
+test("Download Excel from Right Sizing tab", { tag: ["@oss"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

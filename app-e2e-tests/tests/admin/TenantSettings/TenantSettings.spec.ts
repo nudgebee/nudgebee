@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { test, expect, Page, Locator } from "@playwright/test";
 import { TenantSettingsLocators } from "./tenantSettingsLocators";
@@ -48,7 +47,7 @@ test.beforeEach(async ({}, testInfo) => {
 
 test(
   "Tenant Settings sanity - open Admin, open the Tenant Settings tab, verify General, Label Mapping and Features are offered and General is the tab that opens",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -65,7 +64,7 @@ test(
 
 test(
   "Tenant Settings - open General, verify the Tenant Name field holds the tenant this run is pointed at and the two self-onboarding fields follow the checkbox",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -91,7 +90,7 @@ test(
 
 test(
   "Tenant Settings - open General, save the untouched form and verify the tenant name and log label mappings survive a reload, or that Save stays disabled when a build gates it on changes",
-  { tag: ["@dev", "@regression", "@functional", "@snackbar", "@crud"] },
+  { tag: ["@dev", "@regression", "@functional", "@snackbar", "@crud", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -150,7 +149,7 @@ test(
 
 test(
   "Tenant Settings - open General, turn on self-onboarding, clear Allowed Domains, save, verify the empty-domains rejection and that a reload shows the checkbox unchanged",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -183,7 +182,7 @@ test(
 
 test(
   `Tenant Settings - open General, turn on self-onboarding, enter a domain and the role "${INVALID_AUTH_ROLE}", save, verify the invalid-role rejection naming the two allowed roles`,
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -211,7 +210,7 @@ test(
 
 test(
   "Tenant Settings - open Label Mapping, verify the Logs sub-tab renders the three log mapper fields, then return to General",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -232,7 +231,7 @@ test(
 
 test(
   "Tenant Settings - open Label Mapping, switch to Traces, expand the advanced trace fields, verify Trace ID appears, collapse it, verify Trace ID is hidden again",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -275,7 +274,7 @@ test(
 
 test(
   "Tenant Settings - open Label Mapping, switch to Webhook alerts, verify the Subject Name, Namespace and Severity label pickers all render",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -294,7 +293,7 @@ test(
 
 test(
   "Tenant Settings - open Features, verify the flag table renders its four columns and that a category tab's badge count matches the rows it filters the table down to",
-  { tag: ["@dev", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -372,7 +371,7 @@ async function flipFeatureAndLand(
 
 test(
   "Tenant Settings - open Features, toggle a flag and verify the change lands and survives a reload, then restore it",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 
@@ -425,7 +424,7 @@ test(
 
 test(
   "Tenant Settings - open Features, turn on Show flag ids, verify the raw flag id column appears and the control flips to Hide flag ids",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const ts = await openTenantSettings(page);
 

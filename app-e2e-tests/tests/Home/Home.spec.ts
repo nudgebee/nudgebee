@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   openHome,
@@ -29,7 +28,7 @@ test.beforeEach(() => {
 
 test(
   "Home sanity - open Home for the selected cluster, verify the Troubleshoot and Optimize sections and the Quick Links card render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators } = await openHome(page);
 
@@ -53,7 +52,7 @@ test(
 
 test(
   "Home sanity - open the bare /home link, verify the cluster dropdown adopts the account into the URL and the quick links bind to that same account",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const locators = await openHomeUnscoped(page);
 
@@ -76,7 +75,7 @@ test(
 
 test(
   "Home - open Quick Links on a K8s cluster, verify all ten links deep-link into that cluster's details page each with its own fragment",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, accountId } = await openHome(page);
 
@@ -95,7 +94,7 @@ test(
 
 test(
   "Home - click the Query Logs quick link, verify the cluster details page opens on its monitoring logs tab, then go back and verify Home returns",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, accountId } = await openHome(page);
 
@@ -119,7 +118,7 @@ test(
 
 test(
   "Home - collapse the Troubleshoot section from its header, verify its body and View all issues footer unmount and the header reports collapsed",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators } = await openHome(page);
     await expectSectionSettled(locators, TROUBLESHOOT);
@@ -150,7 +149,7 @@ test(
 
 test(
   "Home - collapse the Optimize section and reload the page, verify it is still collapsed and re-expanding it brings its body back",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators } = await openHome(page);
     await expectSectionSettled(locators, OPTIMIZE);
@@ -184,7 +183,7 @@ test(
 
 test(
   "Home - read the Troubleshoot section header, verify a counted subtitle comes with the View all issues footer and the fallback subtitle comes with an empty state instead",
-  { tag: ["@dev", "@regression", "@validation"] },
+  { tag: ["@dev", "@regression", "@validation", "@oss"] },
   async ({ page }) => {
     const { locators } = await openHome(page);
     await expectSectionSettled(locators, TROUBLESHOOT);
@@ -210,7 +209,7 @@ test(
 
 test(
   "Home - click View all issues in the Troubleshoot footer, verify the troubleshoot page opens in a new tab scoped to the same account",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, accountId } = await openHome(page);
     await expectSectionSettled(locators, TROUBLESHOOT);
@@ -241,7 +240,7 @@ test(
 
 test(
   "Home sanity - open Home on a K8s cluster, verify the Security & Compliance section renders alongside Troubleshoot and Optimize with its security dashboard footer",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     // The image-scan and certificate fetches decide both halves of what this test reads —
     // the subtitle's counts and, through hasExternalData, whether the footer renders. They
@@ -268,7 +267,7 @@ test(
 
 test(
   "Home - open the Automations card, verify each stat carries a count and the card is absent only when all three counts are zero",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     // getWorkflowData awaits all three counts before it calls setWorkflowData, so the
     // card's render decision is not final until they have all landed. A bare count() does

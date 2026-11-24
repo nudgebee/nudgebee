@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openMonitoringSubTab, switchMonitoringSubTab, alertRowCount, MONITORING_TIMEOUT_MS } from "./awsMonitoringHelper";
 import {
@@ -15,7 +14,7 @@ const NO_MATCH_NAME = `zz-no-such-alert-${Date.now()}`;
 
 test(
   "Cloud Monitoring sanity - open AWS Monitoring, verify the Alert Manager listing renders its four filters, name search and column headers",
-  { tag: ["@dev", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");
@@ -43,7 +42,7 @@ test(
 
 test(
   "Cloud Monitoring - filter the alert rules by Status Enabled, verify every listed rule reports Enabled",
-  { tag: ["@dev", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");
@@ -80,7 +79,7 @@ test(
 
 test(
   "Cloud Monitoring - search the alert rules for a name no rule can match, verify the listing empties and clearing the search restores it",
-  { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");
@@ -112,7 +111,7 @@ test(
 
 test(
   "Cloud Monitoring - search the alert rules for an existing rule name, verify only that rule stays listed",
-  { tag: ["@dev", "@test", "@regression", "@search"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");
@@ -143,7 +142,7 @@ test(
 
 test(
   "Cloud Monitoring - open a rule's row menu and cancel the enable/disable or mute confirmation, verify the rule keeps its original status",
-  { tag: ["@dev", "@test", "@regression", "@negative", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@negative", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");
@@ -179,7 +178,7 @@ test(
 
 test(
   "Cloud Monitoring sanity - open Cloud Logs, verify the region, log group and limit filters render with the prefilled CloudWatch query and the no-entries empty state",
-  { tag: ["@dev", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "cloud-logs");
@@ -206,7 +205,7 @@ test(
 
 test(
   "Cloud Monitoring - run the Cloud Logs query with no log group selected, verify the run is rejected with the 'Please select a log group' banner",
-  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "cloud-logs");
@@ -226,7 +225,7 @@ test(
 
 test(
   "Cloud Monitoring - change the Cloud Logs row limit to 500, verify the Limit filter commits the new value",
-  { tag: ["@dev", "@test", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "cloud-logs");
@@ -245,7 +244,7 @@ test(
 
 test(
   "Cloud Monitoring - run the Cloud Metrics query with no resource selected, verify the run is rejected with a 'Please select' banner naming what is missing",
-  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "metrics");
@@ -265,7 +264,7 @@ test(
 
 test(
   "Cloud Monitoring - move from Alert Manager through Cloud Logs to Cloud Metrics and back, verify each sub-tab lands on its own URL fragment and panel",
-  { tag: ["@dev", "@test", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(MONITORING_TIMEOUT_MS);
     const m = await openMonitoringSubTab(page, "alert-manager");

@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { GlobalChatLocators } from "./globalChatLocators";

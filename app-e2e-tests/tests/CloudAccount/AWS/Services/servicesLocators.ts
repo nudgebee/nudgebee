@@ -239,8 +239,10 @@ export class ServicesLocators extends AWSLocators {
 
   // A sortable header wraps its label in <span role="button"> (CustomTable.jsx:1240-1243).
   // Scoped to the header cell so the same label in a drill-down table cannot match.
+  // Fallback: CustomTable2 (still used by CloudAccountTable on OSS) renders the handle as a plain <span> holding the sort icon.
   sortHandle(name: string): Locator {
-    return this.columnHeader(name).getByRole("button").first();
+    const header = this.columnHeader(name);
+    return header.getByRole("button").or(header.locator("span").filter({ has: this.page.locator("svg") })).first();
   }
 
   // One column's cells across the data rows only, in row order. nth-child is 1-based.

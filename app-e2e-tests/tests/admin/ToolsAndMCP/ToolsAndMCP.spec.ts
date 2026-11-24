@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { test, expect } from "@playwright/test";
 import {
@@ -54,8 +53,10 @@ import {
 //
 // The tab opens tenant-wide: ToolsAndMCPAdminTab starts with accountId '', which
 // puts ListTools in its isTenantWide branch — an Account column instead of
-// NB Tool Type, and no Create Tool. Picking an account in the header
-// filter is what swaps the mount, so several cases below turn on that difference.
+// NB Tool Type. Create Tool stays available there for a tenant admin (it opens
+// the organisation-scoped form), but hides for a non-admin until an account is
+// picked. Picking an account in the header filter is what swaps the mount, so
+// several cases below turn on that difference.
 //
 // This runs against a shared tenant, so exactly one case writes: it registers a
 // container tool under a name unique to the run and deletes it again in the same
@@ -65,8 +66,8 @@ import {
 
 test.describe("Admin AI & Tools - Tools & MCP", () => {
   test(
-    "Tools & MCP sanity - deep-link to Admin AI & Tools Tools & MCP, verify the Tools toggle is selected and the tenant-wide listing renders Name, Description, Status and Account columns with Actions but no Create Tool control",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    "Tools & MCP sanity - deep-link to Admin AI & Tools Tools & MCP, verify the Tools toggle is selected and the tenant-wide listing renders Name, Description, Status and Account columns with Actions and the Create Tool control available to the tenant admin",
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -88,14 +89,15 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
       await expect(locators.toolsHeader(HEADER_NB_TOOL_TYPE)).toHaveCount(0);
       // Tenant-wide rows keep Edit / Delete (run against the row's own account), so Actions stays.
       await expect(locators.toolsHeader(HEADER_ACTIONS)).toBeVisible();
-      // Create is per-account, so the tenant-wide mount hides it.
-      await expect(locators.createToolBtn).toHaveCount(0);
+      // ListTools.jsx shows Create Tool in the tenant-wide mount too, for a
+      // tenant admin — it opens the organisation-scoped form (nb-41073).
+      await expect(locators.createToolBtn).toBeVisible({ timeout: 30000 });
     }
   );
 
   test(
     "Tools & MCP sanity - switch the toggle to MCP Servers and back to Tools, verify the read-only banner and MCP columns replace the tools listing and the tools search box comes back",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -122,7 +124,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP sanity - open the MCP Servers sub-view, verify the account filter is hidden and the read-only banner offers the Manage in Integrations action",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -146,7 +148,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - type a tool name word into Search Tool, verify only tools whose name contains that word are listed, then clear the box and verify the full catalogue returns",
-    { tag: ["@dev", "@smoke", "@search"] },
+    { tag: ["@dev", "@smoke", "@search", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -181,7 +183,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - filter Created By to User Created, verify every listed tool carries the User Created badge, then switch to System Generated and verify none of them do",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -218,7 +220,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - filter Status to the first status the catalogue offers, verify every listed tool reports that status in its Status column",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -249,7 +251,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - narrow the account filter from All accounts to a single account, verify the listing swaps the Account column for NB Tool Type and Actions and reveals the Create Tool control",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -273,7 +275,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - open Create Tool and submit it empty, verify the Name, Description and Container Image rejections, that the dialog stays open and that no tool created toast appears",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -302,7 +304,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - open Create Tool and enter a name that starts with a digit, verify the name must start with a letter rejection and that Description and Container Image are not blamed",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -333,7 +335,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - open Create Tool, fill the name and image, cancel the dialog, reopen it and verify the form is back to empty with no tool created toast",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -373,7 +375,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - create a container tool under an account, reload the page and verify the tool is listed with its User Created badge, then delete it and verify the row is gone",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(CRUD_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);
@@ -442,7 +444,7 @@ test.describe("Admin AI & Tools - Tools & MCP", () => {
 
   test(
     "Tools & MCP - switch the MCP Servers status filter from Enabled to Disabled, verify every listed server reports Disabled or the listing shows its no-data state",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openToolsAndMcp(page);

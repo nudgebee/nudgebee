@@ -1,4 +1,3 @@
-// Not for OSS
 
 // Shared literals for the Admin -> AI & Tools -> RCA Format suite. Every string
 // here is copied from the component that renders it, so a UI reword is one edit.

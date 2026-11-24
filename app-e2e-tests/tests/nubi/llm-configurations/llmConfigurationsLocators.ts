@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator, expect } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 
@@ -59,7 +58,12 @@ export class LLMConfigurationsLocators extends CommonLocators {
 
     // ds/Banner renders role=status for the info tone. The toast region uses the
     // same role, so the text filter is what keeps this off a snackbar.
-    this.readOnlyBanner = page.getByRole("status").filter({ hasText: /This view is read-only/ }).or(page.getByText(/This view is read-only/)).first();
+    // Anchored on the Manage in Integrations action both sub-tabs' banners carry; the MCP banner stopped saying "read-only" (7469bb4bcb).
+    this.readOnlyBanner = page
+      .getByRole("status")
+      .filter({ has: page.getByRole("button", { name: "Manage in Integrations" }) })
+      .or(page.getByRole("status").filter({ hasText: /This view is read-only|Add or edit\s+MCP Servers/ }))
+      .first();
     this.manageInIntegrationsBtn = this.readOnlyBanner.getByRole("button", { name: "Manage in Integrations" }).first();
 
     // ListingLayout puts its `id` on the wrapping DS Card, so this is the whole

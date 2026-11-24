@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator, expect } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
 import { AutoOptimizeLocators, OPTIMIZATIONS_TABLE, APPROVALS_TABLE } from "./autoOptimizeLocators";

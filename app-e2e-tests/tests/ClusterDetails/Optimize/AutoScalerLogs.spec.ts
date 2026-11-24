@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { OptimizeTabLocator } from "./OptimizeTabLocator";
 
 
-test("API testing Cluster Details->Optimize-> AutoScaler-> Logs", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Optimize-> AutoScaler-> Logs", { tag: ["@oss"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);

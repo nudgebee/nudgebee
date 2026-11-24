@@ -130,11 +130,12 @@ function runLabel(): string {
   }
 }
 
-// Dev and test runs post into the same channel, so the line says which one this is. Only in CI, where the
-// dev workflow sets E2E_ENVIRONMENT=dev and the test workflow does not set it.
+// Dev, test and OSS runs post into the same channel, so the line says which one this is. Only in CI, where the
+// dev workflow sets E2E_ENVIRONMENT=dev, the OSS workflow sets oss and the test workflow does not set it.
 function environmentName(): string {
   if (!process.env.GITHUB_EVENT_NAME) return "";
-  return `${process.env.E2E_ENVIRONMENT === "dev" ? "Dev" : "Test"}  ·  `;
+  const env = process.env.E2E_ENVIRONMENT;
+  return `${env === "dev" ? "Dev" : env === "oss" ? "OSS" : "Test"}  ·  `;
 }
 
 function startedAt(): string {

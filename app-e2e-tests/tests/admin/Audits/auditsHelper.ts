@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Response, expect } from "@playwright/test";
 import { AuditsLocators } from "./auditsLocators";
 import { suppressTourPopups } from "../../utils/tourSuppression";

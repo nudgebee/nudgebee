@@ -39,7 +39,7 @@ on:
         default: ""
         type: string
       run_all:
-        description: "Run complete test suite (overrides test_file and test_name)"
+        description: "Run every @oss test (overrides test_file and test_name)"
         required: false
         default: false
         type: boolean
@@ -98,33 +98,37 @@ jobs:
           INPUT_TEST_NAME: ${{ inputs.test_name }}
           INPUT_RUN_ALL: ${{ inputs.run_all }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Slack alerts thread when .env.oss (E2E_OSS_ENV) carries SLACK_BOT_TOKEN and SLACK_REPORT_CHANNEL_ID; do not set SLACK_BOT_TOKEN here, an empty secret would mask the file's value. Without them, alerts fall back to the webhook.
         run: |
           rm -rf playwright-report
           mkdir -p playwright-report
 
           set +e
 
-          PW_CMD="node node_modules/.bin/playwright test --project=chromium"
+          # Only tests tagged @oss are valid against the OSS build; EE-only specs reach this repo with the sync but their UI does not.
+          # --pass-with-no-tests: a changed spec with no @oss test is a clean no-op, not a failure.
+          PW_CMD="node node_modules/.bin/playwright test --project=chromium --pass-with-no-tests --grep @oss"
 
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             # Manual run: full suite, specific file(s), or a specific test case by name.
             # Precedence: run_all > test_file > test_name > full suite (default).
             if [ "$INPUT_RUN_ALL" == "true" ]; then
-              echo "Manual run — executing complete test suite"
+              echo "Manual run — executing every @oss test"
               $PW_CMD
             elif [ -n "$INPUT_TEST_FILE" ]; then
               echo "Manual run — executing specific test file(s): $INPUT_TEST_FILE"
               FILES=$(echo "$INPUT_TEST_FILE" | tr ',' ' ')
               $PW_CMD $FILES
             elif [ -n "$INPUT_TEST_NAME" ]; then
-              echo "Manual run — executing tests matching name: $INPUT_TEST_NAME"
-              $PW_CMD --grep "$INPUT_TEST_NAME"
+              echo "Manual run — executing @oss tests matching name: $INPUT_TEST_NAME"
+              # Playwright takes one --grep, so the name and the @oss tag are both required through lookaheads.
+              node node_modules/.bin/playwright test --project=chromium --pass-with-no-tests --grep "^(?=.*@oss)(?=.*${INPUT_TEST_NAME})"
             else
-              echo "Manual run — no input given, executing complete test suite"
+              echo "Manual run — no input given, executing every @oss test"
               $PW_CMD
             fi
           elif [ "${{ github.event_name }}" == "schedule" ]; then
-            echo "Scheduled run — executing complete test suite"
+            echo "Scheduled run — executing every @oss test"
             $PW_CMD
           elif [ "${{ github.event_name }}" == "pull_request" ]; then
             # PR run: only the spec files changed in this PR. If shared plumbing
@@ -140,7 +144,7 @@ jobs:
             echo "$CHANGED"
 
             if echo "$CHANGED" | grep -qE '^app-e2e-tests/(pages/|playwright\.config\.ts|dt\.js)'; then
-              echo "Shared plumbing changed — executing complete test suite"
+              echo "Shared plumbing changed — executing every @oss test"
               $PW_CMD
             else
               # Spec files only — strip the working-directory prefix for Playwright.
@@ -155,7 +159,7 @@ jobs:
               $PW_CMD $SPECS
             fi
           else
-            echo "Push to main — executing complete test suite"
+            echo "Push to main — executing every @oss test"
             $PW_CMD
           fi
 

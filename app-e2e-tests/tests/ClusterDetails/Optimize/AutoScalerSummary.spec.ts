@@ -3,7 +3,7 @@ import { LoginPage } from "../../../pages/LoginPage";
 import { OptimizeTabLocator } from "./OptimizeTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
-test("API testing Cluster Details->Optimize-> AutoScaler-> Summary", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Optimize-> AutoScaler-> Summary", { tag: ["@oss"] }, async ({ page }, testInfo) => {
   test.setTimeout(120000);
   const loginPage = new LoginPage(page);
   const locators = new OptimizeTabLocator(page);

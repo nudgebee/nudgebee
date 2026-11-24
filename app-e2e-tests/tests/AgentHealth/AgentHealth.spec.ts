@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   openAgentHealth,
@@ -34,7 +33,7 @@ test.beforeEach(() => {
 
 test(
   "Agent Health sanity - open Agent Health for the selected cluster, verify both the Agent and Proxy Agent tabs render with Agent selected",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -57,7 +56,7 @@ test(
 
 test(
   "Agent Health sanity - open the Agent tab, verify the summary card reports a status and states the agent version, Kubernetes flavour, namespace and URL",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -82,7 +81,7 @@ test(
 
 test(
   "Agent Health - open the Agent tab, verify the Components table reports a state for Relay, Prometheus, Alert Manager, Logs, Traces, OpenCost and Node Agent",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -111,7 +110,7 @@ test(
 
 test(
   "Agent Health - read the summary card, verify the update callout and its guide link appear only when the reported version differs from the latest version",
-  { tag: ["@dev", "@regression", "@functional", "@validation"] },
+  { tag: ["@dev", "@regression", "@functional", "@validation", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -151,7 +150,7 @@ test(
 
 test(
   "Agent Health - open the Agent tab, verify Scheduled Jobs lists a readable schedule beside each cron and right-aligns the execution count",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -183,7 +182,7 @@ test(
 
 test(
   "Agent Health - open Scheduled Jobs with overdue jobs present, verify the Overdue filter narrows the table to them",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -220,7 +219,7 @@ test(
 
 test(
   "Agent Health - switch from Agent to Proxy Agent, verify the fragment becomes #proxy-agent and the proxy panel replaces the Agent Health card",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
     await expect(agentHealth.agentCard).toBeVisible();
@@ -236,7 +235,7 @@ test(
 
 test(
   "Agent Health - switch to Proxy Agent and back to Agent, verify the Agent Health card and its Components table return",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
     test.skip(!(await hasRedesignedAgentTab(agentHealth)), PREDATES_REDESIGN);
@@ -259,7 +258,7 @@ test(
 
 test(
   "Agent Health - open the module with a #proxy-agent deep link, verify the Proxy Agent tab is the one selected on load",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "proxy-agent");
 
@@ -272,7 +271,7 @@ test(
 
 test(
   "Agent Health - open the Proxy Agent tab then press browser Back, verify history restores the Agent tab and its card",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -291,7 +290,7 @@ test(
 
 test(
   "Agent Health sanity - open the bare /agentHealth link, verify the page adopts the selected cluster's account into the URL and opens the Agent tab",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealthUnscoped(page);
 
@@ -318,7 +317,7 @@ test(
 
 test(
   "Agent Health sanity - open Agent Health for a K8s account, verify the tab strip offers exactly the Agent, Observability and Proxy Agent tabs in that order",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 
@@ -343,7 +342,7 @@ test(
 
 test(
   "Agent Health - open the Observability tab, verify each of logs, metrics and traces gets a card naming the backend serving it",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const agentHealth = await openAgentHealth(page, "agent");
 

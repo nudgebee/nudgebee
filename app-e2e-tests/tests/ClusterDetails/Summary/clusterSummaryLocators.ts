@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator } from "@playwright/test";
 import { ClusterDetailsLocators } from "../ClusterDetailsLocators";
 

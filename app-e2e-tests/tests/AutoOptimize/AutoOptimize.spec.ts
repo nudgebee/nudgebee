@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   APPROVALS_HEADERS,
@@ -46,7 +45,7 @@ test.beforeEach(() => {
 test.describe("Auto Optimize", () => {
   test(
     "Auto Optimize sanity - open /optimise#auto-optimize, verify the Auto Optimize tab is selected and its Optimizations and Approvals sub-tabs render with Optimizations open",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -76,7 +75,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - open the Optimizations sub-tab, verify the Account filter resolves to the cluster the run logged in on and the Status, Category, search and download controls render",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators, cluster } = await openAutoOptimize(page);
 
@@ -116,7 +115,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - open the Status filter and pick Disabled, verify the trigger reports Disabled and no listed configuration is still Active",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -145,7 +144,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - open the Category filter and pick PVC RightSizing, verify the trigger reports it and every listed configuration is a PVC RightSizing",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -170,7 +169,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - search for a configuration name that cannot exist, verify the table empties and the listing shows its No Data Available state",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@regression", "@negative", "@search", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -191,7 +190,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - search a two-character name, verify the listing ignores it and keeps its unfiltered rows, then extend the term past the three-character floor and verify the table empties",
-    { tag: ["@dev", "@regression", "@negative", "@validation", "@search"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@search", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -219,7 +218,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Optimizations - search a name that cannot exist then clear the search box, verify the empty panel goes and the original rows come back",
-    { tag: ["@dev", "@regression", "@functional", "@search"] },
+    { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -244,7 +243,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize - click the Approvals sub-tab then click back to Optimizations, verify each click moves the URL fragment and swaps which listing is mounted",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 
@@ -273,7 +272,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize Approvals - open /optimise#auto-optimize/approvals directly, verify the Approvals sub-tab is selected and its table renders the approval columns or its No Data Available state",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page, "approvals");
 
@@ -304,7 +303,7 @@ test.describe("Auto Optimize", () => {
 
   test(
     "Auto Optimize - open the Create Auto Optimize menu, verify it offers all four rightsizing types, press Escape and verify the menu closes with no configuration form opened",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const { locators } = await openAutoOptimize(page);
 

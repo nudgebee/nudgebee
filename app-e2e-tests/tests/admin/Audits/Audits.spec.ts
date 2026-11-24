@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openAuditsTab, withAuditsCapture, pickPresentValue, pickPresentPair, predicate } from "./auditsHelper";
 import {
@@ -31,7 +30,7 @@ test.beforeEach(() => {
 
 test(
   "Audits sanity - open the Audits tab of user management, verify the tab is selected and the listing renders its six filters and seven column headers",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators } = await openAuditsTab(page);
 
@@ -56,7 +55,7 @@ test(
 
 test(
   "Audits sanity - open the Audits tab, verify the rendered rows match the audits_v2 payload the table rendered from, row for row",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
 
@@ -76,7 +75,7 @@ test(
 
 test(
   "Audits - filter the log by an action the log actually holds, verify the query carries the event_action predicate and every Action cell reads that action",
-  { tag: ["@dev", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     const action = pickPresentValue(capture.rows, "event_action");
@@ -93,7 +92,7 @@ test(
 
 test(
   "Audits - filter the log by a status the log actually holds, verify the query carries the event_status predicate and every Status chip reads that status",
-  { tag: ["@dev", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     const status = pickPresentValue(capture.rows, "event_status");
@@ -110,7 +109,7 @@ test(
 
 test(
   "Audits - apply an action filter and a status filter that co-occur in the log, verify the query carries both predicates and every row satisfies both",
-  { tag: ["@dev", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     // Taken as a pair rather than independently: two values that each exist but
@@ -132,7 +131,7 @@ test(
 
 test(
   "Audits - filter by a category and an event type that cannot occur on one record, verify the query carries both predicates and the table shows the No Data Available empty state",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@regression", "@negative", "@oss"] },
   async ({ page }) => {
     const { locators } = await openAuditsTab(page);
 
@@ -154,7 +153,7 @@ test(
 
 test(
   "Audits - search the Category filter for a prefix, verify only categories containing it are offered and an unmatchable query shows No results found",
-  { tag: ["@dev", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@regression", "@search", "@negative", "@oss"] },
   async ({ page }) => {
     const { locators } = await openAuditsTab(page);
 
@@ -195,7 +194,7 @@ test(
 
 test(
   "Audits - apply a status filter then clear it from the trigger, verify the trigger drops the value and the reissued query carries no event_status predicate",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     const status = pickPresentValue(capture.rows, "event_status");
@@ -221,7 +220,7 @@ test(
 
 test(
   "Audits - expand the first audit row, verify it reports itself expanded and reveals the Diff State panel, then collapse it back",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     expect(capture.rows.length, "expanding a row needs at least one row").toBeGreaterThan(0);
@@ -247,7 +246,7 @@ test(
 
 test(
   "Audits - set the table page size to 5 and reload the page, verify the preference survives the reload and the listing requests and renders five rows",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators, capture } = await openAuditsTab(page);
     expect(capture.rows.length, "paging needs a populated log").toBeGreaterThan(0);
@@ -280,7 +279,7 @@ test(
 
 test(
   "Audits - leave Audits for the Users tab and return, verify Audits is reselected and the audit listing is rebuilt",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     const { locators } = await openAuditsTab(page);
 

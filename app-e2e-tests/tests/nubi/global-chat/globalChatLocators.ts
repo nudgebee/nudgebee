@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
 import { NubiLocators } from "../nubiLocators";
