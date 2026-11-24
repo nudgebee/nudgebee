@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   OPTIMIZE_TIMEOUT_MS,
@@ -30,7 +29,7 @@ import {
 
 test(
   "Cloud Optimize sanity - open the AWS account, select Optimize, verify Right Sizing renders its four filters, download action and both recommendation stat cards",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -57,7 +56,7 @@ test(
 
 test(
   "Cloud Optimize sanity - open Right Sizing, verify the listing declares its five columns and the Status filter opens pre-set to Open and In Progress",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -90,7 +89,7 @@ test(
 
 test(
   "Cloud Optimize - filter Right Sizing by a rule name the account holds, verify every remaining row belongs to that one rule",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -137,7 +136,7 @@ test(
 
 test(
   "Cloud Optimize - filter Right Sizing by a severity the account holds, verify every remaining row reports that severity",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -175,7 +174,7 @@ test(
 
 test(
   "Cloud Optimize - filter Right Sizing by a rule name then clear it, verify the listing returns to its unfiltered row count",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -205,7 +204,7 @@ test(
 
 test(
   "Cloud Optimize - expand a Right Sizing recommendation, verify the Evidence, Description, Mitigation and Audit History tabs open, then collapse it and verify the panel closes",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -248,7 +247,7 @@ test(
 
 test(
   "Cloud Optimize - move from Right Sizing through Configuration and Security to Infra Upgrade, verify each sub-tab lands on its own URL fragment and replaces the previous listing",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -286,7 +285,7 @@ test(
 
 test(
   "Cloud Optimize - open a Right Sizing row's actions menu, verify Resolve is offered disabled and the ticket action matches the row's ticket state, dismiss it and verify no ticket form opens",
-  { tag: ["@dev", "@regression", "@negative", "@functional"] },
+  { tag: ["@dev", "@regression", "@negative", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");
@@ -339,7 +338,7 @@ test(
 
 test(
   "Cloud Optimize - open the Recommendation Resolution sub-tab, verify its resolution listing and status filter render, then return to Right Sizing",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(OPTIMIZE_TIMEOUT_MS);
     const o = await openOptimizeCategory(page, "right-sizing");

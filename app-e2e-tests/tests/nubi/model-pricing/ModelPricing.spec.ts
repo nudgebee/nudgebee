@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 import {
@@ -23,7 +22,7 @@ import {
 test.describe("Nubi Model Pricing Tab", () => {
   test(
     "Model Pricing sanity - open Nubi AI & Tools, select the Model Pricing tab, verify the rate table lists built-in models and offers the Add price control",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openModelPricingTab(page);
@@ -50,7 +49,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - add a custom rate for a new model, leave the tab and return, verify the saved input and output rates persist",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openModelPricingTab(page);
@@ -78,7 +77,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - add a custom rate, reopen it with Edit and change the output rate, verify the table shows the updated rate",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openModelPricingTab(page);
@@ -119,7 +118,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - add a custom rate then remove the override, verify the warning that nothing else prices the model and that the row is gone",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openModelPricingTab(page);
@@ -157,7 +156,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - open Add price, try to use an unsupported provider, save, verify the price is refused and that no pricing mutation is sent",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openModelPricingTab(page);
@@ -194,7 +193,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - open Add price, leave the output rate blank, save, verify the missing-rate error and that no pricing mutation is sent",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openModelPricingTab(page);
@@ -216,7 +215,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - open Add price, enter a long-context threshold with no tier rates, save, verify the long-context tier error and that no pricing mutation is sent",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(150000);
       const locators = await openModelPricingTab(page);
@@ -236,7 +235,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - add a custom rate, filter the table by model name and then by the Custom rate source, verify only tenant rates are listed",
-    { tag: ["@dev", "@regression", "@search", "@crud"] },
+    { tag: ["@dev", "@regression", "@search", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(210000);
       const locators = await openModelPricingTab(page);
@@ -267,7 +266,7 @@ test.describe("Nubi Model Pricing Tab", () => {
 
   test(
     "Model Pricing - open Add price, fill a valid rate, cancel, verify the model is never listed and no pricing mutation is sent",
-    { tag: ["@dev", "@regression", "@functional", "@negative"] },
+    { tag: ["@dev", "@regression", "@functional", "@negative", "@oss"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const locators = await openModelPricingTab(page);

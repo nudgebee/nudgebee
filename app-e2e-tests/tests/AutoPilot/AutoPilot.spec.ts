@@ -1,7 +1,6 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
-import { openFirstAutoPilotTask, openTaskTab, settleTasksTab } from "./autoPilotHelper";
+import { openAutoPilotTaskWithExecutions, openFirstAutoPilotTask, openTaskTab, settleTasksTab } from "./autoPilotHelper";
 import {
   AutoPilotLocators,
   TASKS_TABLE,
@@ -29,7 +28,7 @@ const UNKNOWN_TASK_ID = "00000000-0000-0000-0000-000000000000";
 
 test(
   "AutoPilot sanity - open Auto Optimize, click the first configuration's name, verify the task page header names that configuration and the route carries its id",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -46,7 +45,7 @@ test(
 
 test(
   "AutoPilot sanity - open a task, verify the tab strip offers Tasks and Details and lands on Tasks with its listing mounted",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -63,7 +62,7 @@ test(
 
 test(
   "AutoPilot Tasks - open a task, verify the executions table renders all six columns and settles on either its rows or its No Data Available panel",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -83,7 +82,7 @@ test(
 
 test(
   "AutoPilot Tasks - open the Status filter, verify it offers All, Complete, Scheduled, Failed, Skipped and Dryrun",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -101,7 +100,7 @@ test(
 
 test(
   "AutoPilot Tasks - pick Complete in the Status filter, verify the trigger reports Complete and no listed execution carries any other status",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -124,7 +123,7 @@ test(
 
 test(
   "AutoPilot Tasks - narrow the Status filter to Complete then pick All, verify the trigger reports All and the unfiltered executions come back",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -145,10 +144,10 @@ test(
 
 test(
   "AutoPilot Tasks - click the chevron on the first execution, verify the row expands and its drilldown lists the Name, Old Value and New Value columns",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
-    const task = await openFirstAutoPilotTask(page);
+    const task = await openAutoPilotTaskWithExecutions(page);
 
     await expect(task.locators.tasksRows.first()).toBeVisible({ timeout: 60000 });
     const firstRow = task.locators.tasksRows.first();
@@ -167,10 +166,10 @@ test(
 
 test(
   "AutoPilot Tasks - expand the first execution then click the chevron again, verify the row collapses and its drilldown columns leave the page",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
-    const task = await openFirstAutoPilotTask(page);
+    const task = await openAutoPilotTaskWithExecutions(page);
 
     await expect(task.locators.tasksRows.first()).toBeVisible({ timeout: 60000 });
     const firstRow = task.locators.tasksRows.first();
@@ -191,7 +190,7 @@ test(
 
 test(
   "AutoPilot - open a task and click the Details tab, verify the URL fragment moves to details and the summary replaces the executions table with its Namespace and Workload filters and stat cards",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -216,7 +215,7 @@ test(
 
 test(
   "AutoPilot - open the Details tab then click back to Tasks, verify the fragment returns to tasks and the executions table is mounted again",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const task = await openFirstAutoPilotTask(page);
@@ -237,7 +236,7 @@ test(
 
 test(
   "AutoPilot Tasks - open a task details url whose auto pilot id does not exist, verify the executions table renders its No Data Available panel and lists no rows",
-  { tag: ["@dev", "@regression", "@negative"] },
+  { tag: ["@dev", "@regression", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

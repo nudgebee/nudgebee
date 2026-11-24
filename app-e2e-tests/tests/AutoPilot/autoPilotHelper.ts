@@ -1,5 +1,4 @@
-// Not for OSS
-import { Page, expect } from "@playwright/test";
+import { Locator, Page, expect } from "@playwright/test";
 import { openAutoOptimize, parkCursor } from "../AutoOptimize/autoOptimizeHelper";
 import { AutoPilotLocators } from "./autoPilotLocators";
 
@@ -36,9 +35,26 @@ export async function openFirstAutoPilotTask(page: Page): Promise<OpenedTask> {
   const { locators: listing } = await openAutoOptimize(page, "optimizations");
 
   await expect(listing.optimizationsRows.first(), NO_CONFIGS_HINT).toBeVisible({ timeout: 90000 });
+  return followTaskLink(page, listing.optimizationsRows.first());
+}
 
+export async function openAutoPilotTaskWithExecutions(page: Page, maxConfigs = 10): Promise<OpenedTask> {
+  const { locators: listing } = await openAutoOptimize(page, "optimizations");
+  await expect(listing.optimizationsRows.first(), NO_CONFIGS_HINT).toBeVisible({ timeout: 90000 });
+
+  const total = Math.min(await listing.optimizationsRows.count(), maxConfigs);
+  for (let i = 0; i < total; i++) {
+    const task = await followTaskLink(page, listing.optimizationsRows.nth(i));
+    if ((await task.locators.tasksRows.count()) > 0) return task;
+    await page.goBack();
+    await expect(listing.optimizationsRows.first(), NO_CONFIGS_HINT).toBeVisible({ timeout: 90000 });
+  }
+  throw new Error(`None of the first ${total} auto optimize configurations has an execution on its Tasks tab, so there is no row to expand.`);
+}
+
+async function followTaskLink(page: Page, listingRow: Locator): Promise<OpenedTask> {
   const locators = new AutoPilotLocators(page);
-  const link = locators.taskLinkIn(listing.optimizationsRows.first());
+  const link = locators.taskLinkIn(listingRow);
   await expect(link, NO_CONFIGS_HINT).toBeVisible({ timeout: 30000 });
 
   const taskName = (await link.innerText()).trim();

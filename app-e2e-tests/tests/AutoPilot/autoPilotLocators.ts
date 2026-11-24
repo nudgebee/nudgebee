@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator } from "@playwright/test";
 import { AutoOptimizeLocators } from "../AutoOptimize/autoOptimizeLocators";
 

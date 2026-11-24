@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { Browser, Page, Locator, expect } from "@playwright/test";
 import { existsSync } from "fs";

@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { Page, expect } from "@playwright/test";
 import { RCAFormatLocators } from "./rcaFormatLocators";

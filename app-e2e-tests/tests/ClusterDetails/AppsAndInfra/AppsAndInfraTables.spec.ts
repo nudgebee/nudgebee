@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { LISTINGS, LISTING_ORDER } from "./appsAndInfraTablesLocators";
 import { clearSearch, expectHeaders, noMatchTerm, NO_ROWS_HINT, openListing, searchAndApply, selectFilterOption, setup } from "./appsAndInfraTablesHelper";
@@ -22,7 +21,7 @@ test.beforeEach(() => {
 test.describe("Apps & Infra", () => {
   test(
     "Apps & Infra sanity - open the Apps & Infra section, verify the sub-tab strip lists all nine listings and opens on Nodes",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -46,7 +45,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Nodes - open the Nodes listing, verify its nine column headers render and its State filter and Node Name search are offered",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.nodes);
@@ -62,7 +61,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Nodes - search a node name no node can match, verify the No Data Available panel replaces the rows, clear the search, verify the node rows return",
-    { tag: ["@dev", "@regression", "@search", "@negative"] },
+    { tag: ["@dev", "@regression", "@search", "@negative", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.nodes);
@@ -85,7 +84,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Nodes - filter State to Deleted, verify no Active node survives the filter, switch back to Active, verify every listed node reads Active again",
-    { tag: ["@dev", "@regression", "@search", "@functional"] },
+    { tag: ["@dev", "@regression", "@search", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.nodes);
@@ -122,7 +121,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Applications - open the Applications listing, expand its first application, verify the row reports itself expanded, collapse it, verify the row reports itself collapsed again",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.applications);
@@ -146,7 +145,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Applications - open Bulk assign owner, verify Assign stays disabled with no namespace, workload or owner picked, cancel, verify the modal closes and the listing still lists its applications",
-    { tag: ["@dev", "@regression", "@validation", "@negative"] },
+    { tag: ["@dev", "@regression", "@validation", "@negative", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.applications);
@@ -174,7 +173,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra - move through the Namespace, Services, PVC and PV listings, verify each one mounts its own table and renders its own column headers",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -190,7 +189,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra - open the Databases and Queues listings, verify each mounts its own table with the Type, Name, Namespace and Status columns and offers a Status filter",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
 
@@ -207,7 +206,7 @@ test.describe("Apps & Infra", () => {
 
   test(
     "Apps & Infra Pods - open the Pods listing, verify its pagination summary counts the rows the page is showing, switch to Nodes and back, verify Pods is selected again and still lists rows",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await setup(page);
       await openListing(locators, LISTINGS.pods);

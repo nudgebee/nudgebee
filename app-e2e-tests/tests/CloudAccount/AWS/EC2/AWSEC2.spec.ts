@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { openEc2SubTab, openInstances, firstEnabledLifecycleAction } from "./ec2Helper";
 import { INSTANCE_COLUMNS, LIFECYCLE_ACTION_LABEL, stateOptionLabel } from "./ec2Constants";
@@ -20,7 +19,7 @@ const NO_INSTANCES_HINT =
   "The AWS account holds no EC2 instances, so there is no row to expand or act on. " +
   "Point AWS_CLUSTER_NAME at an account with at least one instance to cover this journey.";
 
-test("EC2 sanity - open the AWS account, hover the EC2 tab, open Summary, verify the instance, alarm and optimization tiles render their counts", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("EC2 sanity - open the AWS account, hover the EC2 tab, open Summary, verify the instance, alarm and optimization tiles render their counts", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const ec2 = await openEc2SubTab(page, "summary");
@@ -48,7 +47,7 @@ test("EC2 sanity - open the AWS account, hover the EC2 tab, open Summary, verify
   });
 });
 
-test("EC2 sanity - open the EC2 Instances sub-tab, verify the listing renders its eight named columns and the search, state, region and tag filters", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("EC2 sanity - open the EC2 Instances sub-tab, verify the listing renders its eight named columns and the search, state, region and tag filters", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount } = await openInstances(page);
@@ -77,7 +76,7 @@ test("EC2 sanity - open the EC2 Instances sub-tab, verify the listing renders it
   });
 });
 
-test("EC2 - open Instances, search an instance id that cannot exist, verify the listing empties to the No Data Available panel", { tag: ["@dev", "@regression", "@search", "@negative"] }, async ({ page }) => {
+test("EC2 - open Instances, search an instance id that cannot exist, verify the listing empties to the No Data Available panel", { tag: ["@dev", "@regression", "@search", "@negative", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2 } = await openInstances(page);
@@ -96,7 +95,7 @@ test("EC2 - open Instances, search an instance id that cannot exist, verify the 
   await expect(ec2.instancesSearch).toHaveValue(NO_MATCH_TERM);
 });
 
-test("EC2 - open Instances, search a term that matches nothing, clear the search, verify the original instance count comes back", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("EC2 - open Instances, search a term that matches nothing, clear the search, verify the original instance count comes back", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount: baseline } = await openInstances(page);
@@ -121,7 +120,7 @@ test("EC2 - open Instances, search a term that matches nothing, clear the search
   });
 });
 
-test("EC2 - open Instances, read the first instance's state, filter State by that state, verify every listed instance reports it", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("EC2 - open Instances, read the first instance's state, filter State by that state, verify every listed instance reports it", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount } = await openInstances(page);
@@ -153,7 +152,7 @@ test("EC2 - open Instances, read the first instance's state, filter State by tha
   });
 });
 
-test("EC2 - open Instances, verify the Tag Value filter stays disabled until a Tag Key is chosen", { tag: ["@dev", "@regression", "@validation"] }, async ({ page }) => {
+test("EC2 - open Instances, verify the Tag Value filter stays disabled until a Tag Key is chosen", { tag: ["@dev", "@regression", "@validation", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2 } = await openInstances(page);
@@ -190,7 +189,7 @@ test("EC2 - open Instances, verify the Tag Value filter stays disabled until a T
   });
 });
 
-test("EC2 - open Instances, expand the first instance row, verify the Details drill-down names the instance the row belongs to", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("EC2 - open Instances, expand the first instance row, verify the Details drill-down names the instance the row belongs to", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount } = await openInstances(page);
@@ -216,7 +215,7 @@ test("EC2 - open Instances, expand the first instance row, verify the Details dr
   });
 });
 
-test("EC2 - open Instances, expand a row, switch the drill-down to Action History, collapse the row, verify the drill-down closes", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("EC2 - open Instances, expand a row, switch the drill-down to Action History, collapse the row, verify the drill-down closes", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount } = await openInstances(page);
@@ -244,7 +243,7 @@ test("EC2 - open Instances, expand a row, switch the drill-down to Action Histor
   });
 });
 
-test("EC2 - open Instances, open a row's actions menu, start a lifecycle action, cancel the confirmation, verify the dialog closes and the instance is untouched", { tag: ["@dev", "@regression", "@negative", "@functional"] }, async ({ page }) => {
+test("EC2 - open Instances, open a row's actions menu, start a lifecycle action, cancel the confirmation, verify the dialog closes and the instance is untouched", { tag: ["@dev", "@regression", "@negative", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const { locators: ec2, rowCount } = await openInstances(page);
@@ -297,7 +296,7 @@ test("EC2 - open Instances, open a row's actions menu, start a lifecycle action,
   });
 });
 
-test("EC2 - open Summary, click the Total Instances tile, verify the Instances sub-tab opens, reopen Summary from the EC2 tab, verify the tiles come back", { tag: ["@dev", "@smoke", "@functional"] }, async ({ page }) => {
+test("EC2 - open Summary, click the Total Instances tile, verify the Instances sub-tab opens, reopen Summary from the EC2 tab, verify the tiles come back", { tag: ["@dev", "@smoke", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const ec2 = await openEc2SubTab(page, "summary");

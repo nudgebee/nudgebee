@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { test, expect } from "@playwright/test";
 import {
@@ -41,7 +40,7 @@ import {
 test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
   test(
     "Usage & Limits sanity - deep-link to Admin AI & Tools Budgets & Limits, verify the Usage & Limits toggle is selected and the period header, Add Budget control and Active Budgets section render",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -65,7 +64,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits sanity - switch the toggle to Model Pricing and back to Usage & Limits, verify the budget period header disappears and comes back with the toggle selection",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -87,7 +86,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits sanity - open Budgets & Limits, verify the Active Budgets section lists this run's tenant scope or states that system defaults apply",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -107,7 +106,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - open Add Budget, verify the form opens on the Tenant scope applied to both modules with Monthly Cost on and the Daily Cost amount field disabled",
-    { tag: ["@dev", "@smoke", "@functional"] },
+    { tag: ["@dev", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -136,7 +135,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - open Add Budget, switch the scope to Account, leave the account unpicked, submit, verify the Please select an entity rejection and that the dialog stays open",
-    { tag: ["@dev", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -162,7 +161,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - open Add Budget, turn Daily Cost on, enter an amount, turn Daily Cost back off, verify the amount field goes disabled and keeps the typed amount",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -187,7 +186,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - open Add Budget, turn Monthly Count on and enter a limit, cancel the dialog, reopen it, verify the form is back to its defaults with Monthly Count off and empty",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -213,7 +212,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - open Add Budget, turn Daily Count on with a limit, switch Apply to from Both Modules to Event Analysis, verify the limit rows reset to Monthly Cost on and every amount cleared",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(SPEC_TIMEOUT_MS);
       const locators = await openUsageLimits(page);
@@ -237,7 +236,7 @@ test.describe("Admin AI & Tools Budgets & Limits - Usage & Limits", () => {
 
   test(
     "Usage & Limits - add an Event Analysis budget with every limit switched off for an account that has none, reload the page, verify the saved budget is listed under Budgets for All Accounts, then delete it and verify the chip is gone",
-    { tag: ["@dev", "@regression", "@crud"] },
+    { tag: ["@dev", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(CRUD_TIMEOUT_MS);
       const locators = await openUsageLimits(page);

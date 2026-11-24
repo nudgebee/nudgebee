@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
 import { AccountMenuLocators } from "./accountMenuLocators";
@@ -6,7 +5,7 @@ import { AccountMenuLocators } from "./accountMenuLocators";
 test.describe("Account Menu", () => {
   test(
     "Account Menu - open the user menu and verify the displayed app Version is not blank, N/A, or 0.0.0",
-    { tag: ["@dev", "@test", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(60000);
       const loginPage = new LoginPage(page);

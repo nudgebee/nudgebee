@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   chooseFilter,
@@ -48,7 +47,7 @@ const NO_RESOURCE_ROWS_HINT =
   "No listed service carries a positive resource count outside the ECS special case, so the Resources drill-down " +
   "has no row to open. Point AWS_CLUSTER_NAME at an account with inventoried resources to cover this journey.";
 
-test("AWS Services sanity - open the AWS account, select the Services tab, verify the six named columns, the date range, the download control and the Service Name, Region and Tag Key filters render", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("AWS Services sanity - open the AWS account, select the Services tab, verify the six named columns, the date range, the download control and the Service Name, Region and Tag Key filters render", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -75,7 +74,7 @@ test("AWS Services sanity - open the AWS account, select the Services tab, verif
   });
 });
 
-test("AWS Services sanity - open the Services tab, verify every listed row names a service, shows a resource count and a currency total cost, and the footer reports the row range", { tag: ["@dev", "@sanity", "@functional"] }, async ({ page }) => {
+test("AWS Services sanity - open the Services tab, verify every listed row names a service, shows a resource count and a currency total cost, and the footer reports the row range", { tag: ["@dev", "@sanity", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -103,7 +102,7 @@ test("AWS Services sanity - open the Services tab, verify every listed row names
   });
 });
 
-test("AWS Services - pick a service in the Service Name filter, verify the listing request carries that service and only its row stays listed, clear the filter, verify the full listing returns", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("AWS Services - pick a service in the Service Name filter, verify the listing request carries that service and only its row stays listed, clear the filter, verify the full listing returns", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -138,7 +137,7 @@ test("AWS Services - pick a service in the Service Name filter, verify the listi
   });
 });
 
-test("AWS Services - pick the first region in the Region filter, verify the listing request carries that region, the trigger shows it and no more rows than before stay listed", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("AWS Services - pick the first region in the Region filter, verify the listing request carries that region, the trigger shows it and no more rows than before stay listed", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -163,7 +162,7 @@ test("AWS Services - pick the first region in the Region filter, verify the list
   expect(await services.servicesRows.count()).toBeLessThanOrEqual(baseline);
 });
 
-test("AWS Services - click the Total Cost header, verify the listing re-requests costs ascending and the listed costs rise down the page, click it again, verify they fall", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - click the Total Cost header, verify the listing re-requests costs ascending and the listed costs rise down the page, click it again, verify they fall", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -199,7 +198,7 @@ test("AWS Services - click the Total Cost header, verify the listing re-requests
   });
 });
 
-test("AWS Services - click the Estimated Savings header, verify the listing request switches its order column to estimated savings ascending", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - click the Estimated Savings header, verify the listing request switches its order column to estimated savings ascending", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -217,7 +216,7 @@ test("AWS Services - click the Estimated Savings header, verify the listing requ
   await expect(services.servicesRows.first().or(services.servicesEmpty)).toBeVisible();
 });
 
-test("AWS Services - expand a service row, verify the Resources drill-down requests that service's resources and lists them under the seven resource columns with Type, Region and Tag Key filters, collapse the row, verify the drill-down closes", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - expand a service row, verify the Resources drill-down requests that service's resources and lists them under the seven resource columns with Type, Region and Tag Key filters, collapse the row, verify the drill-down closes", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -252,7 +251,7 @@ test("AWS Services - expand a service row, verify the Resources drill-down reque
   });
 });
 
-test("AWS Services - expand a service row and open Cost Trend, verify the card titles itself Cost Trend and renders its Frequency filter and chart canvas", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - expand a service row and open Cost Trend, verify the card titles itself Cost Trend and renders its Frequency filter and chart canvas", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -270,7 +269,7 @@ test("AWS Services - expand a service row and open Cost Trend, verify the card t
   await expect(services.drilldownTab(DRILLDOWN_TABS[1])).toHaveAttribute("aria-selected", "true");
 });
 
-test("AWS Services - expand a service row and open Recommendations, verify the drill-down renders its Category filter and six columns or empty panel, set Category to Security, verify the trigger commits it and the table settles", { tag: ["@dev", "@regression", "@search"] }, async ({ page }) => {
+test("AWS Services - expand a service row and open Recommendations, verify the drill-down renders its Category filter and six columns or empty panel, set Category to Security, verify the trigger commits it and the table settles", { tag: ["@dev", "@regression", "@search", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -304,7 +303,7 @@ test("AWS Services - expand a service row and open Recommendations, verify the d
   });
 });
 
-test("AWS Services - expand a service row, expand its first resource in the Resources drill-down, verify the Details panel renders the resource's identity blocks, collapse it, verify the panel closes", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - expand a service row, expand its first resource in the Resources drill-down, verify the Details panel renders the resource's identity blocks, collapse it, verify the panel closes", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -327,7 +326,7 @@ test("AWS Services - expand a service row, expand its first resource in the Reso
   await expect(services.resourceDetailsPanel).toBeHidden({ timeout: 15000 });
 });
 
-test("AWS Services - open the date range and choose Last Month, verify the trigger reads Last Month and the listing re-requests a spend window covering the previous calendar month", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - open the date range and choose Last Month, verify the trigger reads Last Month and the listing re-requests a spend window covering the previous calendar month", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);
@@ -363,7 +362,7 @@ test("AWS Services - open the date range and choose Last Month, verify the trigg
   await expect(services.servicesRows.first().or(services.servicesEmpty)).toBeVisible();
 });
 
-test("AWS Services - open a service row's actions menu, verify the Start, Stop, Terminate and Add Alarms actions are listed but every one is disabled, press Escape, verify the menu closes with the listing untouched", { tag: ["@dev", "@regression", "@negative", "@functional"] }, async ({ page }) => {
+test("AWS Services - open a service row's actions menu, verify the Start, Stop, Terminate and Add Alarms actions are listed but every one is disabled, press Escape, verify the menu closes with the listing untouched", { tag: ["@dev", "@regression", "@negative", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const services = await openServicesTab(page);
@@ -385,7 +384,7 @@ test("AWS Services - open a service row's actions menu, verify the Start, Stop, 
   await expect(services.servicesRows).toHaveCount(rowCount);
 });
 
-test("AWS Services - read the footer's total, when it exceeds one page go to page 2 and verify the request offsets by ten and the footer starts at row 11, otherwise verify no second page is offered", { tag: ["@dev", "@regression", "@functional"] }, async ({ page }) => {
+test("AWS Services - read the footer's total, when it exceeds one page go to page 2 and verify the request offsets by ten and the footer starts at row 11, otherwise verify no second page is offered", { tag: ["@dev", "@regression", "@functional", "@oss"] }, async ({ page }) => {
   test.setTimeout(180000);
 
   const log = trackGroupingsQueries(page);

@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   askQuestion,
@@ -22,7 +21,7 @@ import {
 test.describe("Nubi Chat History Rail", () => {
   test(
     "Chat History sanity - open Ask Nubi, open the Chat History rail from the left rail, verify the search box, the Mine and Everyone scope buttons, the type filter and the Saved and Waiting chips render",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openAskNubiPage(page);
@@ -47,7 +46,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History sanity - open the Chat History rail, verify past conversations are listed under a dated group heading",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openAskNubiPage(page);
@@ -69,7 +68,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - ask a new question, search the rail for its marker, open the found conversation, verify only that conversation is listed and the chat reopens on its session",
-    { tag: ["@dev", "@regression", "@search", "@crud"] },
+    { tag: ["@dev", "@regression", "@search", "@crud", "@oss"] },
     async ({ page }) => {
       test.setTimeout(480000);
       const { nubi, locators } = await openAskNubiPage(page);
@@ -101,7 +100,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - search the rail for a string no conversation contains, verify the list empties, then clear the search and verify the conversations come back",
-    { tag: ["@dev", "@regression", "@negative", "@search"] },
+    { tag: ["@dev", "@regression", "@negative", "@search", "@oss"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openAskNubiPage(page);
@@ -122,7 +121,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - ask a new question, save it from the row menu, filter by Saved and verify it is listed, then unsave it and verify it drops out of the Saved list",
-    { tag: ["@dev", "@regression", "@crud", "@snackbar"] },
+    { tag: ["@dev", "@regression", "@crud", "@snackbar", "@oss"] },
     async ({ page }) => {
       test.setTimeout(480000);
       const { nubi, locators } = await openAskNubiPage(page);
@@ -159,7 +158,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - ask a new question, wait for it to stop running, delete it from the row menu, verify the delete snackbar and that the conversation stays gone when the rail is searched again",
-    { tag: ["@dev", "@regression", "@crud", "@snackbar"] },
+    { tag: ["@dev", "@regression", "@crud", "@snackbar", "@oss"] },
     async ({ page }) => {
       test.setTimeout(480000);
       const { nubi, locators } = await openAskNubiPage(page);
@@ -193,7 +192,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - open the type filter and pick Chats, verify the trigger reads Chats and every listed conversation carries a chat source badge",
-    { tag: ["@dev", "@regression", "@functional"] },
+    { tag: ["@dev", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(240000);
       const { locators } = await openAskNubiPage(page);
@@ -226,7 +225,7 @@ test.describe("Nubi Chat History Rail", () => {
 
   test(
     "Chat History - collapse the rail with Collapse Recent, verify the conversation list is hidden and the rail button brings it back",
-    { tag: ["@dev", "@sanity", "@functional"] },
+    { tag: ["@dev", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       test.setTimeout(180000);
       const { locators } = await openAskNubiPage(page);

@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "./MonitoringTabLocator";
@@ -45,7 +44,7 @@ function makeKnownLimitationRecorder(limitations: CheckResult[]) {
 
 test(
   "Query Metrics - verify every operator Prometheus offers returns semantically correct series, in both Builder and Code, across a non-existent value, combined filters, a removal, a date-range change and download",
-  { tag: ["@dev", "@regression", "@functional", "@negative", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@negative", "@search", "@oss"] },
   async ({ page }) => {
     // Ten minutes is enough for real round trips and short enough that a hang fails fast.
     test.setTimeout(600000);

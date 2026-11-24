@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import { firstGroupName, noMatchTerm, NO_GROUP_HINT, openCreateModal, setup, uniqueGroupName } from "./applicationGroupHelper";
 

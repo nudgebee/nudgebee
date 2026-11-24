@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   openNotificationsTab,
@@ -22,7 +21,7 @@ test.describe.configure({ timeout: 240000 });
 
 test(
   "Notifications sanity - open the Notifications tab, verify the rules table, Add rule button, type filters, search and Check where it goes render",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
@@ -44,7 +43,7 @@ test(
 
 test(
   "Notifications sanity - open the Notifications tab, verify the rules listing renders its columns and the When no rule matches line",
-  { tag: ["@dev", "@sanity", "@functional"] },
+  { tag: ["@dev", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
@@ -59,7 +58,7 @@ test(
 
 test(
   "Notifications - add a blank rule, make it a one-hour weekly digest Don't send, save, verify it appears in the listing as paused",
-  { tag: ["@dev", "@regression", "@crud", "@functional"] },
+  { tag: ["@dev", "@regression", "@crud", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(240000);
     const noti = await openNotificationsTab(page);
@@ -82,7 +81,7 @@ test(
 
 test(
   "Notifications - create a paused rule, delete it from the listing, verify the rule is removed from the table",
-  { tag: ["@dev", "@regression", "@crud"] },
+  { tag: ["@dev", "@regression", "@crud", "@oss"] },
   async ({ page }) => {
     test.setTimeout(240000);
     const noti = await openNotificationsTab(page);
@@ -109,7 +108,7 @@ test(
 
 test(
   "Notifications - add a rule, type a name starting with a hyphen, save, verify the name format rejection",
-  { tag: ["@dev", "@regression", "@negative", "@validation"] },
+  { tag: ["@dev", "@regression", "@negative", "@validation", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
@@ -135,7 +134,7 @@ test(
 
 test(
   "Notifications - pick the Weekly digest type filter, verify the listing narrows and the When no rule matches line follows the type",
-  { tag: ["@dev", "@regression", "@functional", "@search"] },
+  { tag: ["@dev", "@regression", "@functional", "@search", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
@@ -155,7 +154,7 @@ test(
 
 test(
   "Notifications - add a rule, enter a name, cancel the editor, verify no rule was created and the form is empty on reopen",
-  { tag: ["@dev", "@regression", "@functional"] },
+  { tag: ["@dev", "@regression", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);
@@ -182,7 +181,7 @@ test(
 
 test(
   "Notifications sanity - switch from Notifications to the Access & Users > Audit Log tab and back, verify the rules listing is restored",
-  { tag: ["@dev", "@smoke", "@functional"] },
+  { tag: ["@dev", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
     const noti = await openNotificationsTab(page);

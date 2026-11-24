@@ -1,4 +1,3 @@
-// Not for OSS
 import { test, expect } from "@playwright/test";
 import {
   NO_MATCH_TERM,
@@ -32,7 +31,7 @@ const USER_AGENT_OPTION = /^User Created Agent$/;
 
 test(
   "Custom Agents sanity - open Nubi AI & Tools, land on the Agents tab, verify the search box, the Agent Type filter, the Create Custom Agent button and the agents table render",
-  { tag: ["@dev", "@test", "@sanity", "@functional"] },
+  { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -61,7 +60,7 @@ test(
 
 test(
   "Custom Agents - search the Agents listing by an existing agent name, verify only agents whose name contains that term stay listed",
-  { tag: ["@dev", "@test", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -100,7 +99,7 @@ test(
 
 test(
   "Custom Agents - search a name no agent can match, verify the No Data Available empty state, clear the search, verify the full listing returns",
-  { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -129,7 +128,7 @@ test(
 
 test(
   "Custom Agents - filter Agent Type by System Agent then by User Created Agent, verify the two sets share no agent and together cover the unfiltered listing",
-  { tag: ["@dev", "@test", "@regression", "@search", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@search", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -167,7 +166,7 @@ test(
 
 test(
   "Custom Agents - create a custom agent with a unique name, verify a fresh search returns it, delete it, verify the search returns the No Data Available empty state",
-  { tag: ["@dev", "@test", "@regression", "@crud"] },
+  { tag: ["@dev", "@test", "@regression", "@crud", "@oss"] },
   async ({ page }) => {
     test.setTimeout(300000);
 
@@ -208,7 +207,7 @@ test(
 
 test(
   "Custom Agents - open the create form, enter the name of an agent that already exists, verify the Agent name already exists error and that Create Agent is refused",
-  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -276,7 +275,7 @@ test(
 
 test(
   "Custom Agents - open the create form, submit with Name and Description left empty, verify the Please fill the following fields rejection and that the form stays open",
-  { tag: ["@dev", "@test", "@regression", "@validation", "@negative"] },
+  { tag: ["@dev", "@test", "@regression", "@validation", "@negative", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -305,7 +304,7 @@ test(
 
 test(
   "Custom Agents - open the create form, fill a unique agent name, cancel the form, verify searching that name returns the No Data Available empty state",
-  { tag: ["@dev", "@test", "@regression", "@negative", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@negative", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 
@@ -335,7 +334,7 @@ test(
 
 test(
   "Custom Agents - create a custom agent, open Edit Agent from its row menu, verify the form opens pre-filled with that agent's name, close it and delete the agent",
-  { tag: ["@dev", "@test", "@regression", "@crud", "@functional"] },
+  { tag: ["@dev", "@test", "@regression", "@crud", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(300000);
 
@@ -382,7 +381,7 @@ test(
 
 test(
   "Custom Agents - switch from the Agents tab to the Tools tab and back, verify each tab renders its own listing",
-  { tag: ["@dev", "@test", "@smoke", "@functional"] },
+  { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
   async ({ page }) => {
     test.setTimeout(180000);
 

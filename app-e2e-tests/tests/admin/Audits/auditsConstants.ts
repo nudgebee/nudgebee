@@ -1,4 +1,3 @@
-// Not for OSS
 
 // The Audit Log sub-tab of /user-management's Access & Users tab
 // (app/src/pages/user-management/index.jsx), whose body is AuditsTable

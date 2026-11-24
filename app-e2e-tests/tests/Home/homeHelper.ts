@@ -1,4 +1,3 @@
-// Not for OSS
 import { Page, Locator, Response, expect } from "@playwright/test";
 import { LoginPage } from "../../pages/LoginPage";
 import { readGlobalClusterValue } from "../utils/helpers";

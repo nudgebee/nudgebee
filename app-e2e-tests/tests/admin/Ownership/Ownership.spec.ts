@@ -1,4 +1,3 @@
-// Not for OSS
 
 import { test, expect } from "@playwright/test";
 import {
@@ -65,7 +64,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership sanity - open /user-management#access-users/ownership, verify the Ownership sub-tab is selected and the Ownership rules listing renders with its table and Add rule action",
-    { tag: ["@dev", "@test", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
 
@@ -88,7 +87,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, enter a name, keep the Label scope, enter a label key and value, select an owner, create, verify the rule is listed and the rules API returns it",
-    { tag: ["@dev", "@test", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
       const name = ruleName("create");
@@ -136,7 +135,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, enter a label key and value but leave the name and owner empty, verify Create stays disabled until both are supplied",
-    { tag: ["@dev", "@test", "@regression", "@negative", "@validation"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@validation", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
       const name = ruleName("validation");
@@ -176,7 +175,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open the row menu on a seeded rule, edit its name, save, verify the renamed rule replaces the old name in the listing and in the rules API",
-    { tag: ["@dev", "@test", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       const original = ruleName("edit-before");
       const renamed = ruleName("edit-after");
@@ -224,7 +223,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, open the Owner picker, search a prefix of the first offered owner, verify only matching owners remain and an unmatchable query shows No results found",
-    { tag: ["@dev", "@test", "@regression", "@search", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@search", "@negative", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
 
@@ -265,7 +264,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, fill the form completely, cancel instead of creating, verify the form closes and no rule by that name reaches the listing or the rules API",
-    { tag: ["@dev", "@test", "@regression", "@negative"] },
+    { tag: ["@dev", "@test", "@regression", "@negative", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
       const name = ruleName("cancelled");
@@ -297,7 +296,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open Add rule, enter a label key, switch the Domain to Cloud, verify the Match list swaps to the cloud scopes and the entered label key is cleared",
-    { tag: ["@dev", "@test", "@regression", "@functional"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@oss"] },
     async ({ page }) => {
       const locators = await openOwnership(page);
 
@@ -338,7 +337,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - toggle a seeded enabled rule off from the listing, verify the row reports disabled and the rules API returns enabled false",
-    { tag: ["@dev", "@test", "@regression", "@functional", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@functional", "@crud", "@oss"] },
     async ({ page }) => {
       const name = ruleName("toggle");
       const id = await seedLabelRule(page, name, owner, { enabled: true });
@@ -379,7 +378,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - open the row menu on a seeded rule, choose Delete, confirm, verify the row leaves the listing and the rules API no longer returns it",
-    { tag: ["@dev", "@test", "@regression", "@crud"] },
+    { tag: ["@dev", "@test", "@regression", "@crud", "@oss"] },
     async ({ page }) => {
       const name = ruleName("delete");
       const id = await seedLabelRule(page, name, owner);
@@ -417,7 +416,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership - leave Ownership for the Users tab and come back, verify Ownership is selected again and the seeded rule is still listed",
-    { tag: ["@dev", "@test", "@smoke", "@functional"] },
+    { tag: ["@dev", "@test", "@smoke", "@functional", "@oss"] },
     async ({ page }) => {
       const name = ruleName("nav");
       const id = await seedLabelRule(page, name, owner);
@@ -450,7 +449,7 @@ test.describe("Admin -> Ownership: ownership rules", () => {
 
   test(
     "Ownership sanity - open the listing on a seeded account-wide label rule, verify the table headers render and the row shows the Label scope chip, its key = value match, All accounts and an owner",
-    { tag: ["@dev", "@test", "@sanity", "@functional"] },
+    { tag: ["@dev", "@test", "@sanity", "@functional", "@oss"] },
     async ({ page }) => {
       const name = ruleName("row");
       const id = await seedLabelRule(page, name, owner, { matchKey: "squad", matchValue: "checkout" });
