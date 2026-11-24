@@ -242,7 +242,7 @@ export class ServicesLocators extends AWSLocators {
   // Fallback: CustomTable2 (still used by CloudAccountTable on OSS) renders the handle as a plain <span> holding the sort icon.
   sortHandle(name: string): Locator {
     const header = this.columnHeader(name);
-    return header.getByRole("button").or(header.locator("span").filter({ has: this.page.locator("svg") })).first();
+    return header.getByRole("button").or(header.locator("span:has(svg)")).first();
   }
 
   // One column's cells across the data rows only, in row order. nth-child is 1-based.
