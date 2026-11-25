@@ -17,7 +17,7 @@
 # at release time, so its CVEs stay until upstream cuts a new release. Only the
 # modules a scan flags are bumped, each to an explicit version, so every build is
 # reproducible and every bump shows up in a diff. When a new Atlas release ships
-# them, drop the go get. x/net@v0.60.0 requires x/text@v0.42.0.
+# them, drop the go get. x/net@v0.62.0 requires x/text@v0.43.0.
 # CGO is off because only SQLite needs it; we only talk to Postgres.
 FROM --platform=$BUILDPLATFORM ghcr.io/nudgebee/golang:1.27.3-alpine AS atlas-build
 ARG TARGETOS
@@ -30,8 +30,8 @@ RUN apk add --no-cache git && \
     git fetch -q --depth 1 origin "${ATLAS_COMMIT}" && git checkout -q FETCH_HEAD && \
     cd cmd/atlas && \
     go get \
-        golang.org/x/net@v0.60.0 \
-        golang.org/x/text@v0.42.0 \
+        golang.org/x/net@v0.62.0 \
+        golang.org/x/text@v0.43.0 \
         google.golang.org/grpc@v1.83.2 && \
     go mod tidy && \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" go build -trimpath \
@@ -64,7 +64,7 @@ ENV TZ=Etc/UTC
 # patches — a registry cache otherwise serves a stale package layer forever.
 # Committed (not a build-arg) so each refresh is a reviewable, revertable diff.
 # W44 pulls ca-certificates 20261020, which drops the distrusted emSign ECC Root CA - G3.
-ARG OS_PKG_EPOCH=2026-W44
+ARG OS_PKG_EPOCH=2026-W48
 RUN echo "os-pkg-epoch: ${OS_PKG_EPOCH}" && \
     apk upgrade --no-cache && \
     apk add --no-cache bash postgresql17-client curl ca-certificates tzdata python3
