@@ -601,7 +601,7 @@ const CreateAgentNew = ({
                     setStatus(e.target.value);
                     clearFieldError('status');
                   }}
-                  fieldType='dropdown'
+                  fieldType='select'
                   options={[
                     { label: 'Enabled', value: 'enabled' },
                     { label: 'Disabled', value: 'disabled' },
@@ -750,23 +750,16 @@ const CreateAgentNew = ({
               <FormField
                 label='Tool/Agent'
                 description='Select the tools and agents this agent can use for its tasks'
-                value={tools}
-                onSelect={(_, value) => {
-                  setTools(value);
+                value={tools.map((f) => f?.value || f)}
+                onChange={(e) => {
+                  setTools(e.target.value);
                   clearFieldError('tools');
                 }}
                 placeholder='Select Tool/Agent'
-                fieldType='autocomplete'
-                expanded={true}
-                showCategorization={true}
+                fieldType='select'
                 options={toolOptions || []}
                 multiple={true}
-                grouped={true}
-                isOptionsLoading={false}
                 minWidth={'65%'}
-                limitTags={3}
-                minRows={2}
-                maxRows={5}
                 error={hasSubmitted ? errors.tools : ''}
               />
 
