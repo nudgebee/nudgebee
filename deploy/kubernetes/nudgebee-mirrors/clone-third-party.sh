@@ -27,9 +27,8 @@ IMAGES=(
   # service charts). Pinned rather than the previous untagged `busybox`, which
   # resolved to :latest.
   "docker.io/library/busybox:1.37.0 busybox:1.37.0"
-  # The umbrella chart's own Redis (templates/redis/, redis.image). The Redis
-  # 7.0 Debian image it replaced was built by infra-mirrors-image.yaml.
-  "docker.io/library/redis:7.2.17-alpine redis:7.2.17-alpine"
+  # The umbrella chart's own Redis is no longer a plain copy: it is rebuilt with an
+  # apk upgrade as redis:7.2.17-alpine-nb1 by infra-mirrors-image.yaml.
   # The umbrella chart's own RabbitMQ (templates/rabbitmq/, rabbitmq.image).
   # The -management variant: the migration Job's rabbitmq scripts use the
   # management HTTP API.
