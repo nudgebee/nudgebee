@@ -8,6 +8,7 @@ import {
   disableIntegration,
   enableIntegration,
   selectAccountFromDropdown,
+  expectIntegrationStored,
 } from "./util";
 
 const requiredEnv = ["CLICKHOUSE_INTEGRATION_CONFIG_NAME", "CLICKHOUSE_SECRET"];
@@ -72,7 +73,6 @@ test.describe.serial("Clickhouse Account Integration", () => {
       saveBtn: locators.saveBtn,
       operationNames: ["TestIntegrationConnectionConfig"],
       timeout: 90000,
-      skipOnBackendError: true,
       checkDataErrors: true,
     });
 
@@ -87,6 +87,17 @@ test.describe.serial("Clickhouse Account Integration", () => {
         `account '${process.env.CLUSTER}' already has a 'clickhouse' integration ('clickhouse-test'); only one 'clickhouse' integration per account is supported — edit the existing one or remove it before adding another`,
         `integration config name '${configName}' already exists for this integration type`,
       ],
+    });
+
+    const after = await navigateToDatabaseTab(page);
+    await expectIntegrationStored(page, {
+      openList: async () => {
+        await after.clickhouseBtn.click();
+      },
+      configName,
+      serviceName: "Clickhouse",
+      statusFilterId: "clickhouse-status-filter",
+      accountName: process.env.CLUSTER!,
     });
   });
 

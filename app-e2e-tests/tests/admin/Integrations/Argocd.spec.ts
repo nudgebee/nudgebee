@@ -8,6 +8,7 @@ import {
   disableIntegration,
   enableIntegration,
   selectAccountFromDropdown,
+  expectIntegrationStored,
 } from "./util";
 
 const requiredEnv = [
@@ -78,7 +79,6 @@ test.describe.serial("Argocd Account Integration", () => {
       serviceName: "ArgoCD",
       saveBtn: locators.saveBtn,
       operationNames: ["TestIntegrationConnectionConfig"],
-      skipOnBackendError: true,
       checkDataErrors: true,
       timeout: 20000,
     });
@@ -89,6 +89,17 @@ test.describe.serial("Argocd Account Integration", () => {
       successToast: locators.argocdSuccessToast,
       testName: "Add Argocd Account Integration",
       operationNames: ["AddIntegrations"],
+    });
+
+    const after = await navigateToCicdTab(page);
+    await expectIntegrationStored(page, {
+      openList: async () => {
+        await after.argocdBtn.click();
+      },
+      configName,
+      serviceName: "Argocd",
+      statusFilterId: "argocd-status-filter",
+      accountName: process.env.CLUSTER!,
     });
   });
 

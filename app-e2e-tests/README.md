@@ -84,6 +84,14 @@ USER_EMAIL=qa-bot@example.com
 USER_PASSWORD=...
 ```
 
+Integration specs under `tests/admin/Integrations/` read their own keys. One is easy to miss:
+
+| Key | Used by | Notes |
+|-----|---------|-------|
+| `CONFLUENCE_ACCOUNT` | `Confluence.spec.ts` | Optional. Account the integration is attached to; falls back to `CLUSTER`. Set it when `CLUSTER` already has a Confluence integration under another name (one per account). |
+
+In CI, the test workflow also reads a second secret, `E2E_TEST_ENV_OVERRIDES`, appended after `E2E_TEST_ENV`; a key in both takes the value from the overrides. Put rotated credentials there so the main secret never has to be re-pasted. Add the keys you use to either secret — it rebuilds `.env`, so a key that exists only locally is undefined there.
+
 ## Writing a new test
 
 Tests use the Page-Object Model — UI selectors live in `pages/`, not in the spec. Example:
@@ -102,6 +110,17 @@ test('Magic link Sent Successfully', async ({ page }) => {
 When you need a new UI interaction, prefer adding/extending a Page Object over inlining `page.locator(...)` calls in specs.
 
 Every new test also needs a category tag (`@smoke`/`@sanity`/`@functional`/`@regression`/`@negative`) and an environment tag (`@dev`/`@test`/`@oss`) — see [`TAGGING.md`](TAGGING.md).
+
+## Discord spec keys
+
+`tests/admin/Integrations/Discord.spec.ts` deletes the tenant's Discord bot and installs it again, so it needs its own keys:
+
+| Key | Notes |
+|-----|-------|
+| `DISCORD_BOT_TOKEN` | Bot token of the Discord app. Without it the delete and install steps skip. |
+| `DISCORD_CHANNEL_NAME` | Optional. Channel the bot is mapped to. Defaults to `<E2E_ENVIRONMENT>-default` (`test-default`, `oss-default`), so a run never posts into another environment's channel. The test fails if that channel does not exist. |
+
+In CI, add them to the `E2E_TEST_ENV` secret.
 
 ## CI
 
