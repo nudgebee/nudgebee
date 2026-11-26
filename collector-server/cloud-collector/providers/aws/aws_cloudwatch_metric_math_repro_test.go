@@ -9,7 +9,6 @@ import (
 	"nudgebee/collector/cloud/providers"
 
 	"github.com/aws/aws-sdk-go-v2/service/cloudtrail"
-	trailtypes "github.com/aws/aws-sdk-go-v2/service/cloudtrail/types"
 )
 
 // fakeAwsProviderAPI captures whatever QueryMetricsRequest executeAction
@@ -37,7 +36,7 @@ func (f *fakeAwsProviderAPI) GetECSServiceDetails(providers.CloudProviderContext
 func (f *fakeAwsProviderAPI) GetECSTaskDefinitionDetails(providers.CloudProviderContext, providers.Account, string, string) (providers.Resource, error) {
 	return providers.Resource{}, nil
 }
-func (f *fakeAwsProviderAPI) LookupCloudTrailEvents(providers.CloudProviderContext, providers.Account, string, *cloudtrail.LookupEventsInput) ([]trailtypes.Event, error) {
+func (f *fakeAwsProviderAPI) LookupCloudTrailEvents(providers.CloudProviderContext, providers.Account, string, *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error) {
 	return nil, nil
 }
 

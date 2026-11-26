@@ -31,6 +31,14 @@ import (
 	"github.com/aws/smithy-go/ptr"
 )
 
+// cloudTrailActionContext retains account/security context while bounding pagination.
+type cloudTrailActionContext struct {
+	providers.CloudProviderContext
+	ctx context.Context
+}
+
+func (c cloudTrailActionContext) GetContext() context.Context { return c.ctx }
+
 // --- TemplatedEventBridgeProcessor ---
 
 // ErrEventActionResourceMissing indicates that an event-driven action targeted
@@ -46,7 +54,7 @@ type awsProviderAPI interface {
 	ListResources(ctx providers.CloudProviderContext, account providers.Account, query providers.ListResourceRequest) (providers.ListResourcesResponse, error)
 	GetECSServiceDetails(ctx providers.CloudProviderContext, account providers.Account, region, clusterIdentifier, serviceIdentifier string) (providers.Resource, error)
 	GetECSTaskDefinitionDetails(ctx providers.CloudProviderContext, account providers.Account, region, taskDefinitionIdentifier string) (providers.Resource, error)
-	LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) ([]trailtypes.Event, error)
+	LookupCloudTrailEvents(ctx providers.CloudProviderContext, account providers.Account, region string, input *cloudtrail.LookupEventsInput) (*cloudtrail.LookupEventsOutput, error)
 }
 
 // TemplatedEventBridgeProcessor processes EventBridgeEvents based on a set of defined rules.
@@ -1681,43 +1689,95 @@ func (p *TemplatedEventBridgeProcessor) executeAction(
 		// deduped by EventId, an optional per-query EventName allow-list is
 		// applied client-side, and read-only (non-mutating) events are
 		// dropped, matching the prior single-call ReadOnly=false default.
+		// Sparse client-side filters can require many pages; bound the whole action.
+		lookupCtx, cancel := context.WithTimeout(pCtx.GetContext(), 30*time.Second)
+		defer cancel()
+		const maxPagesPerQuery = 5
+		deadline, _ := lookupCtx.Deadline()
 		seen := map[string]bool{}
 		var merged []trailtypes.Event
-		for _, q := range paramsCT.LookupAttributes {
+		var firstLookupErr error
+		for i, q := range paramsCT.LookupAttributes {
 			if q.AttributeKey == "" || q.AttributeValue == "" {
 				logger.Warn("eventprocessor: skipping invalid lookup_attributes entry for aws_get_cloudtrail_events", "entry", q)
 				continue
 			}
-			events, err := p.awsAPI.LookupCloudTrailEvents(pCtx, awsAccount, region, &cloudtrail.LookupEventsInput{
+			input := &cloudtrail.LookupEventsInput{
 				StartTime: ptr.Time(startTimeCT),
 				EndTime:   ptr.Time(endTimeCT),
 				LookupAttributes: []trailtypes.LookupAttribute{
 					{AttributeKey: trailtypes.LookupAttributeKey(q.AttributeKey), AttributeValue: ptr.String(q.AttributeValue)},
 				},
 				MaxResults: ptr.Int32(int32(maxResults)),
-			})
-			if err != nil {
-				return nil, fmt.Errorf("eventprocessor: failed to lookup cloudtrail events for action '%s' (%s=%s): %w", actionDef.Name, q.AttributeKey, q.AttributeValue, err)
 			}
-
 			allowedNames := map[string]bool{}
 			for _, n := range q.EventNames {
 				allowedNames[n] = true
 			}
-			for _, ev := range events {
-				if len(allowedNames) > 0 && !allowedNames[ptr.ToString(ev.EventName)] {
-					continue
+			// Reserve a share of the remaining time for each later query.
+			queryCtx, stopQuery := context.WithTimeout(lookupCtx, time.Until(deadline)/time.Duration(len(paramsCT.LookupAttributes)-i))
+			providerCtx := cloudTrailActionContext{CloudProviderContext: pCtx, ctx: queryCtx}
+			var queryErr error
+			matched := 0
+			querySeen := map[string]bool{}
+			for page := 1; page <= maxPagesPerQuery; page++ {
+				if queryErr = queryCtx.Err(); queryErr != nil {
+					break
 				}
-				if ptr.ToString(ev.ReadOnly) == "true" {
-					continue
+				output, err := p.awsAPI.LookupCloudTrailEvents(providerCtx, awsAccount, region, input)
+				if err != nil {
+					queryErr = err
+					break
 				}
-				id := ptr.ToString(ev.EventId)
-				if id != "" && seen[id] {
-					continue
+				if output == nil {
+					queryErr = errors.New("CloudTrail returned no result")
+					break
 				}
-				seen[id] = true
-				merged = append(merged, ev)
+				// Count filtered matches, preserving CloudTrail's newest-first order per query.
+				for _, ev := range output.Events {
+					if len(allowedNames) > 0 && !allowedNames[ptr.ToString(ev.EventName)] {
+						continue
+					}
+					if ptr.ToString(ev.ReadOnly) == "true" {
+						continue
+					}
+					id := ptr.ToString(ev.EventId)
+					if id != "" && querySeen[id] {
+						continue
+					}
+					querySeen[id] = true
+					matched++
+					if id == "" || !seen[id] {
+						seen[id] = true
+						merged = append(merged, ev)
+					}
+					if matched >= int(maxResults) {
+						break
+					}
+				}
+				if matched >= int(maxResults) || ptr.ToString(output.NextToken) == "" {
+					break
+				}
+				if ptr.ToString(output.NextToken) == ptr.ToString(input.NextToken) {
+					queryErr = errors.New("CloudTrail repeated a pagination token")
+					break
+				}
+				if page == maxPagesPerQuery {
+					queryErr = fmt.Errorf("CloudTrail page limit of %d reached", maxPagesPerQuery)
+					break
+				}
+				input.NextToken = output.NextToken
 			}
+			stopQuery()
+			if queryErr != nil {
+				logger.Warn("eventprocessor: CloudTrail evidence lookup truncated", "action", actionDef.Name, "attribute", q.AttributeKey, "value", q.AttributeValue, "matches", matched, "error", queryErr)
+				if firstLookupErr == nil {
+					firstLookupErr = fmt.Errorf("eventprocessor: incomplete CloudTrail lookup for action '%s' (%s=%s): %w", actionDef.Name, q.AttributeKey, q.AttributeValue, queryErr)
+				}
+			}
+		}
+		if len(merged) == 0 && firstLookupErr != nil {
+			return nil, firstLookupErr
 		}
 
 		sort.Slice(merged, func(i, j int) bool {
