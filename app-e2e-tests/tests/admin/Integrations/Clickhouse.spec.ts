@@ -106,7 +106,12 @@ test.describe.serial("Clickhouse Account Integration", () => {
       `Missing required env vars: ${missingEnv.join(", ")} — add them to the E2E_TEST_ENV secret`,
     );
     const locators = await navigateToDatabaseTab(page);
+    // Wait for the list's first (default "Enabled") ListIntegrations response — it excludes the disabled config, and if it lands after the name search it empties the table.
+    const initialList = page
+      .waitForResponse((r) => r.url().includes("/api/graphql") && !!r.request().postData()?.includes("ListIntegrations"), { timeout: 30000 })
+      .catch(() => null);
     await locators.clickhouseBtn.click();
+    await initialList;
     await enableIntegration(page, {
       configName,
       serviceName: "Clickhouse",
