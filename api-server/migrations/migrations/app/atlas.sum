@@ -1,4 +1,4 @@
-h1:FMytTJZ6p0vgpX9KfZD9yIkSxkMYwo3tNMkLN45OlgU=
+h1:UhY95TDr0Hxp+J2pla5AJwMY7SnrrFxME0sxdTc6dxM=
 1665080411172_V0.up.sql h1:u69osJjPb3FctiXmgk+fpiFMTDQTnGpqDRH45K0pUdc=
 1665211266851_V1.up.sql h1:AGUExFXk9BDw9lpD7Cu1Bu5wn3mQA/Ul+5/jny32xYc=
 1665218608952_V2.up.sql h1:dWrFXuJESbVByq7iXDF7tFbOc1bgbwgCc0Fd8QETHwo=
@@ -1284,3 +1284,4 @@ h1:FMytTJZ6p0vgpX9KfZD9yIkSxkMYwo3tNMkLN45OlgU=
 1794128560545_V1111_k8s_meta_strip_secret_material.up.sql h1:Xg077LObCZGaKym8AKbAkmhOM3QIO19Gtm1k58B1/vc=
 1794197791886_V1112_llm_sql_tools_scoped_role.up.sql h1:RTzFklMiTS4xwYtHULTPNXP0NyfMPzItTI06lhHUrPE=
 1794378257219_V1118_restore_custom_roles_feature_flag.up.sql h1:y8H8XjlW93z92Lttu3cYdnxmCahjb3HHnM4CE2LK7gU=
+1795379783877_V1831_add_openobserve_event_rule_source.up.sql h1:Z9x7s76RrsqdzAkyGKWXLuMxH5FMVSUxfv7POfTiG+M=

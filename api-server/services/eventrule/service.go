@@ -241,6 +241,7 @@ func isExternalProviderSource(source string) bool {
 		"cloudwatch": true, "azure_monitor": true, "gcp_monitoring": true,
 		"splunk": true, "elasticsearch": true, "loki": true,
 		"signoz": true, "grafana": true, "chronosphere_user": true,
+		"openobserve":            true,
 		"cubeapm":                true,
 		prometheusUserSourceName: true,
 	}
@@ -254,6 +255,8 @@ func resolveProviderFromSource(source string) (string, string) {
 		return "datadog", "user"
 	case "newrelic":
 		return "newrelic", "user"
+	case "openobserve":
+		return "openobserve", "user"
 	case "dynatrace":
 		return "dynatrace", "user"
 	case "splunk":
@@ -290,6 +293,8 @@ func resolveSourceFromMetricProvider(metricProvider string) string {
 		return "datadog"
 	case "newrelic":
 		return "newrelic"
+	case "openobserve":
+		return "openobserve"
 	case "dynatrace":
 		return "dynatrace"
 	case "splunk_observability_platform":
