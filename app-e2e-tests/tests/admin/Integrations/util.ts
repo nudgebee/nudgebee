@@ -11,16 +11,20 @@ export function getGcpServiceAccountKey(): string {
     throw new Error("GCP_SERVICE_ACCOUNT_KEY is not set — add it to the E2E_DEV_ENV/E2E_TEST_ENV secret");
   }
 
-  const decoded = Buffer.from(raw, "base64").toString("utf8");
+  // A key joined onto one line as plain JSON (local .env) is as good as base64 (CI secret): parse it as is first, then fall back to base64.
   let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(decoded);
+    parsed = JSON.parse(raw);
   } catch {
-    throw new Error(
-      "GCP_SERVICE_ACCOUNT_KEY is not valid base64-encoded JSON. Store the service-account key JSON " +
-        "as base64 (e.g. `base64 -w 0 key.json`) in the E2E_DEV_ENV/E2E_TEST_ENV secret — a raw multi-line " +
-        "value gets truncated when the workflow exports .env.dev into $GITHUB_ENV line by line.",
-    );
+    try {
+      parsed = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+    } catch {
+      throw new Error(
+        "GCP_SERVICE_ACCOUNT_KEY is neither one-line JSON nor base64-encoded JSON. Store the service-account key JSON " +
+          "on one line, or as base64 (e.g. `base64 -w 0 key.json`), in the E2E_DEV_ENV/E2E_TEST_ENV secret — a raw multi-line " +
+          "value gets truncated when the workflow exports .env.dev into $GITHUB_ENV line by line.",
+      );
+    }
   }
 
   if (parsed.type !== "service_account" || !parsed.project_id || !parsed.private_key || !parsed.client_email) {
@@ -139,6 +143,11 @@ export async function selectAccountFromDropdown(
   dropdown: Locator,
   accountName: string,
 ): Promise<void> {
+  // The account field sits low in the form, so on the 720px test window the panel
+  // opens at the bottom edge and a group opened inside it grows downward, out of
+  // view, inside a panel that clips its overflow — Playwright then cannot scroll the
+  // option into reach. Lift the trigger to the top of the form before opening.
+  await dropdown.evaluate((el) => el.scrollIntoView({ block: "start" }));
   await dropdown.click();
   const panel = page.locator(".MuiPopover-paper").last();
   await expect(panel).toBeVisible({ timeout: 10000 });
@@ -178,7 +187,9 @@ export async function selectAccountFromDropdown(
   }
 
   await expect(option).toBeVisible({ timeout: 10000 });
-  await option.click();
+  // On some runner screens the expanded list reaches past the window, where Playwright refuses the click ("outside of the viewport"); the option also takes a plain click event, which picks the same account.
+  await option.click({ timeout: 2000 }).catch(() => option.dispatchEvent("click"));
+  await expect(option).toHaveAttribute("aria-selected", "true");
   await dropdown.press("Escape");
 }
 
@@ -378,6 +389,45 @@ export async function isIntegrationPresent(
   const hit = await isRowVisible(page, configName);
   console.log(`${serviceName} integration "${configName}" present: ${hit}`);
   return hit;
+}
+
+// For an integration an account can hold only one of (Confluence): the config already on `accountName`, whatever it is called. Call it on the list isIntegrationPresent just filtered; the caller adopts the returned name so delete, add, edit and disable act on the real row instead of tripping over a name the account never had.
+export async function findConfigNameOnAccount(
+  page: Page,
+  { serviceName, accountName }: { serviceName: string; accountName: string },
+): Promise<string | null> {
+  await filterListByName(page, "");
+  // configRow matches any cell holding exactly the text, so the Account column finds the row as well as the Name column does.
+  const row = configRow(page, accountName);
+  // An account with no integration yet is the normal case, so a missing row must come back as null, not throw.
+  const found = await row
+    .waitFor({ state: "visible", timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!found) {
+    console.log(`${serviceName}: the account has no integration yet`);
+    return null;
+  }
+  const name = (await row.locator("td").first().innerText({ timeout: 5000 })).trim();
+  console.log(`${serviceName}: the account already has an integration, adopting its name`);
+  return name;
+}
+
+// A tolerated "already exists" can turn a save into a silent no-op, so after an Add the integration must be on the list: under its own name, or as the one this account is allowed to hold.
+export async function expectIntegrationStored(
+  page: Page,
+  {
+    openList,
+    configName,
+    serviceName,
+    statusFilterId,
+    accountName,
+  }: { openList: () => Promise<void>; configName: string; serviceName: string; statusFilterId: string; accountName: string },
+): Promise<void> {
+  const present = await isIntegrationPresent(page, { openList, configName, serviceName, statusFilterId });
+  if (present) return;
+  const onAccount = await findConfigNameOnAccount(page, { serviceName, accountName });
+  expect(onAccount, `${serviceName}: the Add finished but the integration is not on the list, so nothing was stored`).not.toBeNull();
 }
 
 /**

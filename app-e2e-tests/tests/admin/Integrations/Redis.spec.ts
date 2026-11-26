@@ -7,6 +7,7 @@ import {
   disableIntegration,
   enableIntegration,
   selectAccountFromDropdown,
+  expectIntegrationStored,
 } from "./util";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
 
@@ -88,6 +89,17 @@ test.describe.serial("Redis Account Integration", () => {
         "already has a 'redis' integration",
         `integration config name '${configName}' already exists for this integration type`,
       ],
+    });
+
+    const after = await navigateToInMemoryTab(page);
+    await expectIntegrationStored(page, {
+      openList: async () => {
+        await after.redisBtn.click();
+      },
+      configName,
+      serviceName: "Redis",
+      statusFilterId: "redis-status-filter",
+      accountName: process.env.CLUSTER!,
     });
   });
 

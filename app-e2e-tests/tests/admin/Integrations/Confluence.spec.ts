@@ -4,6 +4,8 @@ import {
   testConnection,
   saveAndHandleAlreadyExists,
   isIntegrationPresent,
+  findConfigNameOnAccount,
+  expectIntegrationStored,
   ensureIntegrationPresent,
   deleteIntegration,
   disableIntegration,
@@ -20,7 +22,10 @@ const requiredEnv = [
   "CONFLUENCE_NAMESPACE",
 ];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
-const configName = process.env.CONFLUENCE_INTEGRATION_CONFIG_NAME!;
+// One Confluence per account: when the account already has one under another name, the check step adopts that name.
+let configName = process.env.CONFLUENCE_INTEGRATION_CONFIG_NAME!;
+// The account the integration is attached to; falls back to the suite's cluster. CLUSTER also drives the login setup, so a different account is chosen here, not there.
+const accountName = process.env.CONFLUENCE_ACCOUNT || process.env.CLUSTER!;
 
 test.describe.serial("Confluence Account Integration", () => {
   let integrationExists = false;
@@ -39,6 +44,16 @@ test.describe.serial("Confluence Account Integration", () => {
       serviceName: "Confluence",
       statusFilterId: "confluence-status-filter",
     });
+    if (!integrationExists) {
+      const onAccount = await findConfigNameOnAccount(page, {
+        serviceName: "Confluence",
+        accountName,
+      });
+      if (onAccount) {
+        configName = onAccount;
+        integrationExists = true;
+      }
+    }
   });
 
   test("Delete Confluence integration if present", { tag: ["@test", "@oss", "@regression", "@functional", "@crud"] }, async ({ page }) => {
@@ -68,7 +83,7 @@ test.describe.serial("Confluence Account Integration", () => {
     await locators.confluenceBtn.click();
     await locators.addConfluenceAccountBtn.click();
 
-    await selectAccountFromDropdown(page, locators.confluenceAccountIdDropdown, process.env.CLUSTER!);
+    await selectAccountFromDropdown(page, locators.confluenceAccountIdDropdown, accountName);
     await locators.confluenceHostInput.fill(process.env.CONFLUENCE_TEST_HOST!);
     await locators.confluenceConfigNameInput.fill(configName);
     await locators.confluenceNamespaceInput.fill(process.env.CONFLUENCE_NAMESPACE!);
@@ -81,7 +96,6 @@ test.describe.serial("Confluence Account Integration", () => {
       serviceName: "Confluence",
       saveBtn: locators.saveBtn,
       operationNames: ["TestIntegrationConnectionConfig"],
-      skipOnBackendError: true,
       checkDataErrors: true,
     });
     if (!connected) return;
@@ -92,6 +106,17 @@ test.describe.serial("Confluence Account Integration", () => {
       testName: "Add Confluence Account Integration",
       operationNames: ["AddIntegrations"],
       ignoreErrorMessages: ["already exists", "already has"],
+    });
+
+    const after = await navigateToDocsTab(page);
+    await expectIntegrationStored(page, {
+      openList: async () => {
+        await after.confluenceBtn.click();
+      },
+      configName,
+      serviceName: "Confluence",
+      statusFilterId: "confluence-status-filter",
+      accountName,
     });
   });
 
@@ -113,9 +138,8 @@ test.describe.serial("Confluence Account Integration", () => {
     test.skip(!present, "Confluence integration is not Active — Slack notification sent");
 
     await openEditIntegration(page, {
-      openList: async () => {
-        await locators.confluenceBtn.click();
-      },
+      // The presence check above already opened the Confluence list; its card is gone from the page, so clicking it again times out.
+      openList: async () => {},
       configName,
       serviceName: "Confluence",
       statusFilterId: "confluence-status-filter",

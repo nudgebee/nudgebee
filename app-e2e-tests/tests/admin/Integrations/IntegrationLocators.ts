@@ -217,6 +217,33 @@ export class IntegrationLocators extends CommonLocators {
   readonly slackTestSuccessToast!: Locator;
   readonly slackTestErrorToast!: Locator;
 
+  // Discord Locators
+  readonly discordBtn!: Locator;
+  readonly discordIntegrationBox!: Locator;
+  readonly discordNotConnected!: Locator;
+  readonly addToDiscordBtn!: Locator;
+  readonly testDiscordNotificationBtn!: Locator;
+  readonly discordBotTokenInput!: Locator;
+  readonly discordInstallBtn!: Locator;
+  readonly discordInstallDoneBtn!: Locator;
+  readonly discordConnectedBtn!: Locator;
+  readonly discordChannelSelect!: Locator;
+  readonly discordMapSaveBtn!: Locator;
+  readonly discordRow!: Locator;
+  readonly discordMapChannelBtn!: Locator;
+  readonly discordRowMenuBtn!: Locator;
+  readonly discordDeleteMenuItem!: Locator;
+  readonly discordDeleteConfirmBtn!: Locator;
+  readonly discordChannelOptions!: Locator;
+  readonly discordTestSuccessToast!: Locator;
+  readonly discordEditMenuItem!: Locator;
+  readonly discordUpdateTokenMenuItem!: Locator;
+  readonly discordInstallCancelBtn!: Locator;
+  readonly discordInviteBtn!: Locator;
+  readonly discordMapInviteBtn!: Locator;
+  readonly discordThreadRepeats!: Locator;
+  readonly discordInstallErrorToast!: Locator;
+
   // MS Teams Locators
   readonly msTeamsBtn!: Locator;
   readonly msTeamsIntegrationBox!: Locator;
@@ -290,9 +317,8 @@ export class IntegrationLocators extends CommonLocators {
       name: "Subscription ID",
     });
     this.azDoneBtn = page.getByRole("button", { name: "Done" });
-    this.azSuccessToast = page.getByText("Onboarded successfully", {
-      exact: false,
-    });
+    // The wizard no longer toasts "Onboarded successfully": a created account ends on a "Waiting for the first data sync" step whose only exit is Done.
+    this.azSuccessToast = this.azDoneBtn;
     this.azDuplicateErrorToast = page.getByText("already exists", {
       exact: false,
     });
@@ -658,6 +684,38 @@ export class IntegrationLocators extends CommonLocators {
     this.slackTestErrorToast = this.genericErrorToast
       .or(page.getByText("Failed to send test notification to Slack", { exact: false }))
       .first();
+
+    // Discord Locators
+    // Section card ID computed from provider "DISCORD" → "Discord" → "Discord-section-card"
+    // MessagingIntegrationTile and DiscordInstallModal render no data-testid and these controls have no stable accessible name, so the ids are the contract.
+    this.discordBtn = page.locator("#Discord-section-card");
+    this.discordIntegrationBox = page.locator("#discord-integrations");
+    this.discordNotConnected = page.locator("#discord-not-installed");
+    // One id for two states: the "Connect Discord" action while not connected, the disabled "Connected" button after.
+    this.addToDiscordBtn = page.locator("#add-to-discord-btn");
+    this.testDiscordNotificationBtn = page.locator("#test-discord-btn");
+    this.discordBotTokenInput = page.locator("#bot-token");
+    this.discordInstallBtn = page.locator("#save-install-modal-btn");
+    this.discordInstallDoneBtn = page.locator("#done-install-modal-btn");
+    this.discordConnectedBtn = this.addToDiscordBtn.filter({ hasText: /^\s*Connected\s*$/ });
+    this.discordChannelSelect = page.locator("#channels");
+    this.discordMapSaveBtn = page.locator("#save-modal-btn");
+    this.discordRow = this.discordIntegrationBox.locator("tbody tr").first();
+    this.discordMapChannelBtn = this.discordIntegrationBox.locator("#map-channel-1");
+    this.discordRowMenuBtn = this.discordRow.getByRole("button", { name: "More actions" });
+    // MUI menu items match zero by role in this app (nested spans, aria-hidden), so the menu item is addressed by its id.
+    this.discordDeleteMenuItem = page.locator('[role="menuitem"]#delete:visible');
+    this.discordDeleteConfirmBtn = page.getByRole("dialog").getByRole("button", { name: "Delete", exact: true });
+    this.discordChannelOptions = page.locator('[role="option"]');
+    this.discordTestSuccessToast = page.getByText("Test notification sent to Discord successfully!", { exact: false });
+    this.discordEditMenuItem = page.locator('[role="menuitem"]#edit:visible');
+    this.discordUpdateTokenMenuItem = page.locator('[role="menuitem"]#update_token:visible');
+    this.discordInstallCancelBtn = page.locator("#cancel-install-modal-btn");
+    this.discordInviteBtn = page.locator("#open-discord-invite-btn");
+    this.discordMapInviteBtn = page.locator("#open-discord-invite-map-btn");
+    this.discordThreadRepeats = page.locator("#thread-repeats-checkbox");
+    // The message is the backend's own rejection text, shown for about 5 seconds in a plain box rather than an alert role; the generic wording is the fallback when the backend sends none.
+    this.discordInstallErrorToast = page.getByText(/Invalid Discord bot token|Failed to install Discord integration/).first();
 
     // MS Teams Locators
     // Section card ID computed from provider "MSTEAMS" → "Msteams" → "Msteams-section-card"
