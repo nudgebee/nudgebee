@@ -130,6 +130,7 @@ jobs:
           # The official image's binary and UI on a Red Hat UBI 9 base (Red Hat chart
           # certification; same Qdrant version).
           - { image: qdrant,               context: deploy/kubernetes/nudgebee-mirrors/qdrant,               tag: v1.19.2-nb2 }
+          - { image: rabbitmq,             context: deploy/kubernetes/nudgebee-mirrors/rabbitmq,             tag: 4.2.9-management-alpine-nb1 }
         plat:
           - { arch: amd64, platform: linux/amd64, runner: ubuntu-latest }
           - { arch: arm64, platform: linux/arm64, runner: ubuntu-24.04-arm }
@@ -198,6 +199,7 @@ jobs:
           - { image: temporal-server,      tag: 1.31.4-nb2 }
           - { image: temporal-admin-tools, tag: 1.31.4-nb2 }
           - { image: qdrant,               tag: v1.19.2-nb2 }
+          - { image: rabbitmq,             tag: 4.2.9-management-alpine-nb1 }
     steps:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
