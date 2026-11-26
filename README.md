@@ -103,6 +103,12 @@ Other defaults work as-is against the compose stack from step 2. Read the
 inline comments before any non-local deploy — a few other values (private keys)
 also need rotation.
 
+The source-run services use the same `LLM_SERVER_TOKEN` to authenticate private
+LLM routes. The copied `.env.example` files provide the local-dev value; keep it
+identical in `app/.env`, `api-server/services/.env`, `llm/llm-server/.env`, and
+any other caller you run from source. Generate a fresh value for shared
+environments with `openssl rand -hex 32`.
+
 ### 4. Run the backend
 
 ```bash
@@ -164,6 +170,7 @@ non-local deployment, generate fresh values and review the notes below.
 | `NUDGEBEE_ENCRYPTION_KEY`                              | services-server **and** app | `openssl rand -hex 32`    | Encrypts integration credentials and other sensitive columns. **Must match between services-server and app.** Rotating it makes previously-encrypted rows unreadable — there is no automatic re-encryption migration. |
 | `ACTION_API_SERVER_TOKEN`                              | services-server and its callers | `openssl rand -hex 32` | Required for private services-server routes. The chart generates it; local Compose uses `dev-action-token-change-me`. Set one matching value for every caller. |
 | `CLOUD_COLLECTOR_SERVER_TOKEN`                         | cloud-collector and its callers | `openssl rand -hex 32` | Required for private cloud-collector routes. The chart generates it; local Compose uses `dev-cloud-collector-token-change-me`. Keep it distinct from other service tokens. |
+| `LLM_SERVER_TOKEN`                                      | app, services-server, llm-server, and other callers | `openssl rand -hex 32` | Shared secret for private llm-server routes. **Must match in every running caller and llm-server.** |
 | `NEXTAUTH_SECRET`                                      | app                         | `openssl rand -base64 32` | Signs both NextAuth session cookies and the inner HS256 session JWT the gateway mints for API-token callers and forwards upstream. Rotating it logs everyone out.                                   |
 | `NEXTAUTH_DUMMY_CREDS_ENABLED` / `_PASSWORD`           | app                         | —                         | Enables the any-email/password provider. Use for local development only; turn it off in any deployment exposed beyond your laptop.                                                                                    |
 | `RABBIT_MQ_USERNAME` / `_PASSWORD` / `_HOST` / `_PORT` | services-server             | —                         | Compose defaults: `guest` / `guest` / `localhost` / `5672`.                                                                                                                                                           |
