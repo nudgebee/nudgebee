@@ -431,10 +431,11 @@ func TestListMetricsLabelValuesTool_SchemaContract(t *testing.T) {
 // otherwise start guessing label names, so it must route both named-resource
 // shapes: workloads to series-match, everything else to label-values.
 func TestPrometheusNoDataMessage_RoutesEachDiscoveryShape(t *testing.T) {
-	msg := prometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
+	msg := PrometheusNoDataMessage(`node_cpu_seconds_total{kubernetes_node="worker-1"}`)
 
 	assert.Contains(t, msg, `node_cpu_seconds_total{kubernetes_node="worker-1"}`,
 		"the failing query must be echoed so the agent knows what to change")
+	assert.Contains(t, msg, "If a base read verifies the metric and scope in the same time range")
 	assert.Contains(t, msg, ToolMetricsSeriesMatch, "workload path")
 	assert.Contains(t, msg, ToolMetricsLabelValues, "non-workload named-resource path")
 	assert.Contains(t, msg, ToolMetricsList, "keyword-discovery path")

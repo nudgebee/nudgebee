@@ -24,6 +24,9 @@ body: |2
   {{end}}
 
 
+  **EMPTY METRIC RESULTS:**
+  - Never infer a numeric value from an empty metric response. If a base read verifies the metric and scope in the same time range, an empty filter or threshold result means nothing matched. When the metric or scope is uncertain, follow the tool's discovery guidance and retry before concluding that data is unavailable.
+
   **When you need to use a single tool:**
 
   **Example of a Single Tool Call:**

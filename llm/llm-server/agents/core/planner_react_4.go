@@ -1894,7 +1894,7 @@ func (o *NBReActPlanner4) renderObservation(step *NBAgentPlannerToolActionStep, 
 		obs = obs + "\n\n" + ev
 	}
 	obs = withSavedOutputNote(obs, step.Metadata)
-	return obs + savedFilesNote(step, obs, o.tools)
+	return withMetricNoDataMarker(*step, obs+savedFilesNote(step, obs, o.tools))
 }
 
 // Replayed results for successful update_notebook calls (see renderObservation).
@@ -2168,7 +2168,7 @@ func (o *NBReActPlanner4) flattenTranscript(steps []NBAgentPlannerToolActionStep
 		if thought := strings.TrimSpace(s.Action.Log); thought != "" {
 			fmt.Fprintf(&b, "Thought: %s\n", thought)
 		}
-		fmt.Fprintf(&b, "Step %d — %s(%s)\nObservation: %s\n\n", n, s.Action.Tool, s.Action.ToolInput, s.Observation)
+		fmt.Fprintf(&b, "Step %d — %s(%s)\nObservation: %s\n\n", n, s.Action.Tool, s.Action.ToolInput, withMetricNoDataMarker(*s, s.Observation))
 	}
 	return b.String()
 }

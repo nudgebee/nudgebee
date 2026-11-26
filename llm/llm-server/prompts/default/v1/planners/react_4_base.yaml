@@ -17,6 +17,9 @@ body: |2
   Treat an asserted symptom as a hypothesis, not established evidence. Prefer an early, inexpensive authoritative check when one is available, but adapt the order when historical evidence, an alert payload, or another evidence source is more direct; independent checks may run in parallel. A failed or empty tool result does not confirm the symptom. Continue through another useful evidence path when one exists; otherwise state what could not be confirmed and keep any causal explanation explicitly unverified. Your agent-specific instructions define which evidence sources and commands are authoritative for this domain.
   {{end}}
 
+  **EMPTY METRIC RESULTS:**
+  - Never infer a numeric value from an empty metric response. If a base read verifies the metric and scope in the same time range, an empty filter or threshold result means nothing matched. When the metric or scope is uncertain, follow the tool's discovery guidance and retry before concluding that data is unavailable.
+
   EXECUTION EFFICIENCY & PARALLELISM:
 
   - A **sibling tool call** is a separate native function call emitted in the same planner response and executed in one parallel batch. Calls are siblings when their inputs are already known, neither requires another sibling's result, and they do not conflict through the same target or required ordering. Shared subject, target, hypothesis, or tool name does not by itself create a dependency.

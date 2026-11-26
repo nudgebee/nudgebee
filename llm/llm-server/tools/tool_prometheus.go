@@ -243,13 +243,16 @@ func (m PrometheusExecuteTool) InputSchema() core.ToolSchema {
 	}
 }
 
-// prometheusNoDataMessage is the guidance returned when every query in a batch
+// PrometheusNoDataPrefix identifies an empty Prometheus query response.
+const PrometheusNoDataPrefix = "No data found for query: "
+
+// PrometheusNoDataMessage is the guidance returned when every query in a batch
 // comes back empty. This is the exact point where the agent would otherwise start
 // guessing successive label names, so it must route each named-resource shape to
 // the discovery tool that can actually resolve it.
-func prometheusNoDataMessage(query string) string {
-	return fmt.Sprintf("No data found for query: %s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
-		" If this is for a named workload, call %s (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
+func PrometheusNoDataMessage(query string) string {
+	return fmt.Sprintf(PrometheusNoDataPrefix+"%s. The metric may not exist, labels may be incorrect, or there is no data in the selected time range."+
+		" If a base read verifies the metric and scope in the same time range, a filter or threshold may simply match nothing. Otherwise, if this is for a named workload, call %s (workload + namespace) to get the families that actually have series for it, then rebuild the query."+
 		" For any other named resource (a node, an instance, a device), do NOT guess another label name — call %s with the label you are filtering on to see the values it actually takes, then filter on a real value."+
 		" Otherwise use %s/%s for keyword discovery.",
 		query, ToolMetricsSeriesMatch, ToolMetricsLabelValues, ToolMetricsList, ToolSearchMetrics)
@@ -682,7 +685,7 @@ func (m PrometheusExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 	if allEmpty {
 		slog.Info("prometheus: all queries returned empty data", "query", input.Command, "parentAgentId", nbRequestContext.ParentAgentId)
 		return core.NBToolResponse{
-			Data:       prometheusNoDataMessage(input.Command),
+			Data:       PrometheusNoDataMessage(input.Command),
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{core.GetNudgebeeUIReferenceForClusterDetails(nbRequestContext, []string{"monitoring", "query"}, "Query Prometheus", map[string]string{"tab": "4", "subtab": "2"}, input.Command)},
 		}, nil
