@@ -5,6 +5,7 @@ import TracesBlueIcon from '@assets/ask-nudgebee/traces-blue-icon.svg';
 import { KubernetesTraceServiceOperation } from '@components/k8s/common/KubernetesTraceServiceOperation';
 import ExecutedQueryInfo from '@shared/ExecutedQueryInfo';
 import { Box } from '@mui/material';
+import { withUtcTimezone } from './timestamp';
 
 // A traces card is created per evidence slot, so its id carries that index. Anything
 // deciding "did a traces card render?" has to ask through here rather than compare the
@@ -97,7 +98,7 @@ class TracesCard {
   async fetchTraceData(event, workloadInfo) {
     const { srcNamespace, srcWorkload, destinationWorkloadNamespace, destinationWorkloadNames } = workloadInfo;
 
-    const timeRangeValue = formatDateForPlusMinusDuration(new Date(event?.starts_at + 'Z').getTime(), 10);
+    const timeRangeValue = formatDateForPlusMinusDuration(new Date(withUtcTimezone(event?.starts_at)).getTime(), 10);
 
     try {
       const response = await apiTrace.traceV2({
@@ -272,7 +273,7 @@ class TracesCard {
     }
 
     const regex = /-?(\w{9,10})?-(\w{1}|(\w{5}))$/;
-    const timeRangeValue = formatDateForPlusMinusDuration(new Date(this.event?.starts_at + 'Z').getTime(), 10);
+    const timeRangeValue = formatDateForPlusMinusDuration(new Date(withUtcTimezone(this.event?.starts_at)).getTime(), 10);
 
     let destinationWorkloadName;
     if (this.alertLabelData?.destination_workload_name) {

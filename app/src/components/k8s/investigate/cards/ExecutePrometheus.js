@@ -4,6 +4,7 @@ import KubernetesPrometheus from '@components/k8s/details/KubernetesPrometheus';
 import { titleCase } from '@lib/formatter';
 import { formatDateForPlusMinusDuration } from 'src/utils/common';
 import { v4 as uuidv4 } from 'uuid';
+import { withUtcTimezone } from './timestamp';
 
 class ExecutePrometheus {
   // requireData: the evidence holds queries, not their results, so a card built from it can open
@@ -51,10 +52,7 @@ class ExecutePrometheus {
 
   // The time the card charts: 30 minutes either side of the alert.
   chartRange = () => {
-    // The event's start is UTC and may be written with or without a zone. Adding "Z" to one that
-    // has a zone gives an invalid date, and the chart then falls back to the last hour.
-    const startsAt = String(this.event.starts_at ?? '');
-    const startDate = /([Zz]|[+-]\d{2}:?\d{2})$/.test(startsAt) ? startsAt : `${startsAt}Z`;
+    const startDate = withUtcTimezone(String(this.event.starts_at ?? ''));
     const plusMinus30MinDuration = formatDateForPlusMinusDuration(new Date(startDate).getTime(), 30);
     return {
       startTime: plusMinus30MinDuration.dateMinusMinutes,

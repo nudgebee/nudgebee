@@ -3,6 +3,7 @@ import { AllEventsIconBlack } from '@assets';
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import apiKubernetes from '@api1/kubernetes';
 import { formatDate } from '@lib/formatter';
+import { withUtcTimezone } from './timestamp';
 import React, { useState, useEffect } from 'react';
 
 class CorrespondingEvents {
@@ -144,8 +145,8 @@ class CorrespondingEvents {
             account_id: event.cloud_account_id,
             action_name: 'service_map',
             action_params: {
-              r_start_time: formatDate(new Date(new Date(event.starts_at + 'Z').getTime() - 15 * 60 * 1000)),
-              r_end_time: formatDate(new Date(new Date(event.starts_at + 'Z').getTime() + 15 * 60 * 1000)),
+              r_start_time: formatDate(new Date(new Date(withUtcTimezone(event.starts_at)).getTime() - 15 * 60 * 1000)),
+              r_end_time: formatDate(new Date(new Date(withUtcTimezone(event.starts_at)).getTime() + 15 * 60 * 1000)),
             },
           },
           cache: false,
@@ -176,8 +177,8 @@ class CorrespondingEvents {
             defaultQuery={{
               namespace: namespaces,
               workloadName: workloadNames,
-              startTime: new Date(new Date(event.starts_at + 'Z').getTime() - 15 * 60 * 1000),
-              endTime: new Date(new Date(event.starts_at + 'Z').getTime() + 15 * 60 * 1000),
+              startTime: new Date(new Date(withUtcTimezone(event.starts_at)).getTime() - 15 * 60 * 1000),
+              endTime: new Date(new Date(withUtcTimezone(event.starts_at)).getTime() + 15 * 60 * 1000),
             }}
             disabledFilters={['subjectType', 'namespace', 'workload', 'aggregationKey', 'source']}
             stickyColumnIndex={'6'}
