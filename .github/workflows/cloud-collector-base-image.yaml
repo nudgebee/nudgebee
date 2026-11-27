@@ -1,7 +1,7 @@
 name: nudgebee-cloud-collector base image
 
 # Builds and publishes the OSS cloud-collector base image —
-# ghcr.io/<owner>/nudgebee-cloud-collector-base (Alpine + aws-cli / azure-cli /
+# ghcr.io/<owner>/nudgebee-cloud-collector-base (Red Hat UBI 9 + aws-cli / azure-cli /
 # gcloud SDK) that cloud-collector-server builds FROM (RUNTIME_BASE).
 #
 # Why this workflow exists: same gap as the python base. The enterprise infra
@@ -145,11 +145,11 @@ jobs:
           set -euo pipefail
           SNAP="${DATE}-${SHA_SHORT}"
           # STABLE is the version-rolling tag consumers pin (mirrors the python
-          # base's :3.12). It tracks the Alpine major.minor the base is built on,
-          # so weekly rebuilds roll security patches WITHIN alpine 3.22 but never
-          # silently jump to a new major (which would risk breaking tooling).
-          # Bump this in lockstep with the FROM alpine:X.Y in the base Dockerfile.
-          STABLE="alpine3.23"
+          # base's :3.12). It tracks the UBI major the base is built on, so weekly
+          # rebuilds roll security patches WITHIN UBI 9 but never silently jump
+          # to a new major (which would risk breaking tooling). Bump this in
+          # lockstep with the FROM ubi:N in the base Dockerfile.
+          STABLE="ubi9"
           echo "Merging ${REPO}:${SNAP} (+ :${STABLE} + :latest) from per-arch images"
           docker buildx imagetools create \
             -t "${REPO}:${STABLE}" \
