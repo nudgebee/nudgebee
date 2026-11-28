@@ -92,7 +92,7 @@ func TestGetLogglyConfigs_DecryptsApiToken(t *testing.T) {
 
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
-	patches.ApplyFunc(core.ListIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
+	patches.ApplyFunc(core.ListActiveIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 		return []core.IntegrationDto{
 			{
 				Name: IntegrationLoggly,
@@ -115,7 +115,7 @@ func TestGetLogglyConfigs_BadCiphertextReturnsError(t *testing.T) {
 
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
-	patches.ApplyFunc(core.ListIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
+	patches.ApplyFunc(core.ListActiveIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 		return []core.IntegrationDto{
 			{
 				Name: IntegrationLoggly,
@@ -136,7 +136,7 @@ func TestGetLogglyConfigs_UnencryptedTokenPassesThrough(t *testing.T) {
 	// Back-compat: if IsEncrypted is false, callers must get the raw value as-is.
 	patches := gomonkey.NewPatches()
 	defer patches.Reset()
-	patches.ApplyFunc(core.ListIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
+	patches.ApplyFunc(core.ListActiveIntegrationConfigs, func(_ *security.RequestContext, _ string, _ string) ([]core.IntegrationDto, error) {
 		return []core.IntegrationDto{
 			{
 				Name: IntegrationLoggly,

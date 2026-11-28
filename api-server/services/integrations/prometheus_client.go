@@ -92,7 +92,7 @@ func ExpandClusterPlaceholder(query, additionalLabels string) string {
 // connects to for an account (user-source, or a datasource its forager registered) and
 // decrypts its secrets.
 func GetPrometheusUserConfigs(sc *security.RequestContext, accountId string) (PrometheusUserConfig, error) {
-	integrationDtos, err := core.ListIntegrationConfigs(sc, accountId, IntegrationPrometheus)
+	integrationDtos, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationPrometheus)
 	if err != nil {
 		return PrometheusUserConfig{}, fmt.Errorf("failed to list Prometheus integration configs: %w", err)
 	}

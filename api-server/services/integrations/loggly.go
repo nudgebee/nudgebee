@@ -138,7 +138,7 @@ func GetLogglyConfigs(sc *security.RequestContext, accountId string) (LogglyConf
 	subdomain := ""
 	apiToken := ""
 
-	logglyIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationLoggly)
+	logglyIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationLoggly)
 	if err != nil {
 		return LogglyConfig{}, fmt.Errorf("failed to list loggly integration configs: %w", err)
 	}

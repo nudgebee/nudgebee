@@ -33,6 +33,8 @@ func listIntegrationConfigValues(sc *security.RequestContext, accountId, integra
 // and source. Unlike listIntegrationConfigValuesWithSource it treats "no such row" as a
 // normal answer (false, nil) rather than an error, so callers asking a question about
 // configuration can tell an absent integration apart from a failed query.
+//
+//go:noinline
 func hasIntegrationWithSource(sc *security.RequestContext, accountId, integrationType, source string) (bool, error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -49,6 +51,7 @@ func hasIntegrationWithSource(sc *security.RequestContext, accountId, integratio
 			  AND i.tenant_id = $2
 			  AND ica.cloud_account_id = $3
 			  AND i.source = $4
+			  AND i.status != 'disabled'
 		)`, integrationType, sc.GetSecurityContext().GetTenantId(), accountId, source)
 	if err != nil {
 		return false, fmt.Errorf("failed to check for %s/%s integration: %w", integrationType, source, err)
@@ -57,6 +60,8 @@ func hasIntegrationWithSource(sc *security.RequestContext, accountId, integratio
 }
 
 // listIntegrationConfigValuesWithSource is like listIntegrationConfigValues but optionally filters by source.
+//
+//go:noinline
 func listIntegrationConfigValuesWithSource(sc *security.RequestContext, accountId, integrationType, source string) ([]integrationConfigValue, error) {
 	values, _, err := listIntegrationConfigValuesAndID(sc, accountId, integrationType, source)
 	return values, err
@@ -78,7 +83,7 @@ func listIntegrationConfigValuesAndID(sc *security.RequestContext, accountId, in
 		SELECT i.id::text
 		FROM integrations i
 		JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id
-		WHERE i.type = $1 AND i.tenant_id = $2`
+		WHERE i.type = $1 AND i.tenant_id = $2 AND i.status != 'disabled'`
 
 	paramIdx := 3
 	if accountId != "" {

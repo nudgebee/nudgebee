@@ -1,10 +1,16 @@
 package playbooks
 
 import (
+	"database/sql"
 	"os"
+	"regexp"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"nudgebee/services/internal/database"
 )
 
 const (
@@ -135,4 +141,82 @@ func TestBuildDatadogQuery(t *testing.T) {
 	}
 	query = buildDatadogQuery(params)
 	assert.Equal(t, "service:payment-service", query)
+}
+
+func TestGetDatadogConfigsForAccount_FiltersDisabledAndScopesTenant(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	manager := &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	// Case 1: Account has disabled Datadog, query matches active only -> not found
+	expectedQuery := `SELECT i.id::text FROM integrations i JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id WHERE i.type = $1 AND ica.cloud_account_id = $2 AND i.status != 'disabled' AND i.tenant_id = $3 LIMIT 1`
+	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
+		WithArgs("datadog", "acc-1", "tenant-1").
+		WillReturnError(sql.ErrNoRows)
+
+	_, _, _, err = getDatadogConfigsForAccount("tenant-1", "acc-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "datadog integration not found for account acc-1")
+
+	// Case 2: Active Datadog exists with plain keys and custom site
+	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
+		WithArgs("datadog", "acc-1", "tenant-1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("dd-active-1"))
+
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT name::text, value::text, is_encrypted FROM integration_config_values WHERE integration_id = $1`)).
+		WithArgs("dd-active-1").
+		WillReturnRows(sqlmock.NewRows([]string{"name", "value", "is_encrypted"}).
+			AddRow("api_key", "plain-api-key", false).
+			AddRow("app_key", "plain-app-key", false).
+			AddRow("site", "datadoghq.eu", false))
+
+	apiKey, appKey, site, err := getDatadogConfigsForAccount("tenant-1", "acc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "plain-api-key", apiKey)
+	assert.Equal(t, "plain-app-key", appKey)
+	assert.Equal(t, "app.datadoghq.eu", site)
+
+	// Case 3: Missing tenant scope must not allow an unscoped credential lookup.
+	_, _, _, err = getDatadogConfigsForAccount("", "acc-2")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tenant_id is required")
+
+	// Case 4: Empty accountId returns error immediately
+	_, _, _, err = getDatadogConfigsForAccount("tenant-1", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "account_id is required")
+
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestDatadogMonitorsSearchAction_FailsWhenActiveIntegrationMissing(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	manager := &database.DatabaseManager{Db: sqlx.NewDb(db, "postgres")}
+	database.RegisterDatabaseManagerHook(database.Metastore, func() (*database.DatabaseManager, error) {
+		return manager, nil
+	})
+	t.Cleanup(func() { database.RegisterDatabaseManagerHook(database.Metastore, nil) })
+
+	action := &datadogMonitorsSearchAction{}
+	ctx := NewPlaybookActionContext("tenant-1", "acc-disabled", nil, PlaybookEvent{})
+
+	expectedQuery := `SELECT i.id::text FROM integrations i JOIN integrations_cloud_accounts ica ON i.id = ica.integration_id WHERE i.type = $1 AND ica.cloud_account_id = $2 AND i.status != 'disabled' AND i.tenant_id = $3 LIMIT 1`
+	mock.ExpectQuery(regexp.QuoteMeta(expectedQuery)).
+		WithArgs("datadog", "acc-disabled", "tenant-1").
+		WillReturnError(sql.ErrNoRows)
+
+	_, err = action.Execute(ctx, map[string]any{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Datadog configuration")
+	assert.Contains(t, err.Error(), "datadog integration not found")
+	require.NoError(t, mock.ExpectationsWereMet())
 }

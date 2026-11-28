@@ -145,7 +145,8 @@ func (a *datadogMonitorsSearchAction) Execute(ctx PlaybookActionContext, rawPara
 
 	// Get Datadog credentials from integration config
 	accountId := ctx.GetAccountId()
-	apiKey, appKey, site, err := getDatadogConfigsForAccount(accountId)
+	tenantId := ctx.GetTenantId()
+	apiKey, appKey, site, err := getDatadogConfigsForAccount(tenantId, accountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Datadog configuration: %w", err)
 	}
@@ -269,11 +270,20 @@ func parseDatadogMonitorsParams(ctx PlaybookActionContext, rawParams map[string]
 // Helper function to get Datadog configs for an account
 // This function retrieves the Datadog integration configuration directly from the database
 // using SQL queries similar to core.ListIntegrationConfigs to avoid import cycles
-func getDatadogConfigsForAccount(accountId string) (apiKey, appKey, site string, err error) {
+//
+//go:noinline
+func getDatadogConfigsForAccount(tenantId, accountId string) (apiKey, appKey, site string, err error) {
 	const datadogIntegrationName = "datadog"
 	const apiKeyConfigName = "api_key"
 	const appKeyConfigName = "app_key"
 	const siteConfigName = "site"
+
+	if accountId == "" {
+		return apiKey, appKey, site, fmt.Errorf("account_id is required to fetch Datadog configuration")
+	}
+	if tenantId == "" {
+		return apiKey, appKey, site, fmt.Errorf("tenant_id is required to fetch Datadog configuration")
+	}
 
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
@@ -289,11 +299,12 @@ func getDatadogConfigsForAccount(accountId string) (apiKey, appKey, site string,
 		  ON i.id = ica.integration_id
 		WHERE i.type = $1
 		  AND ica.cloud_account_id = $2
-		LIMIT 1
-	`
+		  AND i.status != 'disabled'
+		  AND i.tenant_id = $3
+		LIMIT 1`
 
 	var integrationId string
-	err = dbms.Db.QueryRowx(query, datadogIntegrationName, accountId).Scan(&integrationId)
+	err = dbms.Db.QueryRowx(query, datadogIntegrationName, accountId, tenantId).Scan(&integrationId)
 	if err != nil {
 		return apiKey, appKey, site, fmt.Errorf("datadog integration not found for account %s: %w", accountId, err)
 	}

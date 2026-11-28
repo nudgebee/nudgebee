@@ -150,6 +150,7 @@ const observability = {
   // one queries actually run through.
   async getLabelMapping(data: {
     account_id: string;
+    integration_id?: string;
     provider?: string;
     provider_source?: string;
     provider_type?: string;

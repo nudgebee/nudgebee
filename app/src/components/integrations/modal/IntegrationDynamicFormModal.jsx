@@ -3450,6 +3450,7 @@ const IntegrationDynamicFormModal = ({
                         renderAccountGroupIcon={renderAccountGroupIcon}
                         provider={integrationName}
                         providerSource={editData?.source || 'user'}
+                        integrationId={editData?.id}
                       />
                     </Box>
                   )}
@@ -3466,6 +3467,7 @@ const IntegrationDynamicFormModal = ({
                         renderAccountGroupIcon={renderAccountGroupIcon}
                         provider={integrationName}
                         providerSource={editData?.source || 'user'}
+                        integrationId={editData?.id}
                         providerType='traces'
                         signalNoun='trace'
                         testIdPrefix='trace-label-mapping'

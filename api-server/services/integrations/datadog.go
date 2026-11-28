@@ -301,7 +301,7 @@ func GetDatadogConfigs(sc *security.RequestContext, accountId string) (string, s
 	appKey := ""
 	site := ""
 
-	datadogIntegrations, err := core.ListIntegrationConfigs(sc, accountId, IntegrationDatadog)
+	datadogIntegrations, err := core.ListActiveIntegrationConfigs(sc, accountId, IntegrationDatadog)
 	if err != nil {
 		return apiKey, appKey, site, fmt.Errorf("failed to list datadog integration configs: %w", err)
 	}

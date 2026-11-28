@@ -49,7 +49,7 @@ func (s *SignozSaasSource) ExpandedLabelKeys() map[string][]string { return sign
 // connection_mode=vm_agent the client's transport is the account's forager; its
 // datasource is unauthenticated, so the login and the JWT or API key travel per request.
 func (s *SignozSaasSource) signozConnection(ctx *security.RequestContext, accountId string) (signozclient.Credentials, *http.Client, error) {
-	integrationDto, err := core.ListIntegrationConfigs(ctx, accountId, "signoz")
+	integrationDto, err := core.ListActiveIntegrationConfigs(ctx, accountId, "signoz")
 	if err != nil {
 		return signozclient.Credentials{}, nil, fmt.Errorf("failed to get signoz integration: %w", err)
 	}
@@ -105,7 +105,7 @@ func signozCredentials(configs []core.IntegrationConfigValue) (signozclient.Cred
 	for _, config := range configs {
 		stored[config.Name] = config
 	}
-	// value reads one stored config value. ListIntegrationConfigs returns
+	// value reads one stored config value. ListActiveIntegrationConfigs returns
 	// values raw — it does not decrypt — and secrets (signoz_password,
 	// signoz_api_key) are stored with is_encrypted=true, so without this SigNoz
 	// receives ciphertext and answers 401. (Legacy rows saved with
