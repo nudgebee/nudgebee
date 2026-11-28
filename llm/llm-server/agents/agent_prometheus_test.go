@@ -96,3 +96,20 @@ func TestPrometheusPlannerViewSeparatesQueries(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(got, "only-a"), got)
 	assert.Equal(t, 1, strings.Count(got, "only-b"), got)
 }
+
+func TestPrometheusHandlesPromqlClarification(t *testing.T) {
+	agent := PrometheusAgent{}
+	prompt := agent.GetSystemPrompt(nil, core.NBAgentRequest{})
+	usage := strings.Join(prompt.ToolUsage[PromqlAgentName], "\n")
+	assert.Contains(t, usage, "never a clarification note")
+	assert.Contains(t, usage, "rephrase the sub-question")
+	assert.Contains(t, usage, "without waiting for a user reply")
+	assert.Contains(t, usage, "metrics_series_match")
+	assert.Contains(t, usage, "report the metric as unavailable")
+
+	writer := &PromqlAgent{}
+	note := `{"note":"Which application should I query?"}`
+	_, finish, err := writer.UpdateExecutorLlmResponse(nil, &core.NBAgentPlannerFinishAction{Data: note}, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, note, finish.Data)
+}
